@@ -2,16 +2,24 @@
 #
 # 常用命令：
 #   make build    # 编译全部二进制到 bin/ 目录
-#   make test     # 运行单元测试
-#   make run      # 本地运行 cloudcore（占位程序）
+#   make test     # 运行单元测试（含竞态检测和覆盖率）
+#   make run      # 本地运行 cloudcore
 #   make lint     # 代码静态检查（需要 golangci-lint，未安装时给出提示）
 #   make clean    # 清理编译产物
 
 # 二进制输出目录
 BIN_DIR := bin
 
-# 编译参数：注入版本号，后续扩展业务时可在这里追加 -ldflags
-LDFLAGS := -s -w
+# 版本信息：默认 v0.1.0，可用 make build VERSION=v0.2.0 覆盖
+VERSION ?= v0.1.0
+GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_TIME ?= $(shell date +%Y-%m-%dT%H:%M:%S%z)
+
+# 编译参数：通过 -ldflags 把版本信息注入到 pkg/version 包
+LDFLAGS := -s -w \
+	-X edgeflow/pkg/version.Version=$(VERSION) \
+	-X edgeflow/pkg/version.GitCommit=$(GIT_COMMIT) \
+	-X edgeflow/pkg/version.BuildTime=$(BUILD_TIME)
 
 .PHONY: build test run lint clean
 
@@ -22,15 +30,15 @@ build:
 	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/edgecore ./cmd/edgecore
 	@echo "build done: $(BIN_DIR)/cloudcore, $(BIN_DIR)/edgecore"
 
-## test: 运行全部单元测试（含 -race 竞态检测）
+## test: 运行全部单元测试（含竞态检测和覆盖率）
 test:
-	go test -race -v ./...
+	go test -race -cover ./...
 
-## run: 本地运行 cloudcore 占位程序
+## run: 本地运行 cloudcore
 run:
 	go run ./cmd/cloudcore
 
-## lint: 静态检查（依赖 golangci-lint，未安装时跳过并提示）
+## lint: 静态检查（依赖 golangci-lint，未安装时给出提示）
 lint:
 	@if command -v golangci-lint >/dev/null 2>&1; then \
 		golangci-lint run ./...; \

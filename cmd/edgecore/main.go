@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"edgeflow/edge/pkg/edged"
 	"edgeflow/edge/pkg/edgehub"
 	"edgeflow/edge/pkg/metamanager"
 	"edgeflow/pkg/log"
@@ -127,11 +128,37 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	log.Infof("EdgeHub connecting to %s as %s", client.Address(), opts.NodeID)
 	client.Start()
 
+	// 启动 Edged（WBS 3.2 方案 A POC）：声明式调谐循环 + Docker 容器运行时。
+	// 期望状态来自 MetaManager 的 Pod 元数据；每 5s 轮询 + 增量订阅触发。
+	edgedSvc := edged.New(store, edged.NewDockerRuntime(), 5*time.Second)
+	edgedSvc.Start()
+	log.Infof("Edged started（方案 A POC：DockerRuntime + 5s 调谐周期）")
+
+	// MetaManager 增量订阅：Pod 变更（upsert/delete）→ 触发 Edged 立即调谐。
+	// 背压策略：订阅缓冲满时丢弃事件（reconcile 是声明式的，下一轮轮询会收敛）。
+	subID, eventCh, err := store.Subscribe(metamanager.SubscribeOptions{})
+	if err != nil {
+		log.Warnf("MetaManager 订阅失败（Edged 仍按轮询调谐）: %v", err)
+	} else {
+		go func() {
+			for ev := range eventCh {
+				if ev.Type == metamanager.EventPodUpsert || ev.Type == metamanager.EventPodDelete {
+					edgedSvc.Trigger()
+				}
+			}
+		}()
+		log.Infof("MetaManager 增量订阅已启用（subID=%d），Pod 变更将即时触发 Edged 调谐", subID)
+	}
+
 	// 常驻：等待退出信号后优雅关闭（先停 EdgeHub，再关 Store，
 	// 保证回调不再触发后才会关闭数据库连接）
 	sig := <-sigCh
 	log.Infof("收到信号 %v，正在优雅关闭 EdgeHub...", sig)
+	edgedSvc.Stop()
 	client.Stop()
+	if subID != 0 {
+		store.Unsubscribe(subID)
+	}
 	log.Infof("edgecore exited")
 	return 0
 }

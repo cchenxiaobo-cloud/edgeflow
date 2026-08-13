@@ -46,6 +46,8 @@ type Edged struct {
 	mu     sync.RWMutex // 保护 status 与生命周期字段
 	status map[string]PodStatus
 
+	triggerCh chan struct{} // 增量订阅触发信号（非阻塞，合并重复触发）
+
 	stopCh chan struct{}
 	doneCh chan struct{}
 }
@@ -56,10 +58,11 @@ func New(store *metamanager.Store, rt ContainerRuntime, interval time.Duration) 
 		interval = DefaultReconcileInterval
 	}
 	return &Edged{
-		store:    store,
-		rt:       rt,
-		interval: interval,
-		status:   make(map[string]PodStatus),
+		store:     store,
+		rt:        rt,
+		interval:  interval,
+		status:    make(map[string]PodStatus),
+		triggerCh: make(chan struct{}, 1),
 	}
 }
 
@@ -95,10 +98,22 @@ func (e *Edged) loop(stopCh <-chan struct{}, doneCh chan<- struct{}) {
 		case <-ticker.C:
 			// 错误已记录在 Status 并输出日志，循环不因单轮失败退出
 			_ = e.reconcileOnce()
+		case <-e.triggerCh:
+			// 增量订阅触发：MetaManager 有 Pod 变更时立即调谐一次（不等下个周期）
+			_ = e.reconcileOnce()
 		case <-stopCh:
 			log.Infof("Edged 调谐循环已停止")
 			return
 		}
+	}
+}
+
+// Trigger 请求立即执行一轮调谐（非阻塞；已有一轮在跑则合并）。
+// 供 MetaManager 增量订阅等事件源调用，减少轮询延迟。
+func (e *Edged) Trigger() {
+	select {
+	case e.triggerCh <- struct{}{}:
+	default: // 已有待处理触发信号，合并
 	}
 }
 

@@ -36,10 +36,10 @@
 | 模块 ID | 名称 | 状态 | 完成标准 | 验证证据 |
 |---------|------|------|---------|---------|
 | M0-1 | 项目骨架 + 共享库 + cloudcore healthz | ✅ **完成** | 见 ROADMAP T0-T8 | 见下方 §4 |
-| M0-2 | CRD 类型定义（Node/Device） | ⏳ 待开发 | 后续轮次 | — |
+| M0-2 | CRD 类型定义（Node/Device） | ✅ **完成** | EdgeNode/DeviceModel/Device 定义 + DeepCopy + 文档 | commit a541128，apis/ 3 类型 11 测试 |
 | M0-3 | CI/CD 完整流水线 | ✅ 基础版完成 | lint+test+覆盖率门槛 | commit ab73062 |
-| M0-4 | Helm Chart 骨架 | ⏳ 待开发 | 后续轮次 | — |
-| M1 | 云边核心通信链路（CloudHub/EdgeHub） | ⏳ 待开发 | M0 完成后启动 | — |
+| M0-4 | Helm Chart 骨架 | ✅ **完成** | helm lint 通过 + template 渲染正确 | commit 9d78246，helm v4.2.3 |
+| M1 | 云边核心通信链路（CloudHub/EdgeHub） | ✅ **M1 基础版完成** | 协议+注册+心跳+断线重连，联调通过 | commits e569ea1/6241a78/7b1c27a，见 §4B |
 | M2 | 应用部署与边缘自治 | ⏳ 待开发 | 依赖 M1 | — |
 | M3 | 设备管理（Device CRD/Twin/Mapper） | ⏳ 待开发 | 依赖 M2 | — |
 | M4 | 生产化与规模化 | ⏳ 待开发 | 依赖 M3 | — |
@@ -90,6 +90,38 @@
 {"status":"ok","version":{"version":"v0.1.0","gitCommit":"e494e20","buildTime":"2026-08-13T09:12:09+0800","goVersion":"go1.26.2"}}
 ```
 
+## 4B. M1 云边通信通道验证结果（2026-08-13）
+
+### 代码库状态
+| 检查项 | 结果 |
+|--------|------|
+| 新增提交 | 6 个（protocol/cloudhub/edgehub/helm/cross-build/apis + gofmt） |
+| 依赖 | gorilla/websocket v1.5.3（M1 起引入，WebSocket 需第三方库，计划内决策） |
+| 代码审查 | docs/CODE-REVIEW-M1.md（复核员审查结论见该文件） |
+
+### 自动化验证
+| 验证项 | 结果 |
+|--------|------|
+| go build / go vet / gofmt | ✅ 全部通过 |
+| golangci-lint | ✅ 0 issues |
+| go test -race（全仓） | ✅ 全部通过，总覆盖率 81.7%（≥70%） |
+| cloudhub 覆盖率 | 77.8% |
+| edgehub 覆盖率 | 82.2% |
+| protocol 覆盖率 | 90.3% |
+| race 连跑 3 遍（cloud/edge） | ✅ 无 flaky |
+| helm lint | ✅ 0 failed |
+
+### 端到端联调（真实 cloudcore + edgecore）
+| 场景 | 结果 |
+|------|------|
+| 注册链路 | ✅ cloudcore 日志"节点 edge-e2e-1 注册成功"，edgecore 确认注册 |
+| 心跳保活 | ✅ 32s 后进程存活，无重连日志 |
+| 断线检测 | ✅ cloudcore 记录"已断开，从注册表移除" |
+| 指数退避 | ✅ 2s/4s/8s 递增重试（日志时间戳验证） |
+| 自动重连 | ✅ cloudcore 重启后 8s 内 edgecore 重连并重新注册 |
+| healthz | ✅ :8080 持续 200 |
+| 进程清理 | ✅ 优雅退出无残留 |
+
 ## 5. 待办项（Backlog）
 
 | 优先级 | 事项 | 说明 |
@@ -104,7 +136,7 @@
 
 | 里程碑 | 状态 | 说明 |
 |--------|------|------|
-| M0 架构基线与开发就绪 | 🔄 进行中（核心完成） | 骨架/共享库/CI 基础 ✅；CRD 与 Helm 待开发 |
+| M0 架构基线与开发就绪 | ✅ **完成** | 骨架/共享库/CI/CRD/Helm/架构文档全部就绪 |
 | M1 云边核心通信链路 | ⏳ 未开始 | 依赖 M0 收尾 |
 | M2 应用部署与边缘自治 | ⏳ 未开始 | — |
 | M3 设备管理 | ⏳ 未开始 | — |

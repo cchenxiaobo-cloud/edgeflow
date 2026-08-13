@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EdgeFlow 研发启动报告 — M0 里程碑交付</title>
+<style>
+  :root {
+    --bg: #fafafa; --surface: #ffffff; --text: #1a1a1a; --text-2: #555; --text-3: #888;
+    --accent: #1a4f8b; --accent-light: #e8eef5; --border: #d8dde3; --rule: #b9c2cc;
+    --green: #1a6b3c; --green-light: #e6f2ea; --red: #8b1a1a; --red-light: #f5e8e8;
+    --yellow: #8b6b1a; --yellow-light: #f5efe0; --code-bg: #f4f5f7; --radius: 2px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+    --serif: Georgia, 'Times New Roman', serif;
+    --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.65; font-weight: 400; font-size: 15px; -webkit-font-smoothing: antialiased; }
+  .container { max-width: 900px; margin: 0 auto; padding: 64px 48px; }
+  h1 { font-family: var(--serif); font-size: 1.9rem; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.05rem; font-weight: 600; margin: 2.5rem 0 0.8rem; padding-bottom: 0.4rem; border-bottom: 1.5px solid var(--rule); letter-spacing: 0.02em; }
+  h3 { font-size: 0.95rem; font-weight: 600; margin: 1.5rem 0 0.5rem; }
+  p { margin-bottom: 0.7rem; color: var(--text-2); }
+  .subtitle { font-family: var(--serif); font-size: 0.95rem; color: var(--text-3); font-style: italic; margin-bottom: 2.5rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 2px; font-size: 0.85em; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); padding: 0.9rem 1rem; border-radius: var(--radius); overflow-x: auto; margin: 0.8rem 0; font-size: 0.8rem; line-height: 1.5; font-family: var(--mono); }
+  pre code { background: none; padding: 0; }
+  table { width: 100%; border-collapse: collapse; margin: 0.8rem 0 1.2rem; font-size: 0.85rem; }
+  th { text-align: left; font-weight: 600; padding: 0.5rem 0.6rem; border-bottom: 1.5px solid var(--rule); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-2); }
+  td { padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--border); }
+  tr:hover td { background: var(--accent-light); }
+  .badge { display: inline-block; padding: 0.1em 0.5em; border-radius: 2px; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em; }
+  .b-green { background: var(--green-light); color: var(--green); }
+  .b-red { background: var(--red-light); color: var(--red); }
+  .b-yellow { background: var(--yellow-light); color: var(--yellow); }
+  .b-blue { background: var(--accent-light); color: var(--accent); }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); margin: 1.2rem 0; }
+  .metric { background: var(--surface); padding: 1rem 0.8rem; text-align: center; }
+  .metric-value { font-family: var(--serif); font-size: 1.6rem; font-weight: 600; color: var(--accent); }
+  .metric-label { font-size: 0.72rem; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.2rem; }
+  .panel { border: 1px solid var(--border); border-left: 3px solid var(--accent); padding: 1rem 1.2rem; margin: 1rem 0; background: var(--surface); }
+  .panel-title { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.4rem; }
+  .arch { font-family: var(--mono); font-size: 0.75rem; line-height: 1.55; background: var(--surface); border: 1px solid var(--border); padding: 1rem; overflow-x: auto; margin: 0.8rem 0; color: var(--text-2); }
+  .timeline { position: relative; padding-left: 1.6rem; margin: 1rem 0; }
+  .timeline::before { content: ''; position: absolute; left: 0.4rem; top: 0.2rem; bottom: 0.2rem; width: 1.5px; background: var(--rule); }
+  .tl-item { position: relative; margin-bottom: 1rem; }
+  .tl-item::before { content: ''; position: absolute; left: -1.42rem; top: 0.35rem; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg); }
+  .tl-title { font-weight: 600; font-size: 0.88rem; }
+  .tl-text { font-size: 0.82rem; color: var(--text-2); }
+  .checklist { list-style: none; margin: 0.6rem 0; }
+  .checklist li { padding: 0.2rem 0; font-size: 0.85rem; color: var(--text-2); }
+  .checklist li::before { content: '✓ '; color: var(--green); font-weight: 700; }
+  .footer { margin-top: 3rem; padding-top: 1.2rem; border-top: 1.5px solid var(--rule); font-size: 0.75rem; color: var(--text-3); }
+  @media (max-width: 700px) { .container { padding: 32px 18px; } .metrics { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>EdgeFlow 研发启动报告</h1>
+<p class="subtitle">M0 里程碑 · 环境配置与首个模块交付 · 2026-08-13</p>
+
+<div class="metrics">
+  <div class="metric"><div class="metric-value">7</div><div class="metric-label">Git 提交</div></div>
+  <div class="metric"><div class="metric-value">87.5%</div><div class="metric-label">测试覆盖率</div></div>
+  <div class="metric"><div class="metric-value">0</div><div class="metric-label">Lint 问题</div></div>
+  <div class="metric"><div class="metric-value">6/6</div><div class="metric-label">运行场景验证</div></div>
+</div>
+
+<h2>1. 交付摘要</h2>
+<p>本报告记录 EdgeFlow 边缘计算项目研发启动（M0 里程碑）的完整过程与验证证据：基础环境配置（可复现脚本）、项目骨架（Git 托管）、首个模块（共享库 + cloudcore 健康检查服务）开发与独立审查修复。</p>
+
+<h2>2. 环境配置</h2>
+<p>本机（macOS 26.1, Apple Silicon）工具链已全部就绪；<code>setup-env.sh</code> 为幂等脚本，可在干净环境复现。</p>
+
+<table>
+<thead><tr><th>工具</th><th>版本</th><th>状态</th><th>验收命令</th></tr></thead>
+<tbody>
+<tr><td>Go</td><td>1.26.2</td><td><span class="badge b-green">就绪</span></td><td><code>go version</code></td></tr>
+<tr><td>Git</td><td>2.50.1</td><td><span class="badge b-green">就绪</span></td><td><code>git --version</code></td></tr>
+<tr><td>Docker</td><td>29.4.3</td><td><span class="badge b-green">就绪</span></td><td><code>docker --version</code></td></tr>
+<tr><td>golangci-lint</td><td>2.12.2</td><td><span class="badge b-green">就绪</span></td><td><code>golangci-lint version</code></td></tr>
+<tr><td>Delve (dlv)</td><td>1.27.1</td><td><span class="badge b-green">就绪</span></td><td><code>~/go/bin/dlv version</code>（新终端生效）</td></tr>
+<tr><td>VS Code</td><td>1.133.0</td><td><span class="badge b-green">就绪</span></td><td>应用已安装</td></tr>
+<tr><td>GOPROXY</td><td>goproxy.cn</td><td><span class="badge b-green">就绪</span></td><td><code>go env GOPROXY</code></td></tr>
+<tr><td>SSH key</td><td>ed25519</td><td><span class="badge b-yellow">已生成</span></td><td>粘贴公钥到 GitHub（人工步骤）</td></tr>
+</tbody>
+</table>
+
+<h2>3. 项目结构</h2>
+<div class="arch">edgeflow/
+├── cmd/
+│   ├── cloudcore/    云端入口：healthz 服务 + 配置加载 + 优雅退出（已实现）
+│   └── edgecore/     边缘端入口（占位，M1 开发）
+├── pkg/
+│   ├── config/       配置库：JSON 文件，优先级 --port &gt; 环境变量 &gt; 文件 &gt; 默认 8080
+│   ├── httpx/        healthz handler（返回 status + version）
+│   ├── log/          日志封装（INFO/WARN/ERROR）
+│   └── version/      版本信息（构建时注入）
+├── config/cloudcore.json   示例配置
+├── docs/             ROADMAP / ENV-SETUP / CODE-REVIEW / PROGRESS / HANDOFF
+├── .github/workflows/ci.yml  lint（强制）+ build + test + 覆盖率 ≥70%
+├── Makefile          build / test / run / lint
+└── setup-env.sh      环境配置脚本（幂等）</div>
+
+<h2>4. 首个模块验证结果</h2>
+
+<h3>4.1 自动化验证</h3>
+<table>
+<thead><tr><th>验证项</th><th>命令</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>编译</td><td><code>go build ./...</code></td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>静态检查</td><td><code>go vet ./...</code></td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>代码规范</td><td><code>gofmt -l .</code></td><td><span class="badge b-green">无输出</span></td></tr>
+<tr><td>Lint</td><td><code>golangci-lint run ./...</code></td><td><span class="badge b-green">0 issues</span></td></tr>
+<tr><td>测试（race）</td><td><code>go test -race -cover ./...</code></td><td><span class="badge b-green">全部通过</span></td></tr>
+<tr><td>总覆盖率</td><td>CI 同款 awk 检查</td><td><span class="badge b-green">87.5% ≥ 70%</span></td></tr>
+</tbody>
+</table>
+
+<h3>4.2 运行时验证（6 场景实测）</h3>
+<table>
+<thead><tr><th>场景</th><th>期望</th><th>实测</th></tr></thead>
+<tbody>
+<tr><td>默认启动（配置 8080）</td><td>:8080/healthz → 200</td><td><span class="badge b-green">200</span> 来源: 配置文件</td></tr>
+<tr><td>配置文件缺失</td><td>回退默认值，不报错</td><td><span class="badge b-green">200</span> 来源: 默认值</td></tr>
+<tr><td>配置文件改 9090</td><td>:9090 → 200</td><td><span class="badge b-green">200</span> 来源: 配置文件</td></tr>
+<tr><td>环境变量 10000</td><td>:10000 → 200</td><td><span class="badge b-green">200</span> 来源: 环境变量</td></tr>
+<tr><td>--port 7070</td><td>:7070 → 200</td><td><span class="badge b-green">200</span> 来源: 命令行</td></tr>
+<tr><td>非法端口 / 坏 JSON</td><td>启动前报错 exit 1</td><td><span class="badge b-green">通过</span> 无 listening 日志</td></tr>
+<tr><td>SIGTERM 优雅退出</td><td>退出码 0，无残留</td><td><span class="badge b-green">通过</span></td></tr>
+</tbody>
+</table>
+
+<h3>4.3 healthz 响应</h3>
+<pre><code>{"status":"ok","version":{"version":"v0.1.0","gitCommit":"e494e20","buildTime":"2026-08-13T09:12:09+0800","goVersion":"go1.26.2"}}</code></pre>
+
+<h2>5. 代码审查与修复</h2>
+<div class="panel">
+<div class="panel-title">审查结论：有条件通过 → 3 项 P1 已全部修复 → 完全通过</div>
+<table>
+<thead><tr><th>审查发现</th><th>修复</th><th>提交</th></tr></thead>
+<tbody>
+<tr><td>P1-① 配置库未交付（标准 #7 无法验证）</td><td>新增 pkg/config（零依赖，100% 覆盖）</td><td><code>f49ce32</code></td></tr>
+<tr><td>P1-② ROADMAP 状态与端口口径未同步</td><td>T0-T8 全部 ✅，端口口径统一（healthz 8080 / 云边 10000 属 M1）</td><td><code>470e32d</code></td></tr>
+<tr><td>P1-③ CI 缺 lint job、覆盖率门槛、缓存</td><td>lint 强制 + 覆盖率 ≥70% + setup-go 缓存</td><td><code>ab73062</code></td></tr>
+<tr><td>P2 顺手项：端口校验、ReadTimeout、main 可测性</td><td>前置校验 + 10s 超时 + main_test.go（88.2%）</td><td><code>f49ce32</code></td></tr>
+</tbody>
+</table>
+<p style="margin-top:0.5rem;font-size:0.82rem">审查报告全文：<code>docs/CODE-REVIEW.md</code>；未做 P2（日志级别过滤、edgecore 测试）已记录到 PROGRESS.md 待办项。</p>
+</div>
+
+<h2>6. 开发路线（M0 之后）</h2>
+<div class="timeline">
+  <div class="tl-item"><div class="tl-title">M0 架构基线与开发就绪 <span class="badge b-green">进行中（核心完成）</span></div><div class="tl-text">骨架/共享库/CI 基础 ✅ · 剩余：CRD 定义、Helm 骨架</div></div>
+  <div class="tl-item"><div class="tl-title">M1 云边核心通信链路 <span class="badge b-blue">下一个</span></div><div class="tl-text">CloudHub ↔ EdgeHub WebSocket 通道、节点注册、消息协议（端口 10000）</div></div>
+  <div class="tl-item"><div class="tl-title">M2 应用部署与边缘自治</div><div class="tl-text">应用下发、断网自治、ConfigMap 同步</div></div>
+  <div class="tl-item"><div class="tl-title">M3 设备管理</div><div class="tl-text">Device CRD、Device Twin、MQTT 通信、Mapper 框架</div></div>
+  <div class="tl-item"><div class="tl-title">M4 生产化 · M5 发布</div><div class="tl-text">Helm 完整版、多架构镜像、升级回滚、规模化验证</div></div>
+</div>
+
+<h2>7. 验收自检（对照目标完成标准）</h2>
+<table>
+<thead><tr><th>完成标准</th><th>证据</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td>环境配置完成且可复现</td><td>setup-env.sh（幂等，语法校验通过）+ ENV-SETUP.md（168 行含验收命令）</td><td><span class="badge b-green">达成</span></td></tr>
+<tr><td>开发计划已确认并拆解</td><td>ROADMAP.md（306 行：模块清单/顺序/依赖/完成标准 T0-T8）</td><td><span class="badge b-green">达成</span></td></tr>
+<tr><td>首个模块完成并通过验证</td><td>代码已入库（commit 98a50a6→470e32d），编译/测试/lint/运行全部通过，审查 P1 修复完毕</td><td><span class="badge b-green">达成</span></td></tr>
+<tr><td>研发进度可追踪</td><td>PROGRESS.md（环境状态/模块状态/验证证据/待办项）</td><td><span class="badge b-green">达成</span></td></tr>
+<tr><td>交接文档齐备</td><td>HANDOFF.md（接手步骤/标准流程/命令速查/检查单）+ ENV-SETUP.md</td><td><span class="badge b-green">达成</span></td></tr>
+</tbody>
+</table>
+
+<h2>8. 待办（接手后第一件事）</h2>
+<ul class="checklist">
+  <li>把 <code>~/.ssh/id_ed25519.pub</code> 粘贴到 GitHub（见 ENV-SETUP.md §4.2）</li>
+  <li>关联远程并首次 push：<code>git remote add origin … && git push -u origin main</code></li>
+  <li>确认 Actions 标签页 CI 绿勾（lint + test + 覆盖率门槛）</li>
+  <li>下一个模块：M0-2 CRD 定义或直接进入 M1 通信链路（见 ROADMAP）</li>
+</ul>
+
+<div class="footer">
+  EdgeFlow 研发启动报告 · 生成时间 2026-08-13 09:25 (Asia/Shanghai)<br>
+  研发方式：多 Agent 协作（环境配置员 / 模块拆解员 / 项目骨架工程师 / 模块开发工程师 / 代码审查员 / 修复工程师）<br>
+  仓库：/Users/mac/Documents/edgeflow/ · 全部验证结果可复现（命令见 docs/ENV-SETUP.md 与 docs/PROGRESS.md）
+</div>
+
+</div>
+</body>
+</html>

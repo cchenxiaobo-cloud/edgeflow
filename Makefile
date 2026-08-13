@@ -30,10 +30,13 @@ test:
 run:
 	go run ./cmd/cloudcore
 
-## lint: 静态检查（依赖 golangci-lint）
+## lint: 静态检查（依赖 golangci-lint，未安装时跳过并提示）
 lint:
-	@command -v golangci-lint >/dev/null 2>&1 || (echo "golangci-lint 未安装，跳过 lint（安装方式见 README）"; exit 0)
-	golangci-lint run ./...
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run ./...; \
+	else \
+		echo "golangci-lint 未安装，跳过 lint（安装方式见 README）"; \
+	fi
 
 ## clean: 清理编译产物
 clean:

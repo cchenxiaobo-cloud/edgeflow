@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EdgeFlow M1 里程碑报告 — 云边通信通道打通</title>
+<style>
+  :root {
+    --bg: #fafafa; --surface: #ffffff; --text: #1a1a1a; --text-2: #6b6b6b; --text-3: #999;
+    --accent: #2563eb; --accent-light: #dbeafe; --border: #e5e5e5;
+    --green: #16a34a; --green-light: #dcfce7; --yellow: #ca8a04; --yellow-light: #fef3c7;
+    --red: #dc2626; --red-light: #fee2e2; --code-bg: #f5f5f5; --radius: 4px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+    --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.7; font-weight: 300; -webkit-font-smoothing: antialiased; }
+  .container { max-width: 880px; margin: 0 auto; padding: 80px 40px; }
+  h1 { font-size: 2.2rem; font-weight: 200; letter-spacing: -0.02em; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.3rem; font-weight: 400; letter-spacing: -0.01em; margin: 3rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.05rem; font-weight: 500; margin: 1.8rem 0 0.6rem; }
+  p { margin-bottom: 0.8rem; color: var(--text-2); }
+  .subtitle { font-size: 0.95rem; color: var(--text-3); font-weight: 300; margin-bottom: 2.5rem; }
+  a { color: var(--accent); text-decoration: none; font-weight: 400; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.85em; }
+  pre { background: var(--code-bg); padding: 1rem; border-radius: var(--radius); overflow-x: auto; margin: 1rem 0; font-size: 0.8rem; line-height: 1.5; font-family: var(--mono); }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.85rem; }
+  th { text-align: left; font-weight: 500; padding: 0.6rem 0.5rem; border-bottom: 2px solid var(--text); }
+  td { padding: 0.5rem; border-bottom: 1px solid var(--border); font-weight: 300; }
+  tr:hover td { background: var(--accent-light); }
+  .badge { display: inline-block; padding: 0.15em 0.6em; border-radius: 100px; font-size: 0.75rem; font-weight: 500; }
+  .b-green { background: var(--green-light); color: var(--green); }
+  .b-blue { background: var(--accent-light); color: var(--accent); }
+  .b-yellow { background: var(--yellow-light); color: var(--yellow); }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); margin: 1.5rem 0; }
+  .metric { background: var(--surface); padding: 1.2rem 0.8rem; text-align: center; }
+  .metric-value { font-size: 1.6rem; font-weight: 200; color: var(--accent); }
+  .metric-label { font-size: 0.7rem; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.3rem; }
+  .arch { font-family: var(--mono); font-size: 0.75rem; line-height: 1.6; background: var(--surface); border: 1px solid var(--border); padding: 1.2rem; overflow-x: auto; margin: 1rem 0; color: var(--text-2); }
+  .panel { border: 1px solid var(--border); border-left: 3px solid var(--accent); padding: 1rem 1.2rem; margin: 1rem 0; background: var(--surface); }
+  .footer { margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border); font-size: 0.78rem; color: var(--text-3); }
+  @media (max-width: 700px) { .container { padding: 40px 20px; } .metrics { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>EdgeFlow M1 里程碑报告</h1>
+<p class="subtitle">云边核心通信链路打通 · 2026-08-13 · 研发进度第 2 轮交付</p>
+
+<div class="metrics">
+  <div class="metric"><div class="metric-value">12</div><div class="metric-label">本轮提交</div></div>
+  <div class="metric"><div class="metric-value">81.8%</div><div class="metric-label">总测试覆盖率</div></div>
+  <div class="metric"><div class="metric-value">0</div><div class="metric-label">Lint / P0 / P1</div></div>
+  <div class="metric"><div class="metric-value">5/5</div><div class="metric-label">联调场景通过</div></div>
+</div>
+
+<h2>1. 本轮交付摘要</h2>
+<p>在 M0 里程碑基础上完成 <strong>M0 收尾</strong>（CRD 类型定义、Helm Chart 骨架、交叉编译、架构文档、开发环境脚本）与 <strong>M1 启动</strong>（云边消息协议 + CloudHub/EdgeHub WebSocket 通道），并通过真实云边联调端到端验证与独立代码审查。</p>
+
+<h2>2. 本轮新增模块</h2>
+<table>
+<thead><tr><th>模块</th><th>WBS</th><th>内容</th><th>提交</th></tr></thead>
+<tbody>
+<tr><td>apis/edge/v1alpha1</td><td>1.4</td><td>EdgeNode / DeviceModel / Device CRD 类型 + DeepCopy + 文档</td><td>a541128</td></tr>
+<tr><td>build/charts/edgeflow</td><td>8.5</td><td>Helm Chart 骨架（deployment/service/values），helm lint 通过</td><td>9d78246</td></tr>
+<tr><td>Makefile cross-build</td><td>1.6</td><td>linux amd64/arm64 交叉编译，4 产物架构确认</td><td>9d78246</td></tr>
+<tr><td>docs/ARCHITECTURE + DEV-ENV</td><td>9.1 / 1.3</td><td>架构设计文档（437 行）+ 开发环境方案（301 行）+ dev-up/down 脚本</td><td>92ede1b</td></tr>
+<tr><td>pkg/protocol</td><td>4.1</td><td>云边消息信封 + 11 种类型枚举 + JSON 编解码（零依赖）</td><td>e569ea1</td></tr>
+<tr><td>cloud/pkg/cloudhub</td><td>2.1</td><td>WebSocket 服务端：注册 / 心跳 / 同 ID 踢旧 / 90s 超时</td><td>6241a78</td></tr>
+<tr><td>edge/pkg/edgehub</td><td>3.1</td><td>WebSocket 客户端：注册 / 心跳 30s / 指数退避重连 / 消息分发</td><td>7b1c27a</td></tr>
+</tbody>
+</table>
+
+<h2>3. 云边通道架构</h2>
+<div class="arch">┌────────────────────────────── Cloud Side ──────────────────────────────┐
+│  cmd/cloudcore                                                            │
+│   ├─ healthz HTTP 管理端口 :8080（配置可覆盖）                             │
+│   └─ cloudhub WebSocket 服务端 :10000（EDGEFLOW_CLOUDCORE_HUB_PORT）       │
+│        ├─ 注册表 map[nodeID]conn（mutex 保护，同 ID 踢旧）                  │
+│        ├─ 心跳超时 90s 断开 · 消息上限 1MiB                                │
+│        └─ Shutdown 优雅关闭（P2-1 修复：wg.Add 前置 + 复查 shuttingDown）   │
+└───────────────────────────┬──────────────────────────────────────────────┘
+                            │ WebSocket ws://host:10000/v1/edge
+                            │ 首条消息 Register → RegisterAck
+                            │ 每 30s Heartbeat → HeartbeatAck
+┌───────────────────────────┴──────────────────────────────────────────────┐
+│  cmd/edgecore（Edge Side）                                                │
+│   └─ edgehub WebSocket 客户端                                             │
+│        ├─ 注册（nodeID 环境变量，缺省 edge-$(hostname)）                    │
+│        ├─ 心跳 30s · 读超时 90s · 读上限 1MiB（P2-2 修复）                  │
+│        ├─ 断线指数退避 1/2/4/8/16/32/60s（封顶）→ 重连后重置并重新注册      │
+│        └─ 消息分发 SetMessageHandler（PodSync 等未来消息）                  │
+└───────────────────────────────────────────────────────────────────────────┘</div>
+
+<h2>4. 验证结果</h2>
+
+<h3>4.1 端到端联调（真实 cloudcore + edgecore 进程）</h3>
+<table>
+<thead><tr><th>场景</th><th>实测证据</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>注册链路</td><td>cloudcore 日志"节点 edge-e2e-1 注册成功"；edgecore 日志"已连接并注册到云端"</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>心跳保活</td><td>32s 观察进程存活、无重连日志</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>断线检测</td><td>cloudcore 日志"已断开，从注册表移除"</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>指数退避</td><td>重试日志间隔 2s → 4s → 8s 递增</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>自动重连</td><td>cloudcore 重启后 8s 内 edgecore 重连并重新注册成功</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>healthz</td><td>:8080 全程 200</td><td><span class="badge b-green">通过</span></td></tr>
+</tbody>
+</table>
+
+<h3>4.2 自动化验证</h3>
+<table>
+<thead><tr><th>项目</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>go build / go vet / gofmt</td><td><span class="badge b-green">全部通过</span></td></tr>
+<tr><td>go test -race（10 个包）</td><td><span class="badge b-green">全部通过</span>，race 连跑 3 遍无 flaky</td></tr>
+<tr><td>总覆盖率</td><td><span class="badge b-green">81.8%</span>（门槛 ≥70%）</td></tr>
+<tr><td>golangci-lint</td><td><span class="badge b-green">0 issues</span></td></tr>
+<tr><td>helm lint</td><td><span class="badge b-green">0 failed</span></td></tr>
+</tbody>
+</table>
+
+<h2>5. 代码审查与修复闭环</h2>
+<div class="panel">
+<p><strong>独立复核结论：有条件通过 → P2×3 已全部修复（commit e565a15）</strong></p>
+<table>
+<thead><tr><th>问题</th><th>修复方式</th><th>验证</th></tr></thead>
+<tbody>
+<tr><td>P2-1 Shutdown 与新建连接窗口竞态（wg.Wait 最长阻塞 90s）</td><td>根因修复：wg.Add 前置 + trackConn 锁内复查 shuttingDown，漏关窗口闭合</td><td>新增 2 测试 + 回归验证（还原旧代码后测试以 i/o timeout 失败，证明缺陷真实）</td></tr>
+<tr><td>P2-2 客户端缺 SetReadLimit</td><td>SetReadLimit(1MiB) 与云端对称</td><td>超限消息触发断开→重连测试通过</td></tr>
+<tr><td>P2-3 RegisterPayload.Memory 类型不对称</td><td>云侧 int64 → uint64 统一</td><td>1&lt;&lt;63 内存值无损往返测试（旧代码编译期失败）</td></tr>
+</tbody>
+</table>
+<p style="margin-top:0.5rem;font-size:0.82rem">P3 项×4（newID 忽略 rand 错误、Shutdown 撞 Start 窗口、被踢标志延迟、退避重置单测）已列入 PROGRESS.md 待办，M2 起步处理。</p>
+</div>
+
+<h2>6. 研发进度全景</h2>
+<table>
+<thead><tr><th>里程碑</th><th>状态</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>M0 架构基线与开发就绪</td><td><span class="badge b-green">✅ 完成</span></td><td>骨架/共享库/CI/CRD/Helm/架构文档全部就绪</td></tr>
+<tr><td>M1 云边核心通信链路</td><td><span class="badge b-blue">🔄 基础版完成</span></td><td>协议+注册+心跳+断线重连联调通过；剩余：连接管理完善、消息路由、注册与 apiserver 对接、keadm 基础</td></tr>
+<tr><td>M2-M5</td><td><span class="badge b-yellow">⏳ 未开始</span></td><td>应用部署 / 设备管理 / 生产化 / 发布</td></tr>
+</tbody>
+</table>
+
+<h2>7. 下一步建议</h2>
+<table>
+<thead><tr><th>优先级</th><th>事项</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>P1</td><td>M1 剩余：MetaManager SQLite 持久化（3.3）</td><td>边缘自治的地基，节点状态/心跳落盘</td></tr>
+<tr><td>P1</td><td>注册对接 Node CRD（2.3/2.6）</td><td>注册成功后创建 EdgeNode 资源，向"kubectl 可见"推进</td></tr>
+<tr><td>P2</td><td>消息路由引擎（4.3）</td><td>按 type/主题分发，为 PodSync/DeviceReport 铺路</td></tr>
+<tr><td>P2</td><td>P3 项×4 + 日志级别过滤</td><td>已列入台账待办</td></tr>
+</tbody>
+</table>
+
+<div class="footer">
+  EdgeFlow M1 里程碑报告 · 生成时间 2026-08-13 22:00 (Asia/Shanghai)<br>
+  研发方式：多 Agent 协作（CRD 定义 / 部署构建 / 架构文档 / CloudHub / EdgeHub / 通道复核 / P2 修复）<br>
+  仓库：/Users/mac/Documents/edgeflow/ · 台账：docs/PROGRESS.md · 审查：docs/CODE-REVIEW-M1.md
+</div>
+
+</div>
+</body>
+</html>

@@ -9,6 +9,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ import (
 	"edgeflow/edge/pkg/edgehub"
 	"edgeflow/edge/pkg/metamanager"
 	"edgeflow/pkg/log"
+	"edgeflow/pkg/protocol"
 	"edgeflow/pkg/version"
 )
 
@@ -79,6 +81,20 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 
 	client := edgehub.New(opts)
 
+	// 消息处理回调（WBS 4.6）：云端下发类消息（PodSync 等）→ MetaManager
+	// 落盘；处理结果由 EdgeHub 自动回 Ack（成功 code=ok / 失败 code=error）。
+	client.SetMessageHandlerFunc(func(msg *protocol.Message) error {
+		switch msg.Type {
+		case protocol.TypePodSync:
+			return handlePodSync(store, msg)
+		default:
+			// 未知下发类型（ConfigSync 等 M2 消息）：暂不处理但回 ok，
+			// 避免云端视为失败无限重试；后续模块接入时在此扩展
+			log.Warnf("EdgeHub 收到未注册处理器的消息类型 %s，忽略", msg.Type)
+			return nil
+		}
+	})
+
 	// 连接状态回调：注册成功（收到 RegisterAck）后把节点信息落盘。
 	// 回调在 EdgeHub 内部 goroutine 中触发，且此时 NodeName 已赋值，
 	// 直接读取并写入 SQLite（单条写，耗时微秒级，不会阻塞主循环）。
@@ -118,4 +134,51 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	client.Stop()
 	log.Infof("edgecore exited")
 	return 0
+}
+
+// PodSyncPayload 是 PodSync 消息的负载（与云端契约一致，字段不可改）：
+// operation 取 add/update/delete，pod 是 Pod 的 JSON 对象（原样交给
+// MetaManager 落盘，不做字段裁剪）。
+type PodSyncPayload struct {
+	Operation string          `json:"operation"` // add / update / delete
+	Pod       json.RawMessage `json:"pod"`       // Pod 的 JSON 表示
+}
+
+// handlePodSync 处理一条 PodSync 下发消息：
+//   - add/update → MetaManager.SavePod（Pod JSON 原样落盘）；
+//   - delete → 从 pod 对象提取 name 后 MetaManager.DeletePod；
+//   - 解析/存储失败返回 error，EdgeHub 自动回 Ack code=error。
+func handlePodSync(store *metamanager.Store, msg *protocol.Message) error {
+	var payload PodSyncPayload
+	if err := msg.DecodePayload(&payload); err != nil {
+		return fmt.Errorf("解析 PodSync 负载失败: %w", err)
+	}
+	podJSON := string(payload.Pod)
+	switch payload.Operation {
+	case "add", "update":
+		if err := store.SavePod(podJSON); err != nil {
+			return fmt.Errorf("保存 Pod 元数据失败: %w", err)
+		}
+		log.Infof("MetaManager 已保存 Pod 元数据（operation=%s, pod=%s）",
+			payload.Operation, podJSON)
+		return nil
+	case "delete":
+		// delete 时 pod 对象通常只携带 name；提取后按名删除
+		var pod struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal([]byte(podJSON), &pod); err != nil {
+			return fmt.Errorf("解析 delete 操作的 Pod 信息失败: %w", err)
+		}
+		if pod.Name == "" {
+			return errors.New("delete 操作的 Pod 缺少 name 字段")
+		}
+		if err := store.DeletePod(pod.Name); err != nil {
+			return fmt.Errorf("删除 Pod 元数据失败: %w", err)
+		}
+		log.Infof("MetaManager 已删除 Pod 元数据（pod=%s）", pod.Name)
+		return nil
+	default:
+		return fmt.Errorf("未知的 PodSync operation: %q", payload.Operation)
+	}
 }

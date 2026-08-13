@@ -124,8 +124,8 @@ EdgeFlow 借鉴 KubeEdge 的整体架构（CloudHub/EdgeHub 云边通信、Edged
 | **DeviceController** | 云 | Device/DeviceModel CRD 控制器、设备状态同步 | 2.2、5.3 | ⬜ M3 |
 | NodeJob 任务管理 | 云 | 任务 CRD、任务分发与结果回收（⚠️ 里程碑归属待确认，ROADMAP 缺口 1） | 2.8 | ⬜ 待定 |
 | 可观测性（云） | 云 | 指标暴露、日志收集、告警 | 2.9、10.1 | ⬜ M4 |
-| **EdgeHub** | 边 | WebSocket **客户端**：消息路由、断线重连（60s 内）、心跳保活 | 3.1 | ✅ M1 基础版（注册/心跳/重连，见 `edge/pkg/edgehub`） |
-| **MetaManager** | 边 | 本地元数据存储（SQLite）：缓存云端下发的 Pod/配置，重启不丢 | 3.3 | ⬜ M1 |
+| **EdgeHub** | 边 | WebSocket **客户端**：消息路由、断线重连（60s 内）、心跳保活、自动 Ack + 幂等去重 | 3.1、4.6 | ✅ M1 基础版（注册/心跳/重连）+ 可靠投递接收侧（自动 Ack/幂等，见 `edge/pkg/edgehub`） |
+| **MetaManager** | 边 | 本地元数据存储（SQLite）：缓存云端下发的 Pod/配置，重启不丢 | 3.3 | ✅ M1 基础版（KV/节点信息）+ M2 前置（Pod 元数据存取，见 `edge/pkg/metamanager`） |
 | **Edged** | 边 | 轻量容器运行时管理：Pod 生命周期、容器启停、健康检查 | 3.2 | ⬜ M2（⛔ P0 决策：方案 A/B/C 未定） |
 | **自治引擎** | 边 | 断网时独立运行、重连后增量同步、冲突解决 | 3.4 | ⬜ M2 |
 | **DeviceTwin** | 边 | 设备影子（desired/reported 双状态）、状态同步 | 3.5 | ⬜ M3 |
@@ -304,6 +304,7 @@ edgeflow.cloud.broadcast.{group}          # 云端广播（如全量升级指令
   2. 接收方处理后回 `Ack`（携带 ackID=被确认消息的 id）；超时（默认 5s）未收 → 重试（上限 3 次尝试，当前为固定间隔，指数退避留待后续）；
   3. 接收方按 `id` 去重：重复消息直接回 Ack 不重复执行（幂等）。
 - **云端已实现**（M1 二期，`cloud/pkg/cloudhub/reliable.go`）：`ReliableSend(nodeID, msg, ReliableOptions{Timeout:5s, MaxRetries:2})`——发送后按 `msg.ID`（Ack 的 CorrelationID）匹配确认，超时重发且**保持原 msg.ID**（幂等键），重试耗尽返回导出错误 `ErrAckTimeout`；节点回 `code="error"` 返回 `ErrAckFailed`（不重试）；节点离线返回 `ErrNodeOffline`（立即失败，不消耗重试）。并发在途消息按 ID 关联，互不干扰。
+- **边缘端已实现**（`edge/pkg/edgehub/ack.go`）：收到下发类消息（非 Ack 且非注册/心跳类，如 PodSync/ConfigSync/DeviceCommand）后自动回 `Ack{code:ok}`（`CorrelationID=被确认消息的 ID`）；成功处理过的 ID 记入幂等缓存（上限 1000 条，FIFO 淘汰，`edge/pkg/edgehub` 内实现），云端重发同 ID 直接回 ok 不重复执行；handler 返回 error 时回 `Ack{code:error}` 且**不入缓存**——云端重试同 ID 允许重新执行（与云端 `ErrAckFailed` 不重试语义配合：失败即不再重试，重发仅在超时路径发生）。
 - 离线缓冲（边侧待确认队列持久化到 SQLite，配合自治引擎 §3.3，断网不丢、恢复补发）：**待实现**（M2+，当前云端重启会丢失在途未确认消息，由上层控制器在恢复后重新下发）。
 
 ### 4.6 序列化演进路径

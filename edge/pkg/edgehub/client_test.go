@@ -1,6 +1,7 @@
 package edgehub
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -40,7 +41,9 @@ type mockCloud struct {
 	url string // ws://... 形式的完整地址（含 /v1/edge）
 
 	mu         sync.Mutex
+	sendMu     sync.Mutex             // 串行化 mock 端 WebSocket 写（gorilla 不允许并发写）
 	upgrades   int                    // 累计建立的连接数（第几个连接）
+	conn       *websocket.Conn        // 最近一次升级的连接（测试主动推送用）
 	received   chan *protocol.Message // 收到的所有消息
 	registers  chan *protocol.Message // 收到的 Register（带缓冲，服务端不阻塞）
 	heartbeats chan struct{}          // 每收到一条 Heartbeat 通知一次
@@ -80,6 +83,7 @@ func (m *mockCloud) handle(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	m.upgrades++
 	n := m.upgrades
+	m.conn = conn // 记录当前连接，供测试 push 使用
 	m.mu.Unlock()
 	m.connCount <- struct{}{}
 
@@ -143,13 +147,26 @@ func (m *mockCloud) nodeIDOf(msg *protocol.Message) string {
 	return msg.Source
 }
 
-// send 以文本帧发送一条消息。
+// send 以文本帧发送一条消息（并发安全：gorilla/websocket 不允许并发写）。
 func (m *mockCloud) send(conn *websocket.Conn, msg *protocol.Message) error {
 	data, err := protocol.Encode(msg)
 	if err != nil {
 		return err
 	}
+	m.sendMu.Lock()
+	defer m.sendMu.Unlock()
 	return conn.WriteMessage(websocket.TextMessage, data)
+}
+
+// push 通过当前活动连接向客户端推送一条消息（测试主动注入用）。
+func (m *mockCloud) push(msg *protocol.Message) error {
+	m.mu.Lock()
+	conn := m.conn
+	m.mu.Unlock()
+	if conn == nil {
+		return errors.New("mock cloud 无活动连接")
+	}
+	return m.send(conn, msg)
 }
 
 // waitRegister 等待 mock 收到一条 Register（带超时）。
@@ -161,6 +178,23 @@ func (m *mockCloud) waitRegister(t *testing.T) *protocol.Message {
 	case <-time.After(5 * time.Second):
 		t.Fatal("5s 内未收到 Register")
 		return nil
+	}
+}
+
+// waitType 等待 mock 收到指定类型的消息（带超时），跳过其他类型。
+func (m *mockCloud) waitType(t *testing.T, msgType string) *protocol.Message {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case msg := <-m.received:
+			if msg.Type == msgType {
+				return msg
+			}
+		case <-deadline:
+			t.Fatalf("5s 内未收到 %s 消息", msgType)
+			return nil
+		}
 	}
 }
 

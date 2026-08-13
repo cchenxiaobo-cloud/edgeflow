@@ -165,8 +165,14 @@ type Client struct {
 	nodeName  string          // 云端在 RegisterAck 中分配的节点名
 	lastAck   time.Time       // 最近一次收到 HeartbeatAck 的时间
 
-	statusHandler func(connected bool)        // 连接状态回调（状态切换时触发）
-	msgHandler    func(msg *protocol.Message) // 非应答类消息回调
+	statusHandler func(connected bool)              // 连接状态回调（状态切换时触发）
+	msgHandler    func(msg *protocol.Message) error // 非应答类消息回调（可返回错误，供自动 Ack 用）
+
+	// 幂等去重缓存（自动 Ack 用）：记录已成功处理的消息 ID，
+	// 云端重发同 ID 时直接回 Ack 不重复执行（WBS 4.6 QoS 1）。
+	procMu     sync.Mutex
+	processed  map[string]struct{} // ID → 已处理标记
+	processedQ []string            // FIFO 顺序，超上限时淘汰最旧
 
 	writeMu sync.Mutex // 串行化所有 WebSocket 写
 
@@ -245,13 +251,42 @@ func (c *Client) SetStatusHandler(h func(connected bool)) {
 	c.statusHandler = h
 }
 
-// SetMessageHandler 注册消息回调：收到非 RegisterAck/HeartbeatAck 的消息
-// （如未来的 PodSync/ConfigSync）时回调。回调在内部读 goroutine 中调用，
-// 上层不应阻塞（需要异步处理时自行拷贝数据）。
+// SetMessageHandler 注册消息回调：收到下发类消息（非 Ack 且非注册/心跳类，
+// 如 PodSync/ConfigSync/DeviceCommand）时回调，处理完成后 EdgeHub 自动回
+// Ack（code=ok）。回调在内部读 goroutine 中调用，上层不应阻塞。
+//
+// 兼容旧签名：回调不返回错误；需要报告处理失败（回 Ack code=error）时
+// 请用 SetMessageHandlerFunc。
 func (c *Client) SetMessageHandler(h func(msg *protocol.Message)) {
+	c.SetMessageHandlerFunc(func(msg *protocol.Message) error {
+		if h != nil {
+			h(msg)
+		}
+		return nil
+	})
+}
+
+// SetMessageHandlerFunc 注册可返回错误的消息回调（推荐用法）：回调返回
+// nil → 自动回 Ack code=ok；返回 error → 自动回 Ack code=error（云端可据
+// 此重试，见 WBS 4.6 可靠投递契约）。回调在内部读 goroutine 中调用，
+// 上层不应阻塞（需要异步处理时自行拷贝数据）。
+func (c *Client) SetMessageHandlerFunc(h func(msg *protocol.Message) error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.msgHandler = h
+}
+
+// Send 向云端发送一条消息（并发安全，供上层与自动 Ack 使用）。
+// 内部与心跳/注册共用 writeMu 串行化写；当前无活动连接
+// （未连接/已断开）时返回错误。
+func (c *Client) Send(msg *protocol.Message) error {
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+	if conn == nil {
+		return errors.New("未连接到云端")
+	}
+	return c.write(conn, msg)
 }
 
 // Start 启动客户端：立即开始连接，随后在后台持续运行
@@ -296,9 +331,11 @@ func (c *Client) run() {
 
 		// 会话阶段：心跳保活，直到连接断开或收到停止信号
 		err = c.session(conn, closed)
-		// 无论何种原因退出会话（断线/停止），都先清理连接状态
+		// 无论何种原因退出会话（断线/停止），都先清理连接状态；
+		// 断开期间 Send 应报“未连接”而不是写入已关闭的旧连接
 		c.setConnected(false)
 		_ = conn.Close()
+		c.setConn(nil)
 		if c.isStopped() {
 			return
 		}
@@ -390,7 +427,8 @@ func (c *Client) register(conn *websocket.Conn, closed <-chan struct{}, regAckCh
 // readLoop 持续读消息直到连接关闭或出错，并做消息分发：
 //   - RegisterAck → 投递给注册等待方（regAckCh）；
 //   - HeartbeatAck → 更新 lastAck；
-//   - 其余类型（PodSync 等）→ 回调 msgHandler。
+//   - Ack → 云端对边侧上报消息的确认，暂不处理（后续可靠上报用）；
+//   - 其余类型（PodSync 等）→ 自动 Ack + 幂等去重后回调 msgHandler。
 //
 // 退出时关闭 closed 并上报错误（若有），让主循环感知断线。
 func (c *Client) readLoop(conn *websocket.Conn, closed chan struct{}, regAckCh chan<- *protocol.Message, connErrCh chan<- error) {
@@ -424,14 +462,13 @@ func (c *Client) readLoop(conn *websocket.Conn, closed chan struct{}, regAckCh c
 			c.mu.Lock()
 			c.lastAck = time.Now()
 			c.mu.Unlock()
+		case protocol.TypeAck:
+			// 云端对边侧上报消息（PodStatus 等）的确认；可靠上报在 M3 实现，
+			// 当前仅记录日志，不参与自动 Ack（避免 Ack 套 Ack）
+			log.Infof("EdgeHub 收到云端 Ack（correlationID=%s）", msg.CorrelationID)
 		default:
-			// 非应答类消息（PodSync/ConfigSync/DeviceCommand 等）分发给上层
-			c.mu.Lock()
-			h := c.msgHandler
-			c.mu.Unlock()
-			if h != nil {
-				h(msg)
-			}
+			// 下发类消息：自动 Ack + 幂等去重后分发给上层（WBS 4.6）
+			c.handleDownlink(msg)
 		}
 	}
 }

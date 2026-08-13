@@ -119,6 +119,7 @@ EdgeFlow 借鉴 KubeEdge 的整体架构（CloudHub/EdgeHub 云边通信、Edged
 | **EdgeController** | 云 | 边缘节点**注册**（Node CRD）、节点状态管理 | 2.3 | ⬜ M1 |
 | **NodeController** | 云 | 心跳监控、节点上线/下线判定 | 2.4 | ⬜ M1 |
 | 云端元数据层 | 云 | 与 apiserver 交互（watch/CRUD）、本地缓存，避免频繁打 apiserver | 2.6 | ⬜ M1 |
+| 节点注册表（内存版） | 云 | 内存态节点注册表：注册/心跳/离线标记 + EdgeNode CRD 对象映射与查询 API（`/api/v1/edgenodes`，WBS 2.3/2.6 的本地版，见 `cloud/pkg/registry`） | 2.3、2.6 | ✅ M1（内存版，待 apiserver 替换） |
 | CloudCore API 层 | 云 | 面向管理员的 RESTful API、认证中间件 | 2.5 | ⬜ M1+ |
 | **DeviceController** | 云 | Device/DeviceModel CRD 控制器、设备状态同步 | 2.2、5.3 | ⬜ M3 |
 | NodeJob 任务管理 | 云 | 任务 CRD、任务分发与结果回收（⚠️ 里程碑归属待确认，ROADMAP 缺口 1） | 2.8 | ⬜ 待定 |
@@ -300,9 +301,10 @@ edgeflow.cloud.broadcast.{group}          # 云端广播（如全量升级指令
 - 语义：**QoS 1（至少一次）+ 幂等去重**（与 ROADMAP 完成标准"QoS 1 消息不丢失（ACK/重试生效）"一致）。设备指令类关键消息（DeviceCommand）可升级 QoS 2（恰好一次，M3 评审）。
 - 机制：
   1. 发送方为每条消息生成 `id`（UUID），入本地"待确认队列"；
-  2. 接收方处理后回 `Ack`（携带 ackID）；超时（默认 5s）未收 → 指数退避重试（上限 3 次，⚠️ 参数待定）；
+  2. 接收方处理后回 `Ack`（携带 ackID=被确认消息的 id）；超时（默认 5s）未收 → 重试（上限 3 次尝试，当前为固定间隔，指数退避留待后续）；
   3. 接收方按 `id` 去重：重复消息直接回 Ack 不重复执行（幂等）。
-- 离线缓冲：边侧待确认队列持久化到 SQLite（配合自治引擎 §3.3），断网期间的消息不丢，恢复后补发。
+- **云端已实现**（M1 二期，`cloud/pkg/cloudhub/reliable.go`）：`ReliableSend(nodeID, msg, ReliableOptions{Timeout:5s, MaxRetries:2})`——发送后按 `msg.ID`（Ack 的 CorrelationID）匹配确认，超时重发且**保持原 msg.ID**（幂等键），重试耗尽返回导出错误 `ErrAckTimeout`；节点回 `code="error"` 返回 `ErrAckFailed`（不重试）；节点离线返回 `ErrNodeOffline`（立即失败，不消耗重试）。并发在途消息按 ID 关联，互不干扰。
+- 离线缓冲（边侧待确认队列持久化到 SQLite，配合自治引擎 §3.3，断网不丢、恢复补发）：**待实现**（M2+，当前云端重启会丢失在途未确认消息，由上层控制器在恢复后重新下发）。
 
 ### 4.6 序列化演进路径
 

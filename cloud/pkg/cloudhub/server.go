@@ -160,6 +160,11 @@ type Server struct {
 	conns   map[*conn]struct{}
 	// wg 跟踪所有连接相关 goroutine（读循环/写循环/心跳监控）。
 	wg sync.WaitGroup
+
+	// ackMu 保护待确认表 pending（可靠投递，WBS 4.6）。
+	ackMu sync.Mutex
+	// pending 是在途可靠消息表：msgID → 等待项（ReliableSend 注册、handleAck 匹配）。
+	pending map[string]*pendingEntry
 }
 
 // Option 是 Server 的构造选项。
@@ -189,6 +194,7 @@ func New(addr string, opts ...Option) *Server {
 		registry:         make(map[string]*conn),
 		nodes:            make(map[string]*NodeInfo),
 		conns:            make(map[*conn]struct{}),
+		pending:          make(map[string]*pendingEntry),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -547,14 +553,17 @@ func (s *Server) handleHeartbeat(c *conn, m *protocol.Message) {
 	s.notifyNodeEvent(func(h NodeEvents) { h.OnNodeHeartbeat(m.Source) })
 }
 
-// handleAck 处理边侧返回的通用 Ack（目前仅记录日志）。
+// handleAck 处理边侧返回的通用 Ack：记录日志，并匹配可靠投递的在途等待者
+// （WBS 4.6，按 CorrelationID == 在途 msg.ID 匹配，见 resolvePending）。
+// payload 不可解析不影响确认：确认语义由信封的 CorrelationID 决定。
 func (s *Server) handleAck(c *conn, m *protocol.Message) {
 	var ack AckPayload
 	if err := m.DecodePayload(&ack); err != nil {
-		log.Infof("收到节点 %s 的 Ack（payload 不可解析）", m.Source)
-		return
+		log.Infof("收到节点 %s 的 Ack（payload 不可解析: %v）", m.Source, err)
+	} else {
+		log.Infof("收到节点 %s 的 Ack: code=%s message=%q", m.Source, ack.Code, ack.Message)
 	}
-	log.Infof("收到节点 %s 的 Ack: code=%s message=%q", m.Source, ack.Code, ack.Message)
+	s.resolvePending(m)
 }
 
 // kick 踢掉旧连接：先尽力送达 conflict Ack，再关闭连接。

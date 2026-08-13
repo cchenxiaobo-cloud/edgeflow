@@ -360,7 +360,7 @@ func TestContainerName(t *testing.T) {
 		want     string
 	}{
 		{"default", "nginx", "edgeflow-default-nginx"},
-		{"", "nginx", "edgeflow-default-nginx"},   // namespace 缺省补 default
+		{"", "nginx", "edgeflow-default-nginx"},    // namespace 缺省补 default
 		{"prod", "my-app", "edgeflow-prod-my-app"}, // 连字符保留
 		{"prod", "My_App", "edgeflow-prod-my_app"}, // 大写转小写、下划线保留
 		{"ns x", "nginx", "edgeflow-ns-x-nginx"},   // 非法字符替换为 '-'

@@ -33,8 +33,8 @@ func fakeRunner(responses ...[]any) cmdRunner {
 // 不是 Go 错误规范要求——这是故意模拟，故加 nolint 豁免 staticcheck ST1005）。
 var (
 	errFakeDaemonDown = errors.New("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?") //nolint:staticcheck // 模拟 docker CLI 真实报错文本
-	errFakeNoObject   = errors.New("Error: No such object: edgeflow-default-nginx")                                              //nolint:staticcheck // 模拟 docker CLI 真实报错文本
-	errFakeNoCtr      = errors.New("Error: No such container: edgeflow-default-nginx")                                          //nolint:staticcheck // 模拟 docker CLI 真实报错文本
+	errFakeNoObject   = errors.New("Error: No such object: edgeflow-default-nginx")                                                     //nolint:staticcheck // 模拟 docker CLI 真实报错文本
+	errFakeNoCtr      = errors.New("Error: No such container: edgeflow-default-nginx")                                                  //nolint:staticcheck // 模拟 docker CLI 真实报错文本
 )
 
 // newTestDocker 构造带假执行器的 DockerRuntime（超时缩短加速测试）。
@@ -152,9 +152,9 @@ func TestDockerEnsureRunningFlows(t *testing.T) {
 // 重新查询按已存在处理，不报错。
 func TestDockerEnsureRunningConflictFallback(t *testing.T) {
 	d := newTestDocker(fakeRunner(
-		[]any{"", errFakeNoObject},                          // Inspect：不存在
+		[]any{"", errFakeNoObject}, // Inspect：不存在
 		[]any{"", errors.New("Error response from daemon: Conflict. The container name \"/edgeflow-default-nginx\" is already in use by container abc")}, // run 冲突
-		[]any{"true\n", nil},                                // 重新 Inspect：已运行
+		[]any{"true\n", nil}, // 重新 Inspect：已运行
 	))
 	if err := d.EnsureRunning(podNginx()); err != nil {
 		t.Errorf("名字冲突兜底应成功: %v", err)
@@ -197,10 +197,10 @@ func TestDockerExecTimeout(t *testing.T) {
 // TestDockerListParse 验证 List 解析：按标签反解 namespace/name。
 func TestDockerListParse(t *testing.T) {
 	out := strings.Join([]string{
-		"abc\tnginx\tdefault",  // 正常
+		"abc\tnginx\tdefault", // 正常
 		"def\tredis\tprod",
-		"",                      // 空行忽略
-		"odd-line",              // 字段数不符忽略
+		"",         // 空行忽略
+		"odd-line", // 字段数不符忽略
 	}, "\n") + "\n"
 	d := newTestDocker(fakeRunner([]any{out, nil}))
 

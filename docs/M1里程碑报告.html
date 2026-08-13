@@ -47,13 +47,13 @@
 <div class="container">
 
 <h1>EdgeFlow M1 里程碑报告</h1>
-<p class="subtitle">云边核心通信链路打通 · 2026-08-13 · 研发进度第 2 轮交付</p>
+<p class="subtitle">云边核心通信链路打通（含二期：持久化/节点 API/消息路由）· 2026-08-13 · 研发进度第 2-3 轮交付</p>
 
 <div class="metrics">
-  <div class="metric"><div class="metric-value">12</div><div class="metric-label">本轮提交</div></div>
-  <div class="metric"><div class="metric-value">81.8%</div><div class="metric-label">总测试覆盖率</div></div>
+  <div class="metric"><div class="metric-value">25</div><div class="metric-label">累计提交</div></div>
+  <div class="metric"><div class="metric-value">82.8%</div><div class="metric-label">总测试覆盖率</div></div>
   <div class="metric"><div class="metric-value">0</div><div class="metric-label">Lint / P0 / P1</div></div>
-  <div class="metric"><div class="metric-value">5/5</div><div class="metric-label">联调场景通过</div></div>
+  <div class="metric"><div class="metric-value">6/6</div><div class="metric-label">联调场景通过</div></div>
 </div>
 
 <h2>1. 本轮交付摘要</h2>
@@ -121,6 +121,36 @@
 </tbody>
 </table>
 
+<h2>4B. M1 二期：持久化 / 节点 API / 消息路由</h2>
+<p>在通道基础版之上完成三个模块：MetaManager（SQLite 落盘）、云端节点注册表 + 查询 API、消息路由（单播/广播）。</p>
+
+<table>
+<thead><tr><th>模块</th><th>WBS</th><th>内容</th><th>提交</th></tr></thead>
+<tbody>
+<tr><td>edge/pkg/metamanager</td><td>3.3</td><td>SQLite Store（KV + 节点信息，WAL），edgecore 集成，重启数据仍在</td><td>3aaaf28</td></tr>
+<tr><td>cloud/pkg/registry + API</td><td>2.3/2.6</td><td>NodeInfo 注册表（CloudHub 事件接入）+ GET /api/v1/nodes[/{nodeID}]</td><td>3c7b99d</td></tr>
+<tr><td>cloud/pkg/cloudhub 路由</td><td>4.3</td><td>SendToNode / Broadcast / Deliver（Target="*" 广播，ErrNodeOffline 语义）</td><td>081eb0f</td></tr>
+</tbody>
+</table>
+
+<h3>端到端联调实测（真实进程）</h3>
+<table>
+<thead><tr><th>场景</th><th>实测证据</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>注册 → 节点 API</td><td>GET /api/v1/nodes 返回节点（Ready，arch/os/cpu/ip 完整）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>单节点查询</td><td>GET /api/v1/nodes/edge-e2e-2 → 200 JSON</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>停止 → Offline</td><td>edgecore SIGTERM 后 API 显示 Offline</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>重启 → 持久化</td><td>MetaManager 日志"已加载 1 条节点元数据"，SQLite 落盘（db+wal+shm）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>重连 → Ready</td><td>edgecore 重启注册后恢复 Ready</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>进程清理</td><td>双端优雅退出无残留</td><td><span class="badge b-green">通过</span></td></tr>
+</tbody>
+</table>
+
+<h3>M1 二期审查（docs/CODE-REVIEW-M1B.md）</h3>
+<div class="panel">
+<p><strong>结论：✅ 通过（0 P0 / 0 P1，9 项 P2 加固项）</strong>。SQLite 参数化查询/WAL/单连接串行化正确；注册表锁粒度与回调链无死锁；路由竞态由 closed channel 兜底；e2e 现象与代码路径逐条吻合。P2 项（LIKE 转义、Offline TTL、WriteTimeout 等）已记录到台账待办。</p>
+</div>
+
 <h2>5. 代码审查与修复闭环</h2>
 <div class="panel">
 <p><strong>独立复核结论：有条件通过 → P2×3 已全部修复（commit e565a15）</strong></p>
@@ -140,7 +170,7 @@
 <thead><tr><th>里程碑</th><th>状态</th><th>说明</th></tr></thead>
 <tbody>
 <tr><td>M0 架构基线与开发就绪</td><td><span class="badge b-green">✅ 完成</span></td><td>骨架/共享库/CI/CRD/Helm/架构文档全部就绪</td></tr>
-<tr><td>M1 云边核心通信链路</td><td><span class="badge b-blue">🔄 基础版完成</span></td><td>协议+注册+心跳+断线重连联调通过；剩余：连接管理完善、消息路由、注册与 apiserver 对接、keadm 基础</td></tr>
+<tr><td>M1 云边核心通信链路</td><td><span class="badge b-blue">🔄 一期+二期完成</span></td><td>协议+注册+心跳+重连+MetaManager 持久化+节点 API+消息路由；剩余：EdgeNode CRD 对接、可靠投递（4.6）、keadm 基础</td></tr>
 <tr><td>M2-M5</td><td><span class="badge b-yellow">⏳ 未开始</span></td><td>应用部署 / 设备管理 / 生产化 / 发布</td></tr>
 </tbody>
 </table>
@@ -149,16 +179,16 @@
 <table>
 <thead><tr><th>优先级</th><th>事项</th><th>说明</th></tr></thead>
 <tbody>
-<tr><td>P1</td><td>M1 剩余：MetaManager SQLite 持久化（3.3）</td><td>边缘自治的地基，节点状态/心跳落盘</td></tr>
-<tr><td>P1</td><td>注册对接 Node CRD（2.3/2.6）</td><td>注册成功后创建 EdgeNode 资源，向"kubectl 可见"推进</td></tr>
-<tr><td>P2</td><td>消息路由引擎（4.3）</td><td>按 type/主题分发，为 PodSync/DeviceReport 铺路</td></tr>
+<tr><td>P1</td><td>注册对接 EdgeNode CRD（2.3/2.6）</td><td>注册成功后在云端创建 EdgeNode 资源，向"kubectl 可见"推进</td></tr>
+<tr><td>P1</td><td>消息可靠投递（4.6）</td><td>ACK/重试/幂等，为 PodSync 下发做可靠性保障</td></tr>
+<tr><td>P2</td><td>cmd-edgecore 集成级单测</td><td>"注册成功→SQLite 落盘"链路补测试（当前 56.5%）</td></tr>
 <tr><td>P2</td><td>P3 项×4 + 日志级别过滤</td><td>已列入台账待办</td></tr>
 </tbody>
 </table>
 
 <div class="footer">
   EdgeFlow M1 里程碑报告 · 生成时间 2026-08-13 22:00 (Asia/Shanghai)<br>
-  研发方式：多 Agent 协作（CRD 定义 / 部署构建 / 架构文档 / CloudHub / EdgeHub / 通道复核 / P2 修复）<br>
+  研发方式：多 Agent 协作（CRD / 部署构建 / 架构文档 / CloudHub / EdgeHub / MetaManager / 注册表 / 路由 / 复核 / P2 修复）<br>
   仓库：/Users/mac/Documents/edgeflow/ · 台账：docs/PROGRESS.md · 审查：docs/CODE-REVIEW-M1.md
 </div>
 

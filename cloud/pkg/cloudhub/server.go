@@ -110,6 +110,21 @@ type NodeInfo struct {
 	RegisteredAt    time.Time // 注册时间
 }
 
+// NodeEvents 是节点生命周期事件回调接口，供注册表/控制器等外部模块订阅
+// （依赖注入，避免 CloudHub 直接耦合具体注册表实现）。
+//
+// 并发与性能约定：
+//   - 回调在 CloudHub 内部锁之外、连接处理 goroutine 中同步调用
+//   - 实现方应尽快返回、不得执行阻塞操作，也不得反向调用 CloudHub 的方法（防止死锁）
+type NodeEvents interface {
+	// OnNodeRegistered 在节点注册成功时调用，info 是注册信息快照。
+	OnNodeRegistered(info NodeInfo)
+	// OnNodeHeartbeat 在收到已注册节点的心跳时调用。
+	OnNodeHeartbeat(nodeID string)
+	// OnNodeDisconnected 在节点连接断开并从注册表移除时调用。
+	OnNodeDisconnected(nodeID string)
+}
+
 // Server 是 CloudHub WebSocket 服务端。
 //
 // 并发安全说明：registry/nodes 由 mu 保护；连接集合由 connsMu 保护；
@@ -134,10 +149,11 @@ type Server struct {
 	// serveDone 在 Serve 返回后关闭，Shutdown 据此等待退出。
 	serveDone chan struct{}
 
-	// mu 保护注册表 registry 与节点信息 nodes。
-	mu       sync.RWMutex
-	registry map[string]*conn     // nodeID → 活跃连接
-	nodes    map[string]*NodeInfo // nodeID → 节点信息
+	// mu 保护注册表 registry、节点信息 nodes 与事件回调 nodeEvents。
+	mu         sync.RWMutex
+	registry   map[string]*conn     // nodeID → 活跃连接
+	nodes      map[string]*NodeInfo // nodeID → 节点信息
+	nodeEvents NodeEvents           // 节点生命周期事件回调（nil 表示未订阅）
 
 	// connsMu 保护活跃连接集合 conns（含未注册连接，供 Shutdown 统一关闭）。
 	connsMu sync.Mutex
@@ -463,12 +479,15 @@ func (s *Server) handleRegister(c *conn, m *protocol.Message) {
 		RegisteredAt:    time.Now(),
 	}
 
+	// evicted 记录因本连接更换 nodeID 而被清理的旧节点，锁外通知事件回调
+	var evicted string
 	s.mu.Lock()
 	// 同一连接更换 nodeID 重注册时，先清理旧注册项，避免孤儿映射
 	if oldID, _ := c.nodeID.Load().(string); oldID != "" && oldID != reg.NodeID {
 		if s.registry[oldID] == c {
 			delete(s.registry, oldID)
 			delete(s.nodes, oldID)
+			evicted = oldID
 		}
 	}
 	if old, exists := s.registry[reg.NodeID]; exists && old != c {
@@ -488,6 +507,12 @@ func (s *Server) handleRegister(c *conn, m *protocol.Message) {
 		c.registered.Store(true)
 		s.mu.Unlock()
 	}
+
+	// 节点生命周期事件（锁外调用，见 notifyNodeEvent 注释）
+	if evicted != "" {
+		s.notifyNodeEvent(func(h NodeEvents) { h.OnNodeDisconnected(evicted) })
+	}
+	s.notifyNodeEvent(func(h NodeEvents) { h.OnNodeRegistered(*info) })
 
 	log.Infof("节点 %s 注册成功（ip=%s arch=%s os=%s edgecore=%s）",
 		reg.NodeID, c.remoteIP, reg.Arch, reg.OS, reg.EdgecoreVersion)
@@ -518,6 +543,8 @@ func (s *Server) handleHeartbeat(c *conn, m *protocol.Message) {
 	}
 	s.sendTo(c, m.Source, protocol.TypeHeartbeatAck, m.ID,
 		HeartbeatAckPayload{NodeStatus: "Ready"})
+	// 通知事件回调（锁外调用）：刷新注册表心跳时间与状态
+	s.notifyNodeEvent(func(h NodeEvents) { h.OnNodeHeartbeat(m.Source) })
 }
 
 // handleAck 处理边侧返回的通用 Ack（目前仅记录日志）。
@@ -568,17 +595,22 @@ func (s *Server) sendTo(c *conn, target, msgType, correlationID string, payload 
 }
 
 // unregister 在连接断开时从注册表移除节点（仅当注册表仍指向该连接时才删除，
-// 避免误删已被新连接接管的注册项）。
+// 避免误删已被新连接接管的注册项），并通知节点断开事件。
 func (s *Server) unregister(c *conn) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	nodeID, _ := c.nodeID.Load().(string)
-	if nodeID != "" && s.registry[nodeID] == c {
+	removed := nodeID != "" && s.registry[nodeID] == c
+	if removed {
 		delete(s.registry, nodeID)
 		delete(s.nodes, nodeID)
-		log.Infof("节点 %s 已断开（ip=%s），从注册表移除", nodeID, c.remoteIP)
 	}
 	c.registered.Store(false)
+	s.mu.Unlock()
+
+	if removed {
+		log.Infof("节点 %s 已断开（ip=%s），从注册表移除", nodeID, c.remoteIP)
+		s.notifyNodeEvent(func(h NodeEvents) { h.OnNodeDisconnected(nodeID) })
+	}
 }
 
 // trackConn / untrackConn 维护活跃连接集合（Shutdown 时统一关闭）。
@@ -613,6 +645,25 @@ func (s *Server) closeAllConns() {
 	s.connsMu.Unlock()
 	for _, c := range conns {
 		c.close()
+	}
+}
+
+// SetNodeEvents 注册节点生命周期事件回调（nil 表示取消）。可在任意时刻调用。
+func (s *Server) SetNodeEvents(h NodeEvents) {
+	s.mu.Lock()
+	s.nodeEvents = h
+	s.mu.Unlock()
+}
+
+// notifyNodeEvent 在锁外安全地调用事件回调：先在锁内取回调快照，
+// 再在锁外执行，保证回调执行期间不持有任何 CloudHub 锁（防止回调
+// 反向调用 CloudHub 方法时死锁）。
+func (s *Server) notifyNodeEvent(call func(NodeEvents)) {
+	s.mu.RLock()
+	h := s.nodeEvents
+	s.mu.RUnlock()
+	if h != nil {
+		call(h)
 	}
 }
 

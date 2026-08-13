@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"edgeflow/cloud/pkg/cloudhub"
+	"edgeflow/cloud/pkg/registry"
 	"edgeflow/pkg/config"
 	"edgeflow/pkg/httpx"
 	"edgeflow/pkg/log"
@@ -69,9 +71,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	hub := cloudhub.New(fmt.Sprintf(":%d", hubPort))
 
-	// 注册路由：/healthz 健康检查
+	// 节点注册表（内存态）与 CloudHub 事件桥接：
+	// 节点注册/心跳/断开时实时维护节点元数据，供查询 API 使用。
+	// 依赖注入（SetNodeEvents），CloudHub 不感知注册表实现。
+	nodeReg := registry.New()
+	hub.SetNodeEvents(registry.NewCloudHubAdapter(nodeReg))
+
+	// 注册路由：/healthz 健康检查 + /api/v1/nodes 节点查询 API
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", httpx.Healthz())
+	api := &nodeAPI{reg: nodeReg}
+	mux.HandleFunc("GET /api/v1/nodes", api.listNodes)
+	mux.HandleFunc("GET /api/v1/nodes/{nodeID}", api.getNode)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{
@@ -174,4 +185,34 @@ func shutdownAll(srv *http.Server, hub *cloudhub.Server) {
 	if err := hub.Shutdown(ctx); err != nil {
 		log.Errorf("CloudHub 关闭失败: %v", err)
 	}
+}
+
+// nodeAPI 是节点查询 API（/api/v1/nodes）的处理器集合。
+// 通过结构体字段注入注册表（依赖注入，避免全局变量）。
+type nodeAPI struct {
+	// reg 是节点注册表（与 CloudHub 事件桥接共享同一实例）。
+	reg *registry.Registry
+}
+
+// listNodes 处理 GET /api/v1/nodes：返回全部节点（JSON 数组，按 NodeID 排序）。
+func (a *nodeAPI) listNodes(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// 编码失败（如客户端已断开）时无需额外处理，忽略即可
+	_ = json.NewEncoder(w).Encode(a.reg.List())
+}
+
+// getNode 处理 GET /api/v1/nodes/{nodeID}：返回单节点详情；节点不存在时 404。
+func (a *nodeAPI) getNode(w http.ResponseWriter, r *http.Request) {
+	nodeID := r.PathValue("nodeID")
+	info, ok := a.reg.Get(nodeID)
+	if !ok {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		// 编码失败（如客户端已断开）时无需额外处理，忽略即可
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "node not found", "nodeID": nodeID})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// 编码失败（如客户端已断开）时无需额外处理，忽略即可
+	_ = json.NewEncoder(w).Encode(info)
 }

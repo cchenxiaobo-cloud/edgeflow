@@ -5,10 +5,21 @@
 #   make test     # 运行单元测试（含竞态检测和覆盖率）
 #   make run      # 本地运行 cloudcore
 #   make lint     # 代码静态检查（需要 golangci-lint，未安装时给出提示）
+#   make cross-build # 交叉编译 cloudcore/edgecore 到 dist/（linux amd64/arm64）
+#   make helm-lint   # 校验 Helm Chart 语法与规范（需要 helm，未安装时给出提示）
 #   make clean    # 清理编译产物
 
 # 二进制输出目录
 BIN_DIR := bin
+
+# 交叉编译输出目录
+DIST_DIR := dist
+
+# Helm Chart 目录
+CHART_DIR := build/charts/edgeflow
+
+# 交叉编译目标平台：linux/amd64 + linux/arm64（边缘设备以 arm64 为主）
+CROSS_PLATFORMS := linux/amd64 linux/arm64
 
 # 版本信息：默认 v0.1.0，可用 make build VERSION=v0.2.0 覆盖
 VERSION ?= v0.1.0
@@ -21,7 +32,7 @@ LDFLAGS := -s -w \
 	-X edgeflow/pkg/version.GitCommit=$(GIT_COMMIT) \
 	-X edgeflow/pkg/version.BuildTime=$(BUILD_TIME)
 
-.PHONY: build test run lint clean
+.PHONY: build test run lint helm-lint cross-build clean
 
 ## build: 编译 cloudcore 和 edgecore 两个二进制
 build:
@@ -46,6 +57,25 @@ lint:
 		echo "golangci-lint 未安装，跳过 lint（安装方式见 README）"; \
 	fi
 
+## helm-lint: 校验 Helm Chart 结构与模板（依赖 helm，未安装时给出提示）
+helm-lint:
+	@if command -v helm >/dev/null 2>&1; then \
+		helm lint $(CHART_DIR); \
+	else \
+		echo "helm 未安装，跳过 helm-lint（安装方式：brew install helm）"; \
+	fi
+
+## cross-build: 交叉编译 cloudcore/edgecore 到 dist/ 目录（linux amd64/arm64）
+cross-build:
+	@mkdir -p $(DIST_DIR)
+	@for target in $(CROSS_PLATFORMS); do \
+		os=$${target%%/*}; arch=$${target##*/}; \
+		echo "==> 交叉编译 $$os/$$arch ..."; \
+		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/cloudcore-$$os-$$arch ./cmd/cloudcore; \
+		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/edgecore-$$os-$$arch ./cmd/edgecore; \
+	done
+	@echo "cross-build done: 产物见 $(DIST_DIR)/"
+
 ## clean: 清理编译产物
 clean:
-	rm -rf $(BIN_DIR)
+	rm -rf $(BIN_DIR) $(DIST_DIR)

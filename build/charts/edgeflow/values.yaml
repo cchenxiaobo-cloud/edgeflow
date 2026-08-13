@@ -1,0 +1,70 @@
+# EdgeFlow Chart 默认配置
+# 可通过 helm install -f 自定义文件 或 --set key=value 覆盖
+
+## 全局配置（可被各组件引用）
+global:
+  # 部署环境标签：production / staging / dev 等
+  environment: production
+
+## CloudCore（云端组件）配置
+cloudcore:
+  # 镜像配置
+  image:
+    # 占位镜像：真实镜像构建为后续任务（M4 之后），构建完成后替换为正式仓库地址
+    repository: edgeflow/cloudcore
+    # 镜像标签，默认跟随 Chart appVersion
+    tag: "v0.1.0"
+    # 拉取策略：Always 便于开发期频繁更新；生产可改为 IfNotPresent
+    pullPolicy: IfNotPresent
+
+  # 副本数：云边通信为有状态长连接，生产建议 1，后续引入会话粘性后再扩展
+  replicas: 1
+
+  # 端口配置
+  port:
+    # 容器内监听端口（与 cloudcore --port 默认值一致）
+    containerPort: 8080
+    # 健康检查端口（当前与业务端口共用，后续分离时可单独配置）
+    healthPort: 8080
+
+  # 健康检查：cloudcore 暴露 /healthz 接口
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  # 资源配置：骨架阶段给保守值，后续按实测调整
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # 环境变量（透传给容器，如 EDGEFLOW_CLOUDCORE_PORT）
+  env: []
+
+## Service 配置
+service:
+  # 类型：骨架阶段仅集群内访问；对外暴露（NodePort/LoadBalancer）后续按需开启
+  type: ClusterIP
+  port: 8080
+  # 目标端口：指向容器监听端口
+  targetPort: 8080
+
+## 镜像拉取凭据（私有仓库时需要，骨架阶段留空）
+imagePullSecrets: []
+
+## 资源命名前缀
+nameOverride: ""
+fullnameOverride: ""

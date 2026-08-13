@@ -1,0 +1,18 @@
+# 与 Helm 无关的本地文件，打包时忽略
+.DS_Store
+*.tmp
+*.swp
+
+# 常见 VCS 目录
+.git/
+.gitignore
+
+# 测试与本地构建产物
+build/
+dist/
+bin/
+*.tgz
+
+# 编辑器与 IDE 配置
+.idea/
+.vscode/

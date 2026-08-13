@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "edgeflow.fullname" . }}-cloudcore
+  labels:
+    {{- include "edgeflow.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cloudcore
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "edgeflow.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: cloudcore
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP

@@ -21,7 +21,8 @@ edgeflow/
 │   ├── log/              # 轻量日志封装（Info/Warn/Error，基于标准库）
 │   └── httpx/            # HTTP 公共处理器（/healthz 健康检查）
 ├── apis/                 # API 定义（如设备 CRD，后续填充）
-├── build/                # 构建产物与镜像相关文件（后续填充）
+├── build/
+│   └── charts/edgeflow/  # Helm Chart（部署清单，M4 前为骨架）
 ├── docs/                 # 文档
 ├── hack/                 # 开发脚本（后续填充）
 ├── .github/workflows/    # CI 流水线
@@ -77,6 +78,51 @@ make lint
 
 ```bash
 go run ./cmd/edgecore
+```
+
+## 部署（M4 前为骨架）
+
+> ⚠️ 当前 Chart 为**骨架**：引用的镜像是占位地址 `edgeflow/cloudcore:v0.1.0`，**镜像尚未构建**。镜像构建与推送是后续任务（M4 之后），构建完成后替换 `build/charts/edgeflow/values.yaml` 中的 `cloudcore.image.repository` 即可。
+
+### Chart 结构
+
+```
+build/charts/edgeflow/
+├── Chart.yaml                  # Chart 元信息（name/version/appVersion）
+├── values.yaml                 # 可配置项：镜像、副本数、端口、探针、资源（含中文注释）
+├── .helmignore                 # 打包忽略清单
+└── templates/
+    ├── _helpers.tpl            # 标签辅助模板（name/fullname/labels）
+    ├── cloudcore-deployment.yaml  # Deployment：/healthz 健康检查、资源限制
+    ├── cloudcore-service.yaml     # Service：ClusterIP，端口 8080
+    └── NOTES.txt               # 部署后的使用提示
+```
+
+### 使用方法
+
+```bash
+# 1. 校验 Chart（需要 helm，安装：brew install helm）
+make helm-lint
+# 或：helm lint build/charts/edgeflow/
+
+# 2. 本地渲染预览（不部署，仅查看生成清单）
+helm template edgeflow build/charts/edgeflow/
+
+# 3. 部署到集群（镜像构建并推送后执行）
+helm install edgeflow build/charts/edgeflow/ \
+  --set cloudcore.image.repository=<镜像仓库地址>
+
+# 4. 验证
+kubectl get deploy,svc -l app.kubernetes.io/instance=edgeflow
+kubectl port-forward svc/edgeflow-cloudcore 8080:8080
+curl http://127.0.0.1:8080/healthz
+```
+
+### 交叉编译（为边缘节点产出生效二进制）
+
+```bash
+make cross-build
+# 产物：dist/cloudcore-linux-amd64 / cloudcore-linux-arm64 / edgecore-linux-amd64 / edgecore-linux-arm64
 ```
 
 ## License

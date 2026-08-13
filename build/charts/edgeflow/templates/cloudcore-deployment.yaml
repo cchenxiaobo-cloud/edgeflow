@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "edgeflow.fullname" . }}-cloudcore
+  labels:
+    {{- include "edgeflow.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cloudcore
+spec:
+  replicas: {{ .Values.cloudcore.replicas }}
+  selector:
+    matchLabels:
+      {{- include "edgeflow.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: cloudcore
+  template:
+    metadata:
+      labels:
+        {{- include "edgeflow.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: cloudcore
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: cloudcore
+          image: "{{ .Values.cloudcore.image.repository }}:{{ .Values.cloudcore.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.cloudcore.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.cloudcore.port.containerPort }}
+              protocol: TCP
+          {{- with .Values.cloudcore.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.cloudcore.port.healthPort }}
+            initialDelaySeconds: {{ .Values.cloudcore.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.cloudcore.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.cloudcore.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.cloudcore.livenessProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.cloudcore.port.healthPort }}
+            initialDelaySeconds: {{ .Values.cloudcore.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.cloudcore.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.cloudcore.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.cloudcore.readinessProbe.failureThreshold }}
+          resources:
+            {{- toYaml .Values.cloudcore.resources | nindent 12 }}

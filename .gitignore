@@ -1,5 +1,6 @@
 # 编译产物
 /bin/
+/dist/
 *.exe
 *.exe~
 *.dll

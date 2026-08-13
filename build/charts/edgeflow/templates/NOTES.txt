@@ -1,0 +1,20 @@
+感谢使用 EdgeFlow Chart（骨架版）！
+
+CloudCore 已部署（或待部署）：
+
+  名称: {{ include "edgeflow.fullname" . }}-cloudcore
+  副本: {{ .Values.cloudcore.replicas }}
+  镜像: {{ .Values.cloudcore.image.repository }}:{{ .Values.cloudcore.image.tag | default .Chart.AppVersion }}
+
+集群内访问方式:
+
+  # 进入任一 Pod 或使用 kubectl port-forward 验证
+  kubectl port-forward svc/{{ include "edgeflow.fullname" . }}-cloudcore {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl http://127.0.0.1:{{ .Values.service.port }}/healthz
+
+查看部署状态:
+
+  kubectl get deploy,svc -l app.kubernetes.io/instance={{ .Release.Name }}
+
+注意：当前为 M4 骨架，镜像 edgeflow/cloudcore:v0.1.0 尚未构建，
+请先执行 make cross-build / docker build 构建并推送镜像后再安装。

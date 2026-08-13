@@ -39,7 +39,7 @@
 | M0-2 | CRD 类型定义（Node/Device） | ✅ **完成** | EdgeNode/DeviceModel/Device 定义 + DeepCopy + 文档 | commit a541128，apis/ 3 类型 11 测试 |
 | M0-3 | CI/CD 完整流水线 | ✅ 基础版完成 | lint+test+覆盖率门槛 | commit ab73062 |
 | M0-4 | Helm Chart 骨架 | ✅ **完成** | helm lint 通过 + template 渲染正确 | commit 9d78246，helm v4.2.3 |
-| M1 | 云边核心通信链路（CloudHub/EdgeHub） | ✅ **M1 一期+二期完成** | 协议+注册+心跳+重连+MetaManager 持久化+节点 API+消息路由 | commits e569ea1~081eb0f，见 §4B/§4C |
+| M1 | 云边核心通信链路（CloudHub/EdgeHub） | ✅ **M1 一~三期完成** | +EdgeNode 对接+可靠投递 4.6+PodSync 链路 | commits e569ea1~5312253，见 §4D |
 | M2 | 应用部署与边缘自治 | ⏳ 待开发 | 依赖 M1 | — |
 | M3 | 设备管理（Device CRD/Twin/Mapper） | ⏳ 待开发 | 依赖 M2 | — |
 | M4 | 生产化与规模化 | ⏳ 待开发 | 依赖 M3 | — |
@@ -153,6 +153,37 @@
 - 结论：**✅ 通过（0 P0 / 0 P1，9 项 P2 加固项）**
 - P2 项：LIKE 通配符转义、WAL checkpoint、Offline 无 TTL、入缓冲静默丢消息（已文档化）、WriteTimeout 缺失、API Encode 错误无日志、RegisteredAt 语义不对称、SQLite 多进程策略、cmd-edgecore 覆盖缺口
 
+## 4D. M1 三期验证结果（EdgeNode 对接/可靠投递/PodSync，2026-08-13）
+
+### 新增模块
+| 模块 | 提交 | 内容 |
+|------|------|------|
+| registry EdgeNode 映射 | 641863e | ToEdgeNode/ListEdgeNodes + GET /api/v1/edgenodes（K8s 风格 items） |
+| cloudhub ReliableSend | 3197ad3 | pending+Ack 匹配+超时重试同 ID（WBS 4.6 云端侧） |
+| edgehub 自动 Ack+幂等 | 19dd66f | handleDownlink（缓存 1000 FIFO 去重）+ Send + metamanager SavePod |
+| cloudcore podsync API | 15366e7 | POST /api/v1/nodes/{id}/podsync → ReliableSend（200/404/504） |
+| P1 修复 | 5312253 | syncPod 0%→91.3%、handlePodSync 0%→84.2%、Pod key 含 namespace |
+
+### 自动化验证
+| 项目 | 结果 |
+|------|------|
+| go test -race（12 包） | ✅ 全绿，总覆盖率 83.7% |
+| golangci-lint | ✅ 0 issues |
+| 关键覆盖率 | registry 100% / metamanager 77.5% / cloudhub 83% / cloudcore 88.8% / edgecore 61.4% / edgehub 84.7% |
+
+### 端到端联调（真实进程）
+| 场景 | 实测结果 |
+|------|---------|
+| EdgeNode API | ✅ Running→Offline→Running 状态流转 |
+| PodSync 可靠下发 | ✅ POST → 200 acked:true（云端 ReliableSend → 边缘落盘 → 自动 Ack） |
+| SQLite 落盘 | ✅ sqlite3 直查 pods/default/nginx 与 pods/prod/nginx 两条共存（多命名空间隔离） |
+| 按 ns 删除 | ✅ delete default 后仅剩 prod，无误删 |
+| 重启持久化 | ✅ 节点元数据与 Pod 数据同库保留 |
+
+### 代码审查（docs/CODE-REVIEW-M1C.md）
+- 结论：有条件通过（0 P0）→ **P1×3 全部修复**（commit 5312253，含覆盖率前后对比证据）
+- P2 项：pending 交叉清理、ErrAckFailed 映射 502、ReliableSend 无 context、handleDownlink 非原子、云端 operation 校验（已记录待办）
+
 ## 5. 待办项（Backlog）
 
 | 优先级 | 事项 | 说明 |
@@ -160,6 +191,7 @@
 | P1 | GitHub 远程仓库关联 | 用户把 `~/.ssh/id_ed25519.pub` 粘贴到 GitHub → `git remote add origin` → push（步骤见 ENV-SETUP.md §4.2） |
 | P1 | 推送后验证 CI 首次运行 | push 后 Actions 标签页应显示 lint+test 绿勾 |
 | P2 | cmd-edgecore 覆盖率缺口（56.5%） | "注册成功→SQLite 落盘"集成链路补集成级单测（M2 前） |
+| P2 | M1C 审查 P2 项×5 | pending 交叉清理/ErrAckFailed→502/context 取消/非原子/云端 operation 校验（见 CODE-REVIEW-M1C.md） |
 | P2 | M1B 审查 P2 项×9 | LIKE 转义/WAL checkpoint/Offline TTL/WriteTimeout 等（见 CODE-REVIEW-M1B.md） |
 | P3 | 日志级别过滤（SetLevel） | pkg/log 的 Level 目前仅前缀标记，后续模块需要时实现 |
 | P3 | M1 通道 P3 项×4 | newID 忽略 rand 错误 / Shutdown 撞 Start 初始化窗口 / 被踢连接标志延迟清除 / 退避重置缺单测（见 CODE-REVIEW-M1.md） |

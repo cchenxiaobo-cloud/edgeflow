@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	v1alpha1 "edgeflow/apis/edge/v1alpha1"
 	"edgeflow/cloud/pkg/cloudhub"
 	"edgeflow/cloud/pkg/registry"
 	"edgeflow/pkg/config"
@@ -77,12 +78,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 	nodeReg := registry.New()
 	hub.SetNodeEvents(registry.NewCloudHubAdapter(nodeReg))
 
-	// 注册路由：/healthz 健康检查 + /api/v1/nodes 节点查询 API
+	// 注册路由：/healthz 健康检查 + 节点查询 API（两个视角并存）：
+	//   /api/v1/nodes      → NodeInfo 视图（运行视角：CPU/内存/IP 等）
+	//   /api/v1/edgenodes  → EdgeNode 视图（CRD 对象视角，对标 K8s Node）
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", httpx.Healthz())
 	api := &nodeAPI{reg: nodeReg}
 	mux.HandleFunc("GET /api/v1/nodes", api.listNodes)
 	mux.HandleFunc("GET /api/v1/nodes/{nodeID}", api.getNode)
+	mux.HandleFunc("GET /api/v1/edgenodes", api.listEdgeNodes)
+	mux.HandleFunc("GET /api/v1/edgenodes/{nodeID}", api.getEdgeNode)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{
@@ -215,4 +220,45 @@ func (a *nodeAPI) getNode(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	// 编码失败（如客户端已断开）时无需额外处理，忽略即可
 	_ = json.NewEncoder(w).Encode(info)
+}
+
+// edgeNodeList 是 GET /api/v1/edgenodes 的响应形态。
+//
+// 选择 K8s List 风格（kind/apiVersion + items 数组）而非裸数组：
+// 与 apiserver 的列表响应结构一致，后续接入真实 apiserver 时
+// 客户端解析逻辑无需改动；items 里的元素就是完整 EdgeNode 对象
+// （含 kind/apiVersion，可直接当作 CRD 对象消费）。
+type edgeNodeList struct {
+	Kind       string              `json:"kind"`
+	APIVersion string              `json:"apiVersion"`
+	Items      []v1alpha1.EdgeNode `json:"items"`
+}
+
+// listEdgeNodes 处理 GET /api/v1/edgenodes：返回全部节点的 EdgeNode
+// 对象列表（按 Name 排序）。
+func (a *nodeAPI) listEdgeNodes(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// 编码失败（如客户端已断开）时无需额外处理，忽略即可
+	_ = json.NewEncoder(w).Encode(edgeNodeList{
+		Kind:       "EdgeNodeList",
+		APIVersion: v1alpha1.SchemeGroupVersion.String(),
+		Items:      a.reg.ListEdgeNodes(),
+	})
+}
+
+// getEdgeNode 处理 GET /api/v1/edgenodes/{nodeID}：返回单个 EdgeNode
+// 对象；节点不存在时 404。
+func (a *nodeAPI) getEdgeNode(w http.ResponseWriter, r *http.Request) {
+	nodeID := r.PathValue("nodeID")
+	info, ok := a.reg.Get(nodeID)
+	if !ok {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		// 编码失败（如客户端已断开）时无需额外处理，忽略即可
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "node not found", "nodeID": nodeID})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// Get 返回的是拷贝，取地址安全；编码失败（如客户端已断开）时忽略即可
+	_ = json.NewEncoder(w).Encode(a.reg.ToEdgeNode(&info))
 }

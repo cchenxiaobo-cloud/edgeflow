@@ -41,6 +41,7 @@ type Pod struct {
 // 幂等：同 namespace+name 重复保存只覆盖，不新增记录（对应云端重复下发同 Pod）。
 // 入参必须是合法 JSON 且含 name 字段（key 由 namespace+name 派生，namespace 缺省 "default"），
 // 否则报错——错误会经 EdgeHub 自动 Ack 以 code=error 回传云端。
+// 成功落盘后广播 pod.upsert 事件（见 notify.go：add/update 统一为 upsert）。
 func (s *Store) SavePod(podJSON string) error {
 	// 校验合法性并提取 namespace/name（key 派生依据）；额外字段忽略，不做裁剪
 	var pod Pod
@@ -50,7 +51,17 @@ func (s *Store) SavePod(podJSON string) error {
 	if pod.Name == "" {
 		return errors.New("Pod JSON 缺少 name 字段")
 	}
-	return s.Put(podKey(pod.Namespace, pod.Name), podJSON)
+	// 事件携带与落盘 key 一致的规范化命名空间（缺省 "default"）
+	ns := pod.Namespace
+	if ns == "" {
+		ns = "default"
+	}
+	if err := s.Put(podKey(ns, pod.Name), podJSON); err != nil {
+		return err
+	}
+	// 成功落盘后才广播；失败（如数据库错误）不产生事件，调用方以错误回 Ack
+	s.notifyPodUpsert(ns, pod.Name, podJSON)
+	return nil
 }
 
 // ListPods 返回全部已落盘的 Pod JSON（按 key 升序，即按 namespace/name 排序）。
@@ -71,9 +82,19 @@ func (s *Store) ListPods() ([]string, error) {
 // 幂等：Pod 不存在时静默成功（对应云端重复下发删除）。
 // namespace 缺省 "default"（与 SavePod 的 key 派生规则一致），
 // 只删除该命名空间下的同名 Pod，不影响其他命名空间。
+// 成功删除后广播 pod.delete 事件（Value 为空串，见 notify.go）。
 func (s *Store) DeletePod(namespace, name string) error {
 	if name == "" {
 		return errors.New("Pod 名称不能为空")
 	}
-	return s.Delete(podKey(namespace, name))
+	// 事件携带与落盘 key 一致的规范化命名空间（缺省 "default"）
+	ns := namespace
+	if ns == "" {
+		ns = "default"
+	}
+	if err := s.Delete(podKey(ns, name)); err != nil {
+		return err
+	}
+	s.notifyPodDelete(ns, name)
+	return nil
 }

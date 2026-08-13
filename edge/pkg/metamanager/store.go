@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	// 驱动注册：modernc.org/sqlite 是纯 Go 实现的 SQLite（无 CGO），
@@ -57,9 +58,18 @@ type KVEntry struct {
 // 单连接足够；同时保证 Open 时设置的 PRAGMA（busy_timeout 等连接级参数）
 // 一定作用在唯一连接上，不会因连接池新建连接而失效。
 // （journal_mode=WAL 是数据库文件级属性，持久化在文件头，不受此限制。）
+//
+// 订阅者表（subMu/subscribers/nextSubID，见 notify.go）是纯内存态，
+// 与 SQLite 连接相互独立：订阅不落盘，重启后需重新订阅（Edged 启动时
+// 用 ListPods 全量对账即可覆盖重启窗口的变更）。
 type Store struct {
 	db   *sql.DB
 	path string
+
+	// subMu 保护订阅者表（Pod 变更通知，见 notify.go）。
+	subMu       sync.Mutex
+	subscribers map[int]*subscriber // 订阅 ID → 订阅者（nil 表示尚未有任何订阅）
+	nextSubID   int                 // 订阅 ID 自增分配
 }
 
 // NodeInfo 是落盘的节点注册信息（以 JSON 字符串存入 meta_kv，
@@ -148,8 +158,18 @@ func (s *Store) init() error {
 	return nil
 }
 
-// Close 关闭数据库连接。之后再次使用 Store 会报错；需要继续读写时重新 Open。
+// Close 关闭数据库连接，并关闭全部订阅者的事件通道（消费方可据此退出，
+// 避免 edgecore 退出时订阅方 goroutine 永久阻塞）。之后再次使用 Store
+// 会报错；需要继续读写时重新 Open（订阅需重新注册）。
 func (s *Store) Close() error {
+	// 先注销全部订阅者再关库：notify 与 Unsubscribe 互斥于 subMu，
+	// 此处清空订阅表后不会再有任何事件发送（见 notify.go 并发说明）。
+	s.subMu.Lock()
+	for id, sub := range s.subscribers {
+		delete(s.subscribers, id)
+		close(sub.ch)
+	}
+	s.subMu.Unlock()
 	return s.db.Close()
 }
 

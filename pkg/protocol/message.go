@@ -12,18 +12,18 @@ import (
 
 // 消息类型枚举（开放集合：新增类型不改信封结构）。
 const (
-	TypeRegister       = "Register"       // 边→云：节点注册（连接建立后第一条）
-	TypeRegisterAck    = "RegisterAck"    // 云→边：注册结果
-	TypeHeartbeat      = "Heartbeat"      // 边→云：心跳保活
-	TypeHeartbeatAck   = "HeartbeatAck"   // 云→边：心跳应答
-	TypePodSync        = "PodSync"        // 云→边：Pod 配置下发（M1/M2）
-	TypeConfigSync     = "ConfigSync"     // 云→边：ConfigMap/Secret 下发（M2）
-	TypePodStatus      = "PodStatus"      // 边→云：Pod 状态上报（M1/M2）
-	TypeDeviceReport   = "DeviceReport"   // 边→云：设备数据/状态上报（M3）
-	TypeDeviceCommand  = "DeviceCommand"  // 云→边：设备操作指令（M3）
-	TypeNodeJob        = "NodeJob"        // 云→边：任务分发（待定）
-	TypeNodeJobResult  = "NodeJobResult"  // 边→云：任务结果（待定）
-	TypeAck            = "Ack"            // 双向：通用确认
+	TypeRegister      = "Register"      // 边→云：节点注册（连接建立后第一条）
+	TypeRegisterAck   = "RegisterAck"   // 云→边：注册结果
+	TypeHeartbeat     = "Heartbeat"     // 边→云：心跳保活
+	TypeHeartbeatAck  = "HeartbeatAck"  // 云→边：心跳应答
+	TypePodSync       = "PodSync"       // 云→边：Pod 配置下发（M1/M2）
+	TypeConfigSync    = "ConfigSync"    // 云→边：ConfigMap/Secret 下发（M2）
+	TypePodStatus     = "PodStatus"     // 边→云：Pod 状态上报（M1/M2）
+	TypeDeviceReport  = "DeviceReport"  // 边→云：设备数据/状态上报（M3）
+	TypeDeviceCommand = "DeviceCommand" // 云→边：设备操作指令（M3）
+	TypeNodeJob       = "NodeJob"       // 云→边：任务分发（待定）
+	TypeNodeJobResult = "NodeJobResult" // 边→云：任务结果（待定）
+	TypeAck           = "Ack"           // 双向：通用确认
 )
 
 // 协议版本。

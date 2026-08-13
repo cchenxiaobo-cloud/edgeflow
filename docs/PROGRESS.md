@@ -40,7 +40,7 @@
 | M0-3 | CI/CD 完整流水线 | ✅ 基础版完成 | lint+test+覆盖率门槛 | commit ab73062 |
 | M0-4 | Helm Chart 骨架 | ✅ **完成** | helm lint 通过 + template 渲染正确 | commit 9d78246，helm v4.2.3 |
 | M1 | 云边核心通信链路（CloudHub/EdgeHub） | ✅ **M1 一~三期完成** | +EdgeNode 对接+可靠投递 4.6+PodSync 链路 | commits e569ea1~5312253，见 §4D |
-| M2 | 应用部署与边缘自治 | ⏳ 待开发 | 依赖 M1 | — |
+| M2 | 应用部署与边缘自治 | 🟨 **启动轮完成** | Edged 方案 A POC 通过（P0 决策落地） | commits c9db4ba~3826465，见 §4E |
 | M3 | 设备管理（Device CRD/Twin/Mapper） | ⏳ 待开发 | 依赖 M2 | — |
 | M4 | 生产化与规模化 | ⏳ 待开发 | 依赖 M3 | — |
 | M5 | MVP 发布与文档交付 | ⏳ 待开发 | 依赖 M4 | — |
@@ -183,6 +183,39 @@
 ### 代码审查（docs/CODE-REVIEW-M1C.md）
 - 结论：有条件通过（0 P0）→ **P1×3 全部修复**（commit 5312253，含覆盖率前后对比证据）
 - P2 项：pending 交叉清理、ErrAckFailed 映射 502、ReliableSend 无 context、handleDownlink 非原子、云端 operation 校验（已记录待办）
+
+## 4E. M2 启动轮验证结果（Edged POC/增量订阅/4.6 P2，2026-08-14）
+
+### 新增模块
+| 模块 | 提交 | 内容 |
+|------|------|------|
+| metamanager 增量订阅 | 089c358 | Subscribe/Unsubscribe/Event，EventPodUpsert/Delete，缓冲满丢弃（声明式收敛兜底） |
+| 4.6 P2 收尾 | 8321b0e | pending 交叉清理/ErrShuttingDown、ReliableSendContext、ErrAckFailed→502、downlink 原子化、operation 校验 |
+| Edged POC | c9db4ba | ContainerRuntime 接口 + Mock/Docker 双实现 + 声明式 reconcile + Status + POC 报告 |
+| edgecore 装配 | 9fe47c1 | Edged 启动 + 订阅触发 Trigger + 优雅退出顺序 |
+| P2 修复×5 | df2e607 | 零值超时回落/image 校验/ctx 传递/死字段/周期 env 可配 |
+
+### 端到端联调（真实进程 + 真实 Docker 容器）
+| 场景 | 实测结果 |
+|------|---------|
+| PodSync add | ✅ POST → 200 acked → 订阅触发 → Edged 调谐 → Docker 容器 edgeflow-default-web-demo 创建运行 |
+| reconcile 循环 | ✅ 日志稳定（1 pods, 1 running, 0 error） |
+| SQLite 落盘 | ✅ pods/default/web-demo |
+| PodSync delete | ✅ 200 acked → 容器移除 |
+| DockerRuntime 冒烟 | ✅ 6 步（创建/检查/幂等/标签发现/删除/删除幂等） |
+| 进程清理 | ✅ 优雅退出无残留 |
+
+### 自动化验证
+| 项目 | 结果 |
+|------|------|
+| go test -race（13 包） | ✅ 全绿，总覆盖率 82.4%（edged 85.1%） |
+| golangci-lint | ✅ 0 issues |
+| 审查（docs/CODE-REVIEW-M2A.md） | ✅ 有条件通过（无 P0/P1）→ P2×5 修复 + P2×3 记录待办 |
+
+### P2 待办（3 项未修）
+- P2-1：Edged.status 过期条目清理（WBS 6.3 PodStatus 上报前必改）
+- P2-3：docker run 冲突兜底未验标签（低危）
+- P2-8：优雅退出最坏延迟 30s（在途 docker 命令，文档已注明）
 
 ## 5. 待办项（Backlog）
 

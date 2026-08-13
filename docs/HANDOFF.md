@@ -57,7 +57,7 @@ edgeflow/
 
 ## 4. 如何开发下一个模块（标准流程）
 
-1. **读计划**：`docs/ROADMAP.md` 找到下一个模块（当前建议 M2：Edged 方案 A POC（3.2）、MetaManager Pod 消费与增量订阅，或 4.6 剩余 P2）
+1. **读计划**：`docs/ROADMAP.md` 找到下一个模块（当前建议 M2：Edged 完整化（CRI/健康检查/多副本）、PodStatus 上报到云端（6.3）、或 4.6 P2 剩余 3 项）
 2. **建分支**：`git checkout -b feat/模块名`
 3. **开发**：用 AI 工具（Trae/Codex）辅助写代码，遵循现有包风格（中文注释、零第三方依赖）
 4. **验证**（每次提交前必须全跑）：
@@ -84,6 +84,9 @@ make lint       # 静态检查
 | `EDGEFLOW_EDGECORE_CLOUD_ADDR=ws://1.2.3.4:10000 ./bin/edgecore` | 指定云端地址连接 |
 | `EDGEFLOW_EDGECORE_NODE_ID=edge-01 ./bin/edgecore` | 指定边缘节点 ID |
 | `EDGEFLOW_EDGECORE_DB_PATH=/data/edgeflow.db ./bin/edgecore` | 指定 MetaManager 数据库路径 |
+| `EDGEFLOW_EDGECORE_RECONCILE_INTERVAL=10s ./bin/edgecore` | Edged 调谐周期（默认 5s） |
+| `go run ./hack/edged-smoke` | DockerRuntime 冒烟（需 Docker daemon） |
+| `docker ps --filter label=edgeflow.pod` | 查看 Edged 管理的容器 |
 | `curl localhost:8080/api/v1/nodes` | 查询已注册边缘节点（JSON） |
 | `curl localhost:8080/api/v1/edgenodes` | 查询 EdgeNode CRD 对象（K8s 风格 items） |
 | `curl -X POST localhost:8080/api/v1/nodes/{nodeID}/podsync -d '{"operation":"add","pod":{"name":"nginx","namespace":"default","image":"nginx:1.25","replicas":1}}'` | 可靠下发 Pod 配置到边缘（200=边缘已确认） |
@@ -106,7 +109,8 @@ make lint       # 静态检查
 | 零第三方依赖 | 当前设计约束，后续需要时评估（如 NATS 客户端、yaml 解析） |
 | 日志级别过滤 | Level 仅前缀标记，未实现 SetLevel 过滤（P2） |
 | edgecore | 占位程序，M1 开发 |
-| 云边通信（WebSocket） | ✅ M1 基础版：协议+注册+心跳+断线重连（端口 10000，联调通过） |
+| 云边通信（WebSocket） | ✅ M1 完成：协议+注册+心跳+重连+可靠投递+PodSync 链路 |
+| Edged（3.2） | 🟨 方案 A POC 通过：DockerRuntime 驱动真实容器（方案 A 定案，M2 继续） |
 | 设备管理（CRD） | M0-2/M3 内容，未开始 |
 | Docker/Kubernetes 本地环境 | 本机 Docker 已装；kind 环境脚本见 docs/DEV-ENV.md（hack/dev-up.sh） |
 

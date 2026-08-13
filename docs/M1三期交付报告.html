@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EdgeFlow M1 三期交付报告 — EdgeNode 对接与可靠投递</title>
+<style>
+  :root {
+    --bg: #fafafa; --surface: #ffffff; --text: #1a1a1a; --text-2: #6b6b6b; --text-3: #999;
+    --accent: #2563eb; --accent-light: #dbeafe; --border: #e5e5e5;
+    --green: #16a34a; --green-light: #dcfce7; --yellow: #ca8a04; --yellow-light: #fef3c7;
+    --red: #dc2626; --red-light: #fee2e2; --code-bg: #f5f5f5; --radius: 4px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+    --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.7; font-weight: 300; -webkit-font-smoothing: antialiased; }
+  .container { max-width: 880px; margin: 0 auto; padding: 80px 40px; }
+  h1 { font-size: 2.2rem; font-weight: 200; letter-spacing: -0.02em; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.3rem; font-weight: 400; letter-spacing: -0.01em; margin: 3rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.05rem; font-weight: 500; margin: 1.8rem 0 0.6rem; }
+  p { margin-bottom: 0.8rem; color: var(--text-2); }
+  .subtitle { font-size: 0.95rem; color: var(--text-3); font-weight: 300; margin-bottom: 2.5rem; }
+  a { color: var(--accent); text-decoration: none; font-weight: 400; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.85em; }
+  pre { background: var(--code-bg); padding: 1rem; border-radius: var(--radius); overflow-x: auto; margin: 1rem 0; font-size: 0.8rem; line-height: 1.5; font-family: var(--mono); }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.85rem; }
+  th { text-align: left; font-weight: 500; padding: 0.6rem 0.5rem; border-bottom: 2px solid var(--text); }
+  td { padding: 0.5rem; border-bottom: 1px solid var(--border); font-weight: 300; }
+  tr:hover td { background: var(--accent-light); }
+  .badge { display: inline-block; padding: 0.15em 0.6em; border-radius: 100px; font-size: 0.75rem; font-weight: 500; }
+  .b-green { background: var(--green-light); color: var(--green); }
+  .b-blue { background: var(--accent-light); color: var(--accent); }
+  .b-yellow { background: var(--yellow-light); color: var(--yellow); }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); margin: 1.5rem 0; }
+  .metric { background: var(--surface); padding: 1.2rem 0.8rem; text-align: center; }
+  .metric-value { font-size: 1.6rem; font-weight: 200; color: var(--accent); }
+  .metric-label { font-size: 0.7rem; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.3rem; }
+  .arch { font-family: var(--mono); font-size: 0.75rem; line-height: 1.6; background: var(--surface); border: 1px solid var(--border); padding: 1.2rem; overflow-x: auto; margin: 1rem 0; color: var(--text-2); }
+  .panel { border: 1px solid var(--border); border-left: 3px solid var(--accent); padding: 1rem 1.2rem; margin: 1rem 0; background: var(--surface); }
+  .footer { margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border); font-size: 0.78rem; color: var(--text-3); }
+  @media (max-width: 700px) { .container { padding: 40px 20px; } .metrics { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>EdgeFlow M1 三期交付报告</h1>
+<p class="subtitle">EdgeNode CRD 对接 · 消息可靠投递 4.6 · PodSync 应用下发链路 · 2026-08-13</p>
+
+<div class="metrics">
+  <div class="metric"><div class="metric-value">34</div><div class="metric-label">累计提交</div></div>
+  <div class="metric"><div class="metric-value">83.7%</div><div class="metric-label">总覆盖率</div></div>
+  <div class="metric"><div class="metric-value">0</div><div class="metric-label">Lint / P0</div></div>
+  <div class="metric"><div class="metric-value">5/5</div><div class="metric-label">联调场景通过</div></div>
+</div>
+
+<h2>1. 本轮交付摘要</h2>
+<p>在 M1 一、二期基础上完成三项：<strong>注册对接 EdgeNode CRD</strong>（节点注册表 → CRD 对象 + 查询 API）、<strong>消息可靠投递 4.6</strong>（云端 ACK/超时重试 + 边缘自动确认/幂等去重）、<strong>M2 前置 PodSync 链路</strong>（云端下发 → 边缘落盘 MetaManager → 确认闭环）。P1 审查问题全部修复。</p>
+
+<h2>2. 新增模块</h2>
+<table>
+<thead><tr><th>模块</th><th>提交</th><th>内容</th></tr></thead>
+<tbody>
+<tr><td>registry EdgeNode 映射</td><td>641863e</td><td>NodeInfo→EdgeNode（K8s 风格 items 包装），GET /api/v1/edgenodes[/{nodeID}]</td></tr>
+<tr><td>cloudhub ReliableSend</td><td>3197ad3</td><td>pending 队列 + Ack 匹配 + 超时重试（同 ID 幂等）+ 4 种错误语义</td></tr>
+<tr><td>edgehub 自动 Ack + 幂等</td><td>19dd66f</td><td>handleDownlink：1000 条 FIFO 去重缓存，失败不入缓存（允许重试重执行）</td></tr>
+<tr><td>metamanager Pod 存储</td><td>19dd66f</td><td>SavePod/ListPods/DeletePod（key=pods/ns/name，多命名空间隔离）</td></tr>
+<tr><td>cloudcore podsync API</td><td>15366e7</td><td>POST /api/v1/nodes/{id}/podsync → ReliableSend（200/400/404/504/500）</td></tr>
+<tr><td>P1 修复</td><td>5312253</td><td>syncPod 0%→91.3%，handlePodSync 0%→84.2%，Pod key 含 namespace</td></tr>
+</tbody>
+</table>
+
+<h2>3. 可靠投递链路（WBS 4.6）</h2>
+<div class="arch">云端控制器 / 管理 API
+   │  POST /api/v1/nodes/{id}/podsync
+   ▼
+CloudHub.ReliableSend ── pending[msgID] → 等待 Ack（默认 5s）
+   │  超时 → 重发同 ID（默认 2 次）→ 耗尽返回 ErrAckTimeout
+   ▼  WebSocket
+EdgeHub.handleDownlink
+   │  ① 幂等查询（processed 缓存，上限 1000 FIFO）
+   │  ② 执行 handler（PodSync → MetaManager.SavePod 落盘 SQLite）
+   │  ③ 成功 → 记缓存 + 回 Ack(code=ok) ｜ 失败 → 回 Ack(code=error) 不入缓存
+   ▼
+云端收到 Ack → 匹配 pending → ReliableSend 返回 nil（确认完成）
+
+幂等语义（QoS 1：至少一次 + 去重）：
+  重发同 ID → 缓存命中 → 不重复执行，直接回 ok
+  handler 失败重试 → 缓存未记录 → 允许重新执行</div>
+
+<h2>4. 验证结果</h2>
+
+<h3>4.1 端到端联调（真实进程）</h3>
+<table>
+<thead><tr><th>场景</th><th>实测证据</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>EdgeNode API</td><td>GET /api/v1/edgenodes → Running →（停止）→ Offline →（重连）→ Running</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>PodSync 可靠下发</td><td>POST add nginx → {"status":"ok","acked":true} HTTP 200（云→边→Ack→云确认全链路）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>SQLite 落盘</td><td>sqlite3 直查：pods/default/nginx 与 pods/prod/nginx 两条共存</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>按命名空间删除</td><td>delete default → 仅剩 pods/prod/nginx，无误删</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>重启持久化</td><td>节点元数据与 Pod 数据同库保留（WAL）</td><td><span class="badge b-green">通过</span></td></tr>
+</tbody>
+</table>
+
+<h3>4.2 自动化验证</h3>
+<table>
+<thead><tr><th>项目</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>go build / vet / gofmt</td><td><span class="badge b-green">全部通过</span></td></tr>
+<tr><td>go test -race（12 包）</td><td><span class="badge b-green">全绿</span>，总覆盖率 83.7%</td></tr>
+<tr><td>golangci-lint</td><td><span class="badge b-green">0 issues</span></td></tr>
+<tr><td>关键单测断言</td><td>Ack correlationId 精确匹配、幂等 handler 仅执行 1 次、失败重试重新执行（calls=2）、1005 条淘汰边界、多命名空间隔离</td></tr>
+</tbody>
+</table>
+
+<h3>4.3 审查与修复闭环（docs/CODE-REVIEW-M1C.md）</h3>
+<div class="panel">
+<p><strong>结论：有条件通过（0 P0）→ P1×3 全部修复（commit 5312253）</strong></p>
+<table>
+<thead><tr><th>P1 问题</th><th>修复</th><th>证据</th></tr></thead>
+<tbody>
+<tr><td>cloudcore syncPod 零覆盖</td><td>依赖注入 reliableSend 字段 + 7 个路由级用例</td><td>0% → <strong>91.3%</strong></td></tr>
+<tr><td>edgecore handlePodSync 零覆盖</td><td>真实临时 SQLite + 6 个用例</td><td>0% → <strong>84.2%</strong></td></tr>
+<tr><td>Pod key 不含 namespace</td><td>podKey(ns, name)，缺省 default</td><td>多命名空间隔离测试 + 冒烟双条共存</td></tr>
+</tbody>
+</table>
+<p style="margin-top:0.5rem;font-size:0.82rem">P2 项×5（pending 交叉清理、ErrAckFailed→502、ReliableSend 无 context、handleDownlink 非原子、云端 operation 校验）已记录台账待办。</p>
+</div>
+
+<h2>5. 数据可保存可追踪</h2>
+<table>
+<thead><tr><th>数据</th><th>存储</th><th>查询方式</th></tr></thead>
+<tbody>
+<tr><td>节点注册信息</td><td>云端 registry（内存）+ 边缘 SQLite（节点元数据）</td><td>GET /api/v1/nodes、/api/v1/edgenodes；edgecore 重启日志"已加载 N 条"</td></tr>
+<tr><td>Pod 配置</td><td>边缘 SQLite（key=pods/ns/name，WAL）</td><td>sqlite3 meta_kv 直查；ListPods()（后续 Edged 消费）</td></tr>
+<tr><td>消息确认状态</td><td>云端 pending 队列（超时重试语义）</td><td>ReliableSend 返回错误语义（ErrAckTimeout 等）</td></tr>
+</tbody>
+</table>
+
+<h2>6. 下一步建议（M2 前置）</h2>
+<table>
+<thead><tr><th>优先级</th><th>事项</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>P1</td><td>Edged 方案 A POC（3.2，P0 决策项）</td><td>Edged 启动 ListPods() 全量恢复 + 订阅增量变更，驱动容器运行时</td></tr>
+<tr><td>P1</td><td>4.6 剩余 P2（pending 清理/context/operation 校验）</td><td>可靠投递生产化收尾</td></tr>
+<tr><td>P2</td><td>Pod 增量订阅</td><td>MetaManager 变更通知（当前落盘后无推送）</td></tr>
+<tr><td>P2</td><td>真实 K8s 集群接入（kind）</td><td>EdgeNode CRD 对接 apiserver（当前为内存态映射）</td></tr>
+</tbody>
+</table>
+
+<div class="footer">
+  EdgeFlow M1 三期交付报告 · 生成时间 2026-08-13 23:20 (Asia/Shanghai)<br>
+  研发方式：多 Agent 协作（EdgeNode 对接 / 可靠投递云端 / 可靠投递边缘 / M1C 复核 / P1 修复）<br>
+  仓库：/Users/mac/Documents/edgeflow/ · 台账：docs/PROGRESS.md · 审查：docs/CODE-REVIEW-M1C.md
+</div>
+
+</div>
+</body>
+</html>

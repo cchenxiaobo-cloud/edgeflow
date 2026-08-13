@@ -1,5 +1,5 @@
 # EdgeFlow CI 流水线
-# 每次 push / PR 时执行：go vet + build + test
+# 每次 push / PR 时执行：lint（强制）+ go vet + build + test（含覆盖率门槛 ≥70%）
 name: CI
 
 on:
@@ -8,8 +8,28 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    name: Lint（golangci-lint）
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go 1.26
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      # lint 失败即失败（强制）：golangci-lint-action 检出问题后以非 0 退出，无静默降级
+      - name: 运行 golangci-lint（version: latest）
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: run ./...
+
   build-test:
-    name: Build & Test
+    name: Build & Test（覆盖率门槛 ≥70%）
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -22,6 +42,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
+          cache: true # setup-go 自带 Go 模块缓存
 
       - name: 静态检查（go vet）
         run: go vet ./...
@@ -29,5 +50,18 @@ jobs:
       - name: 编译（go build）
         run: go build ./...
 
-      - name: 单元测试（go test）
+      - name: 单元测试（go test -race）
         run: go test -race ./...
+
+      # 覆盖率门槛：总覆盖率 <70% 则 CI 失败
+      - name: 覆盖率检查（总覆盖率 ≥70%）
+        run: |
+          go test ./... -coverprofile=coverage.out
+          total=$(go tool cover -func=coverage.out | tail -n 1 | awk '{print $3}' | tr -d '%')
+          echo "总覆盖率: ${total}%"
+          if awk -v t="$total" 'BEGIN { exit !(t >= 70) }'; then
+            echo "✅ 总覆盖率 ${total}% ≥ 70%，门槛通过"
+          else
+            echo "❌ 总覆盖率 ${total}% < 70%，未达门槛，CI 失败"
+            exit 1
+          fi

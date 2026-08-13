@@ -25,6 +25,7 @@ import (
 	"edgeflow/pkg/config"
 	"edgeflow/pkg/httpx"
 	"edgeflow/pkg/log"
+	"edgeflow/pkg/protocol"
 	"edgeflow/pkg/version"
 )
 
@@ -83,11 +84,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	//   /api/v1/edgenodes  → EdgeNode 视图（CRD 对象视角，对标 K8s Node）
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", httpx.Healthz())
-	api := &nodeAPI{reg: nodeReg}
+	api := &nodeAPI{reg: nodeReg, hub: hub}
 	mux.HandleFunc("GET /api/v1/nodes", api.listNodes)
 	mux.HandleFunc("GET /api/v1/nodes/{nodeID}", api.getNode)
 	mux.HandleFunc("GET /api/v1/edgenodes", api.listEdgeNodes)
 	mux.HandleFunc("GET /api/v1/edgenodes/{nodeID}", api.getEdgeNode)
+	mux.HandleFunc("POST /api/v1/nodes/{nodeID}/podsync", api.syncPod)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{
@@ -132,6 +134,58 @@ func parseFlags(args []string, out io.Writer) (*options, error) {
 }
 
 // serve 启动 HTTP 服务与 CloudHub，等待退出信号后一并优雅关闭，返回进程退出码。
+// podSyncRequest 是云端下发 Pod 配置的请求体（M2 应用管理雏形）。
+type podSyncRequest struct {
+	Operation string  `json:"operation"` // add / update / delete
+	Pod       podSpec `json:"pod"`
+}
+
+// podSpec 是 Pod 的最小规格描述（后续 M2 扩展为完整 PodSpec）。
+type podSpec struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Image     string `json:"image"`
+	Replicas  int    `json:"replicas"`
+}
+
+// syncPod 通过可靠投递向指定边缘节点下发 PodSync 消息（WBS 4.6 端到端入口）。
+// 响应语义：200=边缘已确认（Ack ok）；404=节点未注册/离线；504=确认超时重试耗尽。
+func (api *nodeAPI) syncPod(w http.ResponseWriter, r *http.Request) {
+	nodeID := r.PathValue("nodeID")
+
+	var req podSyncRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json body"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Operation == "" || req.Pod.Name == "" {
+		http.Error(w, `{"error":"operation and pod.name are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	msg, err := protocol.NewMessage(protocol.TypePodSync, "cloud", nodeID, req)
+	if err != nil {
+		http.Error(w, `{"error":"build message failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if err := api.hub.ReliableSend(nodeID, msg, cloudhub.ReliableOptions{}); err != nil {
+		if errors.Is(err, cloudhub.ErrNodeOffline) {
+			http.Error(w, `{"error":"node offline or not registered"}`, http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, cloudhub.ErrAckTimeout) {
+			http.Error(w, `{"error":"ack timeout after retries"}`, http.StatusGatewayTimeout)
+			return
+		}
+		http.Error(w, `{"error":"send failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"status":"ok","acked":true}`))
+}
+
 func serve(srv *http.Server, hub *cloudhub.Server) int {
 	// 在独立 goroutine 中启动 HTTP 服务与 CloudHub，错误通过 channel 上报主流程
 	errCh := make(chan error, 2)
@@ -197,6 +251,8 @@ func shutdownAll(srv *http.Server, hub *cloudhub.Server) {
 type nodeAPI struct {
 	// reg 是节点注册表（与 CloudHub 事件桥接共享同一实例）。
 	reg *registry.Registry
+	// hub 是 CloudHub 服务端（用于可靠投递下发消息，如 PodSync）。
+	hub *cloudhub.Server
 }
 
 // listNodes 处理 GET /api/v1/nodes：返回全部节点（JSON 数组，按 NodeID 排序）。

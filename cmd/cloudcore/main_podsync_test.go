@@ -94,7 +94,7 @@ func TestSyncPodNodeOffline(t *testing.T) {
 		}
 		return cloudhub.ErrNodeOffline
 	})
-	resp := postPodSync(t, srv, "node-1", `{"operation":"add","pod":{"name":"nginx","namespace":"default"}}`)
+	resp := postPodSync(t, srv, "node-1", `{"operation":"add","pod":{"name":"nginx","namespace":"default","image":"nginx:1.25"}}`)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("状态码 = %d，期望 404", resp.StatusCode)
 	}
@@ -108,7 +108,7 @@ func TestSyncPodAckTimeout(t *testing.T) {
 	srv := newPodSyncServer(t, registry.New(), func(context.Context, string, *protocol.Message, cloudhub.ReliableOptions) error {
 		return cloudhub.ErrAckTimeout
 	})
-	resp := postPodSync(t, srv, "node-1", `{"operation":"add","pod":{"name":"nginx"}}`)
+	resp := postPodSync(t, srv, "node-1", `{"operation":"add","pod":{"name":"nginx","image":"nginx:1.25"}}`)
 	if resp.StatusCode != http.StatusGatewayTimeout {
 		t.Fatalf("状态码 = %d，期望 504", resp.StatusCode)
 	}
@@ -125,7 +125,7 @@ func TestSyncPodInvalidOperation(t *testing.T) {
 			t.Error("非法 operation 不应触发可靠投递")
 			return nil
 		})
-		body := `{"operation":"` + op + `","pod":{"name":"nginx"}}`
+		body := `{"operation":"` + op + `","pod":{"name":"nginx","image":"nginx:1.25"}}`
 		resp := postPodSync(t, srv, "node-1", body)
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("operation=%q 状态码 = %d，期望 400", op, resp.StatusCode)
@@ -201,7 +201,7 @@ func TestSyncPodUnexpectedError(t *testing.T) {
 	srv := newPodSyncServer(t, registry.New(), func(context.Context, string, *protocol.Message, cloudhub.ReliableOptions) error {
 		return errors.New("some unexpected error")
 	})
-	resp := postPodSync(t, srv, "node-1", `{"operation":"add","pod":{"name":"nginx"}}`)
+	resp := postPodSync(t, srv, "node-1", `{"operation":"add","pod":{"name":"nginx","image":"nginx:1.25"}}`)
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("状态码 = %d，期望 500", resp.StatusCode)
 	}

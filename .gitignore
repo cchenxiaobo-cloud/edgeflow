@@ -27,3 +27,6 @@ vendor/
 
 # 本地配置（不含密钥，仅占位）
 *.local
+
+# 运行时数据（edgecore 的 SQLite 元数据库默认写入 data/）
+/data/

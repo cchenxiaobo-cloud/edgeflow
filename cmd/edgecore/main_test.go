@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -23,7 +24,9 @@ func TestRunVersion(t *testing.T) {
 
 // TestRunStartsEdgeHubAndExitsOnSignal 验证：启动后 EdgeHub 常驻运行，
 // 收到 SIGTERM 后优雅退出（退出码 0，不挂起）。
+// 数据库重定向到临时目录，避免测试污染仓库内 data/。
 func TestRunStartsEdgeHubAndExitsOnSignal(t *testing.T) {
+	t.Setenv("EDGEFLOW_EDGECORE_DB_PATH", filepath.Join(t.TempDir(), "edgeflow.db"))
 	sigCh := make(chan os.Signal, 1)
 	done := make(chan int, 1)
 	var stdout, stderr bytes.Buffer

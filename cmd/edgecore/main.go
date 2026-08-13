@@ -146,7 +146,7 @@ type PodSyncPayload struct {
 
 // handlePodSync 处理一条 PodSync 下发消息：
 //   - add/update → MetaManager.SavePod（Pod JSON 原样落盘）；
-//   - delete → 从 pod 对象提取 name 后 MetaManager.DeletePod；
+//   - delete → 从 pod 对象提取 namespace/name 后 MetaManager.DeletePod；
 //   - 解析/存储失败返回 error，EdgeHub 自动回 Ack code=error。
 func handlePodSync(store *metamanager.Store, msg *protocol.Message) error {
 	var payload PodSyncPayload
@@ -163,9 +163,10 @@ func handlePodSync(store *metamanager.Store, msg *protocol.Message) error {
 			payload.Operation, podJSON)
 		return nil
 	case "delete":
-		// delete 时 pod 对象通常只携带 name；提取后按名删除
+		// delete 时 pod 对象通常只携带 name/namespace；提取后按命名空间+名称删除
 		var pod struct {
-			Name string `json:"name"`
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
 		}
 		if err := json.Unmarshal([]byte(podJSON), &pod); err != nil {
 			return fmt.Errorf("解析 delete 操作的 Pod 信息失败: %w", err)
@@ -173,10 +174,10 @@ func handlePodSync(store *metamanager.Store, msg *protocol.Message) error {
 		if pod.Name == "" {
 			return errors.New("delete 操作的 Pod 缺少 name 字段")
 		}
-		if err := store.DeletePod(pod.Name); err != nil {
+		if err := store.DeletePod(pod.Namespace, pod.Name); err != nil {
 			return fmt.Errorf("删除 Pod 元数据失败: %w", err)
 		}
-		log.Infof("MetaManager 已删除 Pod 元数据（pod=%s）", pod.Name)
+		log.Infof("MetaManager 已删除 Pod 元数据（namespace=%s, pod=%s）", pod.Namespace, pod.Name)
 		return nil
 	default:
 		return fmt.Errorf("未知的 PodSync operation: %q", payload.Operation)

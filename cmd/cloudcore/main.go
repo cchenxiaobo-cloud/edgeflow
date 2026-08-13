@@ -84,7 +84,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	//   /api/v1/edgenodes  → EdgeNode 视图（CRD 对象视角，对标 K8s Node）
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", httpx.Healthz())
-	api := &nodeAPI{reg: nodeReg, hub: hub}
+	api := &nodeAPI{
+		reg:          nodeReg,
+		hub:          hub,
+		reliableSend: hub.ReliableSend,
+	}
 	mux.HandleFunc("GET /api/v1/nodes", api.listNodes)
 	mux.HandleFunc("GET /api/v1/nodes/{nodeID}", api.getNode)
 	mux.HandleFunc("GET /api/v1/edgenodes", api.listEdgeNodes)
@@ -169,7 +173,7 @@ func (api *nodeAPI) syncPod(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := api.hub.ReliableSend(nodeID, msg, cloudhub.ReliableOptions{}); err != nil {
+	if err := api.reliableSend(nodeID, msg, cloudhub.ReliableOptions{}); err != nil {
 		if errors.Is(err, cloudhub.ErrNodeOffline) {
 			http.Error(w, `{"error":"node offline or not registered"}`, http.StatusNotFound)
 			return
@@ -253,6 +257,10 @@ type nodeAPI struct {
 	reg *registry.Registry
 	// hub 是 CloudHub 服务端（用于可靠投递下发消息，如 PodSync）。
 	hub *cloudhub.Server
+	// reliableSend 是可靠投递函数，默认指向 hub.ReliableSend（run 装配时注入）。
+	// 独立成字段是为了让 syncPod 可测：测试注入 fake 即可覆盖各错误路径
+	// （离线/超时/失败），无需真实 WebSocket 节点与 Ack 往返。
+	reliableSend func(nodeID string, msg *protocol.Message, opts cloudhub.ReliableOptions) error
 }
 
 // listNodes 处理 GET /api/v1/nodes：返回全部节点（JSON 数组，按 NodeID 排序）。

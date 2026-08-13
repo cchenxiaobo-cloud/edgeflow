@@ -1,0 +1,186 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"edgeflow/cloud/pkg/cloudhub"
+	"edgeflow/cloud/pkg/registry"
+	"edgeflow/pkg/protocol"
+)
+
+// newPodSyncServer 构造注册了 POST /api/v1/nodes/{nodeID}/podsync 路由的测试服务，
+// 并注入 fake reliableSend（替代真实 CloudHub 的 ReliableSend，避免依赖
+// WebSocket 连接与 Ack 往返即可覆盖各错误路径）。
+func newPodSyncServer(t *testing.T, reg *registry.Registry, send func(nodeID string, msg *protocol.Message, opts cloudhub.ReliableOptions) error) *httptest.Server {
+	t.Helper()
+	api := &nodeAPI{reg: reg, reliableSend: send}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/nodes/{nodeID}/podsync", api.syncPod)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// postPodSync 向测试服务发送一条 podsync 请求，返回响应。
+func postPodSync(t *testing.T, srv *httptest.Server, nodeID, body string) *http.Response {
+	t.Helper()
+	resp, err := http.Post(srv.URL+"/api/v1/nodes/"+nodeID+"/podsync", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST podsync 失败: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// readBody 读取响应体全文（测试辅助）。
+func readBody(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读取响应体失败: %v", err)
+	}
+	return string(data)
+}
+
+// TestSyncPodBadJSON 验证请求体不是合法 JSON 时返回 400。
+func TestSyncPodBadJSON(t *testing.T) {
+	srv := newPodSyncServer(t, registry.New(), func(string, *protocol.Message, cloudhub.ReliableOptions) error {
+		t.Error("坏 JSON 不应触发可靠投递")
+		return nil
+	})
+	resp := postPodSync(t, srv, "node-1", `{"operation":`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("状态码 = %d，期望 400", resp.StatusCode)
+	}
+	if body := readBody(t, resp); !strings.Contains(body, "invalid json body") {
+		t.Errorf("400 响应文案不符: %s", body)
+	}
+}
+
+// TestSyncPodMissingFields 验证缺 operation 或 pod.name 时返回 400。
+func TestSyncPodMissingFields(t *testing.T) {
+	srv := newPodSyncServer(t, registry.New(), func(string, *protocol.Message, cloudhub.ReliableOptions) error {
+		t.Error("缺字段不应触发可靠投递")
+		return nil
+	})
+
+	// 缺 operation
+	resp := postPodSync(t, srv, "node-1", `{"pod":{"name":"nginx","namespace":"default"}}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("缺 operation 状态码 = %d，期望 400", resp.StatusCode)
+	}
+	// 缺 pod.name
+	resp = postPodSync(t, srv, "node-1", `{"operation":"add","pod":{"namespace":"default"}}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("缺 pod.name 状态码 = %d，期望 400", resp.StatusCode)
+	}
+	if body := readBody(t, resp); !strings.Contains(body, "required") {
+		t.Errorf("400 响应文案不符: %s", body)
+	}
+}
+
+// TestSyncPodNodeOffline 验证节点离线/未注册（ErrNodeOffline）时返回 404。
+func TestSyncPodNodeOffline(t *testing.T) {
+	srv := newPodSyncServer(t, registry.New(), func(nodeID string, _ *protocol.Message, _ cloudhub.ReliableOptions) error {
+		if nodeID != "node-1" {
+			t.Errorf("reliableSend 收到的 nodeID = %q，期望 node-1", nodeID)
+		}
+		return cloudhub.ErrNodeOffline
+	})
+	resp := postPodSync(t, srv, "node-1", `{"operation":"add","pod":{"name":"nginx","namespace":"default"}}`)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("状态码 = %d，期望 404", resp.StatusCode)
+	}
+	if body := readBody(t, resp); !strings.Contains(body, "node offline") {
+		t.Errorf("404 响应文案不符: %s", body)
+	}
+}
+
+// TestSyncPodAckTimeout 验证确认超时重试耗尽（ErrAckTimeout）时返回 504。
+func TestSyncPodAckTimeout(t *testing.T) {
+	srv := newPodSyncServer(t, registry.New(), func(string, *protocol.Message, cloudhub.ReliableOptions) error {
+		return cloudhub.ErrAckTimeout
+	})
+	resp := postPodSync(t, srv, "node-1", `{"operation":"add","pod":{"name":"nginx"}}`)
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("状态码 = %d，期望 504", resp.StatusCode)
+	}
+	if body := readBody(t, resp); !strings.Contains(body, "ack timeout") {
+		t.Errorf("504 响应文案不符: %s", body)
+	}
+}
+
+// TestSyncPodAckFailed 验证边缘明确回 error Ack（ErrAckFailed）时返回 500
+// （消息已送达但被拒绝，错误语义区别于超时/离线）。
+func TestSyncPodAckFailed(t *testing.T) {
+	srv := newPodSyncServer(t, registry.New(), func(string, *protocol.Message, cloudhub.ReliableOptions) error {
+		return cloudhub.ErrAckFailed
+	})
+	resp := postPodSync(t, srv, "node-1", `{"operation":"delete","pod":{"name":"nginx"}}`)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("状态码 = %d，期望 500", resp.StatusCode)
+	}
+}
+
+// TestSyncPodOK 验证成功路径：返回 200 + acked:true，且下发的消息
+// 信封与负载符合契约（Type=PodSync、Source=cloud、Target=节点 ID、payload 原样）。
+func TestSyncPodOK(t *testing.T) {
+	var gotNodeID string
+	var gotMsg *protocol.Message
+	srv := newPodSyncServer(t, registry.New(), func(nodeID string, msg *protocol.Message, _ cloudhub.ReliableOptions) error {
+		gotNodeID = nodeID
+		gotMsg = msg
+		return nil
+	})
+
+	body := `{"operation":"add","pod":{"name":"nginx","namespace":"default","image":"nginx:1.25","replicas":1}}`
+	resp := postPodSync(t, srv, "node-1", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q，期望 application/json", ct)
+	}
+	if got := readBody(t, resp); got != `{"status":"ok","acked":true}` {
+		t.Errorf("响应体 = %q", got)
+	}
+
+	// 校验下发的消息参数
+	if gotNodeID != "node-1" {
+		t.Errorf("reliableSend 收到的 nodeID = %q，期望 node-1", gotNodeID)
+	}
+	if gotMsg == nil {
+		t.Fatal("reliableSend 未收到消息")
+	}
+	if gotMsg.Type != protocol.TypePodSync || gotMsg.Source != "cloud" || gotMsg.Target != "node-1" {
+		t.Errorf("消息信封不符: type=%s source=%s target=%s",
+			gotMsg.Type, gotMsg.Source, gotMsg.Target)
+	}
+	var sent podSyncRequest
+	if err := json.Unmarshal(gotMsg.Payload, &sent); err != nil {
+		t.Fatalf("解析下发的 payload 失败: %v", err)
+	}
+	if sent.Operation != "add" || sent.Pod.Name != "nginx" || sent.Pod.Namespace != "default" || sent.Pod.Image != "nginx:1.25" {
+		t.Errorf("下发的 payload 与原请求不符: %+v", sent)
+	}
+}
+
+// TestSyncPodUnexpectedError 验证非契约错误（未知错误）落入 500 兜底分支。
+func TestSyncPodUnexpectedError(t *testing.T) {
+	srv := newPodSyncServer(t, registry.New(), func(string, *protocol.Message, cloudhub.ReliableOptions) error {
+		return errors.New("some unexpected error")
+	})
+	resp := postPodSync(t, srv, "node-1", `{"operation":"add","pod":{"name":"nginx"}}`)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("状态码 = %d，期望 500", resp.StatusCode)
+	}
+	if body := readBody(t, resp); !strings.Contains(body, "send failed") {
+		t.Errorf("500 响应文案不符: %s", body)
+	}
+}

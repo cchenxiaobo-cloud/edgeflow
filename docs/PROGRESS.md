@@ -97,7 +97,7 @@
 |--------|------|
 | 新增提交 | 6 个（protocol/cloudhub/edgehub/helm/cross-build/apis + gofmt） |
 | 依赖 | gorilla/websocket v1.5.3（M1 起引入，WebSocket 需第三方库，计划内决策） |
-| 代码审查 | docs/CODE-REVIEW-M1.md（复核员审查结论见该文件） |
+| 代码审查 | ✅ 有条件通过（无 P0/P1）→ P2×3 已修复（commit e565a15）→ docs/CODE-REVIEW-M1.md |
 
 ### 自动化验证
 | 验证项 | 结果 |
@@ -128,7 +128,8 @@
 |--------|------|------|
 | P1 | GitHub 远程仓库关联 | 用户把 `~/.ssh/id_ed25519.pub` 粘贴到 GitHub → `git remote add origin` → push（步骤见 ENV-SETUP.md §4.2） |
 | P1 | 推送后验证 CI 首次运行 | push 后 Actions 标签页应显示 lint+test 绿勾 |
-| P2 | 日志级别过滤（SetLevel） | pkg/log 的 Level 目前仅前缀标记，后续模块需要时实现 |
+| P3 | 日志级别过滤（SetLevel） | pkg/log 的 Level 目前仅前缀标记，后续模块需要时实现 |
+| P3 | M1 通道 P3 项×4 | newID 忽略 rand 错误 / Shutdown 撞 Start 初始化窗口 / 被踢连接标志延迟清除 / 退避重置缺单测（见 CODE-REVIEW-M1.md） |
 | P2 | edgecore 占位程序测试 | 非核心包，M1 开发时补 |
 | P2 | Helm Chart 骨架（M0-4） | 进入部署阶段前完成 |
 

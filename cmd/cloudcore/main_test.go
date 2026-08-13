@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"edgeflow/cloud/pkg/cloudhub"
 	"edgeflow/pkg/config"
 )
 
@@ -59,6 +60,8 @@ func TestRunBadConfigFile(t *testing.T) {
 // TestRunServerLifecycle 验证完整生命周期：启动服务 → /healthz 200 → SIGTERM 优雅退出。
 func TestRunServerLifecycle(t *testing.T) {
 	t.Setenv(config.PortEnvVar, "")
+	// CloudHub 用随机端口，避免与开发机上的 10000 端口冲突
+	t.Setenv(cloudhub.EnvHubPort, "0")
 	var stdout, stderr bytes.Buffer
 	done := make(chan int, 1)
 	go func() {
@@ -100,8 +103,19 @@ func TestRunServerLifecycle(t *testing.T) {
 // TestServeListenError 验证监听失败（非法地址）时 serve 返回 1。
 func TestServeListenError(t *testing.T) {
 	srv := &http.Server{Addr: ":99999", Handler: http.NewServeMux()}
-	if code := serve(srv); code != 1 {
+	hub := cloudhub.New("127.0.0.1:0")
+	if code := serve(srv, hub); code != 1 {
 		t.Fatalf("serve 退出码 = %d，期望 1", code)
+	}
+}
+
+// TestServeHubPortInvalid 验证 CloudHub 端口环境变量非法时 run 返回 1。
+func TestServeHubPortInvalid(t *testing.T) {
+	t.Setenv(config.PortEnvVar, "")
+	t.Setenv(cloudhub.EnvHubPort, "not-a-port")
+	var stdout, stderr bytes.Buffer
+	if code := run(nil, &stdout, &stderr); code != 1 {
+		t.Fatalf("run(hub 端口非法) 退出码 = %d，期望 1", code)
 	}
 }
 

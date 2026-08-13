@@ -2,8 +2,8 @@
 //
 // 对标 KubeEdge 的 CloudCore：未来将在这里承载云边通信
 // （WebSocket）、消息路由（NATS）、设备管理（CRD）等云端逻辑。
-// 当前版本提供最小可运行服务：加载配置、启动 HTTP 服务并暴露
-// /healthz 健康检查。
+// 当前版本提供：加载配置、启动 HTTP 服务（/healthz 健康检查）、
+// 启动 CloudHub（云边 WebSocket 通道，默认端口 10000）。
 package main
 
 import (
@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"edgeflow/cloud/pkg/cloudhub"
 	"edgeflow/pkg/config"
 	"edgeflow/pkg/httpx"
 	"edgeflow/pkg/log"
@@ -60,6 +61,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	log.Infof("cloudcore starting, %s", info.String())
 	log.Infof("生效配置: 端口 %d（来源: %s）", cfg.Port, cfg.PortSource)
 
+	// 解析 CloudHub 端口：环境变量 EDGEFLOW_CLOUDCORE_HUB_PORT > 默认 10000
+	hubPort, err := cloudhub.PortFromEnv()
+	if err != nil {
+		log.Errorf("CloudHub 端口配置无效: %v", err)
+		return 1
+	}
+	hub := cloudhub.New(fmt.Sprintf(":%d", hubPort))
+
 	// 注册路由：/healthz 健康检查
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", httpx.Healthz())
@@ -71,7 +80,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		ReadHeaderTimeout: 5 * time.Second,  // 防止慢速连接长时间占用连接
 		ReadTimeout:       10 * time.Second, // 防止慢速读取长时间占用连接
 	}
-	return serve(srv)
+	return serve(srv, hub)
 }
 
 // options 是命令行参数解析结果。
@@ -106,13 +115,18 @@ func parseFlags(args []string, out io.Writer) (*options, error) {
 	return opts, nil
 }
 
-// serve 启动 HTTP 服务并等待退出信号，负责优雅退出，返回进程退出码。
-func serve(srv *http.Server) int {
-	// 在独立 goroutine 中启动 HTTP 服务，错误通过 channel 上报主流程
-	errCh := make(chan error, 1)
+// serve 启动 HTTP 服务与 CloudHub，等待退出信号后一并优雅关闭，返回进程退出码。
+func serve(srv *http.Server, hub *cloudhub.Server) int {
+	// 在独立 goroutine 中启动 HTTP 服务与 CloudHub，错误通过 channel 上报主流程
+	errCh := make(chan error, 2)
 	go func() {
 		log.Infof("HTTP server listening on %s", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+	go func() {
+		if err := hub.Start(); err != nil {
 			errCh <- err
 		}
 	}()
@@ -123,7 +137,9 @@ func serve(srv *http.Server) int {
 
 	select {
 	case err := <-errCh:
-		log.Errorf("HTTP server 异常退出: %v", err)
+		// 任一服务启动/运行失败：尽力关闭两者后返回失败
+		log.Errorf("服务异常退出: %v", err)
+		shutdownAll(srv, hub)
 		return 1
 	case sig := <-quit:
 		log.Infof("收到信号 %s，开始优雅退出...", sig)
@@ -132,10 +148,30 @@ func serve(srv *http.Server) int {
 	// 给正在处理的请求最多 5 秒完成时间
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ok := true
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Errorf("优雅退出失败: %v", err)
+		log.Errorf("HTTP 服务优雅退出失败: %v", err)
+		ok = false
+	}
+	if err := hub.Shutdown(ctx); err != nil {
+		log.Errorf("CloudHub 优雅退出失败: %v", err)
+		ok = false
+	}
+	if !ok {
 		return 1
 	}
 	log.Infof("cloudcore exited")
 	return 0
+}
+
+// shutdownAll 在服务异常退出时尽力关闭 HTTP 服务与 CloudHub（结果只记日志）。
+func shutdownAll(srv *http.Server, hub *cloudhub.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Errorf("HTTP 服务关闭失败: %v", err)
+	}
+	if err := hub.Shutdown(ctx); err != nil {
+		log.Errorf("CloudHub 关闭失败: %v", err)
+	}
 }

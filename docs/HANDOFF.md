@@ -57,7 +57,7 @@ edgeflow/
 
 ## 4. 如何开发下一个模块（标准流程）
 
-1. **读计划**：`docs/ROADMAP.md` 找到下一个模块（当前建议 M1 剩余：连接管理完善/消息路由，或 M2 前置：MetaManager SQLite 持久化）
+1. **读计划**：`docs/ROADMAP.md` 找到下一个模块（当前建议 M2 前置：注册对接 EdgeNode CRD（2.3/2.6），或消息可靠投递（4.6））
 2. **建分支**：`git checkout -b feat/模块名`
 3. **开发**：用 AI 工具（Trae/Codex）辅助写代码，遵循现有包风格（中文注释、零第三方依赖）
 4. **验证**（每次提交前必须全跑）：
@@ -83,6 +83,8 @@ make lint       # 静态检查
 | `EDGEFLOW_CLOUDCORE_HUB_PORT=10000 ./bin/cloudcore` | 指定云边通信端口 |
 | `EDGEFLOW_EDGECORE_CLOUD_ADDR=ws://1.2.3.4:10000 ./bin/edgecore` | 指定云端地址连接 |
 | `EDGEFLOW_EDGECORE_NODE_ID=edge-01 ./bin/edgecore` | 指定边缘节点 ID |
+| `EDGEFLOW_EDGECORE_DB_PATH=/data/edgeflow.db ./bin/edgecore` | 指定 MetaManager 数据库路径 |
+| `curl localhost:8080/api/v1/nodes` | 查询已注册边缘节点（JSON） |
 | `EDGEFLOW_CLOUDCORE_PORT=10000 ./bin/cloudcore` | 环境变量指定端口 |
 | `./bin/cloudcore --port 7070` | 命令行指定端口 |
 | `go test -cover ./pkg/...` | 单测某包覆盖率 |

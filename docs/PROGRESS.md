@@ -39,7 +39,7 @@
 | M0-2 | CRD 类型定义（Node/Device） | ✅ **完成** | EdgeNode/DeviceModel/Device 定义 + DeepCopy + 文档 | commit a541128，apis/ 3 类型 11 测试 |
 | M0-3 | CI/CD 完整流水线 | ✅ 基础版完成 | lint+test+覆盖率门槛 | commit ab73062 |
 | M0-4 | Helm Chart 骨架 | ✅ **完成** | helm lint 通过 + template 渲染正确 | commit 9d78246，helm v4.2.3 |
-| M1 | 云边核心通信链路（CloudHub/EdgeHub） | ✅ **M1 基础版完成** | 协议+注册+心跳+断线重连，联调通过 | commits e569ea1/6241a78/7b1c27a，见 §4B |
+| M1 | 云边核心通信链路（CloudHub/EdgeHub） | ✅ **M1 一期+二期完成** | 协议+注册+心跳+重连+MetaManager 持久化+节点 API+消息路由 | commits e569ea1~081eb0f，见 §4B/§4C |
 | M2 | 应用部署与边缘自治 | ⏳ 待开发 | 依赖 M1 | — |
 | M3 | 设备管理（Device CRD/Twin/Mapper） | ⏳ 待开发 | 依赖 M2 | — |
 | M4 | 生产化与规模化 | ⏳ 待开发 | 依赖 M3 | — |
@@ -122,12 +122,45 @@
 | healthz | ✅ :8080 持续 200 |
 | 进程清理 | ✅ 优雅退出无残留 |
 
+## 4C. M1 二期验证结果（MetaManager/注册表/路由，2026-08-13）
+
+### 新增模块
+| 模块 | 提交 | 内容 |
+|------|------|------|
+| edge/pkg/metamanager | 3aaaf28 | SQLite Store（KV + 节点信息，WAL），edgecore 集成 |
+| cloud/pkg/registry + API | 3c7b99d | NodeInfo 注册表 + GET /api/v1/nodes[/{nodeID}] |
+| cloud/pkg/cloudhub 路由 | 081eb0f | SendToNode/Broadcast/Deliver（WBS 4.3） |
+
+### 自动化验证
+| 项目 | 结果 |
+|------|------|
+| go build/vet/gofmt | ✅ 通过 |
+| go test -race（12 包） | ✅ 全绿，总覆盖率 82.8%（≥70%） |
+| golangci-lint | ✅ 0 issues |
+| 包覆盖率 | registry 100% / metamanager 72.9% / cloudhub 81.5% / cmd-cloudcore 86.4% / cmd-edgecore 56.5%（最低，见待办） |
+
+### 端到端联调（真实进程）
+| 场景 | 实测结果 |
+|------|---------|
+| 注册→API 查询 | ✅ GET /api/v1/nodes 返回节点（Ready，完整字段） |
+| 单节点查询 | ✅ GET /api/v1/nodes/edge-e2e-2 → 200 |
+| 停止→Offline | ✅ 节点状态变 Offline |
+| 重启→持久化 | ✅ MetaManager 日志"已加载 1 条节点元数据"，SQLite 落盘（db+wal+shm） |
+| 重连→Ready | ✅ 恢复 Ready |
+| 进程清理 | ✅ 优雅退出无残留 |
+
+### 代码审查（docs/CODE-REVIEW-M1B.md）
+- 结论：**✅ 通过（0 P0 / 0 P1，9 项 P2 加固项）**
+- P2 项：LIKE 通配符转义、WAL checkpoint、Offline 无 TTL、入缓冲静默丢消息（已文档化）、WriteTimeout 缺失、API Encode 错误无日志、RegisteredAt 语义不对称、SQLite 多进程策略、cmd-edgecore 覆盖缺口
+
 ## 5. 待办项（Backlog）
 
 | 优先级 | 事项 | 说明 |
 |--------|------|------|
 | P1 | GitHub 远程仓库关联 | 用户把 `~/.ssh/id_ed25519.pub` 粘贴到 GitHub → `git remote add origin` → push（步骤见 ENV-SETUP.md §4.2） |
 | P1 | 推送后验证 CI 首次运行 | push 后 Actions 标签页应显示 lint+test 绿勾 |
+| P2 | cmd-edgecore 覆盖率缺口（56.5%） | "注册成功→SQLite 落盘"集成链路补集成级单测（M2 前） |
+| P2 | M1B 审查 P2 项×9 | LIKE 转义/WAL checkpoint/Offline TTL/WriteTimeout 等（见 CODE-REVIEW-M1B.md） |
 | P3 | 日志级别过滤（SetLevel） | pkg/log 的 Level 目前仅前缀标记，后续模块需要时实现 |
 | P3 | M1 通道 P3 项×4 | newID 忽略 rand 错误 / Shutdown 撞 Start 初始化窗口 / 被踢连接标志延迟清除 / 退避重置缺单测（见 CODE-REVIEW-M1.md） |
 | P2 | edgecore 占位程序测试 | 非核心包，M1 开发时补 |

@@ -153,7 +153,9 @@ type podSpec struct {
 }
 
 // syncPod 通过可靠投递向指定边缘节点下发 PodSync 消息（WBS 4.6 端到端入口）。
-// 响应语义：200=边缘已确认（Ack ok）；404=节点未注册/离线；504=确认超时重试耗尽。
+// 响应语义：200=边缘已确认（Ack ok）；400=请求非法（JSON 解析失败/缺字段/
+// operation 不在 {add,update,delete} 内）；404=节点未注册/离线；
+// 502=边缘回 error Ack（消息已送达但被拒绝）；504=确认超时重试耗尽。
 func (api *nodeAPI) syncPod(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.PathValue("nodeID")
 
@@ -164,6 +166,14 @@ func (api *nodeAPI) syncPod(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Operation == "" || req.Pod.Name == "" {
 		http.Error(w, `{"error":"operation and pod.name are required"}`, http.StatusBadRequest)
+		return
+	}
+	// 云端校验 operation 取值（P2-5）：非法值直接 400 拒绝，
+	// 避免下发后等一轮可靠投递往返（最长 ~15s）才以 502 暴露。
+	switch req.Operation {
+	case "add", "update", "delete":
+	default:
+		http.Error(w, `{"error":"invalid operation: must be add, update or delete"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -180,6 +190,12 @@ func (api *nodeAPI) syncPod(w http.ResponseWriter, r *http.Request) {
 		}
 		if errors.Is(err, cloudhub.ErrAckTimeout) {
 			http.Error(w, `{"error":"ack timeout after retries"}`, http.StatusGatewayTimeout)
+			return
+		}
+		if errors.Is(err, cloudhub.ErrAckFailed) {
+			// 边缘明确回 error Ack（P2-2）：消息已送达但被拒绝，
+			// 与「没送达」（404/504）语义不同，映射 502 Bad Gateway。
+			http.Error(w, `{"error":"edge rejected ack"}`, http.StatusBadGateway)
 			return
 		}
 		http.Error(w, `{"error":"send failed"}`, http.StatusInternalServerError)

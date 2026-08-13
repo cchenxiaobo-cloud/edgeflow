@@ -308,6 +308,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	// 关闭所有 WebSocket 连接（含未注册的），等待连接 goroutine 退出
 	s.closeAllConns()
+	// 终止全部在途可靠投递等待（P2-1）：连接已关，Ack 不会再到达，
+	// 直接关闭 pending 通道唤醒等待者返回 ErrShuttingDown，避免 Shutdown
+	// 期间 HTTP 处理器（如 syncPod）空等至单次超时（默认 5s）。
+	s.failAllPending()
 	s.wg.Wait()
 	return firstErr
 }

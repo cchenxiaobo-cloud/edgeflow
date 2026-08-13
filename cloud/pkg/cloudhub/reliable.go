@@ -10,6 +10,8 @@
 //     上层应结合业务语义决定是否以新 ID 重试或告警
 //   - ErrAckFailed：对端回 Ack 但 code="error"——消息已到达但处理失败，重发同样会失败，
 //     上层应修正消息内容而不是盲目重试
+//   - ErrShuttingDown：Server 正在关闭（Shutdown 已触发），在途等待被立即终止——
+//     上层应停止新下发并释放资源，而不是重试
 //   - 发送失败（如 ErrNodeOffline）立即返回，不消耗重试次数：节点离线时重发无意义
 //
 // 幂等说明：云端只保证「重发同 ID」；去重执行由接收方负责。调用方需保证同一时刻
@@ -17,6 +19,7 @@
 package cloudhub
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -31,6 +34,9 @@ var (
 	ErrAckTimeout = errors.New("cloudhub: ack timeout after retries exhausted")
 	// ErrAckFailed 表示节点回 Ack 但 code="error"（消息已到达、处理失败）。
 	ErrAckFailed = errors.New("cloudhub: node rejected message with error ack")
+	// ErrShuttingDown 表示 Server 正在关闭：在途等待被立即终止（P2：Shutdown 时
+	// 关闭全部 pending 通道唤醒等待者），不再等待确认。
+	ErrShuttingDown = errors.New("cloudhub: server shutting down")
 	// ErrEmptyMsgID 表示消息缺少 ID：可靠投递依赖 ID 关联 Ack 并保证重发幂等。
 	ErrEmptyMsgID = errors.New("cloudhub: reliable send requires message id")
 )
@@ -80,20 +86,47 @@ type pendingEntry struct {
 //   - msg 为 nil 或缺少 ID → 返回错误（幂等依赖 ID，不自动生成，避免静默改语义）
 //   - 发送失败（如节点离线）立即返回，不消耗重试次数
 //   - Ack code="error" → 返回 ErrAckFailed（不再重试：消息已到达，重发无意义）
+//   - Shutdown 期间在途等待被终止 → 返回 ErrShuttingDown（不再空等至超时）
 //   - 并发安全：可与任意数量的 ReliableSend 并行（-race 下有测试覆盖）
+//
+// 旧签名，为向后兼容保留；行为等价于 ReliableSendContext(context.Background(), ...)。
+// 需要取消语义（请求断开/优雅关闭）的调用方请改用 ReliableSendContext。
 func (s *Server) ReliableSend(nodeID string, msg *protocol.Message, opts ReliableOptions) error {
+	return s.ReliableSendContext(context.Background(), nodeID, msg, opts)
+}
+
+// ReliableSendContext 是 ReliableSend 的 context 版本（P2-3）：等待确认期间
+// 监听 ctx.Done()，取消时立即返回（错误包装 ctx.Err()，可用
+// errors.Is(err, context.Canceled/DeadlineExceeded) 判定），不再空等至单次超时。
+// 其余语义（重试/错误分类/并发安全）与 ReliableSend 完全一致。
+func (s *Server) ReliableSendContext(ctx context.Context, nodeID string, msg *protocol.Message, opts ReliableOptions) error {
 	if msg == nil {
 		return fmt.Errorf("cloudhub: 消息为空（nil）")
 	}
 	if msg.ID == "" {
 		return fmt.Errorf("%w: nodeID=%s（NewMessage 会自动生成 ID）", ErrEmptyMsgID, nodeID)
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	opts = opts.withDefaults()
 
 	// 先注册等待项再发送：边缘可能在发送返回前就回 Ack（快路径），
-	// 缓冲通道保证不丢；返回时无论成功失败都清理。
-	ch := s.registerPending(nodeID, msg.ID)
-	defer s.unregisterPending(msg.ID)
+	// 缓冲通道保证不丢；返回时无论成功失败都清理（只清自己注册的项，
+	// 见 unregisterPending 的归属校验）。
+	//
+	// Shutdown 竞态说明：registerPending 前后各查一次 shuttingDown，
+	// 与 Shutdown 的 failAllPending 构成两段式互斥——要么本等待项在
+	// 注册后被 failAllPending 关闭通道唤醒（返回 ErrShuttingDown），
+	// 要么在此直接返回，不存在「注册后无人唤醒、空等至超时」的窗口。
+	if s.shuttingDown.Load() {
+		return fmt.Errorf("%w: nodeID=%s msgID=%s", ErrShuttingDown, nodeID, msg.ID)
+	}
+	e := s.registerPending(nodeID, msg.ID)
+	defer s.unregisterPending(msg.ID, e)
+	if s.shuttingDown.Load() {
+		return fmt.Errorf("%w: nodeID=%s msgID=%s", ErrShuttingDown, nodeID, msg.ID)
+	}
 
 	totalAttempts := opts.MaxRetries + 1
 	for attempt := 0; attempt < totalAttempts; attempt++ {
@@ -107,8 +140,15 @@ func (s *Server) ReliableSend(nodeID string, msg *protocol.Message, opts Reliabl
 			return err
 		}
 		select {
-		case ack := <-ch:
+		case ack := <-e.ch:
+			// nil 是 Shutdown 关闭通道的信号（见 failAllPending）
+			if ack == nil {
+				return fmt.Errorf("%w: nodeID=%s msgID=%s", ErrShuttingDown, nodeID, msg.ID)
+			}
 			return ackResult(ack)
+		case <-ctx.Done():
+			// 调用方取消（如 HTTP 请求断开/优雅关闭）：立即返回，不再重试
+			return fmt.Errorf("%w: nodeID=%s msgID=%s（等待确认期间取消）", ctx.Err(), nodeID, msg.ID)
 		case <-time.After(opts.Timeout):
 			// 超时未确认：进入下一轮重发（保持 msg.ID 不变，幂等依赖于此）
 		}
@@ -132,11 +172,11 @@ func ackResult(ack *protocol.Message) error {
 	return nil
 }
 
-// registerPending 登记一条在途可靠消息，返回等待 Ack 的通道。
+// registerPending 登记一条在途可靠消息，返回等待 Ack 的条目（含通道）。
 //
 // 并发约定：同 msgID 已有在途等待项时替换旧项并告警——同 ID 并发在途
 // 属调用方错误（Ack 关联会串），旧等待者只能超时返回 ErrAckTimeout。
-func (s *Server) registerPending(nodeID, msgID string) chan *protocol.Message {
+func (s *Server) registerPending(nodeID, msgID string) *pendingEntry {
 	e := &pendingEntry{nodeID: nodeID, ch: make(chan *protocol.Message, 1)}
 	s.ackMu.Lock()
 	if _, exists := s.pending[msgID]; exists {
@@ -144,15 +184,41 @@ func (s *Server) registerPending(nodeID, msgID string) chan *protocol.Message {
 	}
 	s.pending[msgID] = e
 	s.ackMu.Unlock()
-	return e.ch
+	return e
 }
 
-// unregisterPending 清理已完成的在途项（ReliableSend 返回时调用）。
+// unregisterPending 清理在途项（ReliableSend/ReliableSendContext 返回时调用）。
+//
+// 归属校验（P2-1 交叉清理）：只删除「自己注册的」条目——同 ID 并发在途时，
+// 旧等待者的条目已被新等待者替换，旧等待者返回时不得误删新等待者的条目，
+// 否则新等待者即使收到 Ack 也无法匹配、只能耗尽重试报 ErrAckTimeout。
 // 迟到的 Ack 会因查不到匹配项而被忽略（见 resolvePending）。
-func (s *Server) unregisterPending(msgID string) {
+func (s *Server) unregisterPending(msgID string, e *pendingEntry) {
 	s.ackMu.Lock()
-	delete(s.pending, msgID)
+	if s.pending[msgID] == e {
+		delete(s.pending, msgID)
+	}
 	s.ackMu.Unlock()
+}
+
+// failAllPending 在 Shutdown 时终止全部在途可靠投递等待（P2-1）：
+// 关闭等待通道并清空 pending 表。等待方在 select 中读到关闭信号（nil）
+// 后返回 ErrShuttingDown，不再空等至单次超时（默认 5s）。
+//
+// 并发安全：整个关闭过程持有 ackMu——resolvePending 同样在持锁时做
+// 非阻塞投递（见其注释），二者互斥，不会出现「查表取到条目后、通道
+// 已被关闭」的向已关闭通道发送的竞态。
+func (s *Server) failAllPending() {
+	s.ackMu.Lock()
+	defer s.ackMu.Unlock()
+	n := len(s.pending)
+	for id, e := range s.pending {
+		close(e.ch)
+		delete(s.pending, id)
+	}
+	if n > 0 {
+		log.Infof("CloudHub 关闭：已终止 %d 个在途可靠投递等待", n)
+	}
 }
 
 // resolvePending 把收到的 Ack 投递给匹配的等待者（CorrelationID == 在途 msg.ID）。
@@ -160,10 +226,14 @@ func (s *Server) unregisterPending(msgID string) {
 //   - 无匹配等待项（普通 Ack 或迟到 Ack）→ 静默忽略，仅记日志
 //   - Ack 来源与等待节点不符 → 忽略（防其他节点的迟到 Ack 误匹配）
 //   - 等待通道已满（等待者已退出）→ 丢弃迟到 Ack
+//
+// 并发安全：查表、来源校验与投递全程持有 ackMu。投递是非阻塞的
+// （select+default 永不阻塞），因此持锁不会卡死；持锁可保证与
+// failAllPending 互斥——后者关闭通道时不会出现本方法正在向其发送。
 func (s *Server) resolvePending(m *protocol.Message) {
 	s.ackMu.Lock()
+	defer s.ackMu.Unlock()
 	e := s.pending[m.CorrelationID]
-	s.ackMu.Unlock()
 	if e == nil {
 		return
 	}
@@ -175,6 +245,6 @@ func (s *Server) resolvePending(m *protocol.Message) {
 	select {
 	case e.ch <- m:
 	default:
-		// 等待者已返回：丢弃迟到 Ack（可能来自重发副本，边缘会按 ID 去重）
+		// 等待者已返回/通道已满：丢弃迟到 Ack（可能来自重发副本，边缘会按 ID 去重）
 	}
 }

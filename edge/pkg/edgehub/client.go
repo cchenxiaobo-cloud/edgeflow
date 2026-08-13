@@ -174,6 +174,10 @@ type Client struct {
 	processed  map[string]struct{} // ID → 已处理标记
 	processedQ []string            // FIFO 顺序，超上限时淘汰最旧
 
+	// downlinkMu 串行化 handleDownlink 的「检查→执行→标记」全流程（P2-4）：
+	// 重连窗口内两条连接的 readLoop 可能短暂并存，防止同 ID 消息并发执行。
+	downlinkMu sync.Mutex
+
 	writeMu sync.Mutex // 串行化所有 WebSocket 写
 
 	stopCh   chan struct{}

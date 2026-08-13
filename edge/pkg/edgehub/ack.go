@@ -37,8 +37,18 @@ type AckPayload struct {
 //  2. 分发给 msgHandler，返回 nil → 回 Ack code=ok 并记入幂等缓存；
 //  3. handler 返回 error → 回 Ack code=error，不入缓存（云端可重试）。
 //
-// 注册/心跳类消息不在此处理（它们有专用应答 RegisterAck/HeartbeatAck）。
+// 原子性说明（P2-4）：isProcessed 检查与 markProcessed 记录之间隔着
+// handler 执行，理论上非原子。正常路径下每条连接只有一个 readLoop
+// goroutine 串行调用本方法，不存在并发执行；但重连窗口（旧连接关闭
+// 与新连接注册交错，如注册失败快速重连）两条连接的 readLoop 可能
+// 短暂并存，极端情况下云端对两条连接投递同一 msg.ID 会并发进入。
+// 因此用 downlinkMu 把「检查→执行→标记」整体串行化（防御性加固，
+// 成本极低），从根上消除该窗口；锁内执行 handler 是安全的——handler
+// （如 MetaManager 落盘）不会反向调用本 Client 的加锁方法。
 func (c *Client) handleDownlink(msg *protocol.Message) {
+	c.downlinkMu.Lock()
+	defer c.downlinkMu.Unlock()
+
 	// 防御：注册/心跳类与 Ack 不参与自动 Ack（避免 Ack 套 Ack）
 	switch msg.Type {
 	case protocol.TypeRegister, protocol.TypeHeartbeat, protocol.TypeAck:

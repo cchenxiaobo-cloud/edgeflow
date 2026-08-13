@@ -116,15 +116,39 @@ func TestSyncPodAckTimeout(t *testing.T) {
 	}
 }
 
-// TestSyncPodAckFailed 验证边缘明确回 error Ack（ErrAckFailed）时返回 500
-// （消息已送达但被拒绝，错误语义区别于超时/离线）。
+// TestSyncPodInvalidOperation 验证 operation 取值不在 {add,update,delete}
+// 内时直接返回 400（P2-5：云端校验，省一次 ~15s 可靠投递往返）。
+func TestSyncPodInvalidOperation(t *testing.T) {
+	for _, op := range []string{"create", "DELETE", "", "upsert", "add\u0000"} {
+		srv := newPodSyncServer(t, registry.New(), func(string, *protocol.Message, cloudhub.ReliableOptions) error {
+			t.Error("非法 operation 不应触发可靠投递")
+			return nil
+		})
+		body := `{"operation":"` + op + `","pod":{"name":"nginx"}}`
+		resp := postPodSync(t, srv, "node-1", body)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("operation=%q 状态码 = %d，期望 400", op, resp.StatusCode)
+		}
+	}
+	if body := readBody(t, postPodSync(t, newPodSyncServer(t, registry.New(), func(string, *protocol.Message, cloudhub.ReliableOptions) error {
+		return nil
+	}), "node-1", `{"operation":"remove","pod":{"name":"nginx"}}`)); !strings.Contains(body, "invalid operation") {
+		t.Errorf("400 响应文案不符: %s", body)
+	}
+}
+
+// TestSyncPodAckFailed 验证边缘明确回 error Ack（ErrAckFailed）时返回 502
+// （P2-2：消息已送达但被拒绝，映射 Bad Gateway，区别于 404 未送达/504 超时）。
 func TestSyncPodAckFailed(t *testing.T) {
 	srv := newPodSyncServer(t, registry.New(), func(string, *protocol.Message, cloudhub.ReliableOptions) error {
 		return cloudhub.ErrAckFailed
 	})
 	resp := postPodSync(t, srv, "node-1", `{"operation":"delete","pod":{"name":"nginx"}}`)
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("状态码 = %d，期望 500", resp.StatusCode)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("状态码 = %d，期望 502", resp.StatusCode)
+	}
+	if body := readBody(t, resp); !strings.Contains(body, "edge rejected ack") {
+		t.Errorf("502 响应文案不符: %s", body)
 	}
 }
 

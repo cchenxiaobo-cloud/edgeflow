@@ -55,6 +55,10 @@ const (
 	DefaultBackoffMax = 60 * time.Second
 	// DefaultWriteTimeout 是单次 WebSocket 写超时（防止写死连接时永久阻塞）。
 	DefaultWriteTimeout = 10 * time.Second
+
+	// maxReadBytes 是单条入站消息的大小上限（1 MiB，与 CloudHub 的
+	// maxMessageBytes 对称）：云端被攻破/异常时防止超大消息灌入导致内存膨胀。
+	maxReadBytes = 1 << 20
 )
 
 // DefaultNodeID 解析默认节点 ID，优先级：
@@ -314,6 +318,9 @@ func (c *Client) connectAndRegister() (*websocket.Conn, <-chan struct{}, error) 
 	if err != nil {
 		return nil, nil, fmt.Errorf("拨号 %s 失败: %w", c.opts.CloudAddr, err)
 	}
+	// 与云端对称的入站消息大小限制（1 MiB）：
+	// 超过限制的消息会触发读错误并断开连接，而不是被完整读入内存。
+	conn.SetReadLimit(maxReadBytes)
 
 	// 每个连接独立的信号通道：注册应答（缓冲 1，防阻塞）、连接错误、关闭通知
 	closed := make(chan struct{})

@@ -25,6 +25,9 @@ type mockConfig struct {
 	closeAfterRegisterCount int
 	// sendPodSync 为 true 时注册成功后向客户端推送一条 PodSync。
 	sendPodSync bool
+	// sendOversized 为 true 时注册成功后向客户端推送一条超过
+	// maxReadBytes（1 MiB）的消息，验证客户端 SetReadLimit 生效。
+	sendOversized bool
 }
 
 // mockCloud 是进程内的模拟 CloudHub 服务端：
@@ -110,6 +113,14 @@ func (m *mockCloud) handle(w http.ResponseWriter, r *http.Request) {
 				podSync, _ := protocol.NewMessage(protocol.TypePodSync, targetCloud, msg.Source,
 					map[string]any{"pod": "demo", "namespace": "default"})
 				if err := m.send(conn, podSync); err != nil {
+					return
+				}
+			}
+			if m.cfg.sendOversized {
+				// 构造超过 1 MiB 的负载：客户端应触发 SetReadLimit 拒绝并断开
+				oversized, _ := protocol.NewMessage(protocol.TypeConfigSync, targetCloud, msg.Source,
+					map[string]any{"data": strings.Repeat("x", maxReadBytes)})
+				if err := m.send(conn, oversized); err != nil {
 					return
 				}
 			}
@@ -424,6 +435,33 @@ func TestMessageHandler(t *testing.T) {
 	case m := <-got:
 		t.Fatalf("消息回调不应收到应答类消息，实际收到 %s", m.Type)
 	default:
+	}
+}
+
+// TestReadLimitRejectsOversizedMessage 验证 P2-2：云端下发超过 1 MiB 的
+// 消息时，客户端按 SetReadLimit 拒绝（连接断开、状态回调 false），随后
+// 按退避重连并重新注册成功（与云端 maxMessageBytes=1MiB 对称的防护，
+// 防止超大消息灌入导致内存膨胀）。
+func TestReadLimitRejectsOversizedMessage(t *testing.T) {
+	mock := startMockCloud(t, mockConfig{sendOversized: true})
+	client := New(Options{
+		CloudAddr:   mock.url,
+		NodeID:      "readlimit-node",
+		BackoffBase: 50 * time.Millisecond,
+		BackoffMax:  200 * time.Millisecond,
+	})
+	statusCh := make(chan bool, 8)
+	client.SetStatusHandler(func(v bool) { statusCh <- v })
+	client.Start()
+	defer client.Stop()
+
+	mock.waitRegister(t)           // 第一次注册成功（随后云端推送超大消息）
+	waitStatus(t, statusCh, true)  // 已连接
+	waitStatus(t, statusCh, false) // 收到超大消息 → 连接被拒绝并断开
+	mock.waitRegister(t)           // 重连后重新注册
+	waitStatus(t, statusCh, true)  // 恢复已连接
+	if !client.IsConnected() {
+		t.Fatal("重连注册成功后 IsConnected() 应为 true")
 	}
 }
 

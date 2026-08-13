@@ -72,7 +72,7 @@ type RegisterPayload struct {
 	OS              string `json:"os"`              // 操作系统（如 linux）
 	EdgecoreVersion string `json:"edgecoreVersion"` // edgecore 版本号
 	CPU             int    `json:"cpu"`             // CPU 核数
-	Memory          int64  `json:"memory"`          // 内存大小（字节）
+	Memory          uint64 `json:"memory"`          // 内存大小（字节），契约与 EdgeHub 一致为 uint64
 }
 
 // RegisterAckPayload 是 RegisterAck 消息的负载（云→边）。
@@ -105,7 +105,7 @@ type NodeInfo struct {
 	OS              string    // 操作系统
 	EdgecoreVersion string    // edgecore 版本
 	CPU             int       // CPU 核数
-	Memory          int64     // 内存字节数
+	Memory          uint64    // 内存字节数（uint64，与 RegisterPayload 契约一致）
 	RemoteIP        string    // 连接来源 IP
 	RegisteredAt    time.Time // 注册时间
 }
@@ -300,6 +300,13 @@ func (s *Server) handler() http.Handler {
 
 // serveWS 处理 /v1/edge 的 WebSocket 升级，并为每个连接
 // 启动读循环、写循环和心跳监控三个 goroutine。
+//
+// 竞态说明（P2-1）：http.Server.Shutdown 不等待已 hijack 的连接，
+// 若 Shutdown 恰在 Upgrade 与 trackConn 之间执行，closeAllConns 的
+// 快照会漏掉本连接。因此这里先 wg.Add 再 trackConn，且 trackConn 在
+// connsMu 内复查 shuttingDown：被快照漏掉的连接由本路径立即关闭，
+// 保证 Shutdown 的 wg.Wait 永不因漏关连接而长阻塞；同时 wg.Add 严格
+// 先于 Shutdown 的 wg.Wait（WaitGroup 禁止零计数时 Add 与 Wait 并发）。
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	ws, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -308,8 +315,14 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	}
 	ws.SetReadLimit(maxMessageBytes)
 	c := newConn(ws, remoteIP(r.RemoteAddr))
-	s.trackConn(c)
 	s.wg.Add(3)
+	if !s.trackConn(c) {
+		// Shutdown 已开始：本连接不在 closeAllConns 快照内，
+		// 撤销 goroutine 计数并立即关闭，不启动任何连接 goroutine。
+		s.wg.Add(-3)
+		c.close()
+		return
+	}
 	go func() {
 		defer s.wg.Done()
 		c.writeLoop()
@@ -569,10 +582,19 @@ func (s *Server) unregister(c *conn) {
 }
 
 // trackConn / untrackConn 维护活跃连接集合（Shutdown 时统一关闭）。
-func (s *Server) trackConn(c *conn) {
+//
+// trackConn 返回 false 表示 Shutdown 已开始：连接未被纳入集合（也不应
+// 再纳入，closeAllConns 的快照可能已执行完毕），调用方应立即关闭连接。
+// 在 connsMu 内复查 shuttingDown 可保证：返回 true 的连接必然出现在
+// 之后任意一次 closeAllConns 的快照中（二者互斥于同一把锁）。
+func (s *Server) trackConn(c *conn) bool {
 	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	if s.shuttingDown.Load() {
+		return false
+	}
 	s.conns[c] = struct{}{}
-	s.connsMu.Unlock()
+	return true
 }
 
 func (s *Server) untrackConn(c *conn) {

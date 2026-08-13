@@ -3,8 +3,10 @@ package cloudhub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -420,6 +422,145 @@ func TestStartShutdown(t *testing.T) {
 	}
 	if _, _, err := ws.ReadMessage(); err == nil {
 		t.Error("Shutdown 后连接应被关闭")
+	}
+}
+
+// TestServeWSAfterShutdownStarted 验证 P2-1 修复的确定性路径：
+// Shutdown 已开始（shuttingDown 置位）后到达的 Upgrade，在 trackConn
+// 复查时被拒绝——连接被立即关闭（收到 close frame），且不启动连接
+// goroutine（wg 计数守恒，随后的正式 Shutdown 快速返回、Start 正常退出）。
+func TestServeWSAfterShutdownStarted(t *testing.T) {
+	srv := New("127.0.0.1:0")
+	done := make(chan error, 1)
+	go func() { done <- srv.Start() }()
+	waitFor(t, 3*time.Second, func() bool { return srv.Addr() != "" }, "CloudHub 未开始监听")
+
+	// 直接置位关闭标志，模拟 Shutdown 已执行到 closeAllConns 之前的时刻
+	srv.shuttingDown.Store(true)
+	ws, _, err := websocket.DefaultDialer.Dial("ws://"+srv.Addr()+PathEdge, nil)
+	if err != nil {
+		t.Fatalf("拨号失败: %v", err)
+	}
+	defer func() { _ = ws.Close() }()
+	// 关闭流程中新建的连接应被服务端立即主动关闭（收到 close frame），
+	// 而不是挂起等读超时——这是 serveWS 拒绝路径的直接证据
+	if err := ws.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("设置读超时失败: %v", err)
+	}
+	if _, _, err := ws.ReadMessage(); err == nil {
+		t.Fatal("关闭流程中新建的连接应被立即关闭")
+	} else {
+		var closeErr *websocket.CloseError
+		if !errors.As(err, &closeErr) {
+			t.Fatalf("连接应被服务端主动关闭（close frame），实际错误: %v", err)
+		}
+	}
+
+	// 随后完整执行 Shutdown：wg 计数守恒，应快速返回，Start 正常退出
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown 失败: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start 返回错误: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start 未在 Shutdown 后退出")
+	}
+}
+
+// TestShutdownDuringNewConnections 验证 P2-1 的并发窗口竞态：
+// 多轮“并发拨号 + Shutdown 交错”下，Shutdown 必须快速返回（旧实现可能
+// 因漏关连接而阻塞到心跳超时 ~90s），Start 正常退出。
+func TestShutdownDuringNewConnections(t *testing.T) {
+	for i := 0; i < 15; i++ {
+		srv := New("127.0.0.1:0")
+		done := make(chan error, 1)
+		go func() { done <- srv.Start() }()
+		waitFor(t, 3*time.Second, func() bool { return srv.Addr() != "" }, "CloudHub 未开始监听")
+
+		url := "ws://" + srv.Addr() + PathEdge
+		// 并发建立一批连接，让 Upgrade 与 Shutdown 的关闭快照尽可能交错
+		var dialWG sync.WaitGroup
+		for j := 0; j < 8; j++ {
+			dialWG.Add(1)
+			go func() {
+				defer dialWG.Done()
+				ws, _, err := websocket.DefaultDialer.Dial(url, nil)
+				if err != nil {
+					return // 监听器已关闭：拨号失败属正常
+				}
+				_ = ws.Close()
+			}()
+		}
+		// 拨号完成后再启动 Shutdown，尽量覆盖“Upgrade 之后、trackConn 之前”窗口
+		dialWG.Wait()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownDone := make(chan error, 1)
+		go func() { shutdownDone <- srv.Shutdown(ctx) }()
+		select {
+		case err := <-shutdownDone:
+			if err != nil {
+				cancel()
+				t.Fatalf("第 %d 轮：Shutdown 返回错误: %v", i, err)
+			}
+		case <-time.After(3 * time.Second):
+			cancel()
+			t.Fatalf("第 %d 轮：Shutdown 阻塞超过 3s（新建连接窗口竞态未修复）", i)
+		}
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("第 %d 轮：Start 返回错误: %v", i, err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("第 %d 轮：Start 未在 Shutdown 后退出", i)
+		}
+	}
+}
+
+// TestRegisterMemoryAsUint64 验证 P2-3：Memory 字段契约统一为 uint64——
+// 超过 int64 正数上限的内存字节数（1<<63，8 EiB）也能无损解析并记录
+// （int64 时代该值会导致 JSON 解码失败、注册被拒）。
+func TestRegisterMemoryAsUint64(t *testing.T) {
+	srv, url := newTestServer(t)
+	ws := dial(t, url)
+
+	m, err := protocol.NewMessage(protocol.TypeRegister, "edge-mem", "cloud", RegisterPayload{
+		NodeID:          "edge-mem",
+		Arch:            "arm64",
+		OS:              "linux",
+		EdgecoreVersion: "v0.1.0",
+		CPU:             4,
+		Memory:          uint64(1) << 63, // 超出 int64 正数范围，验证 uint64 契约
+	})
+	if err != nil {
+		t.Fatalf("构造 Register 失败: %v", err)
+	}
+	sendMsg(t, ws, m)
+
+	ack := readMsg(t, ws)
+	if ack.Type != protocol.TypeRegisterAck {
+		t.Fatalf("期望 RegisterAck，收到 %s", ack.Type)
+	}
+	var payload RegisterAckPayload
+	if err := ack.DecodePayload(&payload); err != nil {
+		t.Fatalf("解析 RegisterAck payload 失败: %v", err)
+	}
+	if !payload.Accepted {
+		t.Fatalf("注册被拒绝: %s", payload.Message)
+	}
+	info, ok := srv.NodeInfo("edge-mem")
+	if !ok {
+		t.Fatal("NodeInfo(edge-mem) 不存在")
+	}
+	if info.Memory != uint64(1)<<63 {
+		t.Errorf("NodeInfo.Memory = %d，期望 %d（uint64 契约）", info.Memory, uint64(1)<<63)
 	}
 }
 

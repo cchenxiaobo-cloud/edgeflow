@@ -1,0 +1,28 @@
+# 编译产物
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# 测试产物
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Go 工作区 / 依赖缓存（一般不需要，但保险起见）
+vendor/
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+
+# 本地配置（不含密钥，仅占位）
+*.local

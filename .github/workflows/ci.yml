@@ -1,0 +1,33 @@
+# EdgeFlow CI 流水线
+# 每次 push / PR 时执行：go vet + build + test
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.26.x"]
+    steps:
+      - name: Checkout 代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: 静态检查（go vet）
+        run: go vet ./...
+
+      - name: 编译（go build）
+        run: go build ./...
+
+      - name: 单元测试（go test）
+        run: go test -race ./...

@@ -130,7 +130,16 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 
 	// 启动 Edged（WBS 3.2 方案 A POC）：声明式调谐循环 + Docker 容器运行时。
 	// 期望状态来自 MetaManager 的 Pod 元数据；每 5s 轮询 + 增量订阅触发。
-	edgedSvc := edged.New(store, edged.NewDockerRuntime(), 5*time.Second)
+	// 调谐周期可用环境变量 EDGEFLOW_EDGECORE_RECONCILE_INTERVAL 覆盖（默认 5s）
+	reconcileInterval := 5 * time.Second
+	if v := os.Getenv("EDGEFLOW_EDGECORE_RECONCILE_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			reconcileInterval = d
+		} else {
+			log.Warnf("EDGEFLOW_EDGECORE_RECONCILE_INTERVAL 非法（%q），使用默认 5s", v)
+		}
+	}
+	edgedSvc := edged.New(store, edged.NewDockerRuntime(), reconcileInterval)
 	edgedSvc.Start()
 	log.Infof("Edged started（方案 A POC：DockerRuntime + 5s 调谐周期）")
 

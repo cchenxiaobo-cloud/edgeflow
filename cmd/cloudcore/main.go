@@ -86,8 +86,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	mux.HandleFunc("/healthz", httpx.Healthz())
 	api := &nodeAPI{
 		reg:          nodeReg,
-		hub:          hub,
-		reliableSend: hub.ReliableSend,
+		reliableSend: hub.ReliableSendContext,
 	}
 	mux.HandleFunc("GET /api/v1/nodes", api.listNodes)
 	mux.HandleFunc("GET /api/v1/nodes/{nodeID}", api.getNode)
@@ -168,6 +167,18 @@ func (api *nodeAPI) syncPod(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"operation and pod.name are required"}`, http.StatusBadRequest)
 		return
 	}
+	// operation 白名单校验（WBS 4.6 P2：云端前置校验，避免非法值下发到边缘）
+	switch req.Operation {
+	case "add", "update", "delete":
+	default:
+		http.Error(w, `{"error":"invalid operation: must be add/update/delete"}`, http.StatusBadRequest)
+		return
+	}
+	// 镜像校验：add/update 必须有 image（delete 不需要，按 name 删除）
+	if req.Operation != "delete" && req.Pod.Image == "" {
+		http.Error(w, `{"error":"pod.image is required for add/update"}`, http.StatusBadRequest)
+		return
+	}
 	// 云端校验 operation 取值（P2-5）：非法值直接 400 拒绝，
 	// 避免下发后等一轮可靠投递往返（最长 ~15s）才以 502 暴露。
 	switch req.Operation {
@@ -183,7 +194,7 @@ func (api *nodeAPI) syncPod(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := api.reliableSend(nodeID, msg, cloudhub.ReliableOptions{}); err != nil {
+	if err := api.reliableSend(r.Context(), nodeID, msg, cloudhub.ReliableOptions{}); err != nil {
 		if errors.Is(err, cloudhub.ErrNodeOffline) {
 			http.Error(w, `{"error":"node offline or not registered"}`, http.StatusNotFound)
 			return
@@ -271,12 +282,10 @@ func shutdownAll(srv *http.Server, hub *cloudhub.Server) {
 type nodeAPI struct {
 	// reg 是节点注册表（与 CloudHub 事件桥接共享同一实例）。
 	reg *registry.Registry
-	// hub 是 CloudHub 服务端（用于可靠投递下发消息，如 PodSync）。
-	hub *cloudhub.Server
 	// reliableSend 是可靠投递函数，默认指向 hub.ReliableSend（run 装配时注入）。
 	// 独立成字段是为了让 syncPod 可测：测试注入 fake 即可覆盖各错误路径
 	// （离线/超时/失败），无需真实 WebSocket 节点与 Ack 往返。
-	reliableSend func(nodeID string, msg *protocol.Message, opts cloudhub.ReliableOptions) error
+	reliableSend func(ctx context.Context, nodeID string, msg *protocol.Message, opts cloudhub.ReliableOptions) error
 }
 
 // listNodes 处理 GET /api/v1/nodes：返回全部节点（JSON 数组，按 NodeID 排序）。

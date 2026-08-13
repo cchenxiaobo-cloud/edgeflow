@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,7 +18,7 @@ import (
 // newPodSyncServer 构造注册了 POST /api/v1/nodes/{nodeID}/podsync 路由的测试服务，
 // 并注入 fake reliableSend（替代真实 CloudHub 的 ReliableSend，避免依赖
 // WebSocket 连接与 Ack 往返即可覆盖各错误路径）。
-func newPodSyncServer(t *testing.T, reg *registry.Registry, send func(nodeID string, msg *protocol.Message, opts cloudhub.ReliableOptions) error) *httptest.Server {
+func newPodSyncServer(t *testing.T, reg *registry.Registry, send func(ctx context.Context, nodeID string, msg *protocol.Message, opts cloudhub.ReliableOptions) error) *httptest.Server {
 	t.Helper()
 	api := &nodeAPI{reg: reg, reliableSend: send}
 	mux := http.NewServeMux()
@@ -50,7 +51,7 @@ func readBody(t *testing.T, resp *http.Response) string {
 
 // TestSyncPodBadJSON 验证请求体不是合法 JSON 时返回 400。
 func TestSyncPodBadJSON(t *testing.T) {
-	srv := newPodSyncServer(t, registry.New(), func(string, *protocol.Message, cloudhub.ReliableOptions) error {
+	srv := newPodSyncServer(t, registry.New(), func(context.Context, string, *protocol.Message, cloudhub.ReliableOptions) error {
 		t.Error("坏 JSON 不应触发可靠投递")
 		return nil
 	})
@@ -65,7 +66,7 @@ func TestSyncPodBadJSON(t *testing.T) {
 
 // TestSyncPodMissingFields 验证缺 operation 或 pod.name 时返回 400。
 func TestSyncPodMissingFields(t *testing.T) {
-	srv := newPodSyncServer(t, registry.New(), func(string, *protocol.Message, cloudhub.ReliableOptions) error {
+	srv := newPodSyncServer(t, registry.New(), func(context.Context, string, *protocol.Message, cloudhub.ReliableOptions) error {
 		t.Error("缺字段不应触发可靠投递")
 		return nil
 	})
@@ -87,7 +88,7 @@ func TestSyncPodMissingFields(t *testing.T) {
 
 // TestSyncPodNodeOffline 验证节点离线/未注册（ErrNodeOffline）时返回 404。
 func TestSyncPodNodeOffline(t *testing.T) {
-	srv := newPodSyncServer(t, registry.New(), func(nodeID string, _ *protocol.Message, _ cloudhub.ReliableOptions) error {
+	srv := newPodSyncServer(t, registry.New(), func(_ context.Context, nodeID string, _ *protocol.Message, _ cloudhub.ReliableOptions) error {
 		if nodeID != "node-1" {
 			t.Errorf("reliableSend 收到的 nodeID = %q，期望 node-1", nodeID)
 		}
@@ -104,7 +105,7 @@ func TestSyncPodNodeOffline(t *testing.T) {
 
 // TestSyncPodAckTimeout 验证确认超时重试耗尽（ErrAckTimeout）时返回 504。
 func TestSyncPodAckTimeout(t *testing.T) {
-	srv := newPodSyncServer(t, registry.New(), func(string, *protocol.Message, cloudhub.ReliableOptions) error {
+	srv := newPodSyncServer(t, registry.New(), func(context.Context, string, *protocol.Message, cloudhub.ReliableOptions) error {
 		return cloudhub.ErrAckTimeout
 	})
 	resp := postPodSync(t, srv, "node-1", `{"operation":"add","pod":{"name":"nginx"}}`)
@@ -120,7 +121,7 @@ func TestSyncPodAckTimeout(t *testing.T) {
 // 内时直接返回 400（P2-5：云端校验，省一次 ~15s 可靠投递往返）。
 func TestSyncPodInvalidOperation(t *testing.T) {
 	for _, op := range []string{"create", "DELETE", "", "upsert", "add\u0000"} {
-		srv := newPodSyncServer(t, registry.New(), func(string, *protocol.Message, cloudhub.ReliableOptions) error {
+		srv := newPodSyncServer(t, registry.New(), func(context.Context, string, *protocol.Message, cloudhub.ReliableOptions) error {
 			t.Error("非法 operation 不应触发可靠投递")
 			return nil
 		})
@@ -130,7 +131,7 @@ func TestSyncPodInvalidOperation(t *testing.T) {
 			t.Errorf("operation=%q 状态码 = %d，期望 400", op, resp.StatusCode)
 		}
 	}
-	if body := readBody(t, postPodSync(t, newPodSyncServer(t, registry.New(), func(string, *protocol.Message, cloudhub.ReliableOptions) error {
+	if body := readBody(t, postPodSync(t, newPodSyncServer(t, registry.New(), func(context.Context, string, *protocol.Message, cloudhub.ReliableOptions) error {
 		return nil
 	}), "node-1", `{"operation":"remove","pod":{"name":"nginx"}}`)); !strings.Contains(body, "invalid operation") {
 		t.Errorf("400 响应文案不符: %s", body)
@@ -140,7 +141,7 @@ func TestSyncPodInvalidOperation(t *testing.T) {
 // TestSyncPodAckFailed 验证边缘明确回 error Ack（ErrAckFailed）时返回 502
 // （P2-2：消息已送达但被拒绝，映射 Bad Gateway，区别于 404 未送达/504 超时）。
 func TestSyncPodAckFailed(t *testing.T) {
-	srv := newPodSyncServer(t, registry.New(), func(string, *protocol.Message, cloudhub.ReliableOptions) error {
+	srv := newPodSyncServer(t, registry.New(), func(context.Context, string, *protocol.Message, cloudhub.ReliableOptions) error {
 		return cloudhub.ErrAckFailed
 	})
 	resp := postPodSync(t, srv, "node-1", `{"operation":"delete","pod":{"name":"nginx"}}`)
@@ -157,7 +158,7 @@ func TestSyncPodAckFailed(t *testing.T) {
 func TestSyncPodOK(t *testing.T) {
 	var gotNodeID string
 	var gotMsg *protocol.Message
-	srv := newPodSyncServer(t, registry.New(), func(nodeID string, msg *protocol.Message, _ cloudhub.ReliableOptions) error {
+	srv := newPodSyncServer(t, registry.New(), func(_ context.Context, nodeID string, msg *protocol.Message, _ cloudhub.ReliableOptions) error {
 		gotNodeID = nodeID
 		gotMsg = msg
 		return nil
@@ -197,7 +198,7 @@ func TestSyncPodOK(t *testing.T) {
 
 // TestSyncPodUnexpectedError 验证非契约错误（未知错误）落入 500 兜底分支。
 func TestSyncPodUnexpectedError(t *testing.T) {
-	srv := newPodSyncServer(t, registry.New(), func(string, *protocol.Message, cloudhub.ReliableOptions) error {
+	srv := newPodSyncServer(t, registry.New(), func(context.Context, string, *protocol.Message, cloudhub.ReliableOptions) error {
 		return errors.New("some unexpected error")
 	})
 	resp := postPodSync(t, srv, "node-1", `{"operation":"add","pod":{"name":"nginx"}}`)

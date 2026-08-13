@@ -63,7 +63,11 @@ func (d *DockerRuntime) exec(args ...string) (string, error) {
 		runner = defaultCmdRunner
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), d.timeout)
+	timeout := d.timeout
+	if timeout <= 0 {
+		timeout = defaultExecTimeout // 零值回落：&DockerRuntime{} 也应有默认超时
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	out, err := runner(ctx, args...)

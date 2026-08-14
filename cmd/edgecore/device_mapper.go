@@ -14,13 +14,16 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"edgeflow/edge/pkg/devicetwin"
 	"edgeflow/edge/pkg/eventbus"
 	"edgeflow/edge/pkg/mapper"
+	"edgeflow/edge/pkg/metamanager"
 	"edgeflow/pkg/log"
 
 	mocksensor "edgeflow/mappers/mock_sensor"
+	modbusmapper "edgeflow/mappers/modbus"
 )
 
 // mapperCommandExecutor 把 Mapper 注册表适配成 devicetwin.DeviceCommandExecutor
@@ -65,14 +68,29 @@ func (e *mapperCommandExecutor) ExecuteCommand(deviceName, namespace, property s
 //     构成双通道（语义见 docs/MAPPER-GUIDE.md §8）；
 //   - bus 为 nil（未装配或连接失败降级）：纯本地模式（默认行为）。
 //
+// Modbus Mapper（WBS 5.2，mappers/modbus）：设置环境变量
+// EDGEFLOW_MODBUS_ADDR（如 127.0.0.1:15020）即接入 Modbus TCP 设备
+// （默认设备 mb-sensor-01）。显式设置才注册：避免没有 Modbus 设备的
+// 部署在每轮采集时报连接错误；设备晚于 edgecore 启动也没关系——Mapper
+// 每次操作前按需连接/重连。ledger 非 nil 时所有操作落台账（SQLite，
+// 保留 30 天，见 docs/MODBUS-GUIDE.md）。
+//
 // 真实设备接入时以对应 Mapper 实现替换本函数内的注册即可
 // （协议适配只新增 DeviceMapper 实现，框架与装配无需改动）。
-func buildMapperRegistry(bus *eventbus.EventBus) *mapper.MapperRegistry {
+func buildMapperRegistry(bus *eventbus.EventBus, ledger *metamanager.Ledger) *mapper.MapperRegistry {
 	reg := mapper.NewRegistry()
 	if err := reg.Register(mocksensor.New("sensor-01", mocksensor.WithEventBus(bus))); err != nil {
 		// 注册失败只告警：设备链路退化为"指令找不到 Mapper → 502"，
 		// 不影响 edgecore 其余能力（Pod/节点链路）。
 		log.Warnf("注册模拟传感器失败: %v", err)
+	}
+	// Modbus 设备接入（显式 opt-in，见函数头注释）
+	if addr := os.Getenv(modbusmapper.EnvAddr); addr != "" {
+		if err := reg.Register(modbusmapper.New(addr, modbusmapper.WithLedger(ledger))); err != nil {
+			log.Warnf("注册 Modbus Mapper 失败: %v", err)
+		} else {
+			log.Infof("Modbus Mapper 已注册（addr=%s，设备 mb-sensor-01，台账 %v）", addr, ledger != nil)
+		}
 	}
 	if bus != nil {
 		log.Infof("Mapper 注册完成：mock-sensor 已启用 MQTT 数据面（遥测 %s，指令 %s）",

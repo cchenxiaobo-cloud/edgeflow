@@ -105,6 +105,20 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	defer func() { _ = store.Close() }()
 	log.Infof("MetaManager opened: %s", store.Path())
 
+	// 操作台账（WBS 5.2）：设备上报/下发操作记录，SQLite 持久化（重启不丢），
+	// 保留 30 天（NewLedger 启动即清一次，后台每 24h 再清）。
+	// 创建失败（理论上仅磁盘/权限异常）不阻断 edgecore：Mapper 降级为不记录台账。
+	ledger, err := metamanager.NewLedger(store)
+	if err != nil {
+		log.Errorf("操作台账初始化失败（设备操作将不记录）: %v", err)
+		ledger = nil
+	} else {
+		ledgerCtx, ledgerCancel := context.WithCancel(context.Background())
+		defer ledgerCancel()
+		go ledger.RunCleanupLoop(ledgerCtx, 24*time.Hour)
+		log.Infof("操作台账已就绪（保留 %d 天，后台每 24h 清理）", metamanager.LedgerRetentionDays)
+	}
+
 	// 启动日志：展示已持久化的节点元数据条数——重启后数据仍在的直观证明
 	if infos, err := store.ListNodes(); err != nil {
 		log.Warnf("MetaManager 读取节点元数据失败: %v", err)
@@ -141,7 +155,7 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	// 装配层把 Mapper 注册表适配成 devicetwin.DeviceCommandExecutor
 	// 注入（见 device_mapper.go），指令按 deviceName 路由到具体 Mapper 执行。
 	twinStore := devicetwin.NewStore()
-	mapperReg := buildMapperRegistry(bus)
+	mapperReg := buildMapperRegistry(bus, ledger)
 	deviceExec := &mapperCommandExecutor{reg: mapperReg, twins: twinStore}
 	// Mapper 生命周期随 edgecore 启停：启动采集循环（内置模拟传感器每 2s
 	// 波动一次，由上报循环周期汇入影子）；启动失败只告警，不阻断主流程。

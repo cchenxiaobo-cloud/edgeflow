@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"edgeflow/edge/pkg/devicetwin"
 	"edgeflow/edge/pkg/edged"
 	"edgeflow/edge/pkg/edgehub"
 	"edgeflow/edge/pkg/metamanager"
@@ -82,12 +83,23 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 
 	client := edgehub.New(opts)
 
-	// 消息处理回调（WBS 4.6）：云端下发类消息（PodSync 等）→ MetaManager
-	// 落盘；处理结果由 EdgeHub 自动回 Ack（成功 code=ok / 失败 code=error）。
+	// 设备链路（WBS 3.5/5.3）：设备影子存储 + DeviceCommand 下发处理。
+	// 设备指令执行器（Mapper 适配器）由另一 Agent 并行开发的 Mapper 框架
+	// （edge/pkg/mapper）提供：当前以 nil 占位（指令仅更新 Twin.Desired，
+	// 见 handleDeviceCommand 注释），框架就绪后在此注入适配器即可，
+	// 无需改动消息处理与上报链路。
+	twinStore := devicetwin.NewStore()
+	var deviceExec devicetwin.DeviceCommandExecutor // Mapper 适配器占位（nil = 骨架路径）
+
+	// 消息处理回调（WBS 4.6）：云端下发类消息（PodSync/DeviceCommand 等）→
+	// MetaManager 落盘 / 设备影子更新；处理结果由 EdgeHub 自动回 Ack
+	// （成功 code=ok / 失败 code=error）。
 	client.SetMessageHandlerFunc(func(msg *protocol.Message) error {
 		switch msg.Type {
 		case protocol.TypePodSync:
 			return handlePodSync(store, msg)
+		case protocol.TypeDeviceCommand:
+			return handleDeviceCommand(twinStore, deviceExec, msg)
 		default:
 			// 未知下发类型（ConfigSync 等 M2 消息）：暂不处理但回 ok，
 			// 避免云端视为失败无限重试；后续模块接入时在此扩展
@@ -165,12 +177,28 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	}()
 	log.Infof("Pod 状态上报循环已启动（周期 %s，nodeID=%s）", reportInterval, opts.NodeID)
 
+	// 设备数据上报循环（WBS 5.3 边缘侧）：周期从 Twin 快照生成
+	// DeviceReport 消息上报云端。与 Pod 上报循环同构（独立 stopCh、
+	// 启动即上报一轮）；周期默认 30s，环境变量
+	// EDGEFLOW_EDGECORE_DEVICE_REPORT_INTERVAL 可覆盖（复用 durationFromEnv
+	// 的上下限校验）。
+	deviceReportInterval := durationFromEnv(deviceReportIntervalEnv, defaultReportInterval)
+	deviceReportStopCh := make(chan struct{})
+	deviceReportDone := make(chan struct{})
+	go func() {
+		defer close(deviceReportDone)
+		runDeviceReportLoop(client, twinStore, opts.NodeID, deviceReportInterval, deviceReportStopCh)
+	}()
+	log.Infof("设备上报循环已启动（周期 %s，nodeID=%s）", deviceReportInterval, opts.NodeID)
+
 	// 常驻：等待退出信号后优雅关闭（先停 EdgeHub，再关 Store，
 	// 保证回调不再触发后才会关闭数据库连接）
 	sig := <-sigCh
 	log.Infof("收到信号 %v，正在优雅关闭 EdgeHub...", sig)
 	close(reportStopCh)
-	<-reportDone // 上报循环退出后不再有新消息写入通道
+	<-reportDone // Pod 上报循环退出后不再有新消息写入通道
+	close(deviceReportStopCh)
+	<-deviceReportDone // 设备上报循环退出后不再有新消息写入通道
 	edgedSvc.Stop()
 	client.Stop()
 	if subID != 0 {

@@ -170,12 +170,14 @@ type Server struct {
 	// serveDone 在 Serve 返回后关闭，Shutdown 据此等待退出。
 	serveDone chan struct{}
 
-	// mu 保护注册表 registry、节点信息 nodes 与事件回调 nodeEvents/podStatusHandler。
-	mu               sync.RWMutex
-	registry         map[string]*conn     // nodeID → 活跃连接
-	nodes            map[string]*NodeInfo // nodeID → 节点信息
-	nodeEvents       NodeEvents           // 节点生命周期事件回调（nil 表示未订阅）
-	podStatusHandler PodStatusHandler     // PodStatus 消息回调（nil 表示未订阅）
+	// mu 保护注册表 registry、节点信息 nodes 与事件回调
+	// nodeEvents/podStatusHandler/deviceReportHandler。
+	mu                  sync.RWMutex
+	registry            map[string]*conn     // nodeID → 活跃连接
+	nodes               map[string]*NodeInfo // nodeID → 节点信息
+	nodeEvents          NodeEvents           // 节点生命周期事件回调（nil 表示未订阅）
+	podStatusHandler    PodStatusHandler     // PodStatus 消息回调（nil 表示未订阅）
+	deviceReportHandler DeviceReportHandler  // DeviceReport 消息回调（nil 表示未订阅，WBS 5.3）
 
 	// connsMu 保护活跃连接集合 conns（含未注册连接，供 Shutdown 统一关闭）。
 	connsMu sync.Mutex
@@ -456,6 +458,8 @@ func (s *Server) dispatch(c *conn, data []byte) {
 		s.handleHeartbeat(c, m)
 	case protocol.TypePodStatus:
 		s.handlePodStatus(c, m)
+	case protocol.TypeDeviceReport:
+		s.handleDeviceReport(c, m)
 	case protocol.TypeAck:
 		s.handleAck(c, m)
 	default:

@@ -21,6 +21,7 @@ import (
 
 	v1alpha1 "edgeflow/apis/edge/v1alpha1"
 	"edgeflow/cloud/pkg/cloudhub"
+	"edgeflow/cloud/pkg/devicestatus"
 	"edgeflow/cloud/pkg/podstatus"
 	"edgeflow/cloud/pkg/registry"
 	"edgeflow/pkg/config"
@@ -115,6 +116,27 @@ func run(args []string, stdout, stderr io.Writer) int {
 		})
 	})
 
+	// 设备状态存储（内存态，WBS 5.3）与 CloudHub 上报回调桥接：
+	// 边侧上报的 DeviceReport 消息经 CloudHub 校验后注入存储，供查询 API 使用。
+	// 依赖注入（SetDeviceReportHandler），CloudHub 不感知存储实现。
+	deviceStore := devicestatus.NewStore()
+	hub.SetDeviceReportHandler(func(nodeID string, dr cloudhub.DeviceReportPayload) {
+		// 回调运行在 CloudHub 读循环 goroutine 内：recover 兜底，
+		// 防止单条异常数据导致整个连接处理崩溃（与 PodStatus 回调同约定）。
+		defer func() {
+			if r := recover(); r != nil {
+				log.Errorf("DeviceReport handler panic（nodeID=%s）: %v", nodeID, r)
+			}
+		}()
+		deviceStore.Upsert(nodeID, devicestatus.DeviceStatus{
+			NodeID:         nodeID,
+			DeviceName:     dr.DeviceName,
+			Namespace:      dr.Namespace,
+			Properties:     dr.Properties,
+			LastReportedAt: dr.ReportedAt,
+		})
+	})
+
 	// 注册路由：/healthz 健康检查 + 节点查询 API（两个视角并存）：
 	//   /api/v1/nodes      → NodeInfo 视图（运行视角：CPU/内存/IP 等）
 	//   /api/v1/edgenodes  → EdgeNode 视图（CRD 对象视角，对标 K8s Node）
@@ -123,6 +145,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	api := &nodeAPI{
 		reg:          nodeReg,
 		pods:         podStore,
+		devices:      deviceStore,
 		reliableSend: hub.ReliableSendContext,
 	}
 	mux.HandleFunc("GET /api/v1/nodes", api.listNodes)
@@ -132,6 +155,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	mux.HandleFunc("POST /api/v1/nodes/{nodeID}/podsync", api.syncPod)
 	mux.HandleFunc("GET /api/v1/pods", api.listPods)
 	mux.HandleFunc("GET /api/v1/nodes/{nodeID}/pods", api.listNodePods)
+	// 设备链路 API（WBS 5.3/2.2）：设备状态查询 + 设备指令下发
+	mux.HandleFunc("GET /api/v1/devices", api.listDevices)
+	mux.HandleFunc("GET /api/v1/nodes/{nodeID}/devices", api.listNodeDevices)
+	mux.HandleFunc("POST /api/v1/nodes/{nodeID}/device-command", api.sendDeviceCommand)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{
@@ -317,12 +344,15 @@ func shutdownAll(srv *http.Server, hub *cloudhub.Server) {
 }
 
 // nodeAPI 是节点查询 API（/api/v1/nodes）的处理器集合。
-// 通过结构体字段注入注册表与 Pod 状态存储（依赖注入，避免全局变量）。
+// 通过结构体字段注入注册表、Pod 状态存储与设备状态存储
+// （依赖注入，避免全局变量）。
 type nodeAPI struct {
 	// reg 是节点注册表（与 CloudHub 事件桥接共享同一实例）。
 	reg *registry.Registry
 	// pods 是 Pod 状态存储（与 CloudHub 上报回调共享同一实例）。
 	pods *podstatus.PodStatusStore
+	// devices 是设备状态存储（与 CloudHub 上报回调共享同一实例，WBS 5.3）。
+	devices *devicestatus.DeviceStatusStore
 	// reliableSend 是可靠投递函数，默认指向 hub.ReliableSend（run 装配时注入）。
 	// 独立成字段是为了让 syncPod 可测：测试注入 fake 即可覆盖各错误路径
 	// （离线/超时/失败），无需真实 WebSocket 节点与 Ack 往返。

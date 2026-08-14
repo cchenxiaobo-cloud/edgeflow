@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EdgeFlow M4 主体交付报告 — keadm / NodeController / Modbus / 多架构</title>
+<style>
+  :root {
+    --bg: #f7f8fa; --surface: #ffffff; --text: #1f2933; --text-2: #52606d; --text-3: #9aa5b1;
+    --accent: #3e4c59; --accent2: #2680c2; --border: #d9e2ec; --rule: #bcccdc;
+    --green: #1a6b3c; --green-light: #e6f2ea; --red: #8b1a1a; --red-light: #f5e8e8;
+    --yellow: #8b6b1a; --yellow-light: #f5efe0; --code-bg: #f0f4f8; --radius: 2px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+    --serif: Georgia, 'Times New Roman', serif;
+    --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.65; font-weight: 400; font-size: 15px; -webkit-font-smoothing: antialiased; }
+  .container { max-width: 940px; margin: 0 auto; padding: 64px 48px; }
+  h1 { font-family: var(--serif); font-size: 1.9rem; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.05rem; font-weight: 600; margin: 2.5rem 0 0.8rem; padding-bottom: 0.4rem; border-bottom: 1.5px solid var(--rule); letter-spacing: 0.02em; }
+  h3 { font-size: 0.95rem; font-weight: 600; margin: 1.5rem 0 0.5rem; }
+  p { margin-bottom: 0.7rem; color: var(--text-2); }
+  .subtitle { font-family: var(--serif); font-size: 0.95rem; color: var(--text-3); font-style: italic; margin-bottom: 2.5rem; }
+  a { color: var(--accent2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 2px; font-size: 0.85em; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); padding: 0.9rem 1rem; border-radius: var(--radius); overflow-x: auto; margin: 0.8rem 0; font-size: 0.8rem; line-height: 1.5; font-family: var(--mono); }
+  table { width: 100%; border-collapse: collapse; margin: 0.8rem 0 1.2rem; font-size: 0.85rem; }
+  th { text-align: left; font-weight: 600; padding: 0.5rem 0.6rem; border-bottom: 1.5px solid var(--rule); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-2); }
+  td { padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--border); }
+  tr:hover td { background: var(--surface); }
+  .badge { display: inline-block; padding: 0.1em 0.5em; border-radius: 2px; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em; }
+  .b-green { background: var(--green-light); color: var(--green); }
+  .b-blue { background: #e8f0f8; color: var(--accent2); }
+  .b-yellow { background: var(--yellow-light); color: var(--yellow); }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); margin: 1.2rem 0; }
+  .metric { background: var(--surface); padding: 1rem 0.8rem; text-align: center; }
+  .metric-value { font-family: var(--serif); font-size: 1.6rem; font-weight: 600; color: var(--accent2); }
+  .metric-label { font-size: 0.72rem; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.2rem; }
+  .arch { font-family: var(--mono); font-size: 0.74rem; line-height: 1.55; background: var(--surface); border: 1px solid var(--border); padding: 1rem; overflow-x: auto; margin: 0.8rem 0; color: var(--text-2); }
+  .panel { border: 1px solid var(--border); border-left: 3px solid var(--accent2); padding: 1rem 1.2rem; margin: 1rem 0; background: var(--surface); }
+  .panel-title { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.4rem; }
+  .footer { margin-top: 3rem; padding-top: 1.2rem; border-top: 1.5px solid var(--rule); font-size: 0.75rem; color: var(--text-3); }
+  @media (max-width: 700px) { .container { padding: 32px 18px; } .metrics { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>EdgeFlow M4 主体交付报告</h1>
+<p class="subtitle">keadm 基础版 · NodeController · Modbus Mapper · 多架构镜像 · 2026-08-14</p>
+
+<div class="metrics">
+  <div class="metric"><div class="metric-value">88</div><div class="metric-label">累计提交</div></div>
+  <div class="metric"><div class="metric-value">77.9%</div><div class="metric-label">总覆盖率</div></div>
+  <div class="metric"><div class="metric-value">0</div><div class="metric-label">Lint / P0 / P1</div></div>
+  <div class="metric"><div class="metric-value">6/6</div><div class="metric-label">联调场景通过</div></div>
+</div>
+
+<h2>1. 本轮交付摘要</h2>
+<p>M4 主体完成四个方向：<strong>keadm 基础版（8.6）</strong>——安装管理 CLI（init/join/reset/version）；<strong>NodeController（2.4）</strong>——节点心跳超时判定；<strong>Modbus Mapper（5.2）</strong>——真实协议读写 + 操作台账；<strong>多架构镜像</strong>——amd64/arm64 manifest 本地闭环验证。综合审查 0 P0 / 0 P1。</p>
+
+<h2>2. 四个模块</h2>
+<div class="arch">keadm（8.6）                          NodeController（2.4）
+  init → cloudcore.yaml                  定时扫描 registry（30s）
+  join → edgecore.env + systemd          心跳停滞 > 180s → MarkOffline
+  reset → 白名单清理（确认+幂等）         心跳恢复 → Ready（状态机闭环）
+  version → pkg/version                  env: NODE_TIMEOUT/SCAN_INTERVAL
+
+Modbus Mapper（5.2）                    多架构镜像
+  模拟器（自实现 MBAP+PDU）               buildx：linux/amd64 + linux/arm64
+  5 功能码 + 错误码                       本地 registry 闭环验证
+  goburrow client 读写寄存器/线圈         manifest 双架构 + QEMU 交叉运行
+  台账 op_ledger（SQLite，30 天清理）     CI release.yml（tag 触发+自检）</div>
+
+<h2>3. 验证结果</h2>
+
+<h3>3.1 端到端联调</h3>
+<table>
+<thead><tr><th>场景</th><th>实测证据</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>keadm 命令</td><td>version/init exit=0，产物 cloudcore.yaml+NOTES；异常路径 exit=2 + 可操作提示</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>NodeController</td><td>SIGSTOP 冻结心跳 → Offline 判定日志 + API 状态变化 → SIGCONT → Ready</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>Modbus 读写</td><td>读温度/湿度寄存器、写目标温度回读验证、线圈读写（双向均验证）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>Modbus 台账</td><td>op_ledger 落 SQLite：时间戳/设备 ID/寄存器地址/值/结果，按条件查询，30 天清理</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>多架构镜像</td><td>manifest 含 amd64+arm64；双架构 --version 一致（v0.1.0）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>质量门禁</td><td>24 包 race 全绿、lint 0、覆盖率 77.9%</td><td><span class="badge b-green">通过</span></td></tr>
+</tbody>
+</table>
+
+<h3>3.2 审查与修复（docs/CODE-REVIEW-M4C.md，178 行）</h3>
+<div class="panel">
+<p><strong>结论：✅ 有条件通过（0 P0 / 0 P1 / 9 P2）→ P2×3 修复（commit 499f225）+ P2×6 记录待办</strong></p>
+<table>
+<thead><tr><th>已修复 P2</th><th>内容</th></tr></thead>
+<tbody>
+<tr><td>NodeID 字符白名单</td><td>字母/数字/-/_，防 systemd EnvironmentFile 注入与非法容器名</td></tr>
+<tr><td>coil 属性严格解析</td><td>拒绝 coil2x 之类宽松匹配（精确匹配 coil0..3）</td></tr>
+<tr><td>go.mod 标记</td><td>goburrow/modbus 直接依赖标记修正</td></tr>
+</tbody>
+</table>
+<p style="margin-top:0.5rem;font-size:0.82rem">P2×6 待办：TLSSAN 语法校验、reset 同名文件边界、陈旧快照窗口（已文档化）、模拟器 unit ID 校验、float 截断、:latest immutable/cosign/SBOM。</p>
+</div>
+
+<h2>4. 文档</h2>
+<table>
+<thead><tr><th>文档</th><th>覆盖</th></tr></thead>
+<tbody>
+<tr><td>docs/KEADM.md</td><td>安装/初始化/加入/重置/异常排障/真实集群步骤</td></tr>
+<tr><td>docs/NODECONTROLLER.md</td><td>配置项表、与 CloudHub 断开事件互补、排障</td></tr>
+<tr><td>docs/MODBUS-GUIDE.md</td><td>设备接入指导、模拟器、地址映射、排障 FAQ</td></tr>
+<tr><td>docs/MULTIARCH.md</td><td>本地验证流程、CI 流程、manifest 检查、跨平台风险与回滚预案</td></tr>
+</tbody>
+</table>
+
+<h2>5. 下一步建议</h2>
+<table>
+<thead><tr><th>优先级</th><th>事项</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>P1</td><td>M4 收尾：升级回滚机制（10.2）</td><td>EdgeCore OTA 升级/灰度、回滚 SOP</td></tr>
+<tr><td>P1</td><td>M5 前置：文档与示例完善（9.2-9.5）</td><td>API 文档、Demo、Release Notes</td></tr>
+<tr><td>P2</td><td>M4C P2×6</td><td>见 PROGRESS.md §5</td></tr>
+</tbody>
+</table>
+
+<div class="footer">
+  EdgeFlow M4 主体交付报告 · 生成时间 2026-08-14 19:00 (Asia/Shanghai)<br>
+  研发方式：4 路开发 Agent（keadm / NodeController / Modbus / 多架构）+ M4C 综合复核 + 主线 P2 修复<br>
+  仓库：/Users/mac/Documents/edgeflow/ · 审查：docs/CODE-REVIEW-M4C.md · 台账：docs/PROGRESS.md
+</div>
+
+</div>
+</body>
+</html>

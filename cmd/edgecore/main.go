@@ -131,17 +131,10 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	// 启动 Edged（WBS 3.2 方案 A POC）：声明式调谐循环 + Docker 容器运行时。
 	// 期望状态来自 MetaManager 的 Pod 元数据；每 5s 轮询 + 增量订阅触发。
 	// 调谐周期可用环境变量 EDGEFLOW_EDGECORE_RECONCILE_INTERVAL 覆盖（默认 5s）
-	reconcileInterval := 5 * time.Second
-	if v := os.Getenv("EDGEFLOW_EDGECORE_RECONCILE_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			reconcileInterval = d
-		} else {
-			log.Warnf("EDGEFLOW_EDGECORE_RECONCILE_INTERVAL 非法（%q），使用默认 5s", v)
-		}
-	}
+	reconcileInterval := durationFromEnv("EDGEFLOW_EDGECORE_RECONCILE_INTERVAL", 5*time.Second)
 	edgedSvc := edged.New(store, edged.NewDockerRuntime(), reconcileInterval)
 	edgedSvc.Start()
-	log.Infof("Edged started（方案 A POC：DockerRuntime + 5s 调谐周期）")
+	log.Infof("Edged started（方案 A POC：DockerRuntime + %s 调谐周期）", reconcileInterval)
 
 	// MetaManager 增量订阅：Pod 变更（upsert/delete）→ 触发 Edged 立即调谐。
 	// 背压策略：订阅缓冲满时丢弃事件（reconcile 是声明式的，下一轮轮询会收敛）。
@@ -159,10 +152,25 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 		log.Infof("MetaManager 增量订阅已启用（subID=%d），Pod 变更将即时触发 Edged 调谐", subID)
 	}
 
+	// Pod 状态上报循环（WBS 6.3）：周期读取 Edged 状态表并上报云端。
+	// 与调谐解耦：固定周期（默认 30s，环境变量 EDGEFLOW_EDGECORE_REPORT_INTERVAL
+	// 可覆盖），启动即上报一轮。退出机制与主流程一致：独立 stopCh，收到退出
+	// 信号后先停上报再停 Edged/EdgeHub（上报循环是 EdgeHub 通道的消费者）。
+	reportInterval := durationFromEnv("EDGEFLOW_EDGECORE_REPORT_INTERVAL", defaultReportInterval)
+	reportStopCh := make(chan struct{})
+	reportDone := make(chan struct{})
+	go func() {
+		defer close(reportDone)
+		runStatusReportLoop(client, edgedSvc, opts.NodeID, reportInterval, reportStopCh)
+	}()
+	log.Infof("Pod 状态上报循环已启动（周期 %s，nodeID=%s）", reportInterval, opts.NodeID)
+
 	// 常驻：等待退出信号后优雅关闭（先停 EdgeHub，再关 Store，
 	// 保证回调不再触发后才会关闭数据库连接）
 	sig := <-sigCh
 	log.Infof("收到信号 %v，正在优雅关闭 EdgeHub...", sig)
+	close(reportStopCh)
+	<-reportDone // 上报循环退出后不再有新消息写入通道
 	edgedSvc.Stop()
 	client.Stop()
 	if subID != 0 {

@@ -150,9 +150,9 @@ func (e *Edged) reconcileOnce() error {
 	}
 
 	// 2. 实际集合：运行时上的容器（List 失败不中断：只警告，清理留到下一轮）
-	local, err := e.rt.List()
-	if err != nil {
-		log.Warnf("Edged reconcile: 列出本地容器失败（本轮跳过孤儿清理）: %v", err)
+	local, listErr := e.rt.List()
+	if listErr != nil {
+		log.Warnf("Edged reconcile: 列出本地容器失败（本轮跳过孤儿清理）: %v", listErr)
 		local = nil
 	}
 
@@ -204,7 +204,10 @@ func (e *Edged) reconcileOnce() error {
 		removed++
 	}
 
-	// 5. 摘要日志
+	// 5. 状态表清理（P2-1）：移除已不在期望集合的残留条目（策略见 cleanupStatus）
+	e.cleanupStatus(desiredKeys, local, listErr != nil)
+
+	// 6. 摘要日志
 	if errCount > 0 {
 		log.Warnf("reconcile: %d pods, %d running, %d stopped, %d error, %d removed",
 			len(desired), running, stopped, errCount, removed)

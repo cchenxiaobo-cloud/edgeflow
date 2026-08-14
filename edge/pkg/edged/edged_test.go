@@ -121,8 +121,10 @@ func TestEdgedReconcileRemovesDeletedPod(t *testing.T) {
 	if len(pods) != 0 {
 		t.Errorf("清理后本地容器 = %v，期望为空", pods)
 	}
-	if st := e.Status()["default/nginx"]; st.State != StateAbsent {
-		t.Errorf("Status() = %+v，期望 absent", st)
+	// P2-1：孤儿清理成功后，状态条目一并移除（不保留 Absent 历史，
+	// 避免 status map 无界增长与过期条目误上报）
+	if _, ok := e.Status()["default/nginx"]; ok {
+		t.Errorf("Status() 仍含已删除 Pod 的条目，期望已清理（P2-1）")
 	}
 }
 

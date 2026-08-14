@@ -16,7 +16,9 @@
         "VERSION": "v0.1.0",
         "GIT_COMMIT": "ca2051b",
         "BUILD_TIME": "2026-08-14T19:52:32+0800"
-      }
+      },
+      "archNote": "本机 arm64 单架构构建（docker build，非 buildx 多架构）；多架构 manifest 验证见 docs/MULTIARCH.md §7（commit 301daee，gitCommit=f71684e 的历史构建）",
+      "verifiedBy": "独立复核：digest 双渠道一致 + pull 复验（构建人），registry 已清理无法二次复验"
     },
     {
       "name": "edgeflow/edgecore",
@@ -30,7 +32,9 @@
         "VERSION": "v0.1.0",
         "GIT_COMMIT": "ca2051b",
         "BUILD_TIME": "2026-08-14T19:52:32+0800"
-      }
+      },
+      "archNote": "本机 arm64 单架构构建（docker build，非 buildx 多架构）；多架构 manifest 验证见 docs/MULTIARCH.md §7（commit 301daee，gitCommit=f71684e 的历史构建）",
+      "verifiedBy": "独立复核：digest 双渠道一致 + pull 复验（构建人），registry 已清理无法二次复验"
     }
   ]
 }

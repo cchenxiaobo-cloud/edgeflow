@@ -267,14 +267,16 @@
       "name": "keadm-darwin-arm64",
       "platform": "darwin/arm64",
       "cgo": "enabled",
-      "sha256": "0406b67def3526a3ff380dbbc305f189e9320cabf466747c97000b77a005b7c8"
+      "sha256": "46e43c9755847af3c17326a949f9c57c4da731f63dcf3dab6999ea4e44ab10f1",
+      "buildCommit": "733d0ae"
     },
     {
       "type": "binary",
       "name": "keadm-linux-amd64",
       "platform": "linux/amd64",
       "cgo": "disabled",
-      "sha256": "ebf60259e90a8500ca2c9c5bf849124a1ec4cbd504e79c9a4792d7a2e19f50b9"
+      "sha256": "d96afd8350c2e8322862438c2cf1a6b37d98f57d6f112bade9f9c2983a440d3d",
+      "buildCommit": "733d0ae"
     },
     {
       "type": "helm-chart",

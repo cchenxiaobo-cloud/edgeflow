@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EdgeFlow M4 收尾 + M5 前置交付报告</title>
+<style>
+  :root {
+    --bg: #ffffff; --text: #1a1a1a; --text-2: #444; --text-3: #888;
+    --accent: #1a1a1a; --border: #d9d9d9; --rule: #b3b3b3;
+    --green: #1a6b3c; --green-light: #f0f5f2; --code-bg: #f5f5f5;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+    --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.7; font-weight: 400; font-size: 15px; }
+  .container { max-width: 860px; margin: 0 auto; padding: 72px 40px; }
+  h1 { font-size: 1.75rem; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 0.2rem; }
+  h2 { font-size: 1.05rem; font-weight: 600; margin: 2.5rem 0 0.8rem; padding-bottom: 0.35rem; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 0.95rem; font-weight: 600; margin: 1.5rem 0 0.5rem; }
+  p { margin-bottom: 0.7rem; color: var(--text-2); }
+  .subtitle { font-size: 0.9rem; color: var(--text-3); margin-bottom: 2.5rem; }
+  a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+  code { font-family: var(--mono); background: var(--code-bg); padding: 0.1em 0.35em; font-size: 0.85em; }
+  pre { background: var(--code-bg); padding: 0.9rem 1rem; overflow-x: auto; margin: 0.8rem 0; font-size: 0.8rem; line-height: 1.5; font-family: var(--mono); }
+  table { width: 100%; border-collapse: collapse; margin: 0.8rem 0 1.2rem; font-size: 0.85rem; }
+  th { text-align: left; font-weight: 600; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--text); font-size: 0.78rem; }
+  td { padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--border); }
+  .badge { display: inline-block; padding: 0.1em 0.5em; border: 1px solid var(--text); font-size: 0.72rem; font-weight: 600; }
+  .b-green { border-color: var(--green); color: var(--green); }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); margin: 1.2rem 0; }
+  .metric { background: var(--bg); padding: 1rem 0.8rem; text-align: center; }
+  .metric-value { font-size: 1.5rem; font-weight: 600; }
+  .metric-label { font-size: 0.7rem; color: var(--text-3); margin-top: 0.2rem; }
+  .arch { font-family: var(--mono); font-size: 0.74rem; line-height: 1.55; border: 1px solid var(--border); padding: 1rem; overflow-x: auto; margin: 0.8rem 0; color: var(--text-2); }
+  .panel { border: 1px solid var(--border); padding: 1rem 1.2rem; margin: 1rem 0; }
+  .footer { margin-top: 3rem; padding-top: 1.2rem; border-top: 1px solid var(--rule); font-size: 0.75rem; color: var(--text-3); }
+  @media (max-width: 700px) { .container { padding: 36px 18px; } .metrics { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>EdgeFlow M4 收尾 + M5 前置</h1>
+<p class="subtitle">升级回滚机制 · P2×6 处置 · 9.2-9.5 文档与示例 · 2026-08-14</p>
+
+<div class="metrics">
+  <div class="metric"><div class="metric-value">97</div><div class="metric-label">累计提交</div></div>
+  <div class="metric"><div class="metric-value">77.8%</div><div class="metric-label">总覆盖率</div></div>
+  <div class="metric"><div class="metric-value">0</div><div class="metric-label">Lint / P0 / P1</div></div>
+  <div class="metric"><div class="metric-value">6/6</div><div class="metric-label">演练场景通过</div></div>
+</div>
+
+<h2>1. 交付摘要</h2>
+<p>本轮完成三块：<strong>升级回滚机制（WBS 10.2）</strong>——keadm upgrade/rollback + 备份 + 台账，完整演练通过；<strong>M4C P2×6 处置</strong>——4 项修复 + 1 项关闭 + 1 项延后；<strong>M5 前置（9.2-9.5）</strong>——四文档定稿 + 干净环境可跑的端到端 Demo。审查 0 P0 / 0 P1。</p>
+
+<h2>2. 升级回滚机制（10.2）</h2>
+<div class="arch">keadm upgrade --version=v0.2.0
+  ① 版本格式校验 → ② 备份产物（backups/&lt;ts&gt;/manifest+sha256）
+  → ③ 更新 env 版本标记 → ③b 刷新 reset 校验清单 → ④ 台账
+  任一环节失败：台账 failed + 提示 rollback --latest；--simulate-failure 演练
+
+keadm rollback [--backup=&lt;id&gt;|--latest]
+  完整性校验（manifest+sha256）→ 恢复 3 产物（复制+回读+权限）→ 刷新清单 → 台账
+  失败兜底：备份保留 + 人工 cp 提示 + 重跑幂等
+
+台账 ops-ledger.jsonl：{ts, action, from, to, result, operator, note} 追加写</div>
+
+<h2>3. 验证结果</h2>
+
+<h3>3.1 演练（真实命令）</h3>
+<table>
+<thead><tr><th>场景</th><th>实测证据</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>升级→失败→回滚</td><td>--simulate-failure（exit=1、台账 failed、产物未动）→ rollback --latest 恢复，diff 一致</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>回滚后数据不丢</td><td>预置 SQLite 与用户文件全程 hash 一致</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>异常三类兜底</td><td>中途失败（提示+台账）/回滚失败（备份保留+cp 命令）/产物缺失（明确错误）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>台账可追踪</td><td>ops-ledger 4 条可查，KEADM_OPERATOR=alice 记录操作人</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>协调点</td><td>init→join→upgrade→reset 全链路（清单合并、默认 node-id 清洗）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>Demo 示例</td><td>demo.sh 干净环境 DEMO PASS×3（含 MQTT 段），0 残留</td><td><span class="badge b-green">通过</span></td></tr>
+</tbody>
+</table>
+
+<h3>3.2 P2 处置（M4C P2×6）</h3>
+<table>
+<thead><tr><th>项</th><th>方式</th><th>证据</th></tr></thead>
+<tbody>
+<tr><td>① TLSSAN 无校验</td><td>修复（fail-fast）</td><td>坏 SAN → exit 1</td></tr>
+<tr><td>② reset 误删边界</td><td>修复（manifest 校验和）</td><td>篡改文件 reset 跳过</td></tr>
+<tr><td>③ 模拟器加固</td><td>修复（unit ID 校验+连接上限）</td><td>unit 0 回 0x0B、超限拒连</td></tr>
+<tr><td>④ 陈旧快照窗口</td><td>关闭（已文档化）</td><td>NODECONTROLLER.md 已知边界</td></tr>
+<tr><td>⑤ float 截断</td><td>修复（0.1°C 舍入）</td><td>25.55→256 断言区分新旧</td></tr>
+<tr><td>⑥ :latest immutable</td><td>延后（M5 发布阶段）</td><td>PROGRESS.md 登记</td></tr>
+</tbody>
+</table>
+
+<h3>3.3 审查（docs/CODE-REVIEW-M4D.md，200 行）</h3>
+<div class="panel">
+<p><strong>结论：✅ 有条件通过（0 P0 / 0 P1 / 5 P2）→ P2×3 修复（commit 4c52f4a）+ P2×2 记录待办</strong></p>
+<table>
+<thead><tr><th>已修复</th><th>内容</th></tr></thead>
+<tbody>
+<tr><td>P2-1</td><td>refreshManifest 失败分支台账 result 矛盾（ok→failed）</td></tr>
+<tr><td>P2-2</td><td>HANDOFF/DEPLOYMENT 过时引用（M5 并行→已实现）+ 命令速查补齐</td></tr>
+<tr><td>P2-3</td><td>协调修复补单测（defaultNodeID 清洗、manifest 合并链路）</td></tr>
+</tbody>
+</table>
+<p style="margin-top:0.5rem;font-size:0.82rem">待办：restoreBackup 非事务性（有兜底）、manifest 文件清单白名单（低危纵深防御）。</p>
+</div>
+
+<h2>4. M5 前置文档（9.2-9.5 定稿）</h2>
+<table>
+<thead><tr><th>文档</th><th>内容</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td>API-SPEC.md（9.2）</td><td>全端点 + 请求/响应 + 错误码表</td><td><span class="badge b-green">定稿</span></td></tr>
+<tr><td>DEPLOYMENT.md（9.3）</td><td>快速开始 + Helm/mTLS/keadm + 升级回滚引用</td><td><span class="badge b-green">定稿</span></td></tr>
+<tr><td>HANDOFF.md（9.4）</td><td>代码结构 + 开发流程 + 测试规范 + 常见任务</td><td><span class="badge b-green">定稿</span></td></tr>
+<tr><td>examples/README.md（9.5）</td><td>温度传感器 Demo 教程（架构/步骤/预期输出/排障）</td><td><span class="badge b-green">定稿</span></td></tr>
+<tr><td>examples/demo.sh</td><td>一键端到端示例（构建→双端→Pod→设备→MQTT→清理）</td><td><span class="badge b-green">DEMO PASS×3</span></td></tr>
+</tbody>
+</table>
+
+<h2>5. 下一步建议</h2>
+<table>
+<thead><tr><th>优先级</th><th>事项</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>P1</td><td>M5：发布产物与 Release Notes（9.2-9.5 之外的发布项）</td><td>二进制包、Chart 包、多架构镜像推送</td></tr>
+<tr><td>P1</td><td>M4D P2×2 + M4C P2 遗留</td><td>restoreBackup 事务化、白名单校验、cosign/SBOM</td></tr>
+<tr><td>P2</td><td>生产环境演练排期</td><td>升级回滚生产演练需单独审批排期</td></tr>
+</tbody>
+</table>
+
+<div class="footer">
+  EdgeFlow M4 收尾 + M5 前置 · 生成时间 2026-08-14 19:45 (Asia/Shanghai)<br>
+  研发方式：3 路开发 Agent（升级回滚 / P2×6 / M5 文档）+ M4D 复核 + 主线协调点修复<br>
+  仓库：/Users/mac/Documents/edgeflow/ · 审查：docs/CODE-REVIEW-M4D.md · 台账：docs/PROGRESS.md
+</div>
+
+</div>
+</body>
+</html>

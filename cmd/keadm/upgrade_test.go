@@ -428,3 +428,267 @@ func TestOpsLedger(t *testing.T) {
 		t.Errorf("最近 2 条应为 rollback + upgrade: %+v", recent)
 	}
 }
+
+// TestRestoreBackupTransactional 验证事务化恢复成功路径（P2-4）：
+// 全部产物恢复 + 权限正确（env 0600 / service 0644 / install.sh 0755）+
+// staging 无残留。
+func TestRestoreBackupTransactional(t *testing.T) {
+	out, _ := tmpOut(t)
+	joinOnce(t, out)
+	// 预置备份：升级到 v0.2.0 生成 v0.1.0 快照，随后篡改当前 env
+	// （模拟恢复前的损坏/混杂状态）。
+	if code, _, stderr := runCapture([]string{"upgrade", "--version=v0.2.0", "--output-dir=" + out}, ""); code != 0 {
+		t.Fatalf("预置 upgrade 失败: %s", stderr)
+	}
+	dirs := listBackupDirs(t, out)
+	if len(dirs) != 1 {
+		t.Fatalf("应有 1 个备份，实际 %v", dirs)
+	}
+	if err := os.WriteFile(filepath.Join(out, "edgecore.env"), []byte("# 被篡改的内容\n"), 0o600); err != nil {
+		t.Fatalf("篡改 env 失败: %v", err)
+	}
+	backup := filepath.Join(out, backupsDir, dirs[0])
+
+	m := readManifest(t, out, dirs[0])
+	if err := restoreBackup(out, backup, m); err != nil {
+		t.Fatalf("restoreBackup 失败: %v", err)
+	}
+	// 产物与备份逐字节一致。
+	for _, name := range backupFiles {
+		want, err := os.ReadFile(filepath.Join(backup, name))
+		if err != nil {
+			t.Fatalf("读备份 %s 失败: %v", name, err)
+		}
+		if got := readFile(t, filepath.Join(out, name)); got != string(want) {
+			t.Errorf("%s 恢复后与备份不一致", name)
+		}
+	}
+	// 权限：env 0600 / service 0644 / install.sh 0755。
+	checkPerm := func(name string, want os.FileMode) {
+		t.Helper()
+		info, err := os.Stat(filepath.Join(out, name))
+		if err != nil {
+			t.Fatalf("stat %s 失败: %v", name, err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s 权限 = %v，期望 %v", name, got, want)
+		}
+	}
+	checkPerm("edgecore.env", 0o600)
+	checkPerm("edgecore.service", 0o644)
+	checkPerm("install.sh", 0o755)
+	assertNoStaging(t, out)
+}
+
+// TestRestoreBackupFailureAtomic 验证事务化恢复失败路径（P2-4）：
+// 中途失败（备份缺 install.sh，manifest 声明 3 文件）→ 目标文件与
+// 失败前逐字节一致（未被部分覆盖）+ staging 清理 + 备份目录保留。
+func TestRestoreBackupFailureAtomic(t *testing.T) {
+	out, _ := tmpOut(t)
+	joinOnce(t, out)
+	// 记录失败前的目标文件内容（原子性断言基线）。
+	before := map[string]string{}
+	for _, name := range backupFiles {
+		before[name] = readFile(t, filepath.Join(out, name))
+	}
+	// 构造缺 install.sh 的备份目录（前两个文件可正常复制，第三个读取失败）。
+	backup := filepath.Join(out, backupsDir, "20260101-000000")
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatalf("创建备份目录失败: %v", err)
+	}
+	for _, name := range []string{"edgecore.env", "edgecore.service"} {
+		if err := os.WriteFile(filepath.Join(backup, name), []byte("backup-"+name), 0o644); err != nil {
+			t.Fatalf("写备份文件失败: %v", err)
+		}
+	}
+	m := backupManifest{
+		ID:      "20260101-000000",
+		Version: "v0.1.0",
+		Files:   append([]string{}, backupFiles...),
+	}
+
+	if err := restoreBackup(out, backup, m); err == nil {
+		t.Fatal("restoreBackup 应失败（备份缺 install.sh）")
+	}
+	// 原子性：目标文件与失败前完全一致（没有任何部分覆盖）。
+	for _, name := range backupFiles {
+		if got := readFile(t, filepath.Join(out, name)); got != before[name] {
+			t.Errorf("%s 被部分覆盖（失败前 %q，失败后 %q）", name, before[name], got)
+		}
+	}
+	// 备份保留 + staging 清理。
+	if _, err := os.Stat(filepath.Join(backup, "edgecore.env")); err != nil {
+		t.Errorf("备份目录不应被删除: %v", err)
+	}
+	assertNoStaging(t, out)
+}
+
+// assertNoStaging 断言 output-dir 下没有 .restore-staging-* 残留目录。
+func assertNoStaging(t *testing.T, out string) {
+	t.Helper()
+	entries, err := os.ReadDir(out)
+	if err != nil {
+		t.Fatalf("读取输出目录失败: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".restore-staging-") {
+			t.Errorf("staging 目录未清理: %s", e.Name())
+		}
+	}
+}
+
+// TestFindBackupRejectsUnknownManifestFiles 验证 manifest 白名单校验（P2-5）：
+// Files 含白名单外条目（绝对路径/路径穿越/近似名）→ findBackup 拒绝加载
+// 并提示「未知文件」；恢复原始清单后正常通过。
+func TestFindBackupRejectsUnknownManifestFiles(t *testing.T) {
+	out, _ := tmpOut(t)
+	joinOnce(t, out)
+	if code, _, stderr := runCapture([]string{"upgrade", "--version=v0.2.0", "--output-dir=" + out}, ""); code != 0 {
+		t.Fatalf("预置 upgrade 失败: %s", stderr)
+	}
+	dirs := listBackupDirs(t, out)
+	if len(dirs) != 1 {
+		t.Fatalf("应有 1 个备份，实际 %v", dirs)
+	}
+	id := dirs[0]
+	orig, err := os.ReadFile(filepath.Join(out, backupsDir, id, "manifest.json"))
+	if err != nil {
+		t.Fatalf("读原始清单失败: %v", err)
+	}
+	for _, evil := range []string{"/etc/cron.d/x", "../escape", "a/b", "install.sh.bak"} {
+		m := readManifest(t, out, id)
+		m.Files = append(m.Files, evil)
+		mb, err := json.Marshal(m)
+		if err != nil {
+			t.Fatalf("序列化恶意清单失败: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(out, backupsDir, id, "manifest.json"), mb, 0o644); err != nil {
+			t.Fatalf("写恶意清单失败: %v", err)
+		}
+		if _, _, err := findBackup(out, id); err == nil || !strings.Contains(err.Error(), "未知文件") {
+			t.Errorf("恶意条目 %q 应被拒绝并提示未知文件，实际 err=%v", evil, err)
+		}
+	}
+	// 恢复原始清单 → 正常通过（白名单校验不误伤合法备份）。
+	if err := os.WriteFile(filepath.Join(out, backupsDir, id, "manifest.json"), orig, 0o644); err != nil {
+		t.Fatalf("恢复原始清单失败: %v", err)
+	}
+	if _, _, err := findBackup(out, id); err != nil {
+		t.Errorf("正常清单应通过 findBackup: %v", err)
+	}
+}
+
+// TestRollbackRejectsMaliciousManifest 验证 rollback 全链路拒绝恶意清单（P2-5）：
+// 篡改 manifest 后 rollback --latest 失败（exit 1）+ 产物未动 + 台账 failed。
+func TestRollbackRejectsMaliciousManifest(t *testing.T) {
+	out, _ := tmpOut(t)
+	joinOnce(t, out)
+	if code, _, stderr := runCapture([]string{"upgrade", "--version=v0.2.0", "--output-dir=" + out}, ""); code != 0 {
+		t.Fatalf("预置 upgrade 失败: %s", stderr)
+	}
+	dirs := listBackupDirs(t, out)
+	m := readManifest(t, out, dirs[0])
+	m.Files = append(m.Files, "/etc/cron.d/x")
+	mb, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("序列化恶意清单失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(out, backupsDir, dirs[0], "manifest.json"), mb, 0o644); err != nil {
+		t.Fatalf("写恶意清单失败: %v", err)
+	}
+	before := readFile(t, filepath.Join(out, "edgecore.env"))
+
+	code, _, stderr := runCapture([]string{"rollback", "--latest", "--output-dir=" + out}, "")
+	if code != 1 || !strings.Contains(stderr, "未知文件") {
+		t.Errorf("恶意清单 rollback 应 exit=1 并提示未知文件: code=%d stderr=%q", code, stderr)
+	}
+	// 拒绝加载 → 产物未被触碰。
+	if got := readFile(t, filepath.Join(out, "edgecore.env")); got != before {
+		t.Errorf("拒绝加载后产物不应变化: %q -> %q", before, got)
+	}
+	// 台账：upgrade ok + rollback failed。
+	entries := readLedger(t, out)
+	if len(entries) != 2 || entries[1].Action != "rollback" || entries[1].Result != "failed" {
+		t.Errorf("台账应有 1 条 rollback failed，实际 %+v", entries)
+	}
+}
+
+// TestListBackupsWarnsUnknownManifest 验证 listBackups 对含白名单外条目的
+// 备份跳过并警告（P2-5），不删除现场。
+func TestListBackupsWarnsUnknownManifest(t *testing.T) {
+	out, _ := tmpOut(t)
+	joinOnce(t, out)
+	if code, _, stderr := runCapture([]string{"upgrade", "--version=v0.2.0", "--output-dir=" + out}, ""); code != 0 {
+		t.Fatalf("预置 upgrade 失败: %s", stderr)
+	}
+	dirs := listBackupDirs(t, out)
+	m := readManifest(t, out, dirs[0])
+	m.Files = append(m.Files, "../escape")
+	mb, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("序列化恶意清单失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(out, backupsDir, dirs[0], "manifest.json"), mb, 0o644); err != nil {
+		t.Fatalf("写恶意清单失败: %v", err)
+	}
+
+	backups, warnings, err := listBackups(out)
+	if err != nil {
+		t.Fatalf("listBackups 失败: %v", err)
+	}
+	if len(backups) != 0 {
+		t.Errorf("恶意备份应被跳过，实际 %d 个", len(backups))
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "未知文件") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("应有未知文件警告，实际 %v", warnings)
+	}
+	// 现场保留（不删除）。
+	if _, err := os.Stat(filepath.Join(out, backupsDir, dirs[0], "manifest.json")); err != nil {
+		t.Errorf("恶意备份现场不应被删除: %v", err)
+	}
+}
+
+// TestRestoreBackupSkipsNonWhitelist 验证 restoreBackup 只恢复白名单文件
+// （P2-5 纵深防御）：即使清单含白名单外条目，也不会写出该文件。
+func TestRestoreBackupSkipsNonWhitelist(t *testing.T) {
+	out, _ := tmpOut(t)
+	joinOnce(t, out)
+	backup := filepath.Join(out, backupsDir, "20260101-000000")
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatalf("创建备份目录失败: %v", err)
+	}
+	for _, name := range backupFiles {
+		if err := os.WriteFile(filepath.Join(backup, name), []byte("backup-"+name), 0o644); err != nil {
+			t.Fatalf("写备份文件失败: %v", err)
+		}
+	}
+	// 备份目录里多放一个白名单外文件（模拟被篡改的备份现场）。
+	if err := os.WriteFile(filepath.Join(backup, "evil.txt"), []byte("evil"), 0o644); err != nil {
+		t.Fatalf("写恶意文件失败: %v", err)
+	}
+	m := backupManifest{
+		ID:      "20260101-000000",
+		Version: "v0.1.0",
+		Files:   []string{"edgecore.env", "edgecore.service", "install.sh", "evil.txt"},
+	}
+	if err := restoreBackup(out, backup, m); err != nil {
+		t.Fatalf("restoreBackup 失败: %v", err)
+	}
+	// 白名单产物正常恢复。
+	for _, name := range backupFiles {
+		if got := readFile(t, filepath.Join(out, name)); got != "backup-"+name {
+			t.Errorf("%s 恢复内容错误: %q", name, got)
+		}
+	}
+	// 白名单外文件未被写出到 output-dir。
+	if _, err := os.Stat(filepath.Join(out, "evil.txt")); !os.IsNotExist(err) {
+		t.Errorf("白名单外文件不应被写出: %v", err)
+	}
+	assertNoStaging(t, out)
+}

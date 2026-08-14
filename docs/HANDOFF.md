@@ -57,7 +57,7 @@ edgeflow/
 
 ## 4. 如何开发下一个模块（标准流程）
 
-1. **读计划**：`docs/ROADMAP.md` 找到下一个模块（当前建议 M4 主体：keadm 基础版（8.6）、NodeController 心跳监控（2.4）、或真实协议 Mapper（5.2 Modbus））
+1. **读计划**：`docs/ROADMAP.md` 找到下一个模块（当前建议 M4 收尾：升级回滚机制（10.2）、安全扫描接入 CI、或 M5 前置：文档与示例完善（9.2-9.5））
 2. **建分支**：`git checkout -b feat/模块名`
 3. **开发**：用 AI 工具（Trae/Codex）辅助写代码，遵循现有包风格（中文注释、零第三方依赖）
 4. **验证**（每次提交前必须全跑）：
@@ -102,6 +102,10 @@ make lint       # 静态检查
 | `EDGEFLOW_CLOUDCORE_TLS_SAN='IP:10.0.0.5,DNS:cloudcore.svc' ./bin/cloudcore` | 跨主机部署注入服务端 SAN |
 | `docker build --target cloudcore -t edgeflow/cloudcore:v0.1.0 .` | 构建云端镜像（同理 edgecore） |
 | `helm install edgeflow ./build/charts/edgeflow --namespace edgeflow --create-namespace` | 部署 CloudCore（含 /data 可写挂载） |
+| `./bin/keadm init --output-dir=./keadm-out` | 生成云端部署产物（cloudcore.yaml） |
+| `./bin/keadm join --cloudcore-ip=<ip> --token=<token> --node-id=edge-01` | 生成边缘接入产物（env+systemd） |
+| `go run ./hack/modbus-sim` | 启动 Modbus 模拟器（默认 127.0.0.1:15020） |
+| `EDGEFLOW_CLOUDCORE_NODE_TIMEOUT=180s ./bin/cloudcore` | 节点心跳超时阈值（默认 180s） |
 | `go run ./hack/edged-smoke` | DockerRuntime 冒烟（需 Docker daemon） |
 | `docker ps --filter label=edgeflow.pod` | 查看 Edged 管理的容器 |
 | `curl localhost:8080/api/v1/nodes` | 查询已注册边缘节点（JSON） |

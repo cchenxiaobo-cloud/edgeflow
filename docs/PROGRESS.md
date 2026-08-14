@@ -42,7 +42,7 @@
 | M1 | 云边核心通信链路（CloudHub/EdgeHub） | ✅ **M1 一~三期完成** | +EdgeNode 对接+可靠投递 4.6+PodSync 链路 | commits e569ea1~5312253，见 §4D |
 | M2 | 应用部署与边缘自治 | 🟨 **第 1-4 轮完成** | +Edged 多副本/健康自愈（6.4/6.5）| commits c9db4ba~47d9e21，见 §4E/§4F/§4H/§4I |
 | M3 | 设备管理（Device CRD/Twin/Mapper） | 🟨 **第 1-3 轮完成** | +Mapper 接入 EventBus（MQTT 数据面）| commits 7d82c0c~99b5624，见 §4G/§4H/§4I |
-| M4 | 生产化与规模化 | 🟨 **前置完成** | mTLS 安全认证 + 镜像 + Helm 完整化 | commits 3bb60ce~70d1f5e，见 §4J |
+| M4 | 生产化与规模化 | 🟨 **主体完成** | +keadm/NodeController/Modbus/多架构 | commits 2386fa3~499f225，见 §4J/§4K |
 | M5 | MVP 发布与文档交付 | ⏳ 待开发 | 依赖 M4 | — |
 
 ## 4. 首个模块（M0-1）验证结果
@@ -385,6 +385,31 @@
 - 存量压测 TestShutdownDuringNewConnections 偶发 race 观察项（10+ 复跑全绿，非本轮改动）
 - TLS 握手无超时/并发上限（net/http 固有）
 - gen-certs 与 Go 侧 CN 约定（脚本已可配 CLIENT_CN，默认对齐 edgeflow-edgecore）
+
+## 4K. M4 主体验证结果（keadm/NodeController/Modbus/多架构，2026-08-14）
+
+### 新增模块
+| 模块 | 提交 | 内容 |
+|------|------|------|
+| cmd/keadm（8.6） | 2386fa3 | init（生成 cloudcore.yaml）/join（env+systemd）/reset（白名单+确认）/version；异常路径 exit=2 |
+| cloud/pkg/nodecontroller（2.4） | f71684e | 心跳超时扫描（interval/timeout env 可配、时钟可注入），覆盖率 96.8% |
+| Modbus（5.2） | a290686 | 自实现协议模拟器（5 功能码+错误码）+ goburrow Mapper + op_ledger 台账（30 天清理） |
+| 多架构镜像 | 301daee | 本地 registry 闭环：manifest 双架构 + QEMU 交叉运行版本一致 + CI release.yml |
+| M4C P2×3 | 499f225 | NodeID 白名单（防 systemd 注入）、coil 严格解析、go.mod 标记 |
+
+### 端到端验证
+| 场景 | 实测结果 |
+|------|---------|
+| keadm | ✅ version/init exit=0，产物 cloudcore.yaml+NOTES；异常路径 exit=2 |
+| NodeController | ✅ SIGSTOP 冻结心跳 → Offline → SIGCONT → Ready（状态机闭环） |
+| Modbus 读写 | ✅ 模拟器 + Mapper：读温度湿度、写目标温度回读验证、线圈读写 |
+| Modbus 台账 | ✅ op_ledger 落 SQLite，按条件查询，30 天清理 |
+| 多架构 | ✅ manifest amd64+arm64，双架构 --version 一致（v0.1.0） |
+| 安全扫描/质量门 | ✅ 24 包 race 全绿、lint 0、覆盖率 77.9% |
+
+### 审查（docs/CODE-REVIEW-M4C.md，178 行）
+- 结论：✅ 有条件通过（0 P0 / 0 P1 / 9 P2）→ P2×3 修复 + P2×6 记录待办
+- P2 待办：TLSSAN 语法校验、reset 同名文件误删边界、陈旧快照窗口（已文档化）、模拟器 unit ID 校验、float 截断、:latest immutable/cosign/SBOM
 
 ## 5. 待办项（Backlog）
 

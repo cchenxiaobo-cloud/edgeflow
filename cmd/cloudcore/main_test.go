@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"edgeflow/cloud/pkg/cloudhub"
+	"edgeflow/cloud/pkg/nodecontroller"
+	"edgeflow/cloud/pkg/registry"
 	"edgeflow/pkg/config"
 )
 
@@ -104,7 +106,9 @@ func TestRunServerLifecycle(t *testing.T) {
 func TestServeListenError(t *testing.T) {
 	srv := &http.Server{Addr: ":99999", Handler: http.NewServeMux()}
 	hub := cloudhub.New("127.0.0.1:0")
-	if code := serve(srv, hub); code != 1 {
+	// NodeController 用空注册表即可：本测试只验证监听失败路径
+	nc := nodecontroller.New(registry.New())
+	if code := serve(srv, hub, nc); code != 1 {
 		t.Fatalf("serve 退出码 = %d，期望 1", code)
 	}
 }

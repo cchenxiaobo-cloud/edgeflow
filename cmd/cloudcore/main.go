@@ -25,6 +25,7 @@ import (
 	v1alpha1 "edgeflow/apis/edge/v1alpha1"
 	"edgeflow/cloud/pkg/cloudhub"
 	"edgeflow/cloud/pkg/devicestatus"
+	"edgeflow/cloud/pkg/nodecontroller"
 	"edgeflow/cloud/pkg/podstatus"
 	"edgeflow/cloud/pkg/registry"
 	"edgeflow/pkg/certs"
@@ -134,6 +135,25 @@ func run(args []string, stdout, stderr io.Writer) int {
 	nodeReg := registry.New()
 	hub.SetNodeEvents(registry.NewCloudHubAdapter(nodeReg))
 
+	// 节点心跳静默超时管理（WBS 2.4）：定时扫描注册表，把心跳停滞
+	// （LastHeartbeatAt 超过 timeout 未更新）的节点标记 Offline。
+	// 与 CloudHub 断开事件互补：断开事件覆盖"连接断了"的常规场景，
+	// 本控制器兜底"连接活着但心跳停滞 / 断开事件丢失"的场景
+	// （对标 KubeEdge NodeController）。
+	// 周期/阈值环境变量覆盖：EDGEFLOW_CLOUDCORE_NODE_SCAN_INTERVAL /
+	// EDGEFLOW_CLOUDCORE_NODE_TIMEOUT（默认 30s / 180s，支持 "15s" 或秒数）。
+	scanInterval, nodeTimeout, err := nodecontroller.DurationsFromEnv()
+	if err != nil {
+		log.Errorf("NodeController 配置无效: %v", err)
+		return 1
+	}
+	nc := nodecontroller.New(nodeReg,
+		nodecontroller.WithInterval(scanInterval),
+		nodecontroller.WithTimeout(nodeTimeout),
+	)
+	nc.Start()
+	log.Infof("NodeController 装配完成: 扫描周期 %v, 心跳超时 %v", scanInterval, nodeTimeout)
+
 	// Pod 状态存储（内存态，WBS 6.3）与 CloudHub 上报回调桥接：
 	// 边侧上报的 PodStatus 消息经 CloudHub 校验后注入存储，供查询 API 使用。
 	// 依赖注入（SetPodStatusHandler），CloudHub 不感知存储实现。
@@ -221,7 +241,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		ReadHeaderTimeout: 5 * time.Second,  // 防止慢速连接长时间占用连接
 		ReadTimeout:       10 * time.Second, // 防止慢速读取长时间占用连接
 	}
-	return serve(srv, hub)
+	return serve(srv, hub, nc)
 }
 
 // options 是命令行参数解析结果。
@@ -424,7 +444,7 @@ func (api *nodeAPI) syncConfig(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"ok","acked":true}`))
 }
 
-func serve(srv *http.Server, hub *cloudhub.Server) int {
+func serve(srv *http.Server, hub *cloudhub.Server, nc *nodecontroller.NodeController) int {
 	// 在独立 goroutine 中启动 HTTP 服务与 CloudHub，错误通过 channel 上报主流程
 	errCh := make(chan error, 2)
 	go func() {
@@ -445,9 +465,9 @@ func serve(srv *http.Server, hub *cloudhub.Server) int {
 
 	select {
 	case err := <-errCh:
-		// 任一服务启动/运行失败：尽力关闭两者后返回失败
+		// 任一服务启动/运行失败：尽力关闭全部后返回失败
 		log.Errorf("服务异常退出: %v", err)
-		shutdownAll(srv, hub)
+		shutdownAll(srv, hub, nc)
 		return 1
 	case sig := <-quit:
 		log.Infof("收到信号 %s，开始优雅退出...", sig)
@@ -465,6 +485,8 @@ func serve(srv *http.Server, hub *cloudhub.Server) int {
 		log.Errorf("CloudHub 优雅退出失败: %v", err)
 		ok = false
 	}
+	// NodeController 扫描循环随之停止（优雅退出的一部分）
+	nc.Stop()
 	if !ok {
 		return 1
 	}
@@ -473,7 +495,7 @@ func serve(srv *http.Server, hub *cloudhub.Server) int {
 }
 
 // shutdownAll 在服务异常退出时尽力关闭 HTTP 服务与 CloudHub（结果只记日志）。
-func shutdownAll(srv *http.Server, hub *cloudhub.Server) {
+func shutdownAll(srv *http.Server, hub *cloudhub.Server, nc *nodecontroller.NodeController) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
@@ -482,6 +504,7 @@ func shutdownAll(srv *http.Server, hub *cloudhub.Server) {
 	if err := hub.Shutdown(ctx); err != nil {
 		log.Errorf("CloudHub 关闭失败: %v", err)
 	}
+	nc.Stop()
 }
 
 // nodeAPI 是节点查询 API（/api/v1/nodes）的处理器集合。

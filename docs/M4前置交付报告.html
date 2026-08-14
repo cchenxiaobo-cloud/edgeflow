@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EdgeFlow M4 前置交付报告 — mTLS 与镜像化</title>
+<style>
+  :root {
+    --bg: #fafafa; --surface: #ffffff; --text: #1a1a1a; --text-2: #6b6b6b; --text-3: #999;
+    --accent: #2563eb; --accent-light: #dbeafe; --border: #e5e5e5;
+    --green: #16a34a; --green-light: #dcfce7; --yellow: #ca8a04; --yellow-light: #fef3c7;
+    --red: #dc2626; --red-light: #fee2e2; --code-bg: #f5f5f5; --radius: 4px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+    --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.7; font-weight: 300; -webkit-font-smoothing: antialiased; }
+  .container { max-width: 880px; margin: 0 auto; padding: 80px 40px; }
+  h1 { font-size: 2.2rem; font-weight: 200; letter-spacing: -0.02em; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.3rem; font-weight: 400; letter-spacing: -0.01em; margin: 3rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.05rem; font-weight: 500; margin: 1.8rem 0 0.6rem; }
+  p { margin-bottom: 0.8rem; color: var(--text-2); }
+  .subtitle { font-size: 0.95rem; color: var(--text-3); font-weight: 300; margin-bottom: 2.5rem; }
+  a { color: var(--accent); text-decoration: none; font-weight: 400; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.85em; }
+  pre { background: var(--code-bg); padding: 1rem; border-radius: var(--radius); overflow-x: auto; margin: 1rem 0; font-size: 0.8rem; line-height: 1.5; font-family: var(--mono); }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.85rem; }
+  th { text-align: left; font-weight: 500; padding: 0.6rem 0.5rem; border-bottom: 2px solid var(--text); }
+  td { padding: 0.5rem; border-bottom: 1px solid var(--border); font-weight: 300; }
+  tr:hover td { background: var(--accent-light); }
+  .badge { display: inline-block; padding: 0.15em 0.6em; border-radius: 100px; font-size: 0.75rem; font-weight: 500; }
+  .b-green { background: var(--green-light); color: var(--green); }
+  .b-blue { background: var(--accent-light); color: var(--accent); }
+  .b-yellow { background: var(--yellow-light); color: var(--yellow); }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); margin: 1.5rem 0; }
+  .metric { background: var(--surface); padding: 1.2rem 0.8rem; text-align: center; }
+  .metric-value { font-size: 1.6rem; font-weight: 200; color: var(--accent); }
+  .metric-label { font-size: 0.7rem; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.3rem; }
+  .arch { font-family: var(--mono); font-size: 0.75rem; line-height: 1.6; background: var(--surface); border: 1px solid var(--border); padding: 1.2rem; overflow-x: auto; margin: 1rem 0; color: var(--text-2); }
+  .panel { border: 1px solid var(--border); border-left: 3px solid var(--accent); padding: 1rem 1.2rem; margin: 1rem 0; background: var(--surface); }
+  .footer { margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border); font-size: 0.78rem; color: var(--text-3); }
+  @media (max-width: 700px) { .container { padding: 40px 20px; } .metrics { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>EdgeFlow M4 前置交付报告</h1>
+<p class="subtitle">mTLS 安全认证 · 容器镜像 · Helm 完整化 · 2026-08-14</p>
+
+<div class="metrics">
+  <div class="metric"><div class="metric-value">79</div><div class="metric-label">累计提交</div></div>
+  <div class="metric"><div class="metric-value">79.8%</div><div class="metric-label">总覆盖率</div></div>
+  <div class="metric"><div class="metric-value">0</div><div class="metric-label">Lint / P0</div></div>
+  <div class="metric"><div class="metric-value">5/5</div><div class="metric-label">联调场景通过</div></div>
+</div>
+
+<h2>1. 本轮交付摘要</h2>
+<p>M4 前置完成两个方向：<strong>mTLS 安全认证（WBS 7.1/7.4）</strong>——云边通道 TLS1.2+ 双向证书认证（纯标准库证书管理）；<strong>镜像构建 + Helm 完整化（WBS 8.5）</strong>——distroless 生产镜像与可部署 Chart。审查发现 4 项 P1（全为文档/部署路径）已全部修复。</p>
+
+<h2>2. mTLS 安全架构</h2>
+<div class="arch">证书生命周期（pkg/certs，纯标准库）          云边通道（双向认证）
+┌─────────────────────────┐          ┌──────────────────────────────┐
+│ CA（10 年，RSA 2048）    │          │ CloudHub（wss://:10000）      │
+│  ├─ cloudcore.crt（1年） │──签发──▶ │  TLS1.2+ · RequireAndVerify  │
+│  │  SAN 可注入（P1-4）    │          │  ClientCert（强制客户端证书）  │
+│  └─ edgecore.crt（1年）  │──签发──▶ │  mTLS 审计：peer CN 记录      │
+│  私钥 0600 · 幂等不重签   │          └──────────┬───────────────────┘
+│  半套 fail-fast         │                     │ wss:// + 客户端证书
+└─────────────────────────┘                     ▼
+                                    EdgeHub：TLSConfig + ws→wss 归一化
+                                    无证书/错 CA → bad handshake 拒绝</div>
+
+<h2>3. 验证结果</h2>
+
+<h3>3.1 端到端联调（真实进程）</h3>
+<table>
+<thead><tr><th>场景</th><th>实测证据</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>mTLS 双向认证</td><td>云侧"mTLS 连接已认证（peer CN=edgeflow-edge-tls-2）"+ 节点注册成功；边侧 wss:// 连接</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>拒绝路径</td><td>TLS off → "websocket: bad handshake" 持续退避；云侧"client sent an HTTP request to an HTTPS server"</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>证书权限</td><td>edgecore.key 0600（ls 实证）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>镜像</td><td>distroless：cloudcore 16.7MB / edgecore 22.5MB；docker run --version 输出 v0.1.0</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>Helm</td><td>lint 0 failed、template 渲染（/data 卷挂载）、install --dry-run 通过</td><td><span class="badge b-green">通过</span></td></tr>
+</tbody>
+</table>
+
+<h3>3.2 自动化验证</h3>
+<table>
+<thead><tr><th>项目</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>go test -race（20 包）</td><td><span class="badge b-green">全绿</span>，总覆盖率 79.8%</td></tr>
+<tr><td>golangci-lint / helm lint</td><td><span class="badge b-green">0 issues / 0 failed</span></td></tr>
+<tr><td>关键单测</td><td>证书幂等（字节级不重签）、半套 fail-fast、SAN 注入生效、CA 错配 key 拒绝（新增）</td></tr>
+</tbody>
+</table>
+
+<h3>3.3 审查与修复闭环（docs/CODE-REVIEW-M4B.md，217 行）</h3>
+<div class="panel">
+<p><strong>结论：有条件通过（0 P0 / 4 P1 / 5 P2）→ P1×4 全部修复（commit 70d1f5e）+ P2×2 修复</strong></p>
+<table>
+<thead><tr><th>P1 问题</th><th>修复</th></tr></thead>
+<tbody>
+<tr><td>文档连接串 /edgehub（实际 /v1/edge）→ 照文档必 404</td><td>DEPLOYMENT.md + NOTES.txt 修正</td></tr>
+<tr><td>values 示例引用不存在的 TLS_CERT/KEY 变量</td><td>改为真实变量（TLS=on + CERT_DIR）</td></tr>
+<tr><td>Chart 只读根文件系统与证书自动生成冲突</td><td>挂载可写 /data emptyDir + CERT_DIR=/data/certs 路径说明</td></tr>
+<tr><td>服务端 SAN 硬编码 → mTLS 仅回环可用</td><td>EDGEFLOW_CLOUDCORE_TLS_SAN 注入（Go 装配 + gen-certs.sh TLS_SAN）+ SECURITY.md 跨主机指引</td></tr>
+</tbody>
+</table>
+<p style="margin-top:0.5rem;font-size:0.82rem">P2 修复：CA 公私钥匹配校验（loadCA 加 tls.X509KeyPair 验证 + 测试）、gen-certs.sh 客户端 CN 可配。P2×3 记录待办。</p>
+</div>
+
+<h2>4. 下一步建议（M4 主体）</h2>
+<table>
+<thead><tr><th>优先级</th><th>事项</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>P1</td><td>keadm 基础版（8.6）</td><td>节点 join/reset 工具（含证书分发）</td></tr>
+<tr><td>P1</td><td>NodeController（2.4）</td><td>心跳超时节点状态管理（Offline 判定上收云端）</td></tr>
+<tr><td>P1</td><td>真实协议 Mapper（5.2）</td><td>Modbus 模拟设备 + 适配器</td></tr>
+<tr><td>P2</td><td>多架构镜像（buildx）与镜像推送</td><td>amd64/arm64，M4 验收项</td></tr>
+</tbody>
+</table>
+
+<div class="footer">
+  EdgeFlow M4 前置交付报告 · 生成时间 2026-08-14 15:20 (Asia/Shanghai)<br>
+  研发方式：多 Agent 协作（mTLS 安全 / 镜像 Helm / M4B 复核）+ 主线 P1/P2 修复<br>
+  仓库：/Users/mac/Documents/edgeflow/ · 安全文档：docs/SECURITY.md · 部署文档：docs/DEPLOYMENT.md
+</div>
+
+</div>
+</body>
+</html>

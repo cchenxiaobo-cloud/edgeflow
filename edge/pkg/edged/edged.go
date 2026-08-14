@@ -14,11 +14,16 @@ import (
 // 5s 轮询即可满足"断网自治"场景（M2 验收：断网 30min 容器持续运行）。
 const DefaultReconcileInterval = 5 * time.Second
 
+// DefaultRemovedRetention 是已删除 Pod 的 Absent 终态默认保留窗口（90s）：
+// 覆盖 3 个默认上报周期（30s），保证删除终态至少被云端收到一次。
+const DefaultRemovedRetention = 90 * time.Second
+
 // PodStatus 是单个 Pod 最近一次调谐的结果记录（供日志与后续 Pod 状态上报 WBS 6.3）。
 type PodStatus struct {
 	State         RuntimeState // 最近一次调谐后的容器状态
 	Err           error        // 最近一次调谐错误（nil 表示成功）
 	LastReconcile time.Time    // 最近一次调谐时间
+	RemovedAt     time.Time    // Pod 从期望集合删除的时间（零值=仍在期望集合）
 }
 
 // Edged 是 Pod 生命周期管理主循环（reconciler）。
@@ -43,6 +48,11 @@ type Edged struct {
 
 	reconcileMu sync.Mutex // 串行化调谐（loop 与测试直调不并发）
 
+	// removedRetention 是已删除 Pod 的 Absent 终态保留窗口：
+	// 删除后至少保留一个上报周期（默认 90s = 3×30s），确保 Absent
+	// 终态能被上报到云端，之后条目才被清理（WBS 6.3/P2-1）。
+	removedRetention time.Duration
+
 	mu     sync.RWMutex // 保护 status 与生命周期字段
 	status map[string]PodStatus
 
@@ -58,11 +68,12 @@ func New(store *metamanager.Store, rt ContainerRuntime, interval time.Duration) 
 		interval = DefaultReconcileInterval
 	}
 	return &Edged{
-		store:     store,
-		rt:        rt,
-		interval:  interval,
-		status:    make(map[string]PodStatus),
-		triggerCh: make(chan struct{}, 1),
+		store:            store,
+		rt:               rt,
+		interval:         interval,
+		status:           make(map[string]PodStatus),
+		triggerCh:        make(chan struct{}, 1),
+		removedRetention: DefaultRemovedRetention,
 	}
 }
 

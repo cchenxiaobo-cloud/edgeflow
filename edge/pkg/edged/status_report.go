@@ -8,6 +8,7 @@ package edged
 
 import (
 	"sort"
+	"time"
 
 	"edgeflow/edge/pkg/metamanager"
 )
@@ -57,8 +58,21 @@ func (e *Edged) BuildStatusPayload(nodeID string) []PodStatusPayload {
 	out := make([]PodStatusPayload, 0, len(keys))
 	for _, k := range keys {
 		st := status[k]
-		phase, msg := phaseOf(st.State, st.Err)
 		p := parsePodKey(k)
+		// 已删除 Pod（RemovedAt 非零）：上报 Absent 终态，时间戳用删除时刻
+		// （P1 修复：Absent 必须在保留窗口内进入上报，云端据此清除陈旧记录）。
+		if !st.RemovedAt.IsZero() {
+			out = append(out, PodStatusPayload{
+				NodeID:          nodeID,
+				PodName:         p.Name,
+				Namespace:       p.Namespace,
+				Phase:           "Absent",
+				Message:         "pod removed from desired set",
+				LastReconcileAt: st.RemovedAt.UnixMilli(),
+			})
+			continue
+		}
+		phase, msg := phaseOf(st.State, st.Err)
 		out = append(out, PodStatusPayload{
 			NodeID:          nodeID,
 			PodName:         p.Name,
@@ -81,7 +95,9 @@ func (e *Edged) BuildStatusPayload(nodeID string) []PodStatusPayload {
 //   - key 仍在期望集合 → 保留；
 //   - key 不在期望集合：
 //   - State==StateAbsent 且 Err==nil（容器已确认移除，如孤儿清理成功）
-//     → 直接删除条目，不保留历史；
+//     → 进入 Absent 终态保留：首次设置 RemovedAt，保留 removedRetention
+//     窗口（默认 90s，覆盖 3 个上报周期）让 Absent 终态上报到云端，
+//     窗口期满后删除条目（P1 修复：避免云端删除 Pod 后列表永久陈旧）；
 //   - 容器仍存在（孤儿清理失败等异常，State!=Absent 或带错误）→ 保留
 //     条目（记录错误供排查与上报），直至容器确认移除——下一轮孤儿清理
 //     成功后状态转 Absent，随即被删除；
@@ -89,9 +105,8 @@ func (e *Edged) BuildStatusPayload(nodeID string) []PodStatusPayload {
 //   - List 失败（运行时不可用）时无法确认容器是否还在 → 保守处理：
 //     只删除已确认 Absent 的条目，其余保留，避免误删排查信息。
 //
-// 说明：被删除 Pod 的 "Absent" 阶段只在孤儿清理成功到本函数执行之间的
-// 极短窗口内存在，不会进入上报——云端删除 Pod 时本就知晓删除动作，
-// 无需边侧回补 Absent 历史（若未来需要删除确认，可在此改为延迟删除）。
+// 说明：Absent 终态必须在上报循环的采样窗口内可见（保留 90s），否则云端
+// 删除 Pod 后 /api/v1/pods 会永久显示陈旧状态（M2B 审查 P1 修复）。
 func (e *Edged) cleanupStatus(desiredKeys map[string]struct{}, local []metamanager.Pod, listFailed bool) {
 	localKeys := make(map[string]struct{}, len(local))
 	for _, p := range local {
@@ -100,12 +115,19 @@ func (e *Edged) cleanupStatus(desiredKeys map[string]struct{}, local []metamanag
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	now := time.Now()
 	for key, st := range e.status {
 		if _, ok := desiredKeys[key]; ok {
 			continue // 期望集合内：保留
 		}
 		if st.State == StateAbsent && st.Err == nil {
-			delete(e.status, key) // 容器已确认移除：不保留历史
+			if st.RemovedAt.IsZero() {
+				// 进入 Absent 终态保留：记录删除时刻，等待窗口期满
+				st.RemovedAt = now
+				e.status[key] = st
+			} else if now.Sub(st.RemovedAt) >= e.removedRetention {
+				delete(e.status, key) // 终态已保留足够窗口：清理
+			}
 			continue
 		}
 		if listFailed {

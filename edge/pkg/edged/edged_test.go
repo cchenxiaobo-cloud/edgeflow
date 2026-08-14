@@ -121,10 +121,14 @@ func TestEdgedReconcileRemovesDeletedPod(t *testing.T) {
 	if len(pods) != 0 {
 		t.Errorf("清理后本地容器 = %v，期望为空", pods)
 	}
-	// P2-1：孤儿清理成功后，状态条目一并移除（不保留 Absent 历史，
-	// 避免 status map 无界增长与过期条目误上报）
-	if _, ok := e.Status()["default/nginx"]; ok {
-		t.Errorf("Status() 仍含已删除 Pod 的条目，期望已清理（P2-1）")
+	// P2-1（M2B 审查 P1 修复）：孤儿清理成功后条目进入 Absent 终态保留
+	// （RemovedAt 非零），供上报循环把删除终态送达云端；窗口期满后才清理。
+	st, ok := e.Status()["default/nginx"]
+	if !ok {
+		t.Fatal("删除后条目应保留（Absent 终态，P1 修复），实际已被清理")
+	}
+	if st.RemovedAt.IsZero() {
+		t.Error("条目应记录 RemovedAt（Absent 终态保留），实际为零值")
 	}
 }
 

@@ -85,6 +85,26 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// 依赖注入（SetPodStatusHandler），CloudHub 不感知存储实现。
 	podStore := podstatus.NewStore()
 	hub.SetPodStatusHandler(func(nodeID string, ps cloudhub.PodStatusPayload) {
+		// 回调运行在 CloudHub 读循环 goroutine 内：recover 兜底，
+		// 防止单条异常数据导致整个连接处理崩溃（M2B 审查 P2-4）。
+		defer func() {
+			if r := recover(); r != nil {
+				log.Errorf("PodStatus handler panic（nodeID=%s）: %v", nodeID, r)
+			}
+		}()
+		// phase 白名单校验（M2B 审查 P2-3）：未知阶段视为脏数据，丢弃并告警
+		switch ps.Phase {
+		case "Running", "Stopped", "Absent", "Error", "Unknown":
+		default:
+			log.Warnf("收到未知 PodStatus phase %q（node=%s pod=%s），丢弃", ps.Phase, nodeID, ps.PodName)
+			return
+		}
+		// Absent = 边缘确认 Pod 已从期望集合删除：清除云端记录，
+		// 列表不再显示已删除 Pod（与 K8s 语义一致；P1 修复配套）。
+		if ps.Phase == "Absent" {
+			podStore.Delete(nodeID, ps.Namespace, ps.PodName)
+			return
+		}
 		podStore.Upsert(nodeID, podstatus.PodStatus{
 			NodeID:          ps.NodeID,
 			PodName:         ps.PodName,

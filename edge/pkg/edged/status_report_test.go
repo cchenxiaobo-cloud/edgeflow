@@ -137,13 +137,17 @@ func TestEdgedCleanupStatusKeepsErrorEntryUntilContainerRemoved(t *testing.T) {
 		t.Errorf("条目应保留清理错误，实际 %+v", st)
 	}
 
-	// 故障恢复 → 孤儿清理成功 → 状态转 Absent → 条目随即删除
+	// 故障恢复 → 孤儿清理成功 → 状态转 Absent → 条目进入终态保留（P1 修复）
 	rt.SetFail("default/nginx", nil)
 	if err := e.reconcileOnce(); err != nil {
 		t.Fatalf("第三次 reconcile 失败: %v", err)
 	}
-	if _, ok := e.Status()["default/nginx"]; ok {
-		t.Errorf("孤儿清理成功后条目应被删除（P2-1），实际仍在")
+	st2, ok := e.Status()["default/nginx"]
+	if !ok {
+		t.Fatal("孤儿清理成功后条目应进入 Absent 终态保留（P1 修复），实际被清理")
+	}
+	if st2.RemovedAt.IsZero() {
+		t.Error("终态保留条目应记录 RemovedAt，实际为零值")
 	}
 }
 
@@ -176,6 +180,53 @@ func TestEdgedCleanupStatusRemovesStaleEntryWhenContainerGone(t *testing.T) {
 	}
 }
 
+// TestEdgedRemovedRetentionExpiry 验证 P1 修复的窗口期满清理：
+// Absent 终态条目在 removedRetention 期满后被删除（此后不再上报）。
+func TestEdgedRemovedRetentionExpiry(t *testing.T) {
+	s := newTestStore(t)
+	rt := NewMockRuntime()
+	e := New(s, rt, time.Millisecond)
+	e.removedRetention = 50 * time.Millisecond // 缩短窗口便于测试
+
+	if err := e.reconcileOnce(); err != nil { // 0 pods，无操作
+		t.Fatalf("reconcile 失败: %v", err)
+	}
+	if err := s.SavePod(`{"name":"nginx","namespace":"default","image":"nginx:1.25"}`); err != nil {
+		t.Fatalf("SavePod 失败: %v", err)
+	}
+	if err := e.reconcileOnce(); err != nil {
+		t.Fatalf("reconcile 失败: %v", err)
+	}
+	if err := s.DeletePod("default", "nginx"); err != nil {
+		t.Fatalf("DeletePod 失败: %v", err)
+	}
+	if err := e.reconcileOnce(); err != nil {
+		t.Fatalf("reconcile 失败: %v", err)
+	}
+	if st, ok := e.Status()["default/nginx"]; !ok || st.RemovedAt.IsZero() {
+		t.Fatal("删除后应进入 Absent 终态保留")
+	}
+	// Absent 终态应进入上报负载
+	payloads := e.BuildStatusPayload("edge-test")
+	found := false
+	for _, p := range payloads {
+		if p.PodName == "nginx" && p.Phase == "Absent" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("BuildStatusPayload 应包含 Absent 终态（P1 修复），实际缺失")
+	}
+	// 窗口期满后清理
+	time.Sleep(80 * time.Millisecond)
+	if err := e.reconcileOnce(); err != nil {
+		t.Fatalf("reconcile 失败: %v", err)
+	}
+	if _, ok := e.Status()["default/nginx"]; ok {
+		t.Error("窗口期满后条目应被清理，实际仍在")
+	}
+}
+
 // TestEdgedCleanupStatusKeepsEntryWhenListFails 验证 P2-1 保守路径：
 // 运行时 List 失败（无法确认容器是否还在）→ 只清理已确认 Absent 的条目，
 // 其余保留，避免误删排查信息；恢复后孤儿清理成功则条目被删除。
@@ -202,12 +253,14 @@ func TestEdgedCleanupStatusKeepsEntryWhenListFails(t *testing.T) {
 		t.Fatal("List 失败时不应删除无法确认的条目（保守保留，P2-1）")
 	}
 
-	// 恢复后：孤儿清理成功 → 条目删除
+	// 恢复后：孤儿清理成功 → 条目进入 Absent 终态保留（P1 修复）
 	rt.SetListErr(nil)
 	if err := e.reconcileOnce(); err != nil {
 		t.Fatalf("第三次 reconcile 失败: %v", err)
 	}
-	if _, ok := e.Status()["default/nginx"]; ok {
-		t.Errorf("恢复后条目应被清理（P2-1），实际仍在")
+	if st, ok := e.Status()["default/nginx"]; !ok {
+		t.Fatal("恢复后条目应进入 Absent 终态保留（P1 修复），实际被清理")
+	} else if st.RemovedAt.IsZero() {
+		t.Error("终态保留条目应记录 RemovedAt，实际为零值")
 	}
 }

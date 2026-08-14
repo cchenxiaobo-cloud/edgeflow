@@ -19,6 +19,9 @@ import (
 const (
 	// defaultReportInterval 是默认上报周期（与调谐 5s 解耦，见 runStatusReportLoop 注释）。
 	defaultReportInterval = 30 * time.Second
+	// minReportInterval / maxReportInterval 是上报周期的合法范围（env 保护）。
+	minReportInterval = time.Second
+	maxReportInterval = 10 * time.Minute
 	// targetCloud 是上报消息 Target 的固定值（契约：云侧标识为 "cloud"）。
 	targetCloud = "cloud"
 )
@@ -67,7 +70,7 @@ func reportPodStatuses(client *edgehub.Client, edgedSvc *edged.Edged, nodeID str
 
 // buildStatusMessages 把状态负载数组构造成 PodStatus 消息列表（纯函数，便于单测）。
 // 契约：Source=nodeID、Target="cloud"、Type=PodStatus、Payload=单条状态。
-// 端到端链路（真实 WebSocket 通道 + 云端接收）由 e2e/mock-cloudhub 覆盖。
+// 端到端链路（真实 WebSocket 通道 + 云端接收）由 hack/mock-cloudhub 覆盖。
 func buildStatusMessages(nodeID string, payloads []edged.PodStatusPayload) []*protocol.Message {
 	msgs := make([]*protocol.Message, 0, len(payloads))
 	for _, p := range payloads {
@@ -87,6 +90,13 @@ func buildStatusMessages(nodeID string, payloads []edged.PodStatusPayload) []*pr
 func durationFromEnv(key string, def time.Duration) time.Duration {
 	if v := os.Getenv(key); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			// 上下限保护（M2B 审查 P2-7）：周期过短打爆云边通道，
+			// 过长导致状态陈旧；越界回退默认并告警。
+			if d < minReportInterval || d > maxReportInterval {
+				log.Warnf("%s=%s 超出合法范围（%v~%v），使用默认 %v",
+					key, v, minReportInterval, maxReportInterval, def)
+				return def
+			}
 			return d
 		}
 		log.Warnf("%s 非法（%q），使用默认 %v", key, v, def)

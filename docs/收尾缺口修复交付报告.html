@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EdgeFlow 收尾缺口修复交付报告（2026-08-14）</title>
+<style>
+  :root {
+    --bg: #fafafa; --surface: #ffffff; --text: #1a1a1a; --text-2: #555; --text-3: #888;
+    --accent: #1a4f8b; --accent-light: #e8eef5; --border: #d8dde3; --rule: #b9c2cc;
+    --green: #1a6b3c; --green-light: #e6f2ea; --red: #8b1a1a; --red-light: #f5e8e8;
+    --yellow: #8b6b1a; --yellow-light: #f5efe0; --code-bg: #f4f5f7; --radius: 2px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+    --serif: Georgia, 'Times New Roman', serif;
+    --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.65; font-weight: 400; font-size: 15px; -webkit-font-smoothing: antialiased; margin: 0; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 48px 32px 80px; }
+  h1 { font-family: var(--serif); font-size: 1.9rem; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 0.25rem; }
+  .subtitle { color: var(--text-3); font-size: 0.92rem; margin-bottom: 1.2rem; }
+  h2 { font-size: 1.05rem; font-weight: 600; margin: 2.5rem 0 0.8rem; padding-bottom: 0.4rem; border-bottom: 1.5px solid var(--rule); letter-spacing: 0.02em; }
+  p { margin-bottom: 0.7rem; color: var(--text-2); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.87rem; margin: 0.8rem 0 1.4rem; }
+  th { text-align: left; font-weight: 600; color: var(--text); border-bottom: 1.5px solid var(--rule); padding: 6px 10px 6px 0; font-size: 0.82rem; letter-spacing: 0.03em; white-space: nowrap; }
+  td { padding: 6px 10px 6px 0; border-bottom: 1px solid var(--border); color: var(--text-2); vertical-align: top; }
+  td.mono, code { font-family: var(--mono); font-size: 0.82em; color: var(--text); }
+  .ok { color: var(--green); font-weight: 600; }
+  .warn { color: var(--yellow); font-weight: 600; }
+  .bad { color: var(--red); font-weight: 600; }
+  .tag { display: inline-block; padding: 0 8px; border-radius: var(--radius); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; margin-right: 6px; }
+  .tag-green { background: var(--green-light); color: var(--green); }
+  .tag-yellow { background: var(--yellow-light); color: var(--yellow); }
+  .tag-blue { background: var(--accent-light); color: var(--accent); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; margin: 1rem 0 1.6rem; }
+  .metric-row { display: flex; flex-wrap: wrap; gap: 14px; margin: 0.8rem 0 1.2rem; }
+  .metric { flex: 1 1 150px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
+  .metric .v { font-family: var(--serif); font-size: 1.45rem; font-weight: 600; color: var(--text); }
+  .metric .l { font-size: 0.78rem; color: var(--text-3); margin-top: 2px; letter-spacing: 0.02em; }
+  ul { margin: 0.4rem 0 1rem; padding-left: 1.2rem; }
+  li { margin-bottom: 0.35rem; color: var(--text-2); }
+  .note { font-size: 0.8rem; color: var(--text-3); }
+  .footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-3); }
+  @media (max-width: 640px) { .wrap { padding: 24px 16px 60px; } .metric { flex: 1 1 100%; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>EdgeFlow 收尾缺口修复交付报告</h1>
+<div class="subtitle">逐项完成 CLOSE-OUT-REPORT 审计缺口 · 2026-08-14 · v0.1.0 基线之上</div>
+
+<div class="metric-row">
+  <div class="metric"><div class="v">P1 ×7</div><div class="l">审计缺口全部处置（6 完成 + 1 关闭）</div></div>
+  <div class="metric"><div class="v">116</div><div class="l">仓库提交总数（本轮 +8）</div></div>
+  <div class="metric"><div class="v">3/3</div><div class="l">E2E 真实进程套件全 PASS</div></div>
+  <div class="metric"><div class="v">0</div><div class="l">golangci-lint issues / P0 遗留</div></div>
+</div>
+
+<h2>一、本轮范围与完成情况</h2>
+<table>
+  <tr><th>缺口</th><th>内容</th><th>状态</th><th>交付证据</th></tr>
+  <tr><td class="mono">G1</td><td>8.3 E2E 完整场景套件（自治/设备/多节点）</td><td><span class="ok">✅ 完成</span></td><td class="mono">tests/e2e/ 三用例全 PASS 200s</td></tr>
+  <tr><td class="mono">G2</td><td>6.4 镜像漂移检测 + 滚动重建</td><td><span class="ok">✅ 完成</span></td><td class="mono">edged 单测 5 项全过</td></tr>
+  <tr><td class="mono">G3</td><td>10.1 /metrics 可观测性端点</td><td><span class="ok">✅ 完成</span></td><td class="mono">五指标 · 覆盖 96.6%</td></tr>
+  <tr><td class="mono">G4</td><td>7.2/7.5 Token 认证 + 审计台账</td><td><span class="ok">✅ 完成</span></td><td class="mono">auth 94.1% · audit 76.3%</td></tr>
+  <tr><td class="mono">G5</td><td>8.4 节点模拟压测</td><td><span class="ok">✅ 完成</span></td><td class="mono">10 节点 100% · 201ms</td></tr>
+  <tr><td class="mono">G6</td><td>真实集群验证（kind）</td><td><span class="ok">✅ 完成</span></td><td class="mono">keadm init + Ready</td></tr>
+  <tr><td class="mono">G7</td><td>2.8 NodeJob 明确处置</td><td><span class="tag tag-yellow">🔒 关闭</span></td><td class="mono">v0.1.0 范围外决策</td></tr>
+  <tr><td class="mono">P3</td><td>文档同步（ROADMAP/PROGRESS/KEADM/Release Notes）</td><td><span class="ok">✅ 完成</span></td><td class="mono">52 行回写</td></tr>
+  <tr><td class="mono">B5</td><td>多架构发布镜像（双架构）</td><td><span class="ok">✅ 完成</span></td><td class="mono">buildx manifest 确认</td></tr>
+</table>
+
+<h2>二、关键提交</h2>
+<table>
+  <tr><th>Commit</th><th>内容</th></tr>
+  <tr><td class="mono">4c5b9c6</td><td>安全可观测性：/metrics 五指标、RBAC Token 中间件（默认 off）、审计台账、NodeJob 占位关闭</td></tr>
+  <tr><td class="mono">b809e30</td><td>文档同步（P3）、双架构镜像重建（B5）、kind 真实集群全链路（G6）+ REAL-CLUSTER-GUIDE</td></tr>
+  <tr><td class="mono">a0a4344</td><td>镜像漂移重建（G2）、E2E 三用例套件（G1）、压测工具 + 基线（G5）</td></tr>
+  <tr><td class="mono">ac3913f / 00643e3</td><td>lint 修复（errcheck/unused）</td></tr>
+  <tr><td class="mono">f8e077c</td><td>复核 P1 修复：压测心跳接入、E2E 审计路径隔离、文档回写（CODE-REVIEW-GAP）</td></tr>
+  <tr><td class="mono">237b42c</td><td>清理误提交二进制</td></tr>
+</table>
+
+<h2>三、验证结果（全部实际执行）</h2>
+<div class="metric-row">
+  <div class="metric"><div class="v">28</div><div class="l">go test -race 包全绿</div></div>
+  <div class="metric"><div class="v">0</div><div class="l">build / vet / gofmt 问题</div></div>
+  <div class="metric"><div class="v">0</div><div class="l">golangci-lint issues</div></div>
+  <div class="metric"><div class="v">3/3</div><div class="l">E2E：自治 127s / 设备 35s / 多节点 36s</div></div>
+</div>
+<ul>
+  <li><b>E2E 自治用例</b>：注册 → Pod 下发 → 云端断开 60s 容器持续运行 → 重启恢复同步 → 删除收敛（docker 层确认移除）</li>
+  <li><b>E2E 设备链路</b>：设备指令下发边缘 Ack → 设备状态同步云端 Desired/Properties</li>
+  <li><b>E2E 多节点</b>：双节点注册 + 独立 Pod + 节点隔离验证 + 删除收敛</li>
+  <li><b>压测</b>：10 并发客户端注册成功率 100%，平均 201.3ms，P95 202.0ms（PERFORMANCE-BASELINE.md）</li>
+  <li><b>安全冒烟</b>：/metrics 200 + 指标名、无 Token 401 留痕、fail-fast</li>
+</ul>
+<p class="note">※ E2E 需独占运行（两个套件并行会因共享 Docker daemon 的孤儿清理互相干扰——已定位并记录于 CODE-REVIEW-GAP.md）。</p>
+
+<h2>四、独立复核结论</h2>
+<div class="card">
+  <p><span class="tag tag-blue">复核</span><b>缺口修复复核员：有条件通过 → 已修复全部 P1（3 项）后达成通过</b></p>
+  <ul>
+    <li><b>P0</b>：无</li>
+    <li><b>P1 已修复</b>：① 压测 LOAD_TEST_BEAT_SEC 死代码接入心跳间隔；② 文档回写滞后（ROADMAP 14 处 + PROGRESS 6 处 + ACTIONS 13 处）；③ E2E 审计台账污染仓库（AUDIT_PATH 隔离 + 删除 2737 行死文件）</li>
+    <li><b>亮点确认</b>：常数时间 Token 比较 + 401 审计留痕；审计失败不阻断 API + 启动 fail-fast；漂移重建调用顺序单测（inspect→rm→run）+ 批大小 1 滚动确定性；waitContainerGone 根因修复</li>
+    <li><b>P2 遗留（不阻塞）</b>：完整 RBAC 角色模型、7.3 设备认证、10.3 API 兼容矩阵、100 节点压测（需集群环境）、告警/日志采集、gauge 命名规范等 11 项</li>
+  </ul>
+  <p class="note">报告：docs/CODE-REVIEW-GAP.md（270 行，8 维度审查 + 命令记录 + 代码定位附录）</p>
+</div>
+
+<h2>五、验收自检（对照 Goal Brief 完成标准）</h2>
+<table>
+  <tr><th>完成标准</th><th>证据</th><th>结果</th></tr>
+  <tr><td>P1 缺口逐项处置</td><td>G1-G7 全部完成或明确关闭（上表）</td><td><span class="ok">✅</span></td></tr>
+  <tr><td>异常路径覆盖</td><td>401 拒绝、审计失败降级、docker 竞态兜底、CrashLoop 退避、孤儿清理幂等</td><td><span class="ok">✅</span></td></tr>
+  <tr><td>配置说明完整</td><td>新 env（AUTH/API_TOKEN/AUDIT_PATH）在代码注释 + 文档说明</td><td><span class="ok">✅</span></td></tr>
+  <tr><td>交接/回滚/复核方式</td><td>CLOSE-OUT-ACTIONS 13 项回写 + CODE-REVIEW-GAP + HANDOFF 已入库</td><td><span class="ok">✅</span></td></tr>
+  <tr><td>向后兼容</td><td>认证默认 off；现有测试与 demo 全绿</td><td><span class="ok">✅</span></td></tr>
+  <tr><td>可检查证据</td><td>每项验证实际执行（build/test/lint/E2E/压测/冒烟）</td><td><span class="ok">✅</span></td></tr>
+</table>
+
+<h2>六、剩余项（明示边界）</h2>
+<ul>
+  <li><b>P2 未纳入本轮</b>：keadm 批量操作、Flannel、OPC-UA、CA 分发自动化、证书轮换/吊销、API 兼容矩阵、镜像安全扫描、压缩/Protobuf 协议、调度/超卖、灰度发布</li>
+  <li><b>环境边界</b>：远程镜像仓库推送（无凭据，本地 registry 闭环）、正式环境演练排期（无运维团队）、100 节点压测（需集群资源）</li>
+  <li><b>C7 GitHub 远程关联</b>：需用户操作（粘贴 SSH 公钥 → push → 确认 CI）</li>
+</ul>
+
+<div class="footer">EdgeFlow · docs/收尾缺口修复交付报告.html · 交付物：8 提交 + 3 新文档（CODE-REVIEW-GAP / PERFORMANCE-BASELINE / REAL-CLUSTER-GUIDE）</div>
+</div>
+</body>
+</html>

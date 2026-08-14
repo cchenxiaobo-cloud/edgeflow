@@ -1,0 +1,102 @@
+\chapter{产品概述}
+\label{ch:1}
+
+本章内容：介绍 EdgeFlow 边缘计算平台（Edge Computing Platform）的定位、核心组件、典型应用场景、版本发布情况与使用边界，帮助操作人员建立整体认识。
+
+\section{EdgeFlow 是什么}
+
+EdgeFlow 是一个面向“云—边—设备”三层架构的轻量级边缘计算平台，当前版本为 v0.1.0。它通过云端统一接口，让操作人员可以在云端完成边缘节点的接入与管理、容器应用的下发与运行、设备的接入与远程控制，并实时掌握边缘侧的运行状态。
+
+EdgeFlow 的典型工作方式：边缘节点上的 \texttt{edgecore} 主动连接云端 \texttt{cloudcore} 并保持长连接；操作人员通过云端 REST API（Representational State Transfer Application Programming Interface）下发期望（desired）配置；边缘节点执行后，将实际状态（reported）上报云端，形成“下发—执行—上报”的闭环。整个链路包括节点注册、容器调谐（Reconcile）、设备数字孪生（Digital Twin）与配置同步等能力。
+
+\section{核心组件}
+
+EdgeFlow v0.1.0 由以下组件构成：
+
+\begin{tabularx}{\textwidth}{|l|l|X|}
+  \hline
+  \textbf{组件} & \textbf{角色} & \textbf{职责} \\
+  \hline
+  \texttt{cloudcore} & 云端控制面 & 对外提供 REST API（默认端口 8080）；通过 CloudHub（WebSocket，默认端口 10000）与边缘节点保持长连接，处理节点注册、心跳、可靠下发与设备指令 \\
+  \hline
+  \texttt{edgecore} & 边缘运行时 & 部署在边缘节点上，由五个子模块协作完成云边通道、元数据管理、容器调谐、设备孪生与事件总线（详见下文） \\
+  \hline
+  \texttt{keadm} & 安装管理 CLI & 生成云端与边缘的部署产物，支持 \texttt{init}/\texttt{join}/\texttt{reset}/\texttt{upgrade}/\texttt{rollback}/\texttt{ops-ledger}/\texttt{version} 命令 \\
+  \hline
+  \texttt{mock-cloudhub} & 联调工具 & 在本地模拟云端 CloudHub，用于单独调试 \texttt{edgecore} 的注册、心跳与重连行为 \\
+  \hline
+  \texttt{mappers}（Mapper 设备接入程序） & 设备接入 & 将物理或模拟设备接入平台：内置 \texttt{mock\_sensor} 模拟温湿度传感器（设备名 \texttt{sensor-01}），\texttt{modbus} 支持 Modbus TCP 协议设备（默认设备名 \texttt{mb-sensor-01}） \\
+  \hline
+\end{tabularx}
+
+其中，\texttt{edgecore} 由以下子模块组成：
+
+\begin{itemize}
+  \item \textbf{EdgeHub}：云边通信通道，与云端 CloudHub 建立 WebSocket 长连接，负责消息收发；
+  \item \textbf{MetaManager}：元数据管理，使用 SQLite 将边缘侧元数据持久化落盘；
+  \item \textbf{Edged}：容器调谐，基于 Docker 运行时保证容器实际状态与期望状态一致；
+  \item \textbf{DeviceTwin}：设备数字孪生，维护设备期望值（desired）与实际上报值（reported）；
+  \item \textbf{EventBus}：事件总线，基于 MQTT 提供设备遥测与指令的数据面通道。
+\end{itemize}
+
+\section{典型应用场景}
+
+\begin{itemize}
+  \item \textbf{边缘容器应用部署}：在云端下发 nginx 等容器镜像，由边缘节点本地运行，业务数据不出边缘；
+  \item \textbf{设备数据采集与数字孪生}：温湿度传感器周期上报属性，云端可随时查看设备实时数据；
+  \item \textbf{设备远程控制}：通过设备指令下发期望值（如目标温度），由 Mapper 在边缘执行；
+  \item \textbf{边缘节点管理}：查看节点注册状态、心跳与平台信息，感知节点在线/离线状态；
+  \item \textbf{配置下发}：将 ConfigMap/Secret 配置同步到边缘节点，供边缘应用使用。
+\end{itemize}
+
+\section{版本与发布（v0.1.0）}
+
+\begin{itemize}
+  \item \textbf{版本}：v0.1.0（2026-08-14 发布）；
+  \item \textbf{容器镜像}：\texttt{edgeflow/cloudcore:v0.1.0}、\texttt{edgeflow/edgecore:v0.1.0}，支持 \texttt{linux/amd64} 与 \texttt{linux/arm64} 双架构；
+  \item \textbf{Helm Chart}：\texttt{build/charts/edgeflow}，用于在 Kubernetes 集群中部署云端；
+  \item \textbf{离线制品}：发布目录 \texttt{release/v0.1.0/}，包含云/边/管理工具在各平台的二进制、校验和（\texttt{checksums.txt}）、软件物料清单（SBOM）与 Helm Chart 包（\texttt{edgeflow-0.1.0.tgz}）。
+\end{itemize}
+
+\section{术语约定}
+
+\begin{tabularx}{\textwidth}{|l|X|}
+  \hline
+  \textbf{术语} & \textbf{说明} \\
+  \hline
+  \texttt{nodeID} & 边缘节点唯一标识。edgecore 注册时上报，默认格式为 \texttt{edge-<主机名>}，仅允许字母、数字、连字符与下划线 \\
+  \hline
+  Pod & 云端下发的容器应用单元，包含名称（name）、命名空间（namespace）、镜像（image）与副本数（replicas）等描述 \\
+  \hline
+  Mapper & 设备接入程序，负责协议解析、属性采集与指令执行（如 \texttt{mock\_sensor}、\texttt{modbus}） \\
+  \hline
+  数字孪生（Digital Twin） & 设备的云端影子：desired 为云端下发的期望值，reported 为设备实际上报值 \\
+  \hline
+  可靠下发（Reliable Delivery） & 下发类接口的消息投递机制：消息送达边缘并收到确认（Ack）后才返回成功，未确认则超时重试 \\
+  \hline
+  调谐（Reconcile） & 边缘侧周期性比对期望状态与实际状态，并驱动实际状态收敛到期望状态的过程 \\
+  \hline
+\end{tabularx}
+
+\section{功能边界与已知限制}
+
+使用 EdgeFlow v0.1.0 前，请了解以下边界：
+
+\begin{itemize}
+  \item \textbf{云端状态为内存态}：cloudcore 保存的节点、Pod、设备状态不落盘，重启后查询数据清空；边缘节点重连后会自动重新注册并恢复上报，边缘侧元数据由 SQLite 持久化，不受影响；
+  \item \textbf{接入令牌为预留字段}：\texttt{keadm join} 的 \texttt{--token} 参数当前版本尚未被 edgecore 消费，用于后续版本的接入鉴权；
+  \item \textbf{设备指令值类型}：\texttt{device-command} 的 \texttt{value} 为数值型（float64），字符串、布尔型属性暂不支持通过该端点下发；
+  \item \textbf{Secret 明文存储}：\texttt{config-sync} 下发 Secret 时值为明文，生产环境需自行加密；
+  \item \textbf{无批量下发端点}：当前版本未提供面向多节点的批量（广播）下发接口。
+\end{itemize}
+
+\section{手册内容导航}
+
+本手册面向操作人员，共分若干章节：
+
+\begin{itemize}
+  \item 第 2 章 \autoref{ch:2}：环境要求与安装部署——云端与边缘节点的安装、验证、卸载与升级回滚；
+  \item 第 3 章 \autoref{ch:3}：快速入门——单机跑通完整链路；
+  \item 第 4 章 \autoref{ch:4}：云端操作指南——REST API、监控指标与认证配置；
+  \item 后续章节：设备接入（Mapper）使用、边缘应用管理、维护与排障等专题。
+\end{itemize}

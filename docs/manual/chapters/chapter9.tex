@@ -1,0 +1,137 @@
+% =====================================================================
+% EdgeFlow 用户手册 · 第 9 章 常见问题与故障排查
+% 事实依据：docs/KEADM.md §5、docs/REAL-CLUSTER-GUIDE.md、
+%           docs/EVENTBUS-GUIDE.md、docs/API-SPEC.md
+% =====================================================================
+\chapter{常见问题与故障排查}
+\label{ch:9}
+
+本章汇集 v0.1.0 实测与文档沉淀的常见问题。排障第一步永远是\textbf{看日志}，
+先定位故障在哪一层：云边通道、容器运行时、设备数据面，还是 API 层。
+
+\section{日志位置}
+
+\begin{table}[htbp]
+\centering
+\caption{各组件日志位置}
+\label{tab:9-logs}
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{组件} & \textbf{日志位置} \\
+\midrule
+cloudcore & stdout / 日志文件（部署形态而定） \\
+edgecore（systemd） & \texttt{journalctl -u edgecore -e} / \texttt{-f} 跟踪 \\
+edgecore（裸进程） & stdout \\
+审计台账 & \texttt{data/audit-ledger.jsonl}（云端） \\
+操作台账 & \texttt{<output-dir>/ops-ledger.jsonl}（keadm） \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{常见问题速查表}
+
+\begin{table}[htbp]
+\centering
+\caption{常见问题与处置}
+\label{tab:9-faq}
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{现象} & \textbf{常见原因} & \textbf{处置} \\
+\midrule
+edgecore 起不来 & 网络不通 / 配置错误 &
+\texttt{journalctl -u edgecore -e} 查看；确认可达
+\texttt{--cloudcore-ip} 的 hub 端口；确认 env 文件键值未被手改 \\
+EventBus 连接失败 & MQTT broker 未启动 / 地址错 &
+查看日志确认已\textbf{降级本地模式}（边缘照常运行）；确认 broker
+监听 1883；macOS 注意 broker 二进制在
+\texttt{/opt/homebrew/sbin/mosquitto} \\
+MQTT 建连超时 & broker 无响应 / 网络隔离 &
+调整 \texttt{EDGEFLOW\_EDGECORE\_MQTT\_CONNECT\_TIMEOUT}（默认 5s）；
+确认 \texttt{EDGEFLOW\_EDGECORE\_MQTT\_ADDR} \\
+容器不启动 & Docker 未安装 / daemon 未启动 &
+Edged 依赖 Docker：确认 \texttt{docker info} 正常；daemon 启动后
+Edged 下轮调谐（默认 5s）自动拉起 \\
+端口冲突 & 8080 / 10000 / 1883 被占用 &
+\texttt{lsof -i :8080} 等定位占用进程；改用
+\texttt{EDGEFLOW\_CLOUDCORE\_PORT} / \texttt{HUB\_PORT} /
+\texttt{EDGEFLOW\_EDGECORE\_MQTT\_ADDR} \\
+节点未注册 404 & 节点从未注册 / 已离线 &
+检查 edgecore 是否在跑、注册是否成功；\texttt{GET /api/v1/nodes}
+确认节点状态 \\
+下发 504 超时 & 边缘宕机 / 链路抖动 &
+确认边缘进程存活；504 可重试，边缘侧幂等去重；持续 504 检查
+网络与心跳 \\
+容器反复重启 & 业务崩溃 / 退出型镜像 &
+观察 \texttt{RestartCount} 与 CrashLoopBackOff（3 次阈值/30s 退避/
+60s 稳定重置）；查看容器日志定位业务根因 \\
+云端重启后节点消失 & 云端状态为内存态 &
+边缘自动重连并\textbf{重新注册}；如长时间未恢复，重启 edgecore
+触发重连 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{分层排查指引}
+
+\subsection{云边通道层}
+
+\begin{enumerate}
+  \item 确认 edgecore 进程存活且已注册：
+\begin{lstlisting}
+curl http://127.0.0.1:8080/api/v1/nodes
+\end{lstlisting}
+  \item 节点存在但状态 \texttt{Offline}：心跳停滞超过 180s（约 6 个
+        30s 心跳周期）。检查网络、云端进程；
+  \item 节点不存在（404）：从未注册或注册失败。看 edgecore 日志中
+        Register/RegisterAck 是否成功；
+  \item 启用 mTLS 后连不上：先确认两侧开关都开、证书目录正确、
+        边缘连接地址在服务端证书 SAN 内（见第~\ref{ch:8}~章）。
+\end{enumerate}
+
+\subsection{容器运行层}
+
+\begin{enumerate}
+  \item 调谐周期默认 5s，改动 Pod 定义后最多等一个周期生效；
+  \item 容器反复拉起并进入退避：区分「业务崩溃」与「退出型镜像」。
+        CrashLoopBackOff 是保护机制，不是故障本身；
+  \item 镜像漂移检测会在期望镜像与运行镜像不一致时自动重建（每轮 1 个，
+        逐轮滚动），滚动期间短暂重启属预期。
+\end{enumerate}
+
+\subsection{设备数据面层}
+
+\begin{enumerate}
+  \item \texttt{GET /api/v1/devices} 看不到设备：确认 edgecore 内
+        Mapper 已注册（日志有「Mapper 注册完成」），MQTT 模式下确认
+        broker 可达；
+  \item 设备属性不更新：确认采集周期（mock\_sensor 默认 2s）与
+        上报周期（默认 30s）；
+  \item 指令下发失败：按状态码区分——404 未送达（节点离线，修通道）、
+        502 送达被拒（改请求）、504 未确认（重试）。
+\end{enumerate}
+
+\section{API 错误语义速记}
+
+\begin{itemize}
+  \item \texttt{404}：节点未注册/离线，\textbf{无需重试}，先修通道；
+  \item \texttt{502}：消息已送达但边缘拒绝，\textbf{重试无意义}，
+        检查请求内容；
+  \item \texttt{504}：可能送达但未确认，\textbf{可重试}，边缘幂等去重；
+  \item 错误响应统一为 JSON：\texttt{\{"error":"<机器可读原因>"\}}。
+\end{itemize}
+
+完整语义见附录~B。
+
+\section{环境相关的已知边界}
+
+\begin{itemize}
+  \item \textbf{macOS/Docker Desktop}：宿主机无法直接路由 kind 节点 IP
+        的 NodePort（实测 connection reset），用
+        \texttt{kubectl port-forward} 替代；Linux 上可直接
+        \texttt{nodeIP:nodePort} 访问；
+  \item \textbf{真实多节点集群}：v0.1.0 验证范围为 kind 单节点集群 +
+        单边缘节点（2026-08-14 实测），多节点（10+）E2E 与压测未做；
+  \item \textbf{镜像仓库}：镜像未推送远端仓库，跨机部署需自建 registry
+        （\texttt{docker run -d -p 127.0.0.1:5001:5000 registry:2} +
+        buildx 双架构构建，见 docs/MULTIARCH.md）。
+\end{itemize}

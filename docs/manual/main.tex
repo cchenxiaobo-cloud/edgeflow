@@ -1,0 +1,126 @@
+% ============================================================
+% EdgeFlow 用户手册 v0.1.0
+% 编译：xelatex main.tex（需 ctex 宏包；见 README.md 编译说明）
+% 风格：Information Architects（内容优先、零装饰、系统字体、蓝色链接）
+% ============================================================
+\documentclass[11pt,a4paper,openany]{ctexbook}
+
+% ---------- 宏包 ----------
+\usepackage[top=2.6cm,bottom=2.6cm,left=2.8cm,right=2.4cm]{geometry}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{tocloft}
+\usepackage{enumitem}
+\usepackage{graphicx}
+
+% ---------- 颜色（克制：仅链接蓝 + 代码灰） ----------
+\definecolor{linkblue}{HTML}{0000EE}
+\definecolor{codegray}{HTML}{F4F5F7}
+\definecolor{codeborder}{HTML}{D8DDE3}
+\definecolor{codeblack}{HTML}{1A1A1A}
+\definecolor{notegray}{HTML}{555555}
+
+% ---------- 超链接（经典蓝） ----------
+\hypersetup{
+  colorlinks=true,
+  linkcolor=linkblue,
+  urlcolor=linkblue,
+  citecolor=linkblue,
+  pdftitle={EdgeFlow 用户手册 v0.1.0},
+  pdfauthor={EdgeFlow 项目组},
+  bookmarksnumbered=true,
+}
+
+% ---------- 页眉页脚 ----------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textbf{EdgeFlow 用户手册}}
+\fancyhead[R]{\small v0.1.0}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ---------- 章节标题（无装饰、层级清晰） ----------
+\titleformat{\chapter}[hang]{\Large\bfseries}{第\,\thechapter\,章}{0.6em}{}
+\titlespacing*{\chapter}{0pt}{0pt}{18pt}
+\titleformat{\section}{\large\bfseries}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.6em}{}
+
+% ---------- 目录 ----------
+\setcounter{tocdepth}{2}
+\renewcommand{\cftchapfont}{\bfseries}
+\renewcommand{\cftdot}{.}
+
+% ---------- 代码块（浅灰底、无装饰框） ----------
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  backgroundcolor=\color{codegray},
+  frame=none,
+  breaklines=true,
+  breakatwhitespace=false,
+  showstringspaces=false,
+  aboveskip=10pt,
+  belowskip=10pt,
+  language=bash,
+}
+
+% ---------- 表格（booktabs 风格） ----------
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+% ---------- 自定义环境 ----------
+\newenvironment{note}{\par\small\color{notegray}\noindent\textbf{注：}}{\par}
+
+% ============================================================
+\begin{document}
+
+% ---------- 封面 ----------
+\begin{titlepage}
+\centering
+\vspace*{5cm}
+{\Huge\bfseries EdgeFlow 用户手册}\\[1.2em]
+{\Large 边缘计算平台 使用说明书}\\[3em]
+{\large 版本：v0.1.0（MVP）}\\[0.6em]
+{\large 编制日期：2026 年 8 月 14 日}\\[0.6em]
+{\large 适用产品：EdgeFlow v0.1.0}\\[6cm]
+{\small 本文档随产品发布，内容与 v0.1.0 开发进展一致；\newline
+未实现功能已标注"即将上线"或列入附录 E 已知限制。}
+\end{titlepage}
+
+% ---------- 版本信息页 ----------
+\chapter*{版本信息}
+\addcontentsline{toc}{chapter}{版本信息}
+\begin{tabularx}{\textwidth}{l l Y}
+\toprule
+\textbf{项目} & \textbf{内容} \\
+\midrule
+产品名称 & EdgeFlow（边缘计算平台） \\
+手册版本 & v0.1.0 \\
+产品版本 & v0.1.0（2026-08-14 发布） \\
+编制日期 & 2026 年 8 月 14 日 \\
+适用读者 & 平台安装运维人员、边缘节点操作人员、应用部署人员 \\
+编译方式 & XeLaTeX（ctex 文档类），见 README.md \\
+变更记录 & 见附录 D \\
+\bottomrule
+\end{tabularx}
+
+\tableofcontents
+
+% ---------- 正文 ----------
+\include{chapters/chapter1}
+\include{chapters/chapter2}
+\include{chapters/chapter3}
+\include{chapters/chapter4}
+\include{chapters/chapter5}
+\include{chapters/chapter6}
+\include{chapters/chapter7}
+\include{chapters/chapter8}
+\include{chapters/chapter9}
+\appendix
+\include{chapters/appendix}
+
+\end{document}

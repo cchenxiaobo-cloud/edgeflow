@@ -1,0 +1,154 @@
+% =====================================================================
+% EdgeFlow 用户手册 · 第 8 章 安全与认证
+% 事实依据：docs/SECURITY.md、docs/API-SPEC.md、cloud/pkg/auth、cloud/pkg/audit、
+%           pkg/certs、cmd/cloudcore/main.go、cmd/keadm
+% =====================================================================
+\chapter{安全与认证}
+\label{ch:8}
+
+EdgeFlow v0.1.0 的安全基线由三层构成：\textbf{云边通道 mTLS}（双向认证）、
+\textbf{管理 API Token 认证}（默认关闭）与\textbf{审计台账}（默认开启）。
+本章按层说明启用方式与运维要点。
+
+\section{云边通道 mTLS}
+
+云边 WebSocket 通道默认是明文 \texttt{ws://}（仅限可信网络/本机验证）。
+生产环境必须启用 \textbf{mTLS}（双向 TLS）：云端验证边缘证书、边缘验证
+云端证书与主机名，任何一侧校验失败连接在协议层之前被拒绝。
+
+\subsection{启用开关}
+
+\begin{table}[htbp]
+\centering
+\caption{mTLS 启用开关}
+\label{tab:8-tls}
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{组件} & \textbf{开关（=on）} & \textbf{证书目录变量（默认）} \\
+\midrule
+云端 CloudHub & \texttt{EDGEFLOW\_CLOUDCORE\_TLS} & \texttt{EDGEFLOW\_CLOUDCORE\_CERT\_DIR}（\texttt{data/certs/}） \\
+边缘 EdgeHub & \texttt{EDGEFLOW\_EDGECORE\_TLS} & \texttt{EDGEFLOW\_EDGECORE\_CERT\_DIR}（\texttt{data/certs/}） \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{两侧必须同时开启}：云端只开 TLS 会拒绝明文连接；边缘只开 TLS
+无法通过明文云端的握手。边缘开启后连接地址自动归一化为 \texttt{wss://}。
+
+\begin{lstlisting}
+# 云端
+export EDGEFLOW_CLOUDCORE_TLS=on
+export EDGEFLOW_CLOUDCORE_CERT_DIR=/data/certs
+# 跨主机/集群部署必须注入 SAN（逗号分隔），非法条目启动即报错（fail-fast）
+export EDGEFLOW_CLOUDCORE_TLS_SAN="IP:10.0.0.5,DNS:cloudcore.edgeflow.svc"
+bin/cloudcore
+
+# 边缘
+export EDGEFLOW_EDGECORE_TLS=on
+export EDGEFLOW_EDGECORE_CERT_DIR=/data/certs
+export EDGEFLOW_EDGECORE_CLOUD_ADDR=wss://10.0.0.5:10000/v1/edge
+bin/edgecore
+\end{lstlisting}
+
+\textbf{关键约束}：边缘连接的地址（\texttt{wss://<host>:<port>}）必须落在
+服务端证书 SAN 内，否则握手失败。未设置 SAN 时证书仅覆盖本机回环
+（\texttt{127.0.0.1/localhost/cloudcore}），mTLS 默认只在本机可用。
+
+\subsection{使用 keadm 生成 TLS 产物}
+
+\begin{lstlisting}
+# 云端产物：注入 TLS 开关 + 证书目录 + SAN
+keadm init --tls --tls-san=IP:192.168.1.10 --output-dir=./keadm-out
+
+# 边缘产物：注入 EDGEFLOW_EDGECORE_TLS=on + CERT_DIR，地址用 wss://
+keadm join --cloudcore-ip=192.168.1.10 --cloudcore-port=31000 \
+  --token=<token> --node-id=edge-worker-01 --tls --output-dir=./keadm-out
+\end{lstlisting}
+
+\section{证书管理}
+
+\subsection{证书布局}
+
+证书目录（云端与边缘各自 \texttt{data/certs/}）包含：
+
+\begin{table}[htbp]
+\centering
+\caption{证书文件布局}
+\label{tab:8-certs}
+\begin{tabularx}{\textwidth}{l l l X}
+\toprule
+\textbf{文件} & \textbf{用途} & \textbf{有效期} & \textbf{关键属性} \\
+\midrule
+\texttt{ca.crt} / \texttt{ca.key} & 自签 CA & 10 年 & \texttt{CN=edgeflow-ca}，CertSign \\
+\texttt{cloudcore.crt} / \texttt{cloudcore.key} & 云服务端证书 & 1 年 & SAN：回环 + 注入值，EKU serverAuth \\
+\texttt{edgecore.crt} / \texttt{edgecore.key} & 边客户端证书 & 1 年 & \texttt{CN=edgeflow-<nodeID>}，EKU clientAuth \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+私钥权限 \texttt{0600}，证书文件 \texttt{0644}。证书在组件首次以 TLS
+启动时\textbf{自动生成}（幂等：已存在则加载校验，绝不重新生成）；也可用
+\texttt{hack/gen-certs.sh} 预置。证书损坏/不完整 → \textbf{启动失败}
+（fail-fast，不降级）。
+
+\subsection{轮换（人工编排）}
+
+\begin{enumerate}
+  \item 签发新证书（先备份并删除旧文件，或使用新证书目录）；
+  \item 滚动重启组件，\textbf{先云后边}：云端加载新服务端证书，边缘
+        重连时自动携带新客户端证书；
+  \item 验证新连接建立后，清除旧证书文件。
+\end{enumerate}
+
+轮换 CA 需\textbf{全量重签}所有叶子证书（旧叶子证书随 CA 更换立即失效）。
+CA 私钥仅靠文件权限保护，生产建议离线签发后移出节点或接入 KMS。
+
+\section{管理 API Token 认证}
+
+管理 API（REST，8080 端口）默认\textbf{不认证}（向后兼容）。启用方式：
+
+\begin{lstlisting}
+export EDGEFLOW_CLOUDCORE_AUTH=on
+export EDGEFLOW_CLOUDCORE_API_TOKEN=<你的令牌>   # 必填，未设置则启动失败
+bin/cloudcore
+\end{lstlisting}
+
+\begin{itemize}
+  \item \texttt{EDGEFLOW\_CLOUDCORE\_AUTH=on} 且 \texttt{API\_TOKEN} 未设置
+        → \textbf{启动失败}（fail-fast，防止"开了认证却没令牌"的空转）；
+  \item 请求必须携带 \texttt{Authorization: Bearer <token>}；
+  \item 缺失/非 Bearer 方案/令牌不匹配 → \texttt{401} +
+        \texttt{WWW-Authenticate: Bearer} 响应头；
+  \item 常量时间比较防时序侧信道；认证通过者记为身份 \texttt{token}
+        （单令牌模型，持有令牌即管理员；完整 RBAC 角色模型为后续版本）。
+\end{itemize}
+
+\section{审计台账}
+
+管理 API 的所有操作默认写入审计台账：
+
+\begin{itemize}
+  \item 路径：\texttt{EDGEFLOW\_CLOUDCORE\_AUDIT\_PATH}，默认
+        \texttt{data/audit-ledger.jsonl}；
+  \item 格式：\textbf{JSONL}（逐行 JSON，追加写，不覆盖历史）；
+  \item 记录内容：请求路径、方法、结果、身份（Token 认证下含
+        operator；认证失败记录 \texttt{anonymous}）；
+  \item \textbf{审计失败不阻断 API}：写盘失败只记错误日志，业务请求照常
+        处理（可用性优先）。
+\end{itemize}
+
+\begin{lstlisting}
+# 查看审计台账（每行一条记录）
+tail -f data/audit-ledger.jsonl
+\end{lstlisting}
+
+\section{安全基线小结}
+
+\begin{itemize}
+  \item 已实现：双向认证（云验边、边验云+主机名）、私钥 0600、
+        强制 TLS 1.2+、证书损坏 fail-fast、Token 认证（默认关）、
+        审计台账（默认开）；
+  \item 已知限制：吊销（CRL/OCSP）未实现；CSR 审批流未实现；证书 CN
+        与 nodeID 未绑定校验；单令牌模型（无多角色授权）；设备侧
+        认证 token 为预留字段（keadm join 写入但 edgecore 当前未消费）。
+\end{itemize}

@@ -1,0 +1,253 @@
+\chapter{环境要求与安装部署}
+\label{ch:2}
+
+本章内容：说明 EdgeFlow v0.1.0 的运行环境要求，并给出完整的安装部署步骤，包括获取软件、使用 \texttt{keadm} 初始化云端与接入边缘节点、Helm 部署，以及部署验证、卸载清理与升级回滚。
+
+\section{环境要求}
+
+\begin{tabularx}{\textwidth}{|l|X|}
+  \hline
+  \textbf{部署角色} & \textbf{环境要求} \\
+  \hline
+  云端（cloudcore） & 支持 \texttt{linux/amd64} 与 \texttt{linux/arm64}；建议 2 核 4 GB 以上；云端状态为内存态，无需持久化存储 \\
+  \hline
+  Kubernetes 集群 & 使用 \texttt{keadm} 产物或 Helm 部署时需准备集群；需要 \texttt{kubectl}（与集群版本兼容）与 Helm v3+ \\
+  \hline
+  边缘节点（edgecore） & Linux 系统（支持 systemd）；Docker daemon 运行中（Edged 的容器运行时）；可访问云端 CloudHub 端口（默认 10000，NodePort 部署时为集群分配的节点端口）；SQLite 数据目录可写 \\
+  \hline
+  管理机（keadm） & 任意 amd64/arm64 主机，仅用于生成离线部署产物，不直接操作集群 \\
+  \hline
+  源码构建 & Go 1.26+ 与 Make；构建容器镜像还需 Docker \\
+  \hline
+  可选依赖 & mosquitto（MQTT 数据面）；缺失时主链路不受影响 \\
+  \hline
+\end{tabularx}
+
+\section{获取软件}
+
+\subsection{方式一：源码构建}
+
+在仓库根目录执行：
+
+\begin{lstlisting}
+make build
+\end{lstlisting}
+
+构建产物位于 \texttt{bin/} 目录：\texttt{bin/cloudcore}、\texttt{bin/edgecore}。\texttt{keadm} 可用 \texttt{go build -o bin/keadm ./cmd/keadm} 构建；\texttt{mock-cloudhub} 为联调工具，用 \texttt{go run ./hack/mock-cloudhub} 运行（无需构建）。
+
+\subsection{方式二：使用发布制品}
+
+发布目录 \texttt{release/v0.1.0/} 提供预编译二进制：\texttt{cloudcore}、\texttt{edgecore}、\texttt{keadm} 的 \texttt{linux-amd64} 与 \texttt{darwin-arm64} 版本，以及 Helm Chart 包 \texttt{edgeflow-0.1.0.tgz}。下载后可使用 \texttt{checksums.txt} 校验文件完整性，并将二进制放入 \texttt{PATH} 或仓库 \texttt{bin/} 目录后按需执行。
+
+\subsection{方式三：容器镜像}
+
+可自行构建镜像，或直接使用已发布的 \texttt{edgeflow/cloudcore:v0.1.0}、\texttt{edgeflow/edgecore:v0.1.0}。本地构建命令（仓库根目录执行）：
+
+\begin{lstlisting}
+docker build -f build/docker/Dockerfile --target cloudcore -t edgeflow/cloudcore:v0.1.0 .
+docker build -f build/docker/Dockerfile --target edgecore -t edgeflow/edgecore:v0.1.0 .
+\end{lstlisting}
+
+\section{安装云端（cloudcore）}
+
+\subsection{方式一：keadm 生成 Kubernetes 部署产物（推荐）}
+
+\texttt{keadm init} 在管理机上生成云端部署产物，产物可提交到 Kubernetes 集群执行。参数如下：
+
+\begin{tabularx}{\textwidth}{|l|l|X|}
+  \hline
+  \textbf{参数} & \textbf{默认值} & \textbf{说明} \\
+  \hline
+  \texttt{--cloudcore-image} & \texttt{edgeflow/cloudcore:v0.1.0} & cloudcore 容器镜像 \\
+  \hline
+  \texttt{--tls} & 关 & 启用云边 mTLS，注入 TLS 相关环境变量 \\
+  \hline
+  \texttt{--tls-san} & 空 & 证书 SAN（Subject Alternative Name），逗号分隔，如 \texttt{IP:1.2.3.4,DNS:host}；仅 \texttt{--tls} 时生效 \\
+  \hline
+  \texttt{--service-type} & \texttt{NodePort} & Service 类型：\texttt{NodePort}（边缘跨集群接入）或 \texttt{ClusterIP}（仅集群内访问） \\
+  \hline
+  \texttt{--output-dir} & \texttt{./keadm-out} & 产物输出目录 \\
+  \hline
+\end{tabularx}
+
+生成命令示例：
+
+\begin{lstlisting}
+# 最简（明文通道，本地/测试用）
+keadm init --output-dir=./keadm-out
+
+# 生产推荐：启用云边 mTLS，并注入证书 SAN（边缘节点用 IP 接入时必须覆盖访问地址）
+keadm init --tls --tls-san=IP:192.168.1.10 --output-dir=./keadm-out
+\end{lstlisting}
+
+产物说明：
+
+\begin{itemize}
+  \item \texttt{cloudcore.yaml}：包含 Deployment（副本 1、探针指向 \texttt{/healthz}、安全上下文 nonroot）与 Service（\texttt{NodePort} 类型，暴露 HTTP 8080 与 CloudHub 10000 两个端口；hub 端口由集群自动分配在 30000--32767）；
+  \item \texttt{NOTES.txt}：部署步骤、验证方法、Helm 替代路径与 mTLS 说明。
+\end{itemize}
+
+在集群上执行产物：
+
+\begin{lstlisting}
+kubectl apply -f cloudcore.yaml
+
+# 验证
+kubectl get deploy,svc,pods -l app.kubernetes.io/component=cloudcore
+kubectl port-forward svc/edgeflow-cloudcore 8080:8080
+curl http://127.0.0.1:8080/healthz        # 期望 HTTP 200
+
+# 获取边缘节点接入用的 CloudHub 节点端口
+kubectl get svc edgeflow-cloudcore -o jsonpath='{.spec.ports[?(@.name=="hub")].nodePort}'
+\end{lstlisting}
+
+\subsection{方式二：Helm 部署}
+
+使用仓库内置 Chart 部署云端：
+
+\begin{lstlisting}
+helm install edgeflow build/charts/edgeflow
+
+# 集群外边缘节点接入时：开启 hub 端口并改用 NodePort
+helm install edgeflow build/charts/edgeflow \
+  --set service.hubEnabled=true --set service.type=NodePort
+\end{lstlisting}
+
+验证部署：
+
+\begin{lstlisting}
+kubectl get deploy,svc,pods -l app.kubernetes.io/instance=edgeflow
+kubectl port-forward svc/edgeflow-cloudcore 8080:8080
+curl http://127.0.0.1:8080/healthz
+\end{lstlisting}
+
+关键配置项：\texttt{cloudcore.image.repository/tag}（镜像地址与版本，默认 \texttt{edgeflow/cloudcore:v0.1.0}）、\texttt{service.type}（默认 \texttt{ClusterIP}）、\texttt{service.hubEnabled}（默认 \texttt{false}，集群外边缘接入需开启并配合 NodePort/LoadBalancer）。
+
+\subsection{方式三：裸进程运行（单机联调）}
+
+开发或验证环境可直接运行二进制：
+
+\begin{lstlisting}
+./bin/cloudcore
+\end{lstlisting}
+
+默认监听 REST API 8080 与 CloudHub 10000 端口，端口可通过环境变量或命令行覆盖（详见第 3 章 \autoref{ch:3}）。此方式仅用于单机联调，生产环境请使用方式一或方式二。
+
+\section{接入边缘节点（edgecore）}
+
+\texttt{keadm join} 在管理机或边缘节点上生成边缘接入产物。参数如下：
+
+\begin{tabularx}{\textwidth}{|l|l|X|}
+  \hline
+  \textbf{参数} & \textbf{默认值} & \textbf{说明} \\
+  \hline
+  \texttt{--cloudcore-ip} & 必填 & 云端 CloudHub 节点 IP（IPv4/IPv6 均可） \\
+  \hline
+  \texttt{--cloudcore-port} & \texttt{10000} & CloudHub 端口；NodePort 部署时填集群分配的节点端口 \\
+  \hline
+  \texttt{--token} & 必填 & 接入令牌（预留字段，当前版本 edgecore 尚未消费） \\
+  \hline
+  \texttt{--node-id} & \texttt{edge-<主机名>} & 边缘节点 ID，仅允许字母、数字、连字符与下划线 \\
+  \hline
+  \texttt{--tls} & 关 & 启用 mTLS，地址自动使用 \texttt{wss://} \\
+  \hline
+  \texttt{--output-dir} & \texttt{./keadm-out} & 产物输出目录 \\
+  \hline
+\end{tabularx}
+
+生成命令示例：
+
+\begin{lstlisting}
+keadm join --cloudcore-ip=192.168.1.10 --token=<token> --output-dir=./keadm-out
+
+# TLS 集群 + NodePort 部署（端口为集群分配的 hub 节点端口）
+keadm join --cloudcore-ip=192.168.1.10 --cloudcore-port=31000 \
+  --token=<token> --node-id=edge-worker-01 --tls --output-dir=./keadm-out
+\end{lstlisting}
+
+产物说明：
+
+\begin{itemize}
+  \item \texttt{edgecore.env}：环境变量文件，键名与 edgecore 读取的环境变量一一对应，包括 \texttt{EDGEFLOW\_EDGECORE\_NODE\_ID}、\texttt{EDGEFLOW\_EDGECORE\_CLOUD\_ADDR}（\texttt{ws://<ip>:<port>/v1/edge}）、\texttt{EDGEFLOW\_EDGECORE\_DB\_PATH}（\texttt{/var/lib/edgeflow/edgeflow.db}）、\texttt{EDGEFLOW\_EDGECORE\_MQTT\_ADDR}（\texttt{tcp://127.0.0.1:1883}）等；\texttt{--tls} 时追加 TLS 与证书目录配置；\texttt{TOKEN} 为预留键；
+  \item \texttt{edgecore.service}：systemd 单元文件，通过 \texttt{EnvironmentFile=/etc/edgeflow/edgecore.env} 加载配置，\texttt{ExecStart=/usr/local/bin/edgecore}，崩溃自动重启；
+  \item \texttt{install.sh}：一键安装脚本（需 root），安装二进制、环境文件与 systemd 单元并启用服务；
+  \item \texttt{README.md}：接入说明与手动安装片段。
+\end{itemize}
+
+在边缘节点上执行：
+
+\begin{lstlisting}
+# 1. 将产物与 edgecore 二进制（与节点架构匹配）拷贝到边缘节点
+# 2. 执行安装脚本（需 root）
+sudo ./install.sh
+
+# 3. 验证
+systemctl status edgecore
+journalctl -u edgecore -f
+\end{lstlisting}
+
+mTLS 说明：启用 \texttt{--tls} 后，edgecore 首次运行会在 \texttt{/etc/edgeflow/certs} 自动生成或加载证书（幂等）；云端侧需保证服务端证书 SAN 覆盖边缘节点访问的地址，否则云边连接会被拒绝。
+
+\section{部署验证}
+
+部署完成后，建议按以下清单验证：
+
+\begin{itemize}
+  \item 云端 \texttt{/healthz} 返回 HTTP 200 与版本信息；
+  \item 边缘节点已注册：云端查询 \texttt{/api/v1/nodes} 能看到节点且状态为 \texttt{Ready}（查询方法见第 4 章 \autoref{ch:4}）；
+  \item \texttt{systemctl status edgecore} 显示 active (running)，日志无致命错误；
+  \item 可下发一个测试 Pod 验证端到端链路（见第 3 章 \autoref{ch:3}）。
+\end{itemize}
+
+\section{卸载与清理}
+
+\begin{lstlisting}
+# 清理 keadm 生成的产物（交互确认；--force 跳过确认，幂等）
+keadm reset --output-dir=./keadm-out
+
+# 卸载 Helm 部署
+helm uninstall edgeflow
+
+# 清理 Edged 管理的容器（按标签精确删除，不影响其他容器）
+docker rm -f $(docker ps -aq --filter label=edgeflow.pod) 2>/dev/null
+
+# 清理本地 SQLite 元数据（生产环境请按备份策略处理）
+rm -f data/edgeflow.db
+\end{lstlisting}
+
+\section{升级与回滚}
+
+\texttt{keadm} 在产物层面提供升级与回滚能力（执行前自动备份并记录操作台账）：
+
+\begin{lstlisting}
+# 升级产物到新版本
+keadm upgrade --version=v0.2.0 --operator=alice --output-dir=./keadm-out
+
+# 回滚到最近一次备份
+keadm rollback --latest --output-dir=./keadm-out
+
+# 查询操作台账
+keadm ops-ledger --limit=10
+\end{lstlisting}
+
+升级或回滚后需重新应用产物（\texttt{kubectl apply} 或 \texttt{./install.sh}）。注意：cloudcore 为内存态，云端重启后查询数据清空，边缘节点重连后会自动重新注册并恢复上报。
+
+\section{常见问题}
+
+\begin{tabularx}{\textwidth}{|l|X|}
+  \hline
+  \textbf{现象} & \textbf{处理} \\
+  \hline
+  \texttt{缺少必填参数 --cloudcore-ip} 或 \texttt{--token} & 补全对应参数后重试 \\
+  \hline
+  \texttt{--node-id 含空白字符} & 使用 \texttt{--node-id=edge-xxx} 显式指定合法 ID \\
+  \hline
+  \texttt{kubectl apply} 报 schema 校验失败 & 检查 kubectl 版本与集群 API 版本是否兼容 \\
+  \hline
+  edgecore 起不来 & \texttt{journalctl -u edgecore -e} 查看日志；确认可达 \texttt{--cloudcore-ip} 的 hub 端口；确认 env 文件键值未被手改 \\
+  \hline
+  云边连接被拒（TLS） & 证书 SAN 未覆盖访问地址，云端以 \texttt{--tls-san=IP:<访问IP>} 重新 init 并 apply \\
+  \hline
+  Pod 容器未创建 & 确认 Docker daemon 运行（\texttt{docker info}）；镜像本地未缓存时首次拉取需要时间 \\
+  \hline
+\end{tabularx}

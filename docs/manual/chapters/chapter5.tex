@@ -1,0 +1,169 @@
+% =====================================================================
+% EdgeFlow 用户手册 · 第 5 章 边缘节点与自治运行
+% 事实依据：docs/KEADM.md、docs/RELEASE-NOTES-v0.1.0.md、edge/pkg/edgehub、
+%           edge/pkg/edged、cloud/pkg/nodecontroller、cmd/edgecore
+% =====================================================================
+\chapter{边缘节点与自治运行}
+\label{ch:5}
+
+EdgeFlow 的边缘侧由一个常驻进程 \textbf{edgecore}（边缘核心）承载。它运行在
+边缘节点上，负责三件事：与云端建立并维持管理通道、按云端期望状态调谐本机
+容器、以及在本机维护设备影子与元数据。本章说明 edgecore 的接入、通信、
+自治行为，以及如何配置它。
+
+\section{接入与连接管理}
+
+\subsection{注册}
+
+edgecore 启动后第一条消息是 \textbf{Register}（注册），云端 CloudHub 校验后
+回 \textbf{RegisterAck}（注册确认）。注册通过后，节点在云端注册表中可见，
+状态为 \texttt{Ready}。节点 ID 由环境变量 \texttt{EDGEFLOW\_EDGECORE\_NODE\_ID}
+指定；未设置时使用默认约定 \texttt{edge-\allowbreak<主机名>}。
+
+\begin{lstlisting}
+# 指定节点 ID 与云端地址启动 edgecore
+export EDGEFLOW_EDGECORE_NODE_ID=edge-worker-01
+export EDGEFLOW_EDGECORE_CLOUD_ADDR=ws://192.168.1.10:10000/v1/edge
+bin/edgecore
+\end{lstlisting}
+
+\subsection{心跳保活}
+
+注册完成后，edgecore 以 \textbf{30 秒}为周期向云端发送心跳（Heartbeat）。
+云端 NodeController 每 \textbf{30 秒}扫描一次注册表，若某节点心跳停滞超过
+\textbf{180 秒}（约 6 个心跳周期），将该节点标记为 \texttt{Offline}。
+因此：
+
+\begin{itemize}
+  \item 心跳周期：固定 \texttt{30s}（云边契约常量，不可配置）；\texttt{EDGEFLOW\_EDGECORE\_REPORT\_INTERVAL} 仅控制 Pod 状态上报周期；
+  \item 云端超时阈值：\texttt{EDGEFLOW\_CLOUDCORE\_NODE\_TIMEOUT}，默认 \texttt{180s}；
+  \item 云端扫描周期：\texttt{EDGEFLOW\_CLOUDCORE\_NODE\_SCAN\_INTERVAL}，默认 \texttt{30s}。
+\end{itemize}
+
+\subsection{断线重连}
+
+网络抖动或云端重启导致连接断开时，edgecore \textbf{自动重连}，无需人工干预：
+
+\begin{itemize}
+  \item 指数退避：\texttt{1s/2s/4s/…}，上限 \texttt{60s}；
+  \item 重连成功后重新执行注册流程，退避计时重置；
+  \item 重连期间本地功能不受影响（见第~\ref{ch:5}~章第~\ref{sec:5-autonomy}~节）。
+\end{itemize}
+
+\section{可靠投递}
+
+云边之间的下行消息（Pod 配置、设备指令等）使用\textbf{可靠投递}语义，保证
+云端能确认消息确实被边缘处理：
+
+\begin{enumerate}
+  \item 云端发送消息并登记到 \textbf{pending}（待确认）队列；
+  \item 边缘收到并处理成功后回 \textbf{Ack}；
+  \item 云端收到 Ack 后移出 pending 队列；
+  \item 超时（默认单次 5 秒）未确认，使用\textbf{同一消息 ID} 重试，最多
+        3 次；仍失败则向 API 调用方返回 504。
+\end{enumerate}
+
+边缘侧对重复消息做\textbf{幂等去重}：同一消息 ID 处理过一次后不再重复执行，
+因此重试不会造成重复下发。API 层表现见第~\ref{ch:9}~章与附录~B。
+
+\section{Edged 应用调谐}
+\label{sec:5-edged}
+
+\textbf{Edged} 是 edgecore 内置的容器运行时管理模块，对标 KubeEdge 的 Edged。
+它采用\textbf{声明式调谐}模型：云端下发期望状态（Pod 定义）后，Edged 周期性
+比对期望与实际情况，差异即收敛。
+
+\begin{itemize}
+  \item 调谐周期：\texttt{EDGEFLOW\_EDGECORE\_RECONCILE\_INTERVAL}，默认 \texttt{5s}；
+  \item 启动时立即调谐一次，之后按周期循环；
+  \item 调谐数据来自 MetaManager 落盘数据（SQLite），因此断网时调谐照常进行。
+\end{itemize}
+
+\subsection{多副本 Pod}
+
+云端下发的 Pod 支持 \texttt{replicas} 多副本。Edged 每轮调谐将本机实际运行的
+副本数收敛到期望值：
+
+\begin{itemize}
+  \item 实际副本 \textbf{少于}期望 → 逐个补齐拉起；
+  \item 实际副本 \textbf{多于}期望 → 逐个清理收缩；
+  \item 每轮调谐只处理一个副本的差异（批大小 1），逐轮滚动，避免瞬间抖动。
+\end{itemize}
+
+\subsection{健康自愈与 CrashLoopBackOff}
+
+Edged 每轮调谐都会检查容器运行状态（\texttt{Inspect}）。容器非 Running
+（异常退出、被杀死等）时自动重启，无需人工介入：
+
+\begin{itemize}
+  \item 每次重启累加 \texttt{RestartCount} 并上报云端；
+  \item 连续异常重启达到\textbf{3 次}阈值后进入 \textbf{CrashLoopBackOff}
+        退避：退避时长 \textbf{30 秒}，退避期间不再反复拉起；
+  \item 容器稳定运行 \textbf{60 秒}后重置计数，恢复正常自愈节奏。
+\end{itemize}
+
+典型表现：退出型镜像（如 \texttt{busybox} 执行完即退出）会被反复拉起并进入
+退避，属预期行为；业务容器持续崩溃时请查看容器日志定位根因（见
+第~\ref{ch:9}~章）。
+
+\subsection{镜像漂移检测}
+
+Edged 在调谐时会比对\textbf{期望镜像}与\textbf{实际运行镜像}：
+
+\begin{itemize}
+  \item 已运行的容器镜像与期望不一致 → 判定为\textbf{镜像漂移}，自动重建：
+        停止旧容器 → 用期望镜像重新拉起；
+  \item 同一轮只重建 1 个漂移容器，逐轮滚动完成全部收敛；
+  \item 该机制同时是滚动更新的基础：更新 Pod 定义中的镜像后，Edged
+        自动逐副本完成替换。
+\end{itemize}
+
+\section{断网自治}
+\label{sec:5-autonomy}
+
+\textbf{自治}是边缘计算的核心价值：云端不可达时，边缘业务不能停。
+
+\begin{enumerate}
+  \item 云端断开后，已下发的容器\textbf{持续运行}，调谐、设备采集、本地
+        指令照常工作；
+  \item 断网语义验证：自动化用例以\textbf{60 秒短时断网}模拟验证；
+        \textbf{30 分钟}级长时运行语义（M2 验收口径）需在真实环境长跑确认；
+  \item 重连成功后，edgecore 重新注册，并将离线期间的 Pod 状态、
+        设备上报\textbf{自动同步}到云端，云端视图恢复一致。
+\end{enumerate}
+
+注意：云端状态为\textbf{内存态}，云端进程重启后节点需重新注册（见
+第~\ref{ch:9}~章）。边缘侧元数据由 MetaManager 持久化到本机 SQLite，断网
+期间不丢失。
+
+\section{edgecore 环境变量配置}
+
+edgecore 全部通过环境变量配置，未设置的项使用默认值（表~\ref{tab:5-env}）。
+时长类变量（如调谐/上报周期）合法范围为 \textbf{1s 至 10m}，超出范围或
+非法值回退默认值并打印告警。
+
+\begin{table}[htbp]
+\centering
+\caption{edgecore 环境变量}
+\label{tab:5-env}
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{变量} & \textbf{默认值} & \textbf{说明} \\
+\midrule
+\texttt{EDGEFLOW\_EDGECORE\_NODE\_ID} & \texttt{edge-\allowbreak<主机名>} & 节点 ID，注册用 \\
+\texttt{EDGEFLOW\_EDGECORE\_CLOUD\_ADDR} & \texttt{ws://127.0.0.1:10000/v1/edge} & 云端 CloudHub 地址 \\
+\texttt{EDGEFLOW\_EDGECORE\_TLS} & 关 & \texttt{on} 时启用 mTLS（地址自动 \texttt{wss://}） \\
+\texttt{EDGEFLOW\_EDGECORE\_CERT\_DIR} & \texttt{data/certs/} & 证书目录 \\
+\texttt{EDGEFLOW\_EDGECORE\_DB\_PATH} & 内置默认 & MetaManager SQLite 路径 \\
+\texttt{EDGEFLOW\_EDGECORE\_MQTT\_ADDR} & \texttt{tcp://127.0.0.1:1883} & 本机 MQTT broker 地址 \\
+\texttt{EDGEFLOW\_EDGECORE\_RECONCILE\_INTERVAL} & \texttt{5s} & Edged 调谐周期 \\
+\texttt{EDGEFLOW\_EDGECORE\_REPORT\_INTERVAL} & \texttt{30s} & Pod 状态上报周期 \\
+\texttt{EDGEFLOW\_EDGECORE\_DEVICE\_REPORT\_INTERVAL} & \texttt{30s} & 设备状态上报周期 \\
+\texttt{EDGEFLOW\_EDGECORE\_MQTT\_CONNECT\_TIMEOUT} & \texttt{5s} & 单次 MQTT 建连超时 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+生产环境建议使用 \texttt{keadm join} 生成 \texttt{edgecore.env} 与
+\texttt{edgecore.service}（systemd 单元），由安装脚本统一部署，避免手工
+拼写错误（见第~\ref{ch:7}~章升级回滚时的产物管理）。

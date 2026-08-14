@@ -1,0 +1,173 @@
+% =====================================================================
+% EdgeFlow 用户手册 · 第 7 章 升级与回滚
+% 事实依据：docs/UPGRADE.md、docs/KEADM.md、docs/RELEASE-NOTES-v0.1.0.md、
+%           cmd/keadm/upgrade.go、rollback.go、opsledger.go
+% =====================================================================
+\chapter{升级与回滚}
+\label{ch:7}
+
+EdgeFlow 的升级/回滚由安装管理 CLI \textbf{keadm} 提供，作用在
+\textbf{keadm 生成的产物文件}层面（\texttt{edgecore.env} /
+\texttt{edgecore.service} / \texttt{install.sh}），配合\textbf{操作台账}
+（ops-ledger）实现可审计、可恢复的升级流程。部署在 Kubernetes 上的云端
+组件则走 Helm 路径。两条路径互不替代，本章分别说明。
+
+\section{机制总览}
+
+\begin{table}[htbp]
+\centering
+\caption{升级回滚机制一览}
+\label{tab:7-overview}
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{能力} & \textbf{说明} \\
+\midrule
+备份模型 & 升级前把产物快照备份到 \texttt{backups/<id>/}（含
+\texttt{manifest.json} 与每文件 \texttt{sha256}） \\
+台账模型 & 每次操作（含失败）追加写 \texttt{ops-ledger.jsonl}，逐行 JSON \\
+版本标记 & \texttt{edgecore.env} 内版本标记行，join 写入、upgrade 更新、rollback 恢复 \\
+数据隔离 & 不触碰数据目录（SQLite 等）与用户文件 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{边界}：本机制只保证离线产物可恢复；镜像 tag 变更、edgecore
+二进制替换、节点侧 \texttt{install.sh} 的实际执行不在产物级机制内，需
+结合发布流程执行。
+
+\section{升级前准备}
+
+\begin{enumerate}
+  \item 记录当前产物基线（可选但推荐）：
+\begin{lstlisting}
+sha256sum $OUT/edgecore.env $OUT/edgecore.service $OUT/install.sh > baseline.sha
+\end{lstlisting}
+  \item 如需在台账中记录操作人，设置环境变量：
+\begin{lstlisting}
+export KEADM_OPERATOR=alice
+\end{lstlisting}
+        未设置时台账记录 \texttt{unknown}。
+\end{enumerate}
+
+\section{升级：keadm upgrade}
+
+\begin{lstlisting}
+# 升级到 v0.2.0（先备份 → 更新版本标记 → 写台账）
+keadm upgrade --version=v0.2.0 --output-dir=./keadm-out
+
+# 演练模式：备份后模拟失败（产物不会被修改），用于演练回滚流程
+keadm upgrade --version=v0.2.0 --simulate-failure --output-dir=./keadm-out
+\end{lstlisting}
+
+执行流程：
+
+\begin{enumerate}
+  \item \textbf{校验版本格式}：必须为 \texttt{vX.Y.Z}（如 \texttt{v0.2.0}），
+        非法或与当前版本相同 → 退出码 2，不产生备份；
+  \item \textbf{预检}：三个产物文件（env/service/install.sh）任一缺失 →
+        退出码 1；
+  \item \textbf{备份}：复制产物到 \texttt{backups/<id>/}（\texttt{<id>}
+        为到秒的时间戳，同秒追加 \texttt{-2}、\texttt{-3}\ldots），写入
+        \texttt{manifest.json}（时间/版本/操作人/文件清单/sha256）；
+  \item \textbf{更新版本标记}：整行替换 \texttt{edgecore.env} 中的版本标记；
+  \item \textbf{写台账}：追加 \texttt{result=ok} 记录。
+\end{enumerate}
+
+任一环节失败：退出码 1，台账记 \texttt{failed}，并提示
+「执行 \texttt{keadm rollback --latest} 可恢复」。备份目录只增不删，
+保留恢复路径与审计现场。
+
+\section{回滚：keadm rollback}
+
+\begin{lstlisting}
+# 取最新有效备份回滚
+keadm rollback --latest --output-dir=./keadm-out
+
+# 指定备份 id 回滚（id 见 backups/ 目录名或台账）
+keadm rollback --backup=20260814-190701 --output-dir=./keadm-out
+\end{lstlisting}
+
+执行流程：
+
+\begin{enumerate}
+  \item \textbf{参数校验}：\texttt{--backup} 与 \texttt{--latest} \textbf{互斥}，
+        必须二选一，违规退出码 2；
+  \item \textbf{定位备份}：\texttt{--latest} 取时间戳最新（含序号后缀）；
+        \texttt{--backup=<id>} 精确匹配，不存在 → 退出码 1；
+  \item \textbf{完整性校验}：\texttt{manifest.json} 可解析、字段完整、
+        清单内文件存在且 \texttt{sha256} 一致；校验失败 → 报错并
+        \textbf{保留备份目录}；
+  \item \textbf{恢复}：逐文件复制回输出目录，回读校验内容一致，并
+        强制恢复权限（env \texttt{0600} / service \texttt{0644} /
+        install.sh \texttt{0755}）；
+  \item \textbf{写台账}：追加 \texttt{result=ok}（\texttt{from}=当前版本，
+        \texttt{to}=备份版本）。
+\end{enumerate}
+
+\textbf{失败兜底}：任何自动恢复不可用的场景，备份目录保留完整快照，
+错误提示中给出逐文件人工恢复命令，例如：
+
+\begin{lstlisting}
+cp backups/<id>/edgecore.env    <output-dir>/edgecore.env
+cp backups/<id>/edgecore.service <output-dir>/edgecore.service
+cp backups/<id>/install.sh      <output-dir>/install.sh
+\end{lstlisting}
+
+\section{台账查询：keadm ops-ledger}
+
+\begin{lstlisting}
+# 最近 20 条（默认）
+keadm ops-ledger --output-dir=./keadm-out
+# 最近 N 条
+keadm ops-ledger --limit=5 --output-dir=./keadm-out
+\end{lstlisting}
+
+输出为 JSON 数组，逐行 JSON 原样保留，机器可解析。记录字段：
+\texttt{ts}（RFC3339 时间）、\texttt{action}（\texttt{upgrade}/\texttt{rollback}）、
+\texttt{from}/\texttt{to}（版本）、\texttt{result}（\texttt{ok}/\texttt{failed}）、
+\texttt{operator}（操作人）、\texttt{note}（备份 id、失败原因等）。
+台账不存在时输出 \texttt{[]} 并以 0 退出；损坏行跳过并附警告。
+
+\section{Helm 路径（云端组件）}
+
+云端 cloudcore 若通过 Helm Chart（\texttt{build/charts/edgeflow}）部署，
+升级与回滚走标准 Helm 流程：
+
+\begin{lstlisting}
+# 升级（--install 兼容首次安装）
+helm upgrade --install edgeflow build/charts/edgeflow \
+  --set cloudcore.env.EDGEFLOW_CLOUDCORE_TLS=on \
+  --set cloudcore.env.EDGEFLOW_CLOUDCORE_CERT_DIR=/data/certs
+
+# 回滚到上一个版本
+helm rollback edgeflow <rev>
+\end{lstlisting}
+
+\textbf{版本标记约定}：\texttt{keadm join} 生成的 \texttt{edgecore.env}
+首行注释下含版本标记行，与 \texttt{keadm init} 默认镜像 tag
+（\texttt{edgeflow/cloudcore:v0.1.0}）对齐：
+
+\begin{lstlisting}
+# keadm 产物版本: v0.1.0
+\end{lstlisting}
+
+旧版 join 产物无此标记时，\texttt{upgrade} 视当前版本为 \texttt{unknown}，
+更新时自动追加标记行（兼容升级路径）。\texttt{rollback} 恢复后标记行
+随文件内容一并还原。
+
+\section{端到端演练建议}
+
+\begin{lstlisting}
+keadm init  --output-dir=$OUT
+keadm join  --cloudcore-ip=192.168.1.10 --token=abc123 \
+            --node-id=edge-worker-01 --output-dir=$OUT
+keadm upgrade --version=v0.2.0 --simulate-failure --output-dir=$OUT   # 预期失败 exit=1
+keadm rollback --latest --output-dir=$OUT                             # 恢复
+keadm upgrade --version=v0.2.0 --output-dir=$OUT                      # 真实升级
+keadm rollback --latest --output-dir=$OUT                             # 真实回滚
+sha256sum -c baseline.sha                                             # 产物一致
+keadm ops-ledger --output-dir=$OUT                                    # 台账 4 条
+\end{lstlisting}
+
+注意：重复升级每次都会产生新备份（只增不删），长期使用请定期人工归档
+\texttt{backups/} 目录。

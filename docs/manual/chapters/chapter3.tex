@@ -1,0 +1,170 @@
+\chapter{快速入门}
+\label{ch:3}
+
+本章内容：在单台开发机上用约 10 分钟跑通 EdgeFlow 完整链路：构建制品、启动云端与边缘、注册节点、下发 Pod、查看容器、查看设备数据、下发设备指令。适合第一次接触 EdgeFlow 的操作人员。
+
+\section{准备工作}
+
+开始前请确认：
+
+\begin{itemize}
+  \item 本机为 macOS 或 Linux；
+  \item Docker 已安装且 daemon 运行中（Edged 的容器运行时）；
+  \item 已安装 curl；源码构建还需 Go 1.26+ 与 Make；
+  \item 已进入 EdgeFlow 仓库根目录（\texttt{cd edgeflow}）；
+  \item 可选：mosquitto（MQTT 数据面），缺失时跳过不影响主链路。
+\end{itemize}
+
+\begin{lstlisting}
+docker info        # 确认 Docker daemon 运行
+go version         # 确认 Go 版本（源码构建时需要）
+\end{lstlisting}
+
+\section{第一步：构建制品}
+
+\begin{lstlisting}
+make build
+\end{lstlisting}
+
+构建产物位于 \texttt{bin/}：\texttt{bin/cloudcore}、\texttt{bin/edgecore}。也可以直接使用发布目录 \texttt{release/v0.1.0/} 中的预编译二进制（获取方式见第 2 章 \autoref{ch:2}）。
+
+\section{第二步：启动云端 cloudcore}
+
+打开终端 A，执行：
+
+\begin{lstlisting}
+./bin/cloudcore
+\end{lstlisting}
+
+预期日志输出 \texttt{HTTP server listening on :8080}。默认监听：REST API 端口 8080、CloudHub WebSocket 端口 10000。端口可通过环境变量覆盖（\texttt{EDGEFLOW\_CLOUDCORE\_PORT}、\texttt{EDGEFLOW\_CLOUDCORE\_HUB\_PORT}），命令行参数 \texttt{--port} 优先级更高。
+
+验证健康检查：
+
+\begin{lstlisting}
+curl http://127.0.0.1:8080/healthz
+\end{lstlisting}
+
+预期返回 HTTP 200 与 \texttt{\{"status":"ok","version":\{...\}\}}。
+
+\section{第三步：启动边缘 edgecore}
+
+打开终端 B，执行：
+
+\begin{lstlisting}
+EDGEFLOW_EDGECORE_NODE_ID=node-1 \
+EDGEFLOW_EDGECORE_CLOUD_ADDR=ws://127.0.0.1:10000/v1/edge \
+./bin/edgecore
+\end{lstlisting}
+
+说明：
+
+\begin{itemize}
+  \item \texttt{EDGEFLOW\_EDGECORE\_NODE\_ID}：节点 ID。不设置时默认为 \texttt{edge-<主机名>}，仅允许字母、数字、连字符与下划线；
+  \item \texttt{EDGEFLOW\_EDGECORE\_CLOUD\_ADDR}：云端 CloudHub 地址（明文通道用 \texttt{ws://}；启用 mTLS 时用 \texttt{wss://}，见第 2 章 \autoref{ch:2}）；
+  \item edgecore 启动后自动完成节点注册、云边连接，并随进程启动内置模拟温湿度传感器 \texttt{sensor-01}（mock\_sensor），无需额外配置。
+\end{itemize}
+
+\section{第四步：验证节点注册}
+
+回到终端 A，查询节点列表：
+
+\begin{lstlisting}
+curl http://127.0.0.1:8080/api/v1/nodes
+\end{lstlisting}
+
+预期返回 JSON 数组，包含 \texttt{nodeID} 为 \texttt{node-1}、\texttt{status} 为 \texttt{Ready} 的节点。若长时间未出现，请检查终端 B 的 edgecore 日志与网络连通性。
+
+\section{第五步：下发第一个 Pod（nginx）}
+
+\begin{lstlisting}
+curl -X POST http://127.0.0.1:8080/api/v1/nodes/node-1/podsync \
+  -H 'Content-Type: application/json' \
+  -d '{"operation":"add","pod":{"name":"nginx","namespace":"default","image":"nginx:1.25-alpine","replicas":1}}'
+\end{lstlisting}
+
+预期返回 \texttt{\{"status":"ok","acked":true\}}，表示边缘节点已确认。镜像首次拉取可能需要一些时间。
+
+\section{第六步：查看容器与 Pod 状态}
+
+在边缘侧查看容器（本机即边缘）：
+
+\begin{lstlisting}
+docker ps --filter label=edgeflow.pod
+\end{lstlisting}
+
+预期看到容器 \texttt{edgeflow-default-nginx-0} 处于运行状态。
+
+查询云端 Pod 状态：
+
+\begin{lstlisting}
+curl http://127.0.0.1:8080/api/v1/pods
+\end{lstlisting}
+
+预期返回 \texttt{phase} 为 \texttt{Running} 的 Pod 记录。
+
+\section{第七步：查看设备数据}
+
+\begin{lstlisting}
+curl http://127.0.0.1:8080/api/v1/devices
+\end{lstlisting}
+
+预期返回设备 \texttt{sensor-01}，\texttt{properties} 中包含 \texttt{temperature} 与 \texttt{humidity} 两个属性（周期上报的实时值）。设备默认上报周期为 30 秒，可设置 \texttt{EDGEFLOW\_EDGECORE\_DEVICE\_REPORT\_INTERVAL=3s} 加速观察。
+
+\section{第八步：下发设备指令}
+
+向模拟传感器下发目标温度指令：
+
+\begin{lstlisting}
+curl -X POST http://127.0.0.1:8080/api/v1/nodes/node-1/device-command \
+  -H 'Content-Type: application/json' \
+  -d '{"deviceName":"sensor-01","property":"targetTemp","value":25}'
+\end{lstlisting}
+
+预期返回 \texttt{\{"status":"ok","acked":true\}}。再次查询设备：
+
+\begin{lstlisting}
+curl http://127.0.0.1:8080/api/v1/devices
+\end{lstlisting}
+
+预期 \texttt{sensor-01} 的 \texttt{desired} 中写入 \texttt{\{"targetTemp":25\}}，表明指令已被边缘执行并写回云端设备状态。
+
+\section{一键 Demo（可选）}
+
+仓库提供端到端演示脚本，自动完成上述全部步骤并输出 \texttt{DEMO PASS}：
+
+\begin{lstlisting}
+bash examples/demo.sh
+\end{lstlisting}
+
+脚本自动完成：构建、挑选空闲端口、启动 cloudcore 与 edgecore（运行时数据落在临时目录）、验证节点注册、下发 nginx Pod、验证容器与 Pod 状态、验证设备数据流、下发设备指令、可选 MQTT 数据面验证，最后自动清理资源。脚本幂等，可重复运行；设置 \texttt{EDGEFLOW\_DEMO\_SKIP\_BUILD=1} 可跳过构建步骤。
+
+\section{清理}
+
+\begin{lstlisting}
+# 1. 回收 Pod（边缘 Edged 会自动删除容器）
+curl -X POST http://127.0.0.1:8080/api/v1/nodes/node-1/podsync \
+  -H 'Content-Type: application/json' \
+  -d '{"operation":"delete","pod":{"name":"nginx","namespace":"default"}}'
+
+# 2. 停止 cloudcore 与 edgecore（终端 A/B 按 Ctrl+C，优雅退出）
+
+# 3. 兜底清理容器与本地元数据（可选）
+docker rm -f $(docker ps -aq --filter label=edgeflow.pod) 2>/dev/null
+rm -f data/edgeflow.db
+\end{lstlisting}
+
+\section{常见问题}
+
+\begin{tabularx}{\textwidth}{|l|X|}
+  \hline
+  \textbf{现象} & \textbf{处理} \\
+  \hline
+  节点未注册或状态非 Ready & 查看 edgecore 日志；确认 CloudHub 端口（默认 10000）可达、云边地址配置正确 \\
+  \hline
+  podsync 返回 504 或长时间未确认 & 边缘未确认下发：确认 edgecore 正在运行，且下发路径中的节点 ID 与注册的 nodeID 完全一致 \\
+  \hline
+  容器未创建 & 确认 Docker daemon 运行（\texttt{docker info}）；镜像首次拉取需要时间 \\
+  \hline
+  设备无数据上报 & 上报周期默认 30 秒，可设置 \texttt{EDGEFLOW\_EDGECORE\_DEVICE\_REPORT\_INTERVAL=3s} 加速观察 \\
+  \hline
+\end{tabularx}

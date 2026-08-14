@@ -1,0 +1,171 @@
+% =====================================================================
+% EdgeFlow 用户手册 · 第 6 章 设备接入
+% 事实依据：docs/API-SPEC.md、docs/MAPPER-GUIDE.md、docs/MODBUS-GUIDE.md、
+%           docs/EVENTBUS-GUIDE.md、edge/pkg/devicetwin、cmd/edgecore
+% =====================================================================
+\chapter{设备接入}
+\label{ch:6}
+
+EdgeFlow 通过\textbf{设备影子}（DeviceTwin）统一管理边缘设备：设备数据在
+边缘汇聚、周期上报云端；云端指令经边缘下发到设备。本章说明设备模型、
+指令链路、Mapper 框架（设备映射器）与数据面。
+
+\section{设备模型：影子}
+
+每台设备在边缘维护一份\textbf{影子}（Shadow / DeviceTwin），包含两类属性：
+
+\begin{description}
+  \item[\texttt{properties}（实际值）] 设备实际上报的属性值（如温度、湿度），
+        由 Mapper 采样写入，周期上报云端；
+  \item[\texttt{desired}（期望值）] 云端期望设备达到的属性值，通过指令下发
+        写入，云端与边缘各存一份。
+\end{description}
+
+影子是边缘侧设备数据的\textbf{汇聚点}：无论设备通过何种协议接入（MQTT、
+Modbus\ldots），云端看到的都是统一的影子视图。边缘默认每
+\texttt{EDGEFLOW\_EDGECORE\_DEVICE\_REPORT\_INTERVAL}（30 秒）把影子快照
+上报云端。
+
+\section{设备指令下发链路}
+
+云端下发指令走\textbf{可靠投递}通道（见第~\ref{ch:5}~章），完整链路为：
+
+\begin{enumerate}
+  \item 调用方 \texttt{POST /api/v1/nodes/\{nodeID\}/device-command}，
+        携带 \texttt{deviceName} 与 \texttt{property}（期望值）；
+  \item 云端经 CloudHub 将 DeviceCommand 消息可靠送达边缘（Ack 确认后
+        API 返回 \texttt{200}）；
+  \item 边缘按 \texttt{deviceName} 路由到对应 Mapper 直接执行指令（MQTT 模式下另订阅本地指令主题 \texttt{devices/<ns>/<device>/command}，支持数据面直接下发），设备属性发生变化；
+  \item 边缘影子 \texttt{properties} 更新，下一上报周期同步到云端。
+\end{enumerate}
+
+\begin{lstlisting}
+# 下发设备指令：把 sensor-01 的目标温度设为 25
+curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/device-command \
+  -H 'Content-Type: application/json' \
+  -d '{"deviceName":"sensor-01","property":"targetTemp","value":25}'
+# 期望响应：{"status":"ok","acked":true}
+\end{lstlisting}
+
+常见失败语义：节点离线 → \texttt{404}（未送达，无需重试）；边缘拒绝 →
+\texttt{502}（重试无意义）；确认超时 → \texttt{504}（可重试，边缘幂等去重）。
+详见附录~B。
+
+\section{Mapper 框架}
+
+\textbf{Mapper}（设备映射器）负责把具体设备的协议翻译成 EdgeFlow 的统一
+设备模型。Mapper 注册到边缘的 \texttt{MapperRegistry}，按
+\texttt{deviceName} 路由设备消息。v0.1.0 内置两个 Mapper（\texttt{modbus} 需显式启用，见下）：
+
+\subsection{mock\_sensor：模拟传感器}
+
+内置模拟温湿度传感器，用于验证全链路，无需真实硬件：
+
+\begin{itemize}
+  \item 设备名：\texttt{sensor-01}；
+  \item 采集周期：每 \texttt{2 秒}波动一次温度/湿度；
+  \item 数据面：MQTT（遥测主题 \texttt{devices/default/sensor-01/telemetry}）；
+  \item 支持指令：如 \texttt{targetTemp}（目标温度）写入期望值。
+\end{itemize}
+
+\subsection{Modbus TCP Mapper}
+
+通过 \texttt{goburrow/modbus} 客户端库（社区标准 Modbus 客户端）对接
+Modbus TCP 设备：
+
+\begin{itemize}
+  \item 设备名：\texttt{mb-sensor-01}（unit ID 1），采集温度/湿度保持寄存器；
+  \item 自带 \texttt{modbussim} 模拟器，无需真实设备即可联调；
+  \item \textbf{操作台账}（op-ledger）：每次读写操作落 SQLite 台账，可查
+        设备 ID、方向（\texttt{up}/\texttt{down}）与时间，便于审计排障；
+  \item 指令链路与 mock\_sensor 一致：云端下发
+        \texttt{DeviceCommand\{deviceName:"mb-sensor-01",\ldots\}}，
+        Mapper 按指令写寄存器。
+\end{itemize}
+
+\textbf{启用方式}：Modbus Mapper 为可选接入，必须显式设置环境变量
+\texttt{EDGEFLOW\_MODBUS\_ADDR}（如 \texttt{127.0.0.1:15020} 指向本机模拟器，
+或 \texttt{<设备IP>:502} 指向真实 Modbus 设备）后启动 edgecore，该 Mapper
+才会注册；未设置时 \texttt{mb-sensor-01} 不存在。
+
+\subsection{Mapper 的两种工作模式}
+
+Mapper 由 edgecore 装配时统一注册，按 EventBus 是否可用分为两种模式：
+
+\begin{description}
+  \item[MQTT 模式] EventBus 连接成功：遥测发布到 MQTT 主题、订阅设备指令
+        主题，数据面完整（broker 掉线后 paho 自动重连、订阅自动恢复）；
+  \item[纯本地模式] MQTT 不可用（未装配/连接失败降级）：采集照常写入
+        影子、本地指令照常执行，仅 MQTT 数据面不可用；云边通道
+        （DeviceCommand/DeviceReport）不受影响。
+\end{description}
+
+两种模式对云端完全透明：云端只看到影子视图，不感知边缘内部数据面
+形态。这也是第~\ref{ch:9}~章「EventBus 连接失败不必停机」的机制基础。
+
+\section{EventBus 数据面与降级}
+
+边缘内部通过 \textbf{EventBus}（MQTT，本机 1883）承载设备数据面：
+设备/Mapper 之间的遥测与指令走 MQTT 主题，云边管理消息仍走 WebSocket
+通道，二者互不干扰。
+
+\begin{table}[htbp]
+\centering
+\caption{EventBus 主题约定（QoS 1）}
+\label{tab:6-topics}
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{主题} & \textbf{方向} & \textbf{用途} \\
+\midrule
+\texttt{devices/<ns>/<device>/telemetry} & 设备 → 边缘 & 设备遥测上报 \\
+\texttt{devices/<ns>/<device>/command} & 边缘 → 设备 & 指令下发 \\
+\texttt{edgeflow/<module>/<event>} & 模块间 & 内部事件（预留） \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{降级行为}：MQTT broker 不可用或连接超时（默认 5 秒）时，Mapper
+自动降级\textbf{纯本地模式}——设备采集与本地指令照常工作，仅数据面
+MQTT 发布/订阅不可用；云边通道（DeviceCommand/DeviceReport）不受影响。
+已建立连接后的掉线会自动重连（QoS 1，订阅自动恢复）；若为\textbf{启动时}连接失败而降级，则降级是装配期决策，broker 恢复后需重启 edgecore 才能启用 MQTT 数据面。
+
+\begin{lstlisting}
+# 订阅查看 sensor-01 遥测（本机 mosquitto broker）
+mosquitto_sub -p 1883 -t 'devices/default/sensor-01/telemetry' -v
+# 通过 MQTT 数据面直接下发指令
+mosquitto_pub -p 1883 -t 'devices/default/sensor-01/command' \
+  -m '{"deviceName":"sensor-01","property":"targetTemp","value":23}'
+\end{lstlisting}
+
+\section{设备状态查询}
+
+云端提供统一查询入口，返回设备的 \texttt{properties} 与 \texttt{desired}：
+
+\begin{lstlisting}
+# 全部设备状态
+curl http://127.0.0.1:8080/api/v1/devices
+# 单节点设备状态
+curl http://127.0.0.1:8080/api/v1/nodes/{nodeID}/devices
+\end{lstlisting}
+
+\begin{itemize}
+  \item 节点不存在 → \texttt{404}；
+  \item 节点存在但无设备 → \texttt{200} + 空 \texttt{items}（可无分支遍历）；
+  \item 开启 Token 认证时需携带 \texttt{Authorization: Bearer <token>}
+        请求头（见第~\ref{ch:8}~章）。
+\end{itemize}
+
+\section{设备接入检查清单}
+
+接入一台新设备时，按以下顺序核对：
+
+\begin{enumerate}
+  \item \textbf{数据面}：设备/Mapper 与 broker（或本地模式）连通，遥测
+        主题有数据（\texttt{mosquitto\_sub} 可观测）；
+  \item \textbf{影子}：edgecore 日志出现 Mapper 注册成功，影子
+        \texttt{properties} 有值；
+  \item \textbf{上报}：等一个上报周期（默认 30s），云端
+        \texttt{GET /api/v1/devices} 可见设备；
+  \item \textbf{指令}：下发一条 \texttt{device-command}，确认 200 + 设备
+        属性变化 + 期望值写入云端。
+\end{enumerate}

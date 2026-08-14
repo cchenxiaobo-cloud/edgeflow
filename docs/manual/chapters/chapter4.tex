@@ -1,0 +1,440 @@
+\chapter{云端操作指南}
+\label{ch:4}
+
+本章内容：介绍 cloudcore 对外提供的全部 REST API 端点——用途、请求示例与响应字段说明，以及监控指标（\texttt{/metrics}）与 API 认证的启用方法。操作人员可通过 curl 或任意 HTTP 客户端调用。
+
+\section{通用约定}
+
+\begin{itemize}
+  \item \textbf{Base URL}：\texttt{http://<cloudcore-ip>:8080}（端口可用 \texttt{--port} 或环境变量 \texttt{EDGEFLOW\_CLOUDCORE\_PORT} 覆盖）；
+  \item \textbf{数据格式}：JSON；请求需携带 \texttt{Content-Type: application/json}，响应同样为 JSON；
+  \item \textbf{时间戳}：Unix 毫秒（注册、心跳、上报时间等）；
+  \item \textbf{List 风格}：\texttt{edgenodes}、\texttt{pods}、\texttt{devices} 端点采用 Kubernetes List 风格（\texttt{kind}/\texttt{apiVersion}/\texttt{items}），空数据编码为 \texttt{[]} 而非 \texttt{null}；\texttt{/api/v1/nodes} 为裸数组；
+  \item \textbf{路径参数}：\texttt{\{nodeID\}} 为边缘节点 ID（edgecore 注册时上报，默认 \texttt{edge-<主机名>}），必须与注册时的 nodeID 完全一致；
+  \item \textbf{状态语义}：cloudcore 状态为内存态，重启即清空；边缘节点重连后自动重新注册并恢复上报，边缘侧元数据由 SQLite 持久化，不受影响。
+\end{itemize}
+
+端点总览：
+
+\begin{tabularx}{\textwidth}{|l|l|X|l|}
+  \hline
+  \textbf{方法} & \textbf{路径} & \textbf{说明} & \textbf{主要状态码} \\
+  \hline
+  GET & \texttt{/healthz} & 健康检查（探针用） & 200 \\
+  \hline
+  GET & \texttt{/api/v1/nodes} & 全部节点（运行视角） & 200 \\
+  \hline
+  GET & \texttt{/api/v1/nodes/\{nodeID\}} & 单节点详情 & 200 / 404 \\
+  \hline
+  GET & \texttt{/api/v1/edgenodes} & 全部节点（CRD 对象视角） & 200 \\
+  \hline
+  GET & \texttt{/api/v1/edgenodes/\{nodeID\}} & 单节点 EdgeNode 对象 & 200 / 404 \\
+  \hline
+  GET & \texttt{/api/v1/pods} & 全部节点 Pod 状态 & 200 \\
+  \hline
+  GET & \texttt{/api/v1/nodes/\{nodeID\}/pods} & 单节点 Pod 状态 & 200 / 404 \\
+  \hline
+  GET & \texttt{/api/v1/devices} & 全部设备状态 & 200 \\
+  \hline
+  GET & \texttt{/api/v1/nodes/\{nodeID\}/devices} & 单节点设备状态 & 200 / 404 \\
+  \hline
+  POST & \texttt{/api/v1/nodes/\{nodeID\}/podsync} & 下发 Pod 配置（add/update/delete） & 200 / 400 / 404 / 502 / 504 \\
+  \hline
+  POST & \texttt{/api/v1/nodes/\{nodeID\}/config-sync} & 下发 ConfigMap/Secret 配置 & 200 / 400 / 404 / 502 / 504 \\
+  \hline
+  POST & \texttt{/api/v1/nodes/\{nodeID\}/device-command} & 下发设备指令（期望值） & 200 / 400 / 404 / 502 / 504 \\
+  \hline
+\end{tabularx}
+
+\section{健康检查}
+
+\subsection{GET /healthz}
+
+用途：服务探活，返回云端运行状态与版本信息（Helm 部署的存活/就绪探针均指向此路径）。
+
+\begin{lstlisting}
+curl http://127.0.0.1:8080/healthz
+\end{lstlisting}
+
+响应示例（HTTP 200）：
+
+\begin{lstlisting}
+{"status":"ok","version":{"version":"v0.1.0","gitCommit":"c880bd9","buildTime":"2026-08-14T19:08:17+0800","goVersion":"go1.26.2"}}
+\end{lstlisting}
+
+\section{节点 API}
+
+\subsection{GET /api/v1/nodes —— 全部节点（运行视角）}
+
+用途：获取全部已注册节点，直接返回节点元数据数组（按 nodeID 排序），用于快速了解节点在线状态与平台信息。
+
+\begin{lstlisting}
+curl http://127.0.0.1:8080/api/v1/nodes
+\end{lstlisting}
+
+响应示例（HTTP 200，无节点时返回 \texttt{[]}）：
+
+\begin{lstlisting}
+[
+  {
+    "nodeID": "edge-node-1",
+    "nodeName": "edge-node-1",
+    "arch": "arm64",
+    "os": "darwin",
+    "edgecoreVersion": "version=v0.1.0 gitCommit=... goVersion=go1.26.2",
+    "cpu": 8,
+    "memory": 0,
+    "ip": "127.0.0.1",
+    "registeredAt": 1786705914423,
+    "lastHeartbeatAt": 1786705914423,
+    "status": "Ready"
+  }
+]
+\end{lstlisting}
+
+字段说明：
+
+\begin{tabularx}{\textwidth}{|l|l|X|}
+  \hline
+  \textbf{字段} & \textbf{类型} & \textbf{说明} \\
+  \hline
+  \texttt{nodeID} & string & 节点唯一 ID（edgecore 的 \texttt{EDGEFLOW\_EDGECORE\_NODE\_ID}） \\
+  \hline
+  \texttt{nodeName} & string & 云端分配的节点名（当前与 nodeID 一致） \\
+  \hline
+  \texttt{arch} / \texttt{os} & string & edgecore 所在平台（注册时上报） \\
+  \hline
+  \texttt{edgecoreVersion} & string & edgecore 版本串 \\
+  \hline
+  \texttt{cpu} / \texttt{memory} & int / uint64 & 节点资源（内存：Linux 上报实际值，非 Linux 平台为 0） \\
+  \hline
+  \texttt{ip} & string & 连接来源 IP \\
+  \hline
+  \texttt{registeredAt} / \texttt{lastHeartbeatAt} & int64 & 注册时间 / 最近心跳时间（Unix 毫秒） \\
+  \hline
+  \texttt{status} & string & \texttt{Ready} / \texttt{Unknown} / \texttt{Offline} \\
+  \hline
+\end{tabularx}
+
+\subsection{GET /api/v1/nodes/\{nodeID\} —— 单节点详情}
+
+用途：查询指定节点。节点不存在时返回 404 与 \texttt{\{"error":"node not found",...\}}。
+
+\begin{lstlisting}
+curl http://127.0.0.1:8080/api/v1/nodes/edge-node-1
+\end{lstlisting}
+
+\subsection{GET /api/v1/edgenodes —— 全部节点（CRD 视角）}
+
+用途：以 EdgeNode 对象（\texttt{apiVersion: edgeflow.io/v1alpha1}）形式获取节点，Kubernetes List 风格，便于按 CRD 对象消费。
+
+\begin{lstlisting}
+curl http://127.0.0.1:8080/api/v1/edgenodes
+\end{lstlisting}
+
+响应示例（HTTP 200）：
+
+\begin{lstlisting}
+{
+  "kind": "EdgeNodeList",
+  "apiVersion": "edgeflow.io/v1alpha1",
+  "items": [
+    {
+      "apiVersion": "edgeflow.io/v1alpha1",
+      "kind": "EdgeNode",
+      "metadata": {"name": "edge-node-1", "uid": "...", "creationTimestamp": "2026-08-14T19:11:54+08:00"},
+      "spec": {"nodeID": "edge-node-1", "role": "edge"},
+      "status": {"phase": "Running", "heartbeatTime": "...", "conditions": [{"type": "Ready", "status": "True"}]}
+    }
+  ]
+}
+\end{lstlisting}
+
+关键字段：\texttt{spec.nodeID}（节点唯一标识）、\texttt{spec.role}（角色，默认 \texttt{edge}）、\texttt{status.phase}（\texttt{Pending}/\texttt{Running}/\texttt{Offline}/\texttt{Unknown}）、\texttt{status.conditions}（健康条件，如 \texttt{Ready}）。
+
+\subsection{GET /api/v1/edgenodes/\{nodeID\} —— 单节点 EdgeNode 对象}
+
+用途：查询指定节点的 EdgeNode 对象；节点不存在时返回 404。
+
+\begin{lstlisting}
+curl http://127.0.0.1:8080/api/v1/edgenodes/edge-node-1
+\end{lstlisting}
+
+\section{Pod API}
+
+\subsection{GET /api/v1/pods —— 全部 Pod 状态}
+
+用途：获取云端保存的全部 Pod 状态（由边缘上报）。
+
+\begin{lstlisting}
+curl http://127.0.0.1:8080/api/v1/pods
+\end{lstlisting}
+
+响应示例（HTTP 200）：
+
+\begin{lstlisting}
+{
+  "kind": "PodStatusList",
+  "apiVersion": "v1",
+  "items": [
+    {
+      "nodeID": "edge-node-1",
+      "podName": "nginx",
+      "namespace": "default",
+      "phase": "Running",
+      "message": "",
+      "lastReconcileAt": 1786705732883
+    }
+  ]
+}
+\end{lstlisting}
+
+字段说明：\texttt{phase} 取 \texttt{Running} / \texttt{Stopped} / \texttt{Absent} / \texttt{Error} / \texttt{Unknown}；\texttt{message} 为附加说明（如错误原因）；\texttt{lastReconcileAt} 为边缘最近一次调谐时间（Unix 毫秒）。
+
+\subsection{GET /api/v1/nodes/\{nodeID\}/pods —— 单节点 Pod 状态}
+
+用途：查询指定节点的 Pod 状态。语义约定：节点不存在（从未注册）返回 404；节点存在但无 Pod 返回 200 与空 \texttt{items}。
+
+\begin{lstlisting}
+curl http://127.0.0.1:8080/api/v1/nodes/edge-node-1/pods
+\end{lstlisting}
+
+\section{设备 API}
+
+\subsection{GET /api/v1/devices —— 全部设备状态}
+
+用途：获取全部设备的数字孪生状态：\texttt{properties} 为设备实际上报值，\texttt{desired} 为云端下发的期望值（设备上报不会覆盖 desired）。
+
+\begin{lstlisting}
+curl http://127.0.0.1:8080/api/v1/devices
+\end{lstlisting}
+
+响应示例（HTTP 200，内置模拟传感器 \texttt{sensor-01}）：
+
+\begin{lstlisting}
+{
+  "kind": "DeviceStatusList",
+  "apiVersion": "v1",
+  "items": [
+    {
+      "nodeID": "edge-node-1",
+      "deviceName": "sensor-01",
+      "namespace": "default",
+      "properties": {"humidity": 46.39, "temperature": 29.38},
+      "desired": {"targetTemp": 25},
+      "lastReportedAt": 1786705917423
+    }
+  ]
+}
+\end{lstlisting}
+
+字段说明：\texttt{properties} / \texttt{desired} 均为 \texttt{map[string]float64}；\texttt{lastReportedAt} 为最近上报时间（Unix 毫秒）。
+
+\subsection{GET /api/v1/nodes/\{nodeID\}/devices —— 单节点设备状态}
+
+用途：查询指定节点的设备状态。语义与单节点 Pod 查询一致：节点不存在返回 404；存在但无设备返回 200 与空 \texttt{items}。
+
+\begin{lstlisting}
+curl http://127.0.0.1:8080/api/v1/nodes/edge-node-1/devices
+\end{lstlisting}
+
+\section{下发类 API（可靠下发）}
+
+三个下发端点共用同一套可靠投递语义：消息进入 CloudHub 发送缓冲，由边缘 EdgeHub 接收并处理，处理完成后回确认（Ack）给云端，云端收到确认后返回 200；未确认时按 5 秒超时重试，最多尝试 3 次。
+
+\subsection{POST /api/v1/nodes/\{nodeID\}/podsync —— 下发 Pod 配置}
+
+用途：向边缘节点下发 Pod 期望配置（新增/更新/删除），由边缘 Edged 调谐容器。
+
+\begin{lstlisting}
+curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/podsync \
+  -H 'Content-Type: application/json' \
+  -d '{"operation":"add","pod":{"name":"nginx","namespace":"default","image":"nginx:1.25-alpine","replicas":1}}'
+\end{lstlisting}
+
+请求体字段：
+
+\begin{tabularx}{\textwidth}{|l|l|l|X|}
+  \hline
+  \textbf{字段} & \textbf{类型} & \textbf{必填} & \textbf{说明} \\
+  \hline
+  \texttt{operation} & string & 是 & \texttt{add} / \texttt{update} / \texttt{delete}（白名单校验） \\
+  \hline
+  \texttt{pod.name} & string & 是 & Pod 名称（delete 时作为删除键之一） \\
+  \hline
+  \texttt{pod.namespace} & string & 否 & 命名空间（缺省 \texttt{default}） \\
+  \hline
+  \texttt{pod.image} & string & add/update 必填 & 容器镜像（delete 不需要） \\
+  \hline
+  \texttt{pod.replicas} & int & 否 & 副本数（Edged 按此保证多副本） \\
+  \hline
+\end{tabularx}
+
+响应示例（HTTP 200，边缘已确认）：
+
+\begin{lstlisting}
+{"status":"ok","acked":true}
+\end{lstlisting}
+
+操作说明：边缘收到后，容器按 \texttt{edgeflow-<命名空间>-<名称>-<序号>} 命名并打标签；\texttt{delete} 时按命名空间与名称删除元数据，Edged 回收对应容器。
+
+\subsection{POST /api/v1/nodes/\{nodeID\}/config-sync —— 下发配置}
+
+用途：向边缘节点下发 ConfigMap/Secret 配置，供边缘应用使用。
+
+\begin{lstlisting}
+curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/config-sync \
+  -H 'Content-Type: application/json' \
+  -d '{"operation":"add","config":{"name":"app-config","namespace":"default","kind":"ConfigMap","data":{"key1":"value1"}}}'
+\end{lstlisting}
+
+请求体字段：
+
+\begin{tabularx}{\textwidth}{|l|l|l|X|}
+  \hline
+  \textbf{字段} & \textbf{类型} & \textbf{必填} & \textbf{说明} \\
+  \hline
+  \texttt{operation} & string & 是 & \texttt{add} / \texttt{update} / \texttt{delete} \\
+  \hline
+  \texttt{config.name} & string & 是 & 配置名称 \\
+  \hline
+  \texttt{config.namespace} & string & 否 & 命名空间（缺省 \texttt{default}） \\
+  \hline
+  \texttt{config.kind} & string & 是 & \texttt{ConfigMap} / \texttt{Secret}（白名单校验） \\
+  \hline
+  \texttt{config.data} & map[string]string & add/update 必填 & 键值数据（Secret 的 value 当前为明文存储，生产需自行加密） \\
+  \hline
+\end{tabularx}
+
+响应示例（HTTP 200）：\texttt{\{"status":"ok","acked":true\}}。
+
+\subsection{POST /api/v1/nodes/\{nodeID\}/device-command —— 下发设备指令}
+
+用途：向边缘设备下发期望值指令，由对应 Mapper 执行；执行结果写入边缘设备孪生并随周期上报回云端。内置 \texttt{mock\_sensor} 支持 \texttt{targetTemp} 与 \texttt{reset} 指令。
+
+\begin{lstlisting}
+curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/device-command \
+  -H 'Content-Type: application/json' \
+  -d '{"deviceName":"sensor-01","property":"targetTemp","value":25}'
+\end{lstlisting}
+
+请求体字段：
+
+\begin{tabularx}{\textwidth}{|l|l|l|X|}
+  \hline
+  \textbf{字段} & \textbf{类型} & \textbf{必填} & \textbf{说明} \\
+  \hline
+  \texttt{deviceName} & string & 是 & 目标设备名称（路由到对应 Mapper） \\
+  \hline
+  \texttt{namespace} & string & 否 & 命名空间（缺省 \texttt{default}） \\
+  \hline
+  \texttt{property} & string & 是 & 目标属性名（如 \texttt{targetTemp}） \\
+  \hline
+  \texttt{value} & float64 & 否 & 期望值（数值型） \\
+  \hline
+\end{tabularx}
+
+响应示例（HTTP 200，边缘已确认且期望值已写入云端设备状态）：
+
+\begin{lstlisting}
+{"status":"ok","acked":true}
+\end{lstlisting}
+
+下发成功后，通过 \texttt{GET /api/v1/devices} 可在 \texttt{desired} 字段中看到写入的期望值。
+
+\subsection{五态响应语义}
+
+三个下发端点统一使用以下响应语义：
+
+\begin{tabularx}{\textwidth}{|l|l|X|}
+  \hline
+  \textbf{状态码} & \textbf{响应体（示例）} & \textbf{含义} \\
+  \hline
+  200 & \texttt{\{"status":"ok","acked":true\}} & 边缘已确认（Ack ok） \\
+  \hline
+  400 & \texttt{\{"error":"operation and pod.name are required"\}} & 请求非法：JSON 解析失败 / 缺必填字段 / operation 或 kind 不在白名单 \\
+  \hline
+  404 & \texttt{\{"error":"node offline or not registered"\}} & 节点未注册或离线（消息未送达，无需重试） \\
+  \hline
+  502 & \texttt{\{"error":"edge rejected ack"\}} & 边缘明确拒绝：消息已送达但处理失败（重试无意义） \\
+  \hline
+  504 & \texttt{\{"error":"ack timeout after retries"\}} & 确认超时且重试耗尽：可能已送达但未确认（可重试，边缘侧有幂等去重） \\
+  \hline
+  500 & \texttt{\{"error":"send failed"\}} & 其他内部错误 \\
+  \hline
+\end{tabularx}
+
+\section{监控指标}
+
+\subsection{GET /metrics}
+
+用途：输出 Prometheus 文本格式指标，供 Prometheus 等监控系统抓取，观测云端运行状态。
+
+\begin{lstlisting}
+curl http://127.0.0.1:8080/metrics
+\end{lstlisting}
+
+指标说明：
+
+\begin{tabularx}{\textwidth}{|l|l|X|}
+  \hline
+  \textbf{指标名} & \textbf{类型} & \textbf{含义} \\
+  \hline
+  \texttt{edgeflow\_cloudcore\_nodes\_total} & gauge & 已注册边缘节点总数（含离线） \\
+  \hline
+  \texttt{edgeflow\_cloudcore\_pods\_total} & gauge & 云端 Pod 状态记录总数 \\
+  \hline
+  \texttt{edgeflow\_cloudcore\_devices\_total} & gauge & 云端设备状态记录总数 \\
+  \hline
+  \texttt{edgeflow\_cloudcore\_http\_requests\_total} & counter & 云端 HTTP 请求累计数（按路由模式与状态码分桶） \\
+  \hline
+  \texttt{edgeflow\_cloudcore\_active\_connections} & gauge & CloudHub 活跃连接数 \\
+  \hline
+\end{tabularx}
+
+\section{API 认证}
+
+云端 API 认证默认关闭；生产环境建议开启。
+
+\subsection{启用认证}
+
+启动 cloudcore 前设置两个环境变量：
+
+\begin{lstlisting}
+EDGEFLOW_CLOUDCORE_AUTH=on EDGEFLOW_CLOUDCORE_API_TOKEN=<你的令牌> ./bin/cloudcore
+\end{lstlisting}
+
+注意：\texttt{EDGEFLOW\_CLOUDCORE\_AUTH=on} 时必须同时设置 \texttt{EDGEFLOW\_CLOUDCORE\_API\_TOKEN}，否则 cloudcore 拒绝启动。
+
+\subsection{调用方式}
+
+认证开启后，所有 \texttt{/api/v1/*} 请求必须携带请求头 \texttt{Authorization: Bearer <token>}：
+
+\begin{lstlisting}
+curl -H 'Authorization: Bearer <你的令牌>' http://127.0.0.1:8080/api/v1/nodes
+
+# 未携带或携带错误 token 时返回 401
+curl http://127.0.0.1:8080/api/v1/nodes
+\end{lstlisting}
+
+说明：\texttt{/healthz} 与 \texttt{/metrics} 不参与认证，始终可访问，以保证探活与监控采集通道可用。
+
+\section{排障指南}
+
+\begin{tabularx}{\textwidth}{|l|X|}
+  \hline
+  \textbf{现象} & \textbf{处理} \\
+  \hline
+  返回 401 & API 认证已开启但未携带或携带错误的 token；确认请求头 \texttt{Authorization: Bearer <token>} 正确 \\
+  \hline
+  返回 400 & 请求体 JSON 非法或缺少必填字段、operation/kind 不在白名单；按响应中 \texttt{error} 提示修正 \\
+  \hline
+  返回 404（下发类） & 节点未注册或离线，消息未送达；先确认 edgecore 运行状态与节点 ID 拼写，无需重复重试 \\
+  \hline
+  返回 502 & 消息已送达但被边缘拒绝；检查请求体是否符合边缘校验规则（如设备名、属性名是否正确） \\
+  \hline
+  返回 504 & 可能已送达但未确认（超时重试耗尽）；可稍后重试，边缘侧有幂等去重，不会重复执行 \\
+  \hline
+  云端重启后查询为空 & 云端状态为内存态，重启即清空；边缘节点重连后会自动重新注册并恢复上报 \\
+  \hline
+\end{tabularx}

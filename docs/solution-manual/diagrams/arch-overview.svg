@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- EdgeFlow 整体方案架构图（图 1-1） 可编辑源文件：Inkscape/Figma/Illustrator 可直接打开 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760">
+  <defs>
+    <style>
+      text { font-family: Helvetica, Arial, 'PingFang SC', sans-serif; fill: #111; }
+      .layer-title { font-size: 15px; font-weight: bold; letter-spacing: 2px; }
+      .box-title { font-size: 13px; font-weight: bold; }
+      .box-sub { font-size: 10.5px; fill: #444; }
+      .small { font-size: 10px; fill: #666; }
+      .red { fill: #E30613; }
+      .line { stroke: #111; stroke-width: 1.5; fill: none; }
+      .line-red { stroke: #E30613; stroke-width: 2; fill: none; }
+      .box { fill: #fff; stroke: #111; stroke-width: 1.2; }
+      .box-light { fill: #f7f7f7; stroke: #999; stroke-width: 1; }
+      .dash { stroke-dasharray: 5,4; }
+    </style>
+  </defs>
+  <rect width="1280" height="760" fill="#fff"/>
+  <!-- 顶部标题条 -->
+  <rect x="0" y="0" width="1280" height="46" fill="#111"/>
+  <text x="24" y="30" fill="#fff" font-size="17" font-weight="bold" font-family="Helvetica, Arial, 'PingFang SC', sans-serif">EdgeFlow 整体方案架构</text>
+  <text x="1240" y="30" text-anchor="end" fill="#fff" font-size="12" font-family="Helvetica, Arial, sans-serif">v0.1.0 · 2026-08</text>
+
+  <!-- ============ 云端层 ============ -->
+  <text x="24" y="86" class="layer-title">云层 · CloudCore<span class="red" style="fill:#E30613"> —— 管控 / API / 审计 / 指标</span></text>
+  <rect x="24" y="98" width="1232" height="188" fill="none" stroke="#111" stroke-width="1.5"/>
+  <!-- CloudCore 组件 -->
+  <rect x="48" y="118" width="172" height="64" class="box"/>
+  <text x="58" y="142" class="box-title">CloudHub</text>
+  <text x="58" y="160" class="box-sub">连接管理 · 可靠投递</text>
+  <text x="58" y="175" class="small">WebSocket / mTLS / Token</text>
+
+  <rect x="244" y="118" width="172" height="64" class="box"/>
+  <text x="254" y="142" class="box-title">NodeController</text>
+  <text x="254" y="160" class="box-sub">节点在线/离线判定</text>
+  <text x="254" y="175" class="small">90s 断开 / 180s 心跳超时</text>
+
+  <rect x="440" y="118" width="172" height="64" class="box"/>
+  <text x="450" y="142" class="box-title">DeviceStatus</text>
+  <text x="450" y="160" class="box-sub">设备影子 · 属性汇聚</text>
+  <text x="450" y="175" class="small">内存态 · 周期快照</text>
+
+  <rect x="636" y="118" width="172" height="64" class="box"/>
+  <text x="646" y="142" class="box-title">REST API</text>
+  <text x="646" y="160" class="box-sub">13 端点 · 审计台账</text>
+  <text x="646" y="175" class="small">/api/v1/* · JSON</text>
+
+  <rect x="832" y="118" width="172" height="64" class="box"/>
+  <text x="842" y="142" class="box-title">审计 / 指标</text>
+  <text x="842" y="160" class="box-sub">audit-ledger.jsonl</text>
+  <text x="842" y="175" class="small">edgeflow_cloudcore_*</text>
+
+  <rect x="1028" y="118" width="204" height="64" class="box"/>
+  <text x="1038" y="142" class="box-title">keadm / Helm</text>
+  <text x="1038" y="160" class="box-sub">安装 · 升级 · 回滚</text>
+  <text x="1038" y="175" class="small">备份+sha256 · ops-ledger</text>
+
+  <text x="48" y="214" class="small">部署形态：Kubernetes + Helm Chart，或 docker 单机；镜像 edgeflow/cloudcore:v0.1.0（linux/amd64+arm64）</text>
+  <text x="48" y="232" class="small">API 路由：/healthz · /api/v1/nodes · /api/v1/edgenodes · /api/v1/pods · /api/v1/devices · /api/v1/nodes/{id}/pods|devices|device-command|podsync|config-sync · /metrics（部分列举）</text>
+
+  <!-- 云边通道 -->
+  <path class="line" d="M 640 288 L 640 318"/>
+  <rect x="552" y="290" width="176" height="24" fill="#E30613"/>
+  <text x="640" y="306" text-anchor="middle" fill="#fff" font-size="11.5" font-weight="bold" font-family="Helvetica, Arial, 'PingFang SC', sans-serif">WebSocket 云边通道（wss）</text>
+  <text x="640" y="342" text-anchor="middle" class="small">注册 · 30s 心跳 · 指数退避重连（1s→60s）· 可靠投递（5s×3 重试）· 幂等去重</text>
+
+  <!-- ============ 边缘层 ============ -->
+  <text x="24" y="376" class="layer-title">边缘层 · EdgeCore<span class="red" style="fill:#E30613"> —— 采集 / 自治 / 数据面</span></text>
+  <rect x="24" y="388" width="1232" height="212" fill="none" stroke="#111" stroke-width="1.5"/>
+
+  <rect x="48" y="408" width="152" height="60" class="box"/>
+  <text x="58" y="432" class="box-title">EdgeHub</text>
+  <text x="58" y="450" class="box-sub">云边通道客户端</text>
+  <text x="58" y="465" class="small">Ack · 幂等去重</text>
+
+  <rect x="224" y="408" width="152" height="60" class="box"/>
+  <text x="234" y="432" class="box-title">Edged</text>
+  <text x="234" y="450" class="box-sub">容器自治 · 5s 调谐</text>
+  <text x="234" y="465" class="small">自愈 · 多副本 · 防漂移</text>
+
+  <rect x="400" y="408" width="152" height="60" class="box"/>
+  <text x="410" y="432" class="box-title">DeviceTwin</text>
+  <text x="410" y="450" class="box-sub">设备影子</text>
+  <text x="410" y="465" class="small">desired/reported</text>
+
+  <rect x="576" y="408" width="152" height="60" class="box"/>
+  <text x="586" y="432" class="box-title">EventBus</text>
+  <text x="586" y="450" class="box-sub">MQTT 数据面 · QoS1</text>
+  <text x="586" y="465" class="small">断线降级本地模式</text>
+
+  <rect x="752" y="408" width="152" height="60" class="box"/>
+  <text x="762" y="432" class="box-title">Mapper 框架</text>
+  <text x="762" y="450" class="box-sub">mock_sensor / Modbus</text>
+  <text x="762" y="465" class="small">采集 · 指令执行 · op-ledger</text>
+
+  <rect x="928" y="408" width="152" height="60" class="box"/>
+  <text x="938" y="432" class="box-title">MetaManager</text>
+  <text x="938" y="450" class="box-sub">SQLite（WAL）持久化</text>
+  <text x="938" y="465" class="small">元数据 · Pod · 配置</text>
+
+  <!-- 边缘应用 -->
+  <rect x="1104" y="408" width="128" height="60" class="box-light"/>
+  <text x="1114" y="432" class="box-title" style="fill:#333">边缘应用</text>
+  <text x="1114" y="450" class="box-sub" style="fill:#555">业务/推理容器</text>
+  <text x="1114" y="465" class="small" style="fill:#777">由 Edged 管理</text>
+
+  <!-- 边缘内部连线 -->
+  <path class="line" d="M 640 470 L 640 492"/>
+  <text x="656" y="504" class="small">本地数据面（MQTT/内存）</text>
+  <path class="line dash" d="M 376 438 L 396 438"/>
+  <path class="line dash" d="M 552 438 L 572 438"/>
+  <path class="line dash" d="M 728 438 L 748 438"/>
+  <path class="line dash" d="M 904 438 L 924 438"/>
+
+  <text x="48" y="528" class="small">自治语义：期望状态落盘 SQLite，云端不可达时容器持续运行、本地调谐与设备指令不受影响；重连后自动注册、≤30s 周期补报最新状态</text>
+  <text x="48" y="546" class="small">设备操作台账 op-ledger（SQLite，30 天保留）；设备遥测：devices/&lt;ns&gt;/&lt;device&gt;/telemetry（QoS1）</text>
+
+  <!-- ============ 设备层 ============ -->
+  <text x="24" y="620" class="layer-title">设备层<span class="red" style="fill:#E30613"> —— 协议接入</span></text>
+  <rect x="24" y="632" width="1232" height="104" fill="none" stroke="#111" stroke-width="1.5"/>
+
+  <rect x="48" y="652" width="240" height="56" class="box"/>
+  <text x="58" y="676" class="box-title">Modbus TCP 设备</text>
+  <text x="58" y="694" class="box-sub">传感器/PLC · 保持寄存器 · 线圈</text>
+
+  <rect x="320" y="652" width="240" height="56" class="box"/>
+  <text x="330" y="676" class="box-title">MQTT 传感器</text>
+  <text x="330" y="694" class="box-sub">遥测发布 · 指令订阅 · QoS1</text>
+
+  <rect x="592" y="652" width="240" height="56" class="box box-light"/>
+  <text x="602" y="676" class="box-title" style="fill:#333">模拟器 / 测试设备</text>
+  <text x="602" y="694" class="box-sub" style="fill:#555">mock_sensor（2s 采样）</text>
+
+  <rect x="864" y="652" width="368" height="56" class="box-light"/>
+  <text x="874" y="676" class="box-title" style="fill:#333">接入说明</text>
+  <text x="874" y="694" class="box-sub" style="fill:#555">Modbus 须显式设置 EDGEFLOW_MODBUS_ADDR 启用；设备级离线检测规划中</text>
+
+  <!-- 设备↔边缘连线 -->
+  <path class="line" d="M 168 648 L 168 470" />
+  <path class="line" d="M 440 648 L 440 470"/>
+  <path class="line" d="M 712 648 L 712 470"/>
+  <circle cx="168" cy="648" r="3" fill="#111"/>
+  <circle cx="440" cy="648" r="3" fill="#111"/>
+  <circle cx="712" cy="648" r="3" fill="#111"/>
+
+  <!-- 页脚 -->
+  <rect x="0" y="742" width="1280" height="18" fill="#111"/>
+  <text x="24" y="755" fill="#fff" font-size="9.5" font-family="Helvetica, Arial, sans-serif">EdgeFlow 解决方案手册 v1.0.0 · 图 1-1 整体方案架构 · 可编辑 SVG 源文件</text>
+</svg>

@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 图 4-1 模型管理场景部署拓扑（镜像化模型分发链路） 可编辑源文件 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="520" viewBox="0 0 1100 520">
+  <defs>
+    <style>
+      text { font-family: Helvetica, Arial, 'PingFang SC', sans-serif; fill: #111; }
+      .box-title { font-size: 12px; font-weight: bold; }
+      .box-sub { font-size: 10px; fill: #444; }
+      .small { font-size: 9.5px; fill: #666; }
+      .line { stroke: #111; stroke-width: 1.5; fill: none; }
+      .line-red { stroke: #E30613; stroke-width: 2; fill: none; }
+      .box { fill: #fff; stroke: #111; stroke-width: 1.2; }
+      .box-light { fill: #f7f7f7; stroke: #999; stroke-width: 1; }
+      .dash { stroke-dasharray: 5,4; }
+    </style>
+  </defs>
+  <rect width="1100" height="520" fill="#fff"/>
+  <rect x="0" y="0" width="1100" height="40" fill="#111"/>
+  <text x="20" y="26" fill="#fff" font-size="15" font-weight="bold" font-family="Helvetica, Arial, 'PingFang SC', sans-serif">图 4-1 模型管理场景：镜像化模型分发链路</text>
+
+  <!-- 步骤 1：构建 -->
+  <rect x="30" y="90" width="200" height="120" class="box"/>
+  <text x="40" y="116" class="box-title">① 模型打包</text>
+  <text x="40" y="136" class="box-sub">模型 + 推理运行时 → 镜像</text>
+  <text x="40" y="154" class="small">版本化 Tag（v1.2.0）</text>
+  <text x="40" y="172" class="small">多架构 amd64/arm64</text>
+
+  <!-- 步骤 2：仓库 -->
+  <rect x="290" y="90" width="200" height="120" class="box"/>
+  <text x="300" y="116" class="box-title">② 镜像仓库</text>
+  <text x="300" y="136" class="box-sub">版本不可变 · 可回溯</text>
+  <text x="300" y="154" class="small">镜像 Tag 即模型版本号</text>
+  <text x="300" y="172" class="small">sha256 校验</text>
+
+  <!-- 步骤 3：下发 -->
+  <rect x="550" y="90" width="200" height="120" class="box"/>
+  <text x="560" y="116" class="box-title">③ 声明下发</text>
+  <text x="560" y="136" class="box-sub">POST /nodes/{id}/podsync</text>
+  <text x="560" y="154" class="small">image + replicas</text>
+  <text x="560" y="172" class="small">可靠投递 · 幂等</text>
+
+  <!-- 步骤 4：边缘 -->
+  <rect x="810" y="90" width="260" height="120" class="box"/>
+  <text x="820" y="116" class="box-title">④ 边缘运行</text>
+  <text x="820" y="136" class="box-sub">Edged 拉取镜像 · 5s 调谐</text>
+  <text x="820" y="154" class="small">多副本 · 健康自愈 · 防漂移</text>
+  <text x="820" y="172" class="small">期望态落 SQLite</text>
+
+  <!-- 箭头 -->
+  <path class="line" d="M 230 150 L 290 150"/>
+  <path class="line" d="M 490 150 L 550 150"/>
+  <path class="line" d="M 750 150 L 810 150"/>
+
+  <!-- 升级/回滚 -->
+  <rect x="30" y="260" width="1040" height="140" class="box-light"/>
+  <text x="48" y="286" class="box-title" style="fill:#111">⑤ 模型升级 / 回滚（两层保障）</text>
+  <text x="48" y="310" class="box-sub">· 模型层：新版本镜像 Tag → podsync 更新 Pod 声明 → 边缘滚动收敛（多副本分批）→ 验证后全量</text>
+  <text x="48" y="328" class="box-sub">· 回滚：切回旧 Tag 重下发；配合 keadm rollback 做产品级回滚（staging 原子替换）</text>
+  <text x="48" y="346" class="box-sub">· 参数层：模型阈值/推理参数经 config-sync 下发并持久化（MetaManager SQLite）</text>
+  <text x="48" y="370" class="small red" style="fill:#E30613">· 产品级保障：keadm upgrade 自动备份（manifest.json + sha256）→ --simulate-failure 演练 → ops-ledger 全程留痕（operator/from/to/result）</text>
+  <text x="48" y="388" class="small">· 规划中（即将上线）：模型仓库/版本管理/灰度发布平台；当前以镜像 Tag + 配置参数化作为过渡路径</text>
+
+  <!-- 台账 -->
+  <rect x="30" y="420" width="1040" height="62" class="box-light"/>
+  <text x="48" y="444" class="box-title" style="fill:#111">版本可追溯闭环</text>
+  <text x="48" y="464" class="box-sub">镜像 Tag（模型版本）＋ ops-ledger（升级/回滚记录）＋ 审计台账（API 操作）＋ 镜像 sha256（完整性）→ 四者关联形成可回溯台账口径</text>
+
+  <rect x="0" y="502" width="1100" height="18" fill="#111"/>
+  <text x="20" y="515" fill="#fff" font-size="9.5" font-family="Helvetica, Arial, sans-serif">EdgeFlow 解决方案手册 v1.0.0 · 图 4-1 · 可编辑 SVG 源文件</text>
+</svg>

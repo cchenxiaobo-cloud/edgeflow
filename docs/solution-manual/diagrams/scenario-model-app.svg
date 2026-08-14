@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 图 5-1 模型应用场景部署拓扑（边缘推理） 可编辑源文件 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="520" viewBox="0 0 1100 520">
+  <defs>
+    <style>
+      text { font-family: Helvetica, Arial, 'PingFang SC', sans-serif; fill: #111; }
+      .box-title { font-size: 12px; font-weight: bold; }
+      .box-sub { font-size: 10px; fill: #444; }
+      .small { font-size: 9.5px; fill: #666; }
+      .line { stroke: #111; stroke-width: 1.5; fill: none; }
+      .line-red { stroke: #E30613; stroke-width: 2; fill: none; }
+      .box { fill: #fff; stroke: #111; stroke-width: 1.2; }
+      .box-light { fill: #f7f7f7; stroke: #999; stroke-width: 1; }
+      .dash { stroke-dasharray: 5,4; }
+    </style>
+  </defs>
+  <rect width="1100" height="520" fill="#fff"/>
+  <rect x="0" y="0" width="1100" height="40" fill="#111"/>
+  <text x="20" y="26" fill="#fff" font-size="15" font-weight="bold" font-family="Helvetica, Arial, 'PingFang SC', sans-serif">图 5-1 模型应用场景：边缘推理部署拓扑</text>
+
+  <!-- 数据供给 -->
+  <rect x="30" y="80" width="320" height="200" class="box"/>
+  <text x="40" y="106" class="box-title">数据供给（边缘本地）</text>
+  <rect x="48" y="120" width="280" height="44" class="box box-light"/>
+  <text x="58" y="140" class="box-sub" style="fill:#333">MQTT 遥测主题（QoS1）</text>
+  <text x="58" y="156" class="small" style="fill:#777">devices/&lt;ns&gt;/&lt;device&gt;/telemetry</text>
+  <rect x="48" y="176" width="280" height="44" class="box box-light"/>
+  <text x="58" y="196" class="box-sub" style="fill:#333">设备属性 API / 影子</text>
+  <text x="58" y="212" class="small" style="fill:#777">周期快照 · 最新值</text>
+  <text x="40" y="248" class="small">Modbus 设备 / MQTT 传感器 / 模拟器</text>
+  <text x="40" y="264" class="small">断网期间数据供给不受影响</text>
+
+  <!-- 推理 -->
+  <rect x="400" y="80" width="320" height="200" class="box" stroke="#E30613" stroke-width="2"/>
+  <text x="410" y="106" class="box-title" style="fill:#E30613">边缘推理服务（Edged 管理）</text>
+  <rect x="418" y="120" width="280" height="44" class="box box-light"/>
+  <text x="428" y="140" class="box-sub" style="fill:#333">推理容器（用户镜像）</text>
+  <text x="428" y="156" class="small" style="fill:#777">TensorRT/ONNX 等由镜像自带</text>
+  <rect x="418" y="176" width="280" height="44" class="box box-light"/>
+  <text x="428" y="196" class="box-sub" style="fill:#333">多副本 · 健康自愈</text>
+  <text x="428" y="212" class="small" style="fill:#777">CrashLoopBackOff 退避 · 防漂移</text>
+  <text x="410" y="248" class="small">声明式调谐 5s · 期望态落盘</text>
+  <text x="410" y="264" class="small">断网持续运行 · 恢复自动对账</text>
+
+  <!-- 输出闭环 -->
+  <rect x="770" y="80" width="300" height="200" class="box"/>
+  <text x="780" y="106" class="box-title">结果回流与闭环</text>
+  <rect x="788" y="120" width="260" height="44" class="box box-light"/>
+  <text x="798" y="140" class="box-sub" style="fill:#333">设备命令触发动作</text>
+  <text x="798" y="156" class="small" style="fill:#777">device-command → Mapper 执行</text>
+  <rect x="788" y="176" width="260" height="44" class="box box-light"/>
+  <text x="798" y="196" class="box-sub" style="fill:#333">结果/告警上报云端</text>
+  <text x="798" y="212" class="small" style="fill:#777">属性上报 · 审计留痕</text>
+  <text x="780" y="248" class="small">应用场景示意：预测性维护、</text>
+  <text x="780" y="264" class="small">质量检测（通用行业实践）</text>
+
+  <!-- 箭头 -->
+  <path class="line" d="M 350 180 L 400 180"/>
+  <text x="362" y="168" class="small" text-anchor="middle">实时数据</text>
+  <path class="line-red" d="M 720 180 L 770 180"/>
+  <text x="732" y="168" class="small" style="fill:#E30613" text-anchor="middle">推理结果</text>
+
+  <!-- 云层 -->
+  <rect x="30" y="320" width="1040" height="110" class="box-light"/>
+  <text x="48" y="346" class="box-title" style="fill:#111">云端协同（CloudCore）</text>
+  <text x="48" y="370" class="box-sub">· 模型/配置下发：podsync（image+replicas）· config-sync（推理参数）→ 可靠投递 + 边缘幂等去重</text>
+  <text x="48" y="388" class="box-sub">· 运行状态可视：PodStatus 30s 周期上报（EDGEFLOW_EDGECORE_REPORT_INTERVAL）· 节点状态 Ready/Offline</text>
+  <text x="48" y="406" class="box-sub">· 升级管理：keadm upgrade（备份+演练+台账）· 回滚：keadm rollback / 镜像 Tag 切换</text>
+
+  <rect x="0" y="502" width="1100" height="18" fill="#111"/>
+  <text x="20" y="515" fill="#fff" font-size="9.5" font-family="Helvetica, Arial, sans-serif">EdgeFlow 解决方案手册 v1.0.0 · 图 5-1 · 可编辑 SVG 源文件</text>
+</svg>

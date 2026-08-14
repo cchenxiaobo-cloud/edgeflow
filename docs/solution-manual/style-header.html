@@ -1,0 +1,51 @@
+<style>
+/* EdgeFlow 解决方案手册 v1.0.0 · Müller-Brockmann 网格功能主义
+   白底 / 黑 / 单强调红 #E30613 · 无衬线 · 严格左对齐 · 零装饰 */
+:root{--ink:#111;--red:#E30613;--gray:#666;--line:#111;--light:#f5f5f5}
+*{box-sizing:border-box}
+body{margin:0;background:#fff;color:var(--ink);
+  font-family:Helvetica,Arial,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  font-size:14px;line-height:1.65}
+#content{max-width:1024px;margin:0 auto;padding:48px 56px 80px}
+a{color:var(--red);text-decoration:none}
+a:hover{text-decoration:underline}
+/* 头部标题区 */
+header{margin:0 -56px 40px;padding:32px 56px;background:var(--ink);color:#fff}
+header h1.title{margin:0 0 8px;font-size:26px;font-weight:700;letter-spacing:.5px;color:#fff}
+header p.subtitle{margin:0;font-size:13px;color:#ccc}
+/* 章节标题：严格左对齐、上边框、无装饰 */
+h1,h2,h3,h4{font-weight:700;color:var(--ink)}
+h1#edgeflow-物联网解决方案手册{display:none}
+h1{font-size:22px;margin:56px 0 16px;padding-top:16px;border-top:3px solid var(--ink)}
+h2{font-size:17px;margin:40px 0 12px;padding-top:12px;border-top:2px solid var(--ink)}
+h3{font-size:15px;margin:28px 0 8px;color:var(--red)}
+h4{font-size:14px;margin:20px 0 6px}
+p{margin:8px 0}
+strong{font-weight:700}
+/* 表格：细线网格、表头黑底白字 */
+table{border-collapse:collapse;width:100%;margin:14px 0 22px;font-size:12.5px;line-height:1.5}
+th{background:var(--ink);color:#fff;font-weight:700;text-align:left;padding:7px 9px;border:1px solid var(--ink)}
+td{padding:6px 9px;border:1px solid #bbb;vertical-align:top}
+tr:nth-child(even) td{background:var(--light)}
+/* 引用块：黑左边框，灰字 */
+blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--red);background:var(--light);color:#333}
+blockquote p{margin:4px 0}
+blockquote strong{color:var(--ink)}
+/* 代码块：等宽、细框 */
+code{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:12px;background:var(--light);padding:1px 4px;border:1px solid #ddd}
+pre{background:var(--light);border:1px solid #ddd;padding:12px 14px;overflow-x:auto;font-size:12px;line-height:1.5}
+pre code{border:none;padding:0;background:none}
+/* 图片：细框 + 图题样式 */
+figure{margin:20px 0}
+img{max-width:100%;border:1px solid #bbb;display:block}
+figcaption{font-size:11px;color:var(--gray);margin-top:6px;text-align:left}
+/* 无序/有序列表紧凑 */
+ul,ol{margin:8px 0;padding-left:22px}
+li{margin:4px 0}
+hr{border:none;border-top:1px solid #ddd;margin:36px 0}
+/* 顶部元信息表特殊处理：第一张表加粗首列 */
+/* 脚注/小字 */
+.small,small{font-size:11.5px;color:var(--gray)}
+/* 页脚 */
+footer{margin:60px -56px 0;padding:20px 56px;background:var(--ink);color:#ccc;font-size:11.5px}
+</style>

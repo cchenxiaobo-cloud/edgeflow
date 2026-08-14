@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 图 3-1 弱网自治场景部署拓扑 可编辑源文件 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="560" viewBox="0 0 1100 560">
+  <defs>
+    <style>
+      text { font-family: Helvetica, Arial, 'PingFang SC', sans-serif; fill: #111; }
+      .box-title { font-size: 12px; font-weight: bold; }
+      .box-sub { font-size: 10px; fill: #444; }
+      .small { font-size: 9.5px; fill: #666; }
+      .line { stroke: #111; stroke-width: 1.5; fill: none; }
+      .line-red { stroke: #E30613; stroke-width: 2; fill: none; }
+      .box { fill: #fff; stroke: #111; stroke-width: 1.2; }
+      .box-light { fill: #f7f7f7; stroke: #999; stroke-width: 1; }
+      .dash { stroke-dasharray: 5,4; }
+    </style>
+  </defs>
+  <rect width="1100" height="560" fill="#fff"/>
+  <rect x="0" y="0" width="1100" height="40" fill="#111"/>
+  <text x="20" y="26" fill="#fff" font-size="15" font-weight="bold" font-family="Helvetica, Arial, 'PingFang SC', sans-serif">图 3-1 弱网自治场景部署拓扑（断网期间行为）</text>
+
+  <!-- 云端 -->
+  <rect x="30" y="70" width="300" height="120" class="box"/>
+  <text x="40" y="96" class="box-title">云层 CloudCore</text>
+  <text x="40" y="116" class="box-sub">节点/设备状态 · 内存态</text>
+  <text x="40" y="134" class="small">CloudHub 90s 断开判定 · NodeController 180s 超时</text>
+  <text x="40" y="152" class="small">云端重启 → 边缘自动重注册重建</text>
+
+  <!-- 云边通道 -->
+  <rect x="380" y="86" width="180" height="56" class="box box-light"/>
+  <text x="390" y="108" class="box-title" style="fill:#333">云边通道</text>
+  <text x="390" y="126" class="box-sub" style="fill:#555">WebSocket（wss）</text>
+  <path class="line" d="M 330 130 L 380 130"/>
+  <path class="line" d="M 560 130 L 610 130"/>
+  <text x="470" y="166" class="small red" style="fill:#E30613" text-anchor="middle">断网：指数退避重连 1s→60s</text>
+
+  <!-- 边缘 -->
+  <rect x="610" y="70" width="460" height="180" class="box"/>
+  <text x="620" y="96" class="box-title">边缘层 EdgeCore（断网期间持续自治）</text>
+  <rect x="630" y="110" width="130" height="52" class="box box-light"/>
+  <text x="640" y="132" class="box-title" style="fill:#333">Edged</text>
+  <text x="640" y="150" class="box-sub" style="fill:#555">5s 本地调谐</text>
+  <rect x="780" y="110" width="130" height="52" class="box box-light"/>
+  <text x="790" y="132" class="box-title" style="fill:#333">业务/推理容器</text>
+  <text x="790" y="150" class="box-sub" style="fill:#555">持续运行 · 自愈</text>
+  <rect x="930" y="110" width="130" height="52" class="box box-light"/>
+  <text x="940" y="132" class="box-title" style="fill:#333">MetaManager</text>
+  <text x="940" y="150" class="box-sub" style="fill:#555">期望态 SQLite</text>
+  <rect x="630" y="178" width="130" height="52" class="box box-light"/>
+  <text x="640" y="200" class="box-title" style="fill:#333">Mapper/影子</text>
+  <text x="640" y="218" class="box-sub" style="fill:#555">采集照常 · 影子更新</text>
+  <rect x="780" y="178" width="130" height="52" class="box box-light"/>
+  <text x="790" y="200" class="box-title" style="fill:#333">设备指令</text>
+  <text x="790" y="218" class="box-sub" style="fill:#555">本地 MQTT 照常</text>
+  <rect x="930" y="178" width="130" height="52" class="box box-light"/>
+  <text x="940" y="200" class="box-title" style="fill:#333">op-ledger</text>
+  <text x="940" y="218" class="box-sub" style="fill:#555">照常落 SQLite</text>
+
+  <!-- 设备 -->
+  <rect x="610" y="330" width="460" height="80" class="box"/>
+  <text x="620" y="356" class="box-title">设备层（本地网络，与云无关）</text>
+  <text x="620" y="376" class="box-sub">Modbus TCP 直连设备 · MQTT 传感器 —— 断网期间采集完全不受影响</text>
+  <path class="line" d="M 840 250 L 840 330"/>
+
+  <!-- 恢复同步 -->
+  <rect x="30" y="330" width="520" height="180" class="box-light"/>
+  <text x="48" y="356" class="box-title" style="fill:#111">恢复同步（重连后自动完成）</text>
+  <text x="48" y="380" class="box-sub">① 第一条消息永远是 Register（每次连接重新注册）</text>
+  <text x="48" y="398" class="box-sub">② 无全量/增量协议：≤30s 周期补报最新状态快照</text>
+  <text x="48" y="416" class="box-sub">③ 影子合并：边缘按属性名合并，云端 properties 整体替换 + desired 字段级保留</text>
+  <text x="48" y="434" class="box-sub">④ 重复上报幂等（快照覆盖写）；乱序按到达序收敛</text>
+  <text x="48" y="452" class="box-sub">⑤ 历史遥测样本不回补（状态级补报，如实口径）</text>
+  <text x="48" y="476" class="small red" style="fill:#E30613">验证：E2E 实测停 cloudcore 60s，容器持续运行；重连后自动恢复（30min 长跑未验证）</text>
+
+  <!-- 异常路径 -->
+  <rect x="610" y="430" width="460" height="80" class="box-light"/>
+  <text x="620" y="454" class="box-title" style="fill:#111">异常路径与边界（如实）</text>
+  <text x="620" y="474" class="box-sub">设备离线判定：规划中（采集失败仅 Warn + op-ledger 记 error）</text>
+  <text x="620" y="492" class="box-sub">下行指令幂等去重：同 ID 缓存 1000 条 FIFO；超时 504 重试</text>
+
+  <rect x="0" y="542" width="1100" height="18" fill="#111"/>
+  <text x="20" y="555" fill="#fff" font-size="9.5" font-family="Helvetica, Arial, sans-serif">EdgeFlow 解决方案手册 v1.0.0 · 图 3-1 · 可编辑 SVG 源文件</text>
+</svg>

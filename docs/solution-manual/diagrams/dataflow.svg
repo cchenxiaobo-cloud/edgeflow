@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- EdgeFlow 数据全链路图（第 6 章图 6-1） 可编辑源文件 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="560" viewBox="0 0 1280 560">
+  <defs>
+    <style>
+      text { font-family: Helvetica, Arial, 'PingFang SC', sans-serif; fill: #111; }
+      .box-title { font-size: 12.5px; font-weight: bold; }
+      .box-sub { font-size: 10px; fill: #444; }
+      .small { font-size: 9.5px; fill: #666; }
+      .red { fill: #E30613; }
+      .line { stroke: #111; stroke-width: 1.6; fill: none; }
+      .box { fill: #fff; stroke: #111; stroke-width: 1.2; }
+      .box-light { fill: #f7f7f7; stroke: #999; stroke-width: 1; }
+      .dash { stroke-dasharray: 5,4; }
+    </style>
+  </defs>
+  <rect width="1280" height="560" fill="#fff"/>
+  <rect x="0" y="0" width="1280" height="42" fill="#111"/>
+  <text x="24" y="27" fill="#fff" font-size="16" font-weight="bold" font-family="Helvetica, Arial, 'PingFang SC', sans-serif">EdgeFlow 数据全链路（设备采集 → 缓存/影子 → 上行同步 → 云端存储 → 应用出口）</text>
+
+  <!-- 节点 1：设备 -->
+  <rect x="30" y="150" width="150" height="88" class="box"/>
+  <text x="40" y="176" class="box-title">① 设备 / Mapper</text>
+  <text x="40" y="194" class="box-sub">Modbus 寄存器 / 模拟采样</text>
+  <text x="40" y="210" class="small">mock_sensor 2s / Modbus 30s 上报循环驱动</text>
+
+  <!-- 节点 2：EventBus -->
+  <rect x="250" y="150" width="150" height="88" class="box"/>
+  <text x="260" y="176" class="box-title">② EventBus</text>
+  <text x="260" y="194" class="box-sub">MQTT 数据面 · QoS1</text>
+  <text x="260" y="210" class="small">telemetry / command 主题</text>
+
+  <!-- 节点 3：影子 -->
+  <rect x="470" y="150" width="150" height="88" class="box"/>
+  <text x="480" y="176" class="box-title">③ 设备影子</text>
+  <text x="480" y="194" class="box-sub">DeviceTwin 内存态</text>
+  <text x="480" y="210" class="small">属性快照 · 按属性名合并</text>
+
+  <!-- 节点 4：MetaManager -->
+  <rect x="690" y="150" width="150" height="88" class="box box-light"/>
+  <text x="700" y="176" class="box-title" style="fill:#333">④ 边缘持久化</text>
+  <text x="700" y="194" class="box-sub" style="fill:#555">MetaManager SQLite</text>
+  <text x="700" y="210" class="small" style="fill:#777">元数据/Pod/配置落盘（遥测不落盘）</text>
+
+  <!-- 节点 5：云端 -->
+  <rect x="910" y="150" width="150" height="88" class="box"/>
+  <text x="920" y="176" class="box-title">⑤ 云端接收</text>
+  <text x="920" y="194" class="box-sub">CloudHub → DeviceStatus</text>
+  <text x="920" y="210" class="small">DeviceReport 30s 无 Ack</text>
+
+  <!-- 节点 6：API -->
+  <rect x="1100" y="150" width="150" height="88" class="box"/>
+  <text x="1110" y="176" class="box-title">⑥ REST API</text>
+  <text x="1110" y="194" class="box-sub">/api/v1/devices 等</text>
+  <text x="1110" y="210" class="small">查询 · 消费 · 审计</text>
+
+  <!-- 连线 -->
+  <path class="line" d="M 180 194 L 250 194"/>
+  <text x="200" y="182" class="small" text-anchor="middle">JSON 遥测</text>
+  <text x="200" y="168" class="small red" text-anchor="middle">毫秒 ts</text>
+  <path class="line" d="M 400 194 L 470 194"/>
+  <path class="line" d="M 620 194 L 690 194"/>
+  <path class="line" d="M 840 194 L 910 194"/>
+  <text x="862" y="182" class="small" text-anchor="middle">DeviceReport</text>
+  <text x="862" y="168" class="small red" text-anchor="middle">30s 周期</text>
+  <path class="line" d="M 1060 194 L 1100 194"/>
+
+  <!-- 指令下行 -->
+  <path class="line-red" d="M 1060 260 L 470 260 L 470 240"/>
+  <text x="760" y="276" class="small red" style="fill:#E30613">指令下行：POST device-command → 可靠投递（5s×3 重试·幂等去重）→ Mapper 执行 → 写 Desired</text>
+
+  <!-- 弱网语义 -->
+  <rect x="30" y="330" width="1220" height="120" class="box-light"/>
+  <text x="48" y="356" class="box-title" style="fill:#111">弱网/断网数据语义（如实口径）</text>
+  <text x="48" y="380" class="box-sub">· 断网瞬间：边缘采集不受影响；DeviceReport 发送失败仅记 Warn，不缓存、不重试、不落盘（内存影子持续更新）</text>
+  <text x="48" y="398" class="box-sub">· 断网期间：容器持续运行、本地调谐与设备指令正常、op-ledger 照常落盘；云下发消息无补偿机制</text>
+  <text x="48" y="416" class="box-sub">· 恢复同步：重连后第一条消息为 Register；靠下一轮周期上报（≤30s）补报最新状态快照；属性按名合并、云端 properties 整体替换</text>
+  <text x="48" y="434" class="box-sub">· 重复上报天然幂等（状态快照覆盖写）；乱序按到达序收敛（last-write-wins）；历史遥测样本不回补（状态级补报）</text>
+
+  <!-- 台账 -->
+  <rect x="30" y="470" width="1220" height="70" class="box-light"/>
+  <text x="48" y="494" class="box-title" style="fill:#111">台账与可追溯（三要素：时间戳 + 设备标识 + 同步状态）</text>
+  <text x="48" y="516" class="box-sub">审计台账（云端 API，JSONL，ms）· ops-ledger（升级/回滚，RFC3339）· op-ledger（设备操作，SQLite，30 天）· 设备标识：nodeID / deviceName / namespace</text>
+
+  <rect x="0" y="542" width="1280" height="18" fill="#111"/>
+  <text x="24" y="555" fill="#fff" font-size="9.5" font-family="Helvetica, Arial, sans-serif">EdgeFlow 解决方案手册 v1.0.0 · 图 6-1 数据全链路 · 可编辑 SVG 源文件</text>
+</svg>

@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 图 2-1 物联网数据采集场景部署拓扑 可编辑源文件 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="520" viewBox="0 0 1100 520">
+  <defs>
+    <style>
+      text { font-family: Helvetica, Arial, 'PingFang SC', sans-serif; fill: #111; }
+      .box-title { font-size: 12px; font-weight: bold; }
+      .box-sub { font-size: 10px; fill: #444; }
+      .small { font-size: 9.5px; fill: #666; }
+      .line { stroke: #111; stroke-width: 1.5; fill: none; }
+      .line-red { stroke: #E30613; stroke-width: 2; fill: none; }
+      .box { fill: #fff; stroke: #111; stroke-width: 1.2; }
+      .box-light { fill: #f7f7f7; stroke: #999; stroke-width: 1; }
+      .dash { stroke-dasharray: 5,4; }
+    </style>
+  </defs>
+  <rect width="1100" height="520" fill="#fff"/>
+  <rect x="0" y="0" width="1100" height="40" fill="#111"/>
+  <text x="20" y="26" fill="#fff" font-size="15" font-weight="bold" font-family="Helvetica, Arial, 'PingFang SC', sans-serif">图 2-1 物联网数据采集场景部署拓扑</text>
+
+  <!-- 设备层 -->
+  <text x="20" y="80" font-size="12" font-weight="bold">设备层</text>
+  <rect x="20" y="92" width="1060" height="84" fill="none" stroke="#111" stroke-width="1.2"/>
+  <rect x="40" y="108" width="200" height="52" class="box"/>
+  <text x="50" y="130" class="box-title">Modbus TCP 设备</text>
+  <text x="50" y="148" class="box-sub">保持寄存器 · 线圈</text>
+  <rect x="300" y="108" width="200" height="52" class="box"/>
+  <text x="310" y="130" class="box-title">MQTT 传感器</text>
+  <text x="310" y="148" class="box-sub">遥测发布 · QoS1</text>
+  <rect x="560" y="108" width="200" height="52" class="box box-light"/>
+  <text x="570" y="130" class="box-title" style="fill:#333">模拟设备</text>
+  <text x="570" y="148" class="box-sub" style="fill:#555">mock_sensor 2s 采样</text>
+
+  <!-- 边缘层 -->
+  <text x="20" y="216" font-size="12" font-weight="bold">边缘层 EdgeCore</text>
+  <rect x="20" y="228" width="1060" height="120" fill="none" stroke="#111" stroke-width="1.2"/>
+  <rect x="40" y="248" width="170" height="80" class="box"/>
+  <text x="50" y="272" class="box-title">Modbus Mapper</text>
+  <text x="50" y="290" class="box-sub">EDGEFLOW_MODBUS_ADDR</text>
+  <text x="50" y="306" class="small">显式启用 · 写后回读验证</text>
+  <rect x="240" y="248" width="170" height="80" class="box"/>
+  <text x="250" y="272" class="box-title">mock_sensor Mapper</text>
+  <text x="250" y="290" class="box-sub">温湿度模拟</text>
+  <text x="250" y="306" class="small">targetTemp / reset 指令</text>
+  <rect x="440" y="248" width="170" height="80" class="box"/>
+  <text x="450" y="272" class="box-title">EventBus</text>
+  <text x="450" y="290" class="box-sub">MQTT 数据面</text>
+  <text x="450" y="306" class="small">telemetry / command</text>
+  <rect x="640" y="248" width="170" height="80" class="box"/>
+  <text x="650" y="272" class="box-title">DeviceTwin</text>
+  <text x="650" y="290" class="box-sub">设备影子</text>
+  <text x="650" y="306" class="small">属性快照合并</text>
+  <rect x="840" y="248" width="220" height="80" class="box box-light"/>
+  <text x="850" y="272" class="box-title" style="fill:#333">op-ledger 台账</text>
+  <text x="850" y="290" class="box-sub" style="fill:#555">SQLite 追加流水</text>
+  <text x="850" y="306" class="small" style="fill:#777">direction/result/30 天保留</text>
+
+  <!-- 云层 -->
+  <text x="20" y="390" font-size="12" font-weight="bold">云层 CloudCore</text>
+  <rect x="20" y="402" width="1060" height="96" fill="none" stroke="#111" stroke-width="1.2"/>
+  <rect x="40" y="420" width="240" height="60" class="box"/>
+  <text x="50" y="444" class="box-title">DeviceReport 周期上报（30s）</text>
+  <text x="50" y="462" class="box-sub">EDGEFLOW_EDGECORE_DEVICE_REPORT_INTERVAL</text>
+  <rect x="320" y="420" width="240" height="60" class="box"/>
+  <text x="330" y="444" class="box-title">设备 API 视图</text>
+  <text x="330" y="462" class="box-sub">GET /api/v1/devices · /nodes/{id}/devices</text>
+  <rect x="600" y="420" width="240" height="60" class="box"/>
+  <text x="610" y="444" class="box-title">指令下发</text>
+  <text x="610" y="462" class="box-sub">POST device-command · 可靠投递</text>
+  <rect x="880" y="420" width="180" height="60" class="box box-light"/>
+  <text x="890" y="444" class="box-title" style="fill:#333">审计台账</text>
+  <text x="890" y="462" class="box-sub" style="fill:#555">audit-ledger.jsonl</text>
+
+  <!-- 连线 -->
+  <path class="line" d="M 140 160 L 140 248"/>
+  <path class="line" d="M 400 160 L 400 248"/>
+  <path class="line" d="M 660 160 L 660 248"/>
+  <path class="line-red" d="M 760 330 L 760 402"/>
+  <text x="770" y="372" class="small" style="fill:#E30613">WebSocket 上报</text>
+  <path class="line" d="M 450 330 L 450 402"/>
+
+  <rect x="0" y="502" width="1100" height="18" fill="#111"/>
+  <text x="20" y="515" fill="#fff" font-size="9.5" font-family="Helvetica, Arial, sans-serif">EdgeFlow 解决方案手册 v1.0.0 · 图 2-1 · 可编辑 SVG 源文件</text>
+</svg>

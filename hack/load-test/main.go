@@ -49,15 +49,15 @@ func main() {
 	}
 	nodes := 10
 	if v := os.Getenv("LOAD_TEST_NODES"); v != "" {
-		fmt.Sscanf(v, "%d", &nodes)
+		_, _ = fmt.Sscanf(v, "%d", &nodes)
 	}
 	beatSec := 2 // 心跳间隔（压测用短间隔，正常 30s）
 	if v := os.Getenv("LOAD_TEST_BEAT_SEC"); v != "" {
-		fmt.Sscanf(v, "%d", &beatSec)
+		_, _ = fmt.Sscanf(v, "%d", &beatSec)
 	}
 	durSec := 10
 	if v := os.Getenv("LOAD_TEST_DURATION_SEC"); v != "" {
-		fmt.Sscanf(v, "%d", &durSec)
+		_, _ = fmt.Sscanf(v, "%d", &durSec)
 	}
 	jsonOut := flag.Bool("json", false, "输出 JSON")
 	flag.Parse()

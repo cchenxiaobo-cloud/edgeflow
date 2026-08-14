@@ -298,7 +298,7 @@ func getJSON(t *testing.T, url string, out any) {
 	if err != nil {
 		t.Fatalf("GET %s 失败: %v", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s 状态码 = %d", url, resp.StatusCode)
 	}
@@ -318,7 +318,7 @@ func postJSON(t *testing.T, url string, body any) string {
 	if err != nil {
 		t.Fatalf("POST %s 失败: %v", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	buf := new(bytes.Buffer)
 	_, _ = buf.ReadFrom(resp.Body)
 	if resp.StatusCode != http.StatusOK {
@@ -419,16 +419,6 @@ func dockerOK() bool {
 func dockerImageCached(image string) bool {
 	out, err := exec.Command("docker", "image", "inspect", image).CombinedOutput()
 	return err == nil && strings.Contains(string(out), "Id")
-}
-
-// dockerExec 执行一条 docker 命令（断言成功）。
-func dockerExec(t *testing.T, args ...string) string {
-	t.Helper()
-	out, err := exec.Command("docker", args...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("docker %v 失败: %v\n%s", args, err, out)
-	}
-	return string(out)
 }
 
 // dockerContainerRunning 返回指定容器是否处于 running 状态。

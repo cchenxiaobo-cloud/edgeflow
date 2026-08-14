@@ -262,3 +262,79 @@ func TestEdgedCleanupStatusKeepsEntryWhenListFails(t *testing.T) {
 		t.Error("终态保留条目应记录 RemovedAt，实际为零值")
 	}
 }
+
+// TestEdgedLegacyContainerMigration 验证 M4A P1-1 修复：
+// 旧式无序号命名实例（Index=-1）优先被移除，并由规范副本名重建；无 churn。
+func TestEdgedLegacyContainerMigration(t *testing.T) {
+	s := newTestStore(t)
+	rt := NewMockRuntime()
+	e := New(s, rt, time.Millisecond)
+
+	if err := s.SavePod(`{"name":"nginx","namespace":"default","image":"nginx:1.25","replicas":1}`); err != nil {
+		t.Fatalf("SavePod 失败: %v", err)
+	}
+	// 模拟旧命名实例（升级前遗留的无序号容器）
+	legacyKey := "default/nginx#-1"
+	rt.SetState(legacyKey, StateRunning)
+
+	if err := e.reconcileOnce(); err != nil {
+		t.Fatalf("reconcile 失败: %v", err)
+	}
+	// 旧实例被移除
+	if rt.EnsureStoppedCount(legacyKey) < 1 {
+		t.Error("旧命名实例应被 EnsureStopped 移除（P1-1），实际未移除")
+	}
+	// 规范副本已创建
+	if rt.EnsureRunningCount("default/nginx#0") < 1 {
+		t.Error("应创建规范命名副本 -0（P1-1），实际未创建")
+	}
+
+	// 第二轮 reconcile：无 churn（旧实例已清，不再有停止操作）
+	stoppedBefore := rt.EnsureStoppedCount(legacyKey)
+	if err := e.reconcileOnce(); err != nil {
+		t.Fatalf("第二次 reconcile 失败: %v", err)
+	}
+	if rt.EnsureStoppedCount(legacyKey) != stoppedBefore {
+		t.Error("第二轮 reconcile 不应再次操作旧实例（churn），实际仍在清理")
+	}
+}
+
+// TestEdgedCrashLoopBackOff 验证 M4A P1-2 修复：
+// 连续重启达到阈值后进入退避窗口，不再每轮无限重启。
+func TestEdgedCrashLoopBackOff(t *testing.T) {
+	s := newTestStore(t)
+	rt := NewMockRuntime()
+	e := New(s, rt, time.Millisecond)
+
+	if err := s.SavePod(`{"name":"crashy","namespace":"default","image":"busybox:1.36","replicas":1}`); err != nil {
+		t.Fatalf("SavePod 失败: %v", err)
+	}
+	key := "default/crashy#0"
+
+	// 模拟退出型镜像：每次 reconcile 后容器立即退出（手动置 Stopped）。
+	// 第 1 轮是创建（不计重启），之后每轮健康重启 +1：共需
+	// maxRestartBeforeBackoff+1 轮让 count 达到阈值。
+	for i := 0; i <= maxRestartBeforeBackoff; i++ {
+		if err := e.reconcileOnce(); err != nil {
+			t.Fatalf("第 %d 次 reconcile 失败: %v", i+1, err)
+		}
+		rt.SetState(key, StateStopped)
+	}
+	restartsBefore := rt.EnsureRunningCount(key)
+	if restartsBefore < maxRestartBeforeBackoff {
+		t.Fatalf("重启次数应达到 %d，实际 %d", maxRestartBeforeBackoff, restartsBefore)
+	}
+
+	// 第 4 轮：进入退避，不应重启
+	if err := e.reconcileOnce(); err != nil {
+		t.Fatalf("退避轮 reconcile 失败: %v", err)
+	}
+	if rt.EnsureRunningCount(key) != restartsBefore {
+		t.Error("退避期内不应重启容器（P1-2），实际仍重启")
+	}
+	// 退避状态记录在 PodStatus
+	st, ok := e.Status()["default/crashy"]
+	if !ok || st.Err == nil {
+		t.Fatalf("退避状态应记录到 PodStatus.Err，实际 %+v", st)
+	}
+}

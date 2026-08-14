@@ -19,6 +19,22 @@ const DefaultReconcileInterval = 5 * time.Second
 // 覆盖 3 个默认上报周期（30s），保证删除终态至少被云端收到一次。
 const DefaultRemovedRetention = 90 * time.Second
 
+// CrashLoopBackOff 参数（P1-2 简化版：固定窗口，不做指数退避）：
+//   - maxRestartBeforeBackoff：连续重启达到该次数后进入退避；
+//   - backoffWindow：退避期内不再重启（跳过本轮）；
+//   - stableWindow：副本稳定运行超过该时长后重置重启计数。
+const (
+	maxRestartBeforeBackoff = 3
+	backoffWindow           = 30 * time.Second
+	stableWindow            = 60 * time.Second
+)
+
+// restartRecord 是单个副本的重启历史。
+type restartRecord struct {
+	count       int       // 连续重启次数（稳定运行后归零）
+	lastRestart time.Time // 最近一次重启时间
+}
+
 // PodStatus 是单个 Pod 最近一次调谐的结果记录（供日志与后续 Pod 状态上报 WBS 6.3）。
 type PodStatus struct {
 	State         RuntimeState // 最近一次调谐后的容器状态
@@ -58,6 +74,10 @@ type Edged struct {
 	// 终态能被上报到云端，之后条目才被清理（WBS 6.3/P2-1）。
 	removedRetention time.Duration
 
+	// restartRec 记录每个副本的重启历史（CrashLoopBackOff 输入，P1-2）。
+	restartMu  sync.Mutex
+	restartRec map[string]restartRecord
+
 	mu     sync.RWMutex // 保护 status 与生命周期字段
 	status map[string]PodStatus
 
@@ -79,6 +99,7 @@ func New(store *metamanager.Store, rt ContainerRuntime, interval time.Duration) 
 		status:           make(map[string]PodStatus),
 		triggerCh:        make(chan struct{}, 1),
 		removedRetention: DefaultRemovedRetention,
+		restartRec:       make(map[string]restartRecord),
 	}
 }
 
@@ -217,10 +238,11 @@ func (e *Edged) reconcileOnce() error {
 			}
 		}
 
-		// 3c. 健康检查自愈（WBS 6.5）：逐个期望副本 Inspect，非 Running 且
-		//     无错误（Stopped/Unknown/Absent）→ 视为运行异常 → EnsureRunning
-		//     重启（幂等：Stopped 走 start、Absent 走创建）。POC 简化：不做
-		//     指数退避，每次调谐都重试（M2 完整版按 RestartCount 加退避）。
+		// 3c. 健康检查自愈（WBS 6.5 + P1-2 CrashLoopBackOff）：逐个期望副本
+		//     Inspect，非 Running 且无错误（Stopped/Unknown/Absent）→ 视为
+		//     运行异常 → EnsureRunning 重启（幂等）。连续重启达到阈值后进入
+		//     退避窗口（固定 30s，不做指数退避——POC 简化，注释标明演进方向）；
+		//     副本稳定运行超过 stableWindow 后重置重启计数。
 		restartedThisPod := 0
 		for idx := 0; idx < replicas; idx++ {
 			st, ierr := e.rt.Inspect(pod, idx)
@@ -230,11 +252,34 @@ func (e *Edged) reconcileOnce() error {
 				errCount++
 				continue
 			}
+			instKey := instanceKey(pod.Namespace, pod.Name, idx)
 			if st == StateRunning {
 				running++
+				// 稳定运行 → 重置重启计数（CrashLoopBackOff 恢复条件）
+				e.restartMu.Lock()
+				if rec, ok := e.restartRec[instKey]; ok && !rec.lastRestart.IsZero() &&
+					now.Sub(rec.lastRestart) > stableWindow {
+					delete(e.restartRec, instKey)
+				}
+				e.restartMu.Unlock()
 				continue
 			}
-			// 运行异常（停止/未知/缺失）→ 重启
+			// 运行异常（停止/未知/缺失）：先查退避状态
+			e.restartMu.Lock()
+			rec := e.restartRec[instKey]
+			inBackoff := rec.count >= maxRestartBeforeBackoff &&
+				now.Sub(rec.lastRestart) < backoffWindow
+			e.restartMu.Unlock()
+			if inBackoff {
+				// 退避期内跳过重启（退出型镜像不再被每轮无限拉起）
+				podState, podErr = StateStopped, fmt.Errorf(
+					"CrashLoopBackOff: 副本 %d 连续重启 %d 次，退避至 %v",
+					idx, rec.count, rec.lastRestart.Add(backoffWindow).Format("15:04:05"))
+				log.Warnf("CrashLoopBackOff：Pod %s 副本 %d 进入退避（已重启 %d 次）",
+					key, idx, rec.count)
+				continue
+			}
+			// 退避期外 → 重启并记录
 			if rerr := e.rt.EnsureRunning(pod, idx); rerr != nil {
 				podState, podErr = StateUnknown, rerr
 				log.Errorf("Edged reconcile: 健康检查重启 Pod %s 副本 %d 失败: %v", key, idx, rerr)
@@ -246,7 +291,11 @@ func (e *Edged) reconcileOnce() error {
 			if st == StateStopped {
 				stopped++ // 统计"发现时已停止"的副本数
 			}
-			log.Infof("健康检查：容器 %s 已重启", ContainerName(pod.Namespace, pod.Name, idx))
+			e.restartMu.Lock()
+			e.restartRec[instKey] = restartRecord{count: rec.count + 1, lastRestart: now}
+			e.restartMu.Unlock()
+			log.Infof("健康检查：容器 %s 已重启（累计 %d 次）",
+				ContainerName(pod.Namespace, pod.Name, idx), rec.count+1)
 		}
 
 		// 汇总：重启先累加 RestartCount（addRestarts 置 Running），
@@ -255,6 +304,25 @@ func (e *Edged) reconcileOnce() error {
 			e.addRestarts(key, restartedThisPod, now)
 		}
 		e.setStatus(key, podState, podErr, now)
+	}
+
+	// 3d. 旧命名实例迁移（M4A P1-1 修复）：Index<0 的容器是旧版无序号命名
+	//     （edgeflow-<ns>-<name>），与新版 -0 槽位冲突，replicas≥2 时会
+	//     每轮调谐创建/删除循环。无论是否在期望集合，一律优先移除——
+	//     在期望集合中会被第 3 步以规范名重建，不在则等同孤儿清理。
+	for _, inst := range local {
+		if inst.Index >= 0 {
+			continue
+		}
+		key := podKey(inst.Namespace, inst.Name)
+		if err := e.rt.EnsureStopped(inst.Pod(), inst.Index); err != nil {
+			e.setStatus(key, StateUnknown, err, now)
+			log.Errorf("Edged reconcile: 清理旧命名容器 %s 失败: %v", key, err)
+			errCount++
+			continue
+		}
+		log.Infof("Edged reconcile: 已迁移旧命名容器 %s（重建为规范副本命名）", key)
+		removed++
 	}
 
 	// 4. 孤儿清理：本地存在但期望集合已删除 → 确保停止（按副本实例逐个清理）

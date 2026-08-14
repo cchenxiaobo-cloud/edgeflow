@@ -190,7 +190,12 @@ func (d *DockerRuntime) EnsureRunning(pod metamanager.Pod, index int) error {
 
 // EnsureStopped 强制停止并移除 Pod 第 index 个副本的容器；容器不存在时 no-op（幂等）。
 func (d *DockerRuntime) EnsureStopped(pod metamanager.Pod, index int) error {
+	// index=-1 表示旧式无序号命名容器（M4A P1-1）：用无序号名删除，
+	// 与 List 的 parseIndexFromName 返回 -1 对应。
 	name := ContainerName(pod.Namespace, pod.Name, index)
+	if index < 0 {
+		name = LegacyContainerName(pod.Namespace, pod.Name)
+	}
 	_, err := d.exec("rm", "-f", name)
 	if err == nil {
 		return nil
@@ -269,7 +274,9 @@ func (d *DockerRuntime) List() ([]InstanceRef, error) {
 
 // parseIndexFromName 从容器名末段反解副本序号：
 // 命名规范 edgeflow-<ns>-<name>-<index>，-<index> 恒在末尾
-// （超长名截断只作用于基础名）。解析失败（如旧式无序号命名）兜底 0。
+// （超长名截断只作用于基础名）。解析失败（如旧式无序号命名）返回 -1，
+// 由 reconcile 作为"不规范旧实例"优先清理（M4A P1-1 修复：避免与新版
+// -0 槽位冲突导致每轮调谐创建/删除无限循环）。
 func parseIndexFromName(containerName string) int {
 	if i := strings.LastIndexByte(containerName, '-'); i >= 0 {
 		idx, err := strconv.Atoi(containerName[i+1:])
@@ -277,7 +284,7 @@ func parseIndexFromName(containerName string) int {
 			return idx
 		}
 	}
-	return 0
+	return -1
 }
 
 // Close 无持久资源（每次操作独立 exec），按接口要求实现。

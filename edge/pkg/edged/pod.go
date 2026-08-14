@@ -80,6 +80,15 @@ func ContainerName(namespace, name string, index int) string {
 
 // sanitizeDockerName 把任意字符串清洗成合法 docker 容器名：
 // 转小写、非法字符替换为 '-'、去掉首部非字母数字字符、空结果兜底 "pod"。
+// LegacyContainerName 返回旧版无序号容器名（edgeflow-<ns>-<name>，
+// M4A P1-1 迁移用：仅 EnsureStopped(index=-1) 删除路径使用）。
+func LegacyContainerName(namespace, name string) string {
+	if namespace == "" {
+		namespace = "default"
+	}
+	return sanitizeDockerName(containerNamePrefix + namespace + "-" + name)
+}
+
 func sanitizeDockerName(s string) string {
 	lower := strings.ToLower(s)
 	var b strings.Builder
@@ -143,7 +152,9 @@ func instanceKey(namespace, name string, index int) string {
 func parseInstanceKey(key string) InstanceRef {
 	if i := strings.LastIndexByte(key, '#'); i >= 0 {
 		idx, err := strconv.Atoi(key[i+1:])
-		if err == nil && idx >= 0 {
+		if err == nil {
+			// 允许负 index：-1 表示旧式无序号命名实例（M4A P1-1），
+			// 与 docker_runtime.parseIndexFromName 的语义保持一致。
 			p := parsePodKey(key[:i])
 			return InstanceRef{Namespace: p.Namespace, Name: p.Name, Index: idx}
 		}

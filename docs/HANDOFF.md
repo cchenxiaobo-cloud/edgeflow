@@ -57,7 +57,7 @@ edgeflow/
 
 ## 4. 如何开发下一个模块（标准流程）
 
-1. **读计划**：`docs/ROADMAP.md` 找到下一个模块（当前建议 M2：Edged 完整化（CRI/健康检查/多副本）、PodStatus 上报到云端（6.3）、或 4.6 P2 剩余 3 项）
+1. **读计划**：`docs/ROADMAP.md` 找到下一个模块（当前建议 M2：Edged 完整化（健康检查/多副本/镜像更新 6.4）、ConfigMap/Secret 下发（6.2）、或 M3 前置 Device CRD 对接）
 2. **建分支**：`git checkout -b feat/模块名`
 3. **开发**：用 AI 工具（Trae/Codex）辅助写代码，遵循现有包风格（中文注释、零第三方依赖）
 4. **验证**（每次提交前必须全跑）：
@@ -85,6 +85,9 @@ make lint       # 静态检查
 | `EDGEFLOW_EDGECORE_NODE_ID=edge-01 ./bin/edgecore` | 指定边缘节点 ID |
 | `EDGEFLOW_EDGECORE_DB_PATH=/data/edgeflow.db ./bin/edgecore` | 指定 MetaManager 数据库路径 |
 | `EDGEFLOW_EDGECORE_RECONCILE_INTERVAL=10s ./bin/edgecore` | Edged 调谐周期（默认 5s） |
+| `EDGEFLOW_EDGECORE_REPORT_INTERVAL=10s ./bin/edgecore` | Pod 状态上报周期（默认 30s，范围 1s~10min） |
+| `curl localhost:8080/api/v1/pods` | 查询全量 Pod 状态（K8s 风格 items） |
+| `curl localhost:8080/api/v1/nodes/{nodeID}/pods` | 查询单节点 Pod 状态 |
 | `go run ./hack/edged-smoke` | DockerRuntime 冒烟（需 Docker daemon） |
 | `docker ps --filter label=edgeflow.pod` | 查看 Edged 管理的容器 |
 | `curl localhost:8080/api/v1/nodes` | 查询已注册边缘节点（JSON） |

@@ -40,7 +40,7 @@
 | M0-3 | CI/CD 完整流水线 | ✅ 基础版完成 | lint+test+覆盖率门槛 | commit ab73062 |
 | M0-4 | Helm Chart 骨架 | ✅ **完成** | helm lint 通过 + template 渲染正确 | commit 9d78246，helm v4.2.3 |
 | M1 | 云边核心通信链路（CloudHub/EdgeHub） | ✅ **M1 一~三期完成** | +EdgeNode 对接+可靠投递 4.6+PodSync 链路 | commits e569ea1~5312253，见 §4D |
-| M2 | 应用部署与边缘自治 | 🟨 **启动轮完成** | Edged 方案 A POC 通过（P0 决策落地） | commits c9db4ba~3826465，见 §4E |
+| M2 | 应用部署与边缘自治 | 🟨 **第 1-2 轮完成** | POC 定案 + PodStatus 上报链路 + 自治验证 | commits c9db4ba~最新，见 §4E/§4F |
 | M3 | 设备管理（Device CRD/Twin/Mapper） | ⏳ 待开发 | 依赖 M2 | — |
 | M4 | 生产化与规模化 | ⏳ 待开发 | 依赖 M3 | — |
 | M5 | MVP 发布与文档交付 | ⏳ 待开发 | 依赖 M4 | — |
@@ -216,6 +216,37 @@
 - P2-1：Edged.status 过期条目清理（WBS 6.3 PodStatus 上报前必改）
 - P2-3：docker run 冲突兜底未验标签（低危）
 - P2-8：优雅退出最坏延迟 30s（在途 docker 命令，文档已注明）
+
+## 4F. M2 第二轮验证结果（PodStatus 上报/自治，2026-08-14）
+
+### 新增模块
+| 模块 | 提交 | 内容 |
+|------|------|------|
+| cloud/pkg/podstatus + API | 707128f | 云端 Pod 状态存储（93.3% 覆盖）+ GET /api/v1/pods、/api/v1/nodes/{id}/pods |
+| 边缘上报循环 + P2-1 | bc58e40 | 30s 周期上报（env 可配）+ status map 清理 |
+| P1 修复 + P2×5 | 最新 | Absent 终态保留窗口 90s + 云端 Absent→Delete + phase 校验 + recover + 周期上下限 |
+
+### 端到端联调（真实进程 + 真实 Docker）
+| 场景 | 实测结果 |
+|------|---------|
+| PodSync add → 状态上报 | ✅ /api/v1/pods 显示 Running（上报周期 3s 验证） |
+| 断网自治 | ✅ 停 cloudcore 40s，容器持续运行，Edged 本地调谐不受影响 |
+| 恢复同步 | ✅ cloudcore 重启 → 重连注册 → 上报恢复 |
+| **删除收敛（P1 核心）** | ✅ delete → 容器移除 → Absent 终态上报 → 云端列表从 1 → 0 |
+
+### 自动化验证
+| 项目 | 结果 |
+|------|------|
+| go test -race（14 包） | ✅ 全绿，总覆盖率 83.0% |
+| golangci-lint | ✅ 0 issues |
+| 审查（docs/CODE-REVIEW-M2B.md） | ✅ 有条件通过（1 P1 + 10 P2）→ P1 已修复（端到端验证）+ P2×5 修复 + P2×5 记录待办 |
+
+### P2 待办（5 项未修）
+- store 全局单锁（并发量低，可接受）
+- 节点删除后 Pod 状态残留（有意为之：节点重连后状态保留，文档化）
+- 边侧时钟偏差（LastReconcileAt 依赖本地时钟）
+- 无批量上报（逐 Pod 一条消息）
+- 旧连接关闭窗口可投递（微秒级窗口，低危）
 
 ## 5. 待办项（Backlog）
 

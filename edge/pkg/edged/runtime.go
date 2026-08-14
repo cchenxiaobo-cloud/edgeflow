@@ -57,6 +57,14 @@ type ContainerRuntime interface {
 	// （Running/Stopped/Absent/Unknown）。
 	Inspect(pod metamanager.Pod, index int) (RuntimeState, error)
 
+	// ImageMatches 检查 Pod 第 index 个副本容器的镜像是否与期望一致
+	// （WBS 6.4 镜像漂移检测，滚动更新的判定依据）。
+	// 容器不存在时返回 (false, nil)——不算漂移，由 EnsureRunning 的
+	// 创建分支补齐；运行时不可用/查询失败返回错误。
+	// reconciler 对 StateRunning 副本调用它，命中漂移后以 EnsureRunning
+	// 触发重建（EnsureRunning 内部先停再建，幂等收敛）。
+	ImageMatches(pod metamanager.Pod, index int) (bool, error)
+
 	// List 列出本运行时上由 Edged 管理的全部容器实例（含已停止的）。
 	// reconciler 用它发现"本地存在但期望集合已删除"的孤儿容器，触发清理；
 	// 也用它按 Pod 统计实际副本数（多副本收敛的依据）。

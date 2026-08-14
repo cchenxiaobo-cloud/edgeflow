@@ -17,13 +17,22 @@ import (
 //   - 记录每次调用的调用计数，供测试断言幂等性（createCalls 只在
 //     Absent→Running 时自增，ensureRunningCalls 每次自增）；
 //   - 支持按实例注入失败（fail map），模拟"容器异常"验证 reconcile 重试不 panic；
-//   - SetState/DeleteState 供测试直接改写状态表，模拟容器被外部停止/删除。
+//   - SetState/DeleteState 供测试直接改写状态表，模拟容器被外部停止/删除；
+//   - 记录每个实例"创建时"的镜像（images map），EnsureRunning 在已运行
+//     时比对期望镜像（WBS 6.4 镜像漂移）：不一致 → 先停再建（重建）。
+//     SetImage 供测试注入漂移（模拟外部把容器镜像改掉）。
 type MockRuntime struct {
 	mu sync.Mutex
 
 	// states 是当前容器状态表：key 为 instanceKey，value 为状态。
 	// 只有 Running/Stopped 的 key 算"容器存在"（List 返回）。
 	states map[string]RuntimeState
+
+	// images 是每个实例当前持有的镜像（key 同 states）：创建/重建时写入
+	// pod.Image。SetImage 可改写（模拟镜像漂移）；未记录的 key 在
+	// EnsureRunning 漂移检查中视为与期望一致（兼容旧测试语义：
+	// 直接 SetState 注入状态、未记录镜像的实例不误重建）。
+	images map[string]string
 
 	// 调用计数（测试断言用）
 	ensureRunningCalls map[string]int
@@ -44,6 +53,7 @@ type MockRuntime struct {
 func NewMockRuntime() *MockRuntime {
 	return &MockRuntime{
 		states:             make(map[string]RuntimeState),
+		images:             make(map[string]string),
 		ensureRunningCalls: make(map[string]int),
 		ensureStoppedCalls: make(map[string]int),
 		createCalls:        make(map[string]int),
@@ -52,7 +62,10 @@ func NewMockRuntime() *MockRuntime {
 	}
 }
 
-// EnsureRunning 把 pod 第 index 个副本的状态置为 Running；已 Running 则 no-op（幂等）。
+// EnsureRunning 把 pod 第 index 个副本的状态置为 Running；已 Running 且
+// 镜像与期望一致则 no-op（幂等）。镜像漂移处理（WBS 6.4）：已 Running 但
+// 镜像与期望不一致 → 视为需要重建——先记一次 EnsureStopped/remove，再记
+// 一次 create，镜像更新为期望值（与 DockerRuntime 的"先停再建"语义一致）。
 func (m *MockRuntime) EnsureRunning(pod metamanager.Pod, index int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -62,9 +75,25 @@ func (m *MockRuntime) EnsureRunning(pod metamanager.Pod, index int) error {
 		return err
 	}
 	m.ensureRunningCalls[key]++
-	// 只有 Absent→Running 算"创建"；Stopped→Running 是"重新启动"（幂等语义：不重建容器）
-	if m.states[key] == StateAbsent {
+	st := m.states[key]
+	// Absent→Running 算"创建"；Stopped→Running 是"重新启动"（幂等语义：不重建容器）
+	if st == StateAbsent {
 		m.createCalls[key]++
+		m.images[key] = pod.Image
+		m.states[key] = StateRunning
+		return nil
+	}
+	// 镜像漂移重建（WBS 6.4）：已运行但镜像与期望不一致 → 先停再建。
+	// images 未记录（空串）视为一致，不误重建（兼容 SetState 直改状态表的旧测试）。
+	if st == StateRunning && m.images[key] != "" && m.images[key] != pod.Image {
+		m.ensureStoppedCalls[key]++
+		if m.states[key] != StateAbsent {
+			m.removeCalls[key]++
+		}
+		m.createCalls[key]++
+		m.images[key] = pod.Image
+		m.states[key] = StateRunning
+		return nil
 	}
 	m.states[key] = StateRunning
 	return nil
@@ -169,6 +198,41 @@ func (m *MockRuntime) SetListErr(err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.listErr = err
+}
+
+// SetImage 设置实例当前镜像（测试模拟镜像漂移：创建后外部把容器镜像改掉）。
+// key 为 instanceKey（如 "default/nginx#0"）；image 为空串表示清除记录
+// （恢复"未记录即视为一致"语义）。
+func (m *MockRuntime) SetImage(key, image string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.images[key] = image
+}
+
+// Image 返回实例当前记录的镜像（测试断言；未记录返回 ""）。
+func (m *MockRuntime) Image(key string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.images[key]
+}
+
+// ImageMatches 返回实例镜像是否与期望一致（WBS 6.4）：
+// 未记录镜像（images 无此 key）视为一致；已记录则精确比对。
+// 模拟"容器不存在"时也返回 (false, nil)（与 DockerRuntime 语义对齐，
+// 容器不存在不算漂移）。
+func (m *MockRuntime) ImageMatches(pod metamanager.Pod, index int) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.closed {
+		return false, fmt.Errorf("mock runtime 已关闭")
+	}
+	key := instanceKey(pod.Namespace, pod.Name, index)
+	img, ok := m.images[key]
+	if !ok || img == "" {
+		return true, nil // 未记录：视为一致（不误报漂移）
+	}
+	return img == pod.Image, nil
 }
 
 // EnsureRunningCount 返回 EnsureRunning 的累计调用次数（测试断言）。

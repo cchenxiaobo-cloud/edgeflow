@@ -243,7 +243,13 @@ func (e *Edged) reconcileOnce() error {
 		//     运行异常 → EnsureRunning 重启（幂等）。连续重启达到阈值后进入
 		//     退避窗口（固定 30s，不做指数退避——POC 简化，注释标明演进方向）；
 		//     副本稳定运行超过 stableWindow 后重置重启计数。
+		//     镜像漂移重建（WBS 6.4 滚动更新）：StateRunning 时用
+		//     ImageMatches 比对期望镜像，不一致 → EnsureRunning 重建
+		//     （运行时内部先停再建）。滚动策略：按 index 顺序 0→N-1 逐副本
+		//     处理，每轮最多重建 1 个漂移副本（批大小 1；无健康检查等待，
+		//     下一轮调谐继续——简化版，跨 Pod 串行化留待增强）。
 		restartedThisPod := 0
+		driftRebuilt := false // 本轮是否已重建漂移副本（每轮最多 1 个）
 		for idx := 0; idx < replicas; idx++ {
 			st, ierr := e.rt.Inspect(pod, idx)
 			if ierr != nil {
@@ -262,6 +268,33 @@ func (e *Edged) reconcileOnce() error {
 					delete(e.restartRec, instKey)
 				}
 				e.restartMu.Unlock()
+
+				// 镜像漂移检测（WBS 6.4）：每轮最多重建 1 个漂移副本，
+				// 保证"0→N-1 逐批滚动"的确定性顺序（批大小 1）。
+				if driftRebuilt {
+					continue
+				}
+				ok, ierr := e.rt.ImageMatches(pod, idx)
+				if ierr != nil {
+					podState, podErr = StateUnknown, ierr
+					log.Errorf("Edged reconcile: 检查 Pod %s 副本 %d 镜像失败: %v", key, idx, ierr)
+					errCount++
+					continue
+				}
+				if !ok {
+					// 镜像不一致 → 重建（EnsureRunning 内部先停旧容器再重建）。
+					// 不计入 restartRec/RestartCount：这是期望变更驱动的主动
+					// 重建，不是崩溃重启，不应触发 CrashLoopBackOff。
+					if rerr := e.rt.EnsureRunning(pod, idx); rerr != nil {
+						podState, podErr = StateUnknown, rerr
+						log.Errorf("Edged reconcile: 镜像漂移重建 Pod %s 副本 %d 失败: %v", key, idx, rerr)
+						errCount++
+						continue
+					}
+					driftRebuilt = true
+					restarted++ // 摘要统计：重建也是一种重启（RestartCount 不受影响）
+					log.Infof("镜像漂移：Pod %s 副本 %d 已重建（滚动策略，每轮 1 个，顺序 0→N-1）", key, idx)
+				}
 				continue
 			}
 			// 运行异常（停止/未知/缺失）：先查退避状态

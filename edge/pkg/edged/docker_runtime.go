@@ -140,7 +140,8 @@ func firstLine(s string) string {
 // EnsureRunning 确保 Pod 第 index 个副本的容器存在且运行：
 //   - 不存在 → docker run -d（后台创建并启动）；
 //   - 存在但停止 → docker start；
-//   - 已运行 → no-op。
+//   - 已运行 → 检查镜像是否与期望一致（WBS 6.4 镜像漂移检测）：
+//     一致 → no-op；不一致 → 先 EnsureStopped（rm -f）再重建（重新 run -d）。
 //
 // 并发兜底：若 run 因"名字已被占用"失败（并发 reconcile/外部创建），
 // 重新 Inspect 按实际状态处理，不报错。
@@ -152,7 +153,21 @@ func (d *DockerRuntime) EnsureRunning(pod metamanager.Pod, index int) error {
 	}
 	switch state {
 	case StateRunning:
-		return nil // 幂等：已运行
+		// 镜像漂移检测（WBS 6.4 滚动更新）：已运行 ≠ 镜像正确。
+		// 云端更新 Pod 镜像后，旧镜像容器必须重建才能生效——
+		// 不一致时先停（rm -f）再走下方 Absent 分支重新 run -d，
+		// 保证"镜像与期望一致"的幂等收敛。
+		ok, ierr := d.ImageMatches(pod, index)
+		if ierr != nil {
+			return ierr
+		}
+		if ok {
+			return nil // 幂等：已运行且镜像一致
+		}
+		if err := d.EnsureStopped(pod, index); err != nil {
+			return fmt.Errorf("镜像漂移重建 %s 时停止旧容器失败: %w", name, err)
+		}
+		return d.EnsureRunning(pod, index) // 递归：容器已删除，走 Absent 分支重建
 	case StateStopped:
 		if _, err := d.exec("start", name); err != nil {
 			// daemon 不可用类错误已带明确前缀，直接透传避免二次包装
@@ -186,6 +201,26 @@ func (d *DockerRuntime) EnsureRunning(pod metamanager.Pod, index int) error {
 	default:
 		return fmt.Errorf("查询容器 %s 状态未知，拒绝操作", name)
 	}
+}
+
+// ImageMatches 检查容器当前镜像是否与期望一致（WBS 6.4 镜像漂移检测）：
+// docker inspect --format '{{.Config.Image}}' 取创建时镜像引用，与 pod.Image
+// 精确比对。容器不存在 → (false, nil)（不算漂移，由 EnsureRunning 创建分支
+// 补齐）；daemon 不可用等查询失败 → 错误透传（调用方记错误，下一轮重试）。
+func (d *DockerRuntime) ImageMatches(pod metamanager.Pod, index int) (bool, error) {
+	name := ContainerName(pod.Namespace, pod.Name, index)
+	out, err := d.exec("inspect", "--format", "{{.Config.Image}}", name)
+	if err != nil {
+		if isNoSuchContainer(err.Error()) {
+			return false, nil // 容器不存在：不是漂移，交给创建分支
+		}
+		return false, err
+	}
+	// Docker 的 Config.Image 保留创建时的镜像引用（如 "nginx:1.27"），
+	// 与下发期望值同格式时精确相等。跨格式等价（如 digest 引用）暂不
+	// 归一化——云端下发统一引用格式即可（POC 简化，注释标明演进方向：
+	// 需要时改为解析 digest 后比对）。
+	return strings.TrimSpace(out) == pod.Image, nil
 }
 
 // EnsureStopped 强制停止并移除 Pod 第 index 个副本的容器；容器不存在时 no-op（幂等）。

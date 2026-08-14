@@ -97,20 +97,27 @@ func TestDockerInspectStates(t *testing.T) {
 }
 
 // TestDockerEnsureRunningFlows 验证 EnsureRunning 三分支（副本 0）：
-// 已运行 no-op、停止则 start、不存在则 run -d（容器名带 -0 后缀）。
+// 已运行（且镜像一致）no-op、停止则 start、不存在则 run -d（容器名带 -0 后缀）。
+// 已运行分支会多一次镜像比对 inspect（WBS 6.4），此处用独立计数器区分。
 func TestDockerEnsureRunningFlows(t *testing.T) {
 	var calls []string
+	stateInspects := 0
 	d := newTestDocker(func(_ context.Context, args ...string) (string, error) {
 		calls = append(calls, strings.Join(args, " "))
-		// 调用序列：inspect(1)→true；inspect(2)→false；start(3)；inspect(4)→不存在；run(5)
+		// 镜像比对 inspect：与状态 inspect 区分（模板含 Config.Image）
+		if args[0] == "inspect" && strings.Contains(strings.Join(args, " "), "Config.Image") {
+			return "nginx:1.27\n", nil // 镜像与期望一致
+		}
+		// 状态 inspect：按调用顺序返回 已运行/已停止/不存在
 		switch args[0] {
 		case "inspect":
-			switch len(calls) {
+			stateInspects++
+			switch stateInspects {
 			case 1:
 				return "true\n", nil // 已运行
 			case 2:
 				return "false\n", nil // 存在但停止
-			case 4:
+			case 3:
 				return "", errFakeNoObject // 不存在
 			}
 		case "start":
@@ -149,6 +156,96 @@ func TestDockerEnsureRunningFlows(t *testing.T) {
 	// start 被调用了一次（分支 2）
 	if n := countPrefix(calls, "start "); n != 1 {
 		t.Errorf("start 调用次数 = %d，期望 1", n)
+	}
+}
+
+// TestDockerEnsureRunningImageDrift 验证 WBS 6.4 镜像漂移：
+// 已运行但镜像与期望不一致 → 先 rm -f（EnsureStopped）再重新 run -d（重建）；
+// 镜像一致 → 只有 inspect，无 rm/run（no-op）。
+func TestDockerEnsureRunningImageDrift(t *testing.T) {
+	t.Run("镜像一致→no-op", func(t *testing.T) {
+		var calls []string
+		d := newTestDocker(func(_ context.Context, args ...string) (string, error) {
+			calls = append(calls, strings.Join(args, " "))
+			switch args[0] {
+			case "inspect":
+				if strings.Contains(strings.Join(args, " "), "Config.Image") {
+					return "nginx:1.27\n", nil // 镜像一致
+				}
+				return "true\n", nil // 状态：已运行
+			}
+			return "", nil
+		})
+
+		if err := d.EnsureRunning(podNginx(), 0); err != nil {
+			t.Fatalf("镜像一致 EnsureRunning 失败: %v", err)
+		}
+		if n := countPrefix(calls, "rm "); n != 0 {
+			t.Errorf("镜像一致不应 rm，实际 %d 次: %v", n, calls)
+		}
+		if n := countPrefix(calls, "run "); n != 0 {
+			t.Errorf("镜像一致不应 run，实际 %d 次: %v", n, calls)
+		}
+	})
+
+	t.Run("镜像不一致→重建（顺序断言）", func(t *testing.T) {
+		var calls []string
+		d := newTestDocker(func(_ context.Context, args ...string) (string, error) {
+			calls = append(calls, args[0])
+			switch {
+			case len(calls) == 1: // 状态 inspect
+				return "true\n", nil
+			case len(calls) == 2: // 镜像 inspect
+				return "nginx:1.26\n", nil
+			case len(calls) == 3: // rm -f
+				return "", nil
+			case len(calls) == 4: // 重建前状态 inspect
+				return "", errFakeNoObject
+			default: // run -d
+				return "abc123\n", nil
+			}
+		})
+
+		if err := d.EnsureRunning(podNginx(), 0); err != nil {
+			t.Fatalf("镜像漂移重建失败: %v", err)
+		}
+		want := []string{"inspect", "inspect", "rm", "inspect", "run"}
+		if len(calls) != len(want) {
+			t.Fatalf("调用次数 = %d，期望 %d: %v", len(calls), len(want), calls)
+		}
+		for i, w := range want {
+			if calls[i] != w {
+				t.Errorf("第 %d 次调用 = %q，期望 %q（顺序：先停再建）", i+1, calls[i], w)
+			}
+		}
+	})
+}
+
+// TestDockerImageMatches 验证 ImageMatches 各分支：
+// 镜像一致→true；不一致→false；容器不存在→(false, nil)；daemon 不可用→错误。
+func TestDockerImageMatches(t *testing.T) {
+	d := newTestDocker(fakeRunner(
+		[]any{"nginx:1.27\n", nil},
+		[]any{"nginx:1.26\n", nil},
+		[]any{"", errFakeNoObject},
+		[]any{"", errFakeDaemonDown},
+	))
+
+	// 一致
+	if ok, err := d.ImageMatches(podNginx(), 0); err != nil || !ok {
+		t.Errorf("镜像一致 → ok=%v, err=%v，期望 true,nil", ok, err)
+	}
+	// 不一致
+	if ok, err := d.ImageMatches(podNginx(), 0); err != nil || ok {
+		t.Errorf("镜像不一致 → ok=%v, err=%v，期望 false,nil", ok, err)
+	}
+	// 容器不存在：不算漂移
+	if ok, err := d.ImageMatches(podNginx(), 0); err != nil || ok {
+		t.Errorf("容器不存在 → ok=%v, err=%v，期望 false,nil", ok, err)
+	}
+	// daemon 不可用：错误透传
+	if _, err := d.ImageMatches(podNginx(), 0); err == nil || !strings.HasPrefix(err.Error(), "docker daemon unavailable: ") {
+		t.Errorf("daemon 不可用应透传错误: %v", err)
 	}
 }
 

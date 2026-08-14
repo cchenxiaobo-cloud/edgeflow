@@ -40,8 +40,8 @@
 | M0-3 | CI/CD 完整流水线 | ✅ 基础版完成 | lint+test+覆盖率门槛 | commit ab73062 |
 | M0-4 | Helm Chart 骨架 | ✅ **完成** | helm lint 通过 + template 渲染正确 | commit 9d78246，helm v4.2.3 |
 | M1 | 云边核心通信链路（CloudHub/EdgeHub） | ✅ **M1 一~三期完成** | +EdgeNode 对接+可靠投递 4.6+PodSync 链路 | commits e569ea1~5312253，见 §4D |
-| M2 | 应用部署与边缘自治 | 🟨 **第 1-2 轮完成** | POC 定案 + PodStatus 上报链路 + 自治验证 | commits c9db4ba~最新，见 §4E/§4F |
-| M3 | 设备管理（Device CRD/Twin/Mapper） | 🟨 **启动轮完成** | Mapper 框架+模拟设备+Twin+设备链路 | commits 7d82c0c~698ee5f，见 §4G |
+| M2 | 应用部署与边缘自治 | 🟨 **第 1-3 轮完成** | +ConfigMap/Secret 下发（6.2）| commits c9db4ba~5403daa，见 §4E/§4F/§4H |
+| M3 | 设备管理（Device CRD/Twin/Mapper） | 🟨 **第 1-2 轮完成** | +MQTT EventBus（3.6）| commits 7d82c0c~2a0d0a3，见 §4G/§4H |
 | M4 | 生产化与规模化 | ⏳ 待开发 | 依赖 M3 | — |
 | M5 | MVP 发布与文档交付 | ⏳ 待开发 | 依赖 M4 | — |
 
@@ -281,6 +281,42 @@
 ### M2 收尾状态（本轮核对）
 - ✅ 已完成：PodSync 下发→容器运行→状态上报→断网自治→恢复同步→删除收敛（M2 核心链路）
 - 📋 M2 完整化待办（列入 §5）：Edged 健康检查/多副本（6.4/6.5）、ConfigMap/Secret 下发（6.2）、镜像更新滚动策略、8.3 E2E 完整场景
+
+## 4H. M3 二期 + M2 完整化验证结果（EventBus/ConfigSync，2026-08-14）
+
+### 新增模块
+| 模块 | 提交 | 内容 |
+|------|------|------|
+| ConfigSync 链路 | 5403daa | 云端 POST config-sync 五态 + 可靠投递 + 边缘 handleConfigSync 落盘（configs/ns/name）+ 自动 Ack |
+| MQTT EventBus | 2a0d0a3 | paho v1.5.1 封装（QoS1、AutoReconnect+ConnectRetry、OnConnect 订阅恢复、IsOnline 瞬态检测、主题段校验）+ docs/EVENTBUS-GUIDE.md |
+| P1 修复 | f3f3df1 | Secret 日志脱敏（P1-1）+ onConnect 全程持 RLock（P1-2 map 竞态）+ 重连并发测试 |
+
+### 端到端验证（真实进程/mosquitto）
+| 场景 | 实测结果 |
+|------|---------|
+| 配置下发 | ✅ POST config-sync add app-config → 200 acked → sqlite3 查 configs/default/app-config |
+| 配置删除 | ✅ delete → sqlite3 确认删除；多配置共存（app-config + db-secret） |
+| 非法路径 | ✅ 400/404 拦截 |
+| MQTT 收发 | ✅ mosquitto 临时 broker：发布/订阅 QoS1 全量断言 |
+| MQTT 重连 | ✅ 停 broker → 自动重连（ConnectRetry 1s）→ OnConnect 恢复订阅 → 恢复收发 |
+| 重连并发竞态 | ✅ race 下并发 Subscribe/Unsubscribe 无 panic（P1-2 回归测试） |
+
+### 自动化验证
+| 项目 | 结果 |
+|------|------|
+| go test -race（19 包） | ✅ 全绿，总覆盖率 82.3% |
+| golangci-lint | ✅ 0 issues |
+| 审查（docs/CODE-REVIEW-M3B.md） | ✅ 有条件通过（0 P0 / 2 P1 / 12 P2）→ P1×2 已修复 + P2×4 顺手修 + P2×8 记录待办 |
+
+### P2 待办（8 项，节选）
+- Mapper 未接入 EventBus（独立库交付，装配下一轮）
+- broker 生命周期管理（systemd/容器化）
+- configs 无增量通知（当前无消费方，轮询对账）
+- ConfigMap/Secret 同名同 ns 互覆盖（文档化决策，需产品确认）
+- QoS1 不保证去重（消费方需幂等）
+- Secret 落盘明文（生产需加密）
+- Connect ctx 取消后 paho 后台重试无法终止（Disconnect 兜底）
+- TestQoS1Delivery 偶发端口抢占（未复现，13 连跑全绿）
 
 ## 5. 待办项（Backlog）
 

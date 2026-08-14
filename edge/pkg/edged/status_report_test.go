@@ -124,7 +124,7 @@ func TestEdgedCleanupStatusKeepsErrorEntryUntilContainerRemoved(t *testing.T) {
 	if err := s.DeletePod("default", "nginx"); err != nil {
 		t.Fatalf("DeletePod 失败: %v", err)
 	}
-	rt.SetFail("default/nginx", errors.New("docker rm 失败: 设备忙"))
+	rt.SetFail("default/nginx#0", errors.New("docker rm 失败: 设备忙"))
 
 	if err := e.reconcileOnce(); err != nil {
 		t.Fatalf("第二次 reconcile 失败: %v", err)
@@ -138,7 +138,7 @@ func TestEdgedCleanupStatusKeepsErrorEntryUntilContainerRemoved(t *testing.T) {
 	}
 
 	// 故障恢复 → 孤儿清理成功 → 状态转 Absent → 条目进入终态保留（P1 修复）
-	rt.SetFail("default/nginx", nil)
+	rt.SetFail("default/nginx#0", nil)
 	if err := e.reconcileOnce(); err != nil {
 		t.Fatalf("第三次 reconcile 失败: %v", err)
 	}
@@ -168,9 +168,7 @@ func TestEdgedCleanupStatusRemovesStaleEntryWhenContainerGone(t *testing.T) {
 	if err := s.DeletePod("default", "nginx"); err != nil {
 		t.Fatalf("DeletePod 失败: %v", err)
 	}
-	rt.mu.Lock()
-	delete(rt.states, "default/nginx")
-	rt.mu.Unlock()
+	rt.DeleteState("default/nginx#0")
 
 	if err := e.reconcileOnce(); err != nil {
 		t.Fatalf("第二次 reconcile 失败: %v", err)

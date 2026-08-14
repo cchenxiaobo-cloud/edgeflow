@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,8 +33,10 @@ func defaultCmdRunner(ctx context.Context, args ...string) (string, error) {
 // 设计：
 //   - 每次操作独立 exec docker CLI（无长连接），daemon 不可用时错误带
 //     "docker daemon unavailable: " 前缀，便于识别与告警；
-//   - 容器命名规范 edgeflow-<namespace>-<name>，并打两个标签
-//     （edgeflow.pod / edgeflow.namespace），List 按标签过滤，只管理自己的容器；
+//   - 容器命名规范 edgeflow-<namespace>-<name>-<index>（index 为副本序号），
+//     并打两个标签（edgeflow.pod / edgeflow.namespace），List 按标签过滤，
+//     只管理自己的容器；副本序号从容器名末段反解（序号始终在名字末尾，
+//     超长名截断只作用于基础名，不影响序号解析）；
 //   - 所有方法幂等：inspect 判断存在性，rm 对不存在容器视为成功。
 type DockerRuntime struct {
 	// timeout 是单次 docker 命令的超时；默认 defaultExecTimeout。
@@ -134,15 +137,16 @@ func firstLine(s string) string {
 	return s
 }
 
-// EnsureRunning 确保容器存在且运行：
+// EnsureRunning 确保 Pod 第 index 个副本的容器存在且运行：
 //   - 不存在 → docker run -d（后台创建并启动）；
 //   - 存在但停止 → docker start；
 //   - 已运行 → no-op。
 //
 // 并发兜底：若 run 因"名字已被占用"失败（并发 reconcile/外部创建），
 // 重新 Inspect 按实际状态处理，不报错。
-func (d *DockerRuntime) EnsureRunning(pod metamanager.Pod) error {
-	state, err := d.Inspect(pod)
+func (d *DockerRuntime) EnsureRunning(pod metamanager.Pod, index int) error {
+	name := ContainerName(pod.Namespace, pod.Name, index)
+	state, err := d.Inspect(pod, index)
 	if err != nil {
 		return err
 	}
@@ -150,25 +154,25 @@ func (d *DockerRuntime) EnsureRunning(pod metamanager.Pod) error {
 	case StateRunning:
 		return nil // 幂等：已运行
 	case StateStopped:
-		if _, err := d.exec("start", ContainerName(pod.Namespace, pod.Name)); err != nil {
+		if _, err := d.exec("start", name); err != nil {
 			// daemon 不可用类错误已带明确前缀，直接透传避免二次包装
 			if isDaemonUnavailable(err.Error()) {
 				return err
 			}
-			return fmt.Errorf("启动容器 %s 失败: %w", ContainerName(pod.Namespace, pod.Name), err)
+			return fmt.Errorf("启动容器 %s 失败: %w", name, err)
 		}
 		return nil
 	case StateAbsent:
 		if _, err := d.exec("run", "-d",
-			"--name", ContainerName(pod.Namespace, pod.Name),
+			"--name", name,
 			"--label", labelPod+"="+pod.Name,
 			"--label", labelNamespace+"="+pod.Namespace,
 			pod.Image); err != nil {
 			// 竞态兜底：并发创建导致名字冲突 → 按已存在处理
 			lower := strings.ToLower(err.Error())
 			if strings.Contains(lower, "conflict") && strings.Contains(lower, "already in use") {
-				if _, ierr := d.Inspect(pod); ierr != nil {
-					return fmt.Errorf("创建容器 %s 冲突后重新查询失败: %w", ContainerName(pod.Namespace, pod.Name), ierr)
+				if _, ierr := d.Inspect(pod, index); ierr != nil {
+					return fmt.Errorf("创建容器 %s 冲突后重新查询失败: %w", name, ierr)
 				}
 				return nil
 			}
@@ -176,17 +180,17 @@ func (d *DockerRuntime) EnsureRunning(pod metamanager.Pod) error {
 			if isDaemonUnavailable(err.Error()) {
 				return err
 			}
-			return fmt.Errorf("创建容器 %s 失败: %w", ContainerName(pod.Namespace, pod.Name), err)
+			return fmt.Errorf("创建容器 %s 失败: %w", name, err)
 		}
 		return nil
 	default:
-		return fmt.Errorf("查询容器 %s 状态未知，拒绝操作", ContainerName(pod.Namespace, pod.Name))
+		return fmt.Errorf("查询容器 %s 状态未知，拒绝操作", name)
 	}
 }
 
-// EnsureStopped 强制停止并移除容器；容器不存在时 no-op（幂等）。
-func (d *DockerRuntime) EnsureStopped(pod metamanager.Pod) error {
-	name := ContainerName(pod.Namespace, pod.Name)
+// EnsureStopped 强制停止并移除 Pod 第 index 个副本的容器；容器不存在时 no-op（幂等）。
+func (d *DockerRuntime) EnsureStopped(pod metamanager.Pod, index int) error {
+	name := ContainerName(pod.Namespace, pod.Name, index)
 	_, err := d.exec("rm", "-f", name)
 	if err == nil {
 		return nil
@@ -202,12 +206,12 @@ func (d *DockerRuntime) EnsureStopped(pod metamanager.Pod) error {
 	return fmt.Errorf("删除容器 %s 失败: %w", name, err)
 }
 
-// Inspect 查询容器状态：
+// Inspect 查询 Pod 第 index 个副本容器的状态：
 //   - docker inspect --format '{{.State.Running}}' → true/false；
 //   - "No such object" → Absent；
 //   - daemon 不可用等 → Unknown + 错误。
-func (d *DockerRuntime) Inspect(pod metamanager.Pod) (RuntimeState, error) {
-	name := ContainerName(pod.Namespace, pod.Name)
+func (d *DockerRuntime) Inspect(pod metamanager.Pod, index int) (RuntimeState, error) {
+	name := ContainerName(pod.Namespace, pod.Name, index)
 	out, err := d.exec("inspect", "--format", "{{.State.Running}}", name)
 	if err == nil {
 		switch out {
@@ -226,10 +230,11 @@ func (d *DockerRuntime) Inspect(pod metamanager.Pod) (RuntimeState, error) {
 	return StateUnknown, err
 }
 
-// List 列出本机由 Edged 管理的全部容器（含已停止的），返回其 Pod 标识。
+// List 列出本机由 Edged 管理的全部容器实例（含已停止的），返回 Pod 标识 + 副本序号。
 // docker ps -a --filter label=edgeflow.pod，按标签反解 namespace/name
-// （不解析容器名，避免名字中的 '-' 造成歧义）。
-func (d *DockerRuntime) List() ([]metamanager.Pod, error) {
+// （不解析容器名，避免名字中的 '-' 造成歧义）；副本序号从容器名末段解析
+// （-<index> 恒在末尾；旧式无序号命名兜底为副本 0）。
+func (d *DockerRuntime) List() ([]InstanceRef, error) {
 	out, err := d.exec("ps", "-a",
 		"--filter", "label="+labelPod,
 		"--format", "{{.Names}}\t{{.Label \""+labelPod+"\"}}\t{{.Label \""+labelNamespace+"\"}}")
@@ -239,7 +244,7 @@ func (d *DockerRuntime) List() ([]metamanager.Pod, error) {
 	if out == "" {
 		return nil, nil
 	}
-	pods := make([]metamanager.Pod, 0, 4)
+	insts := make([]InstanceRef, 0, 4)
 	for _, line := range strings.Split(out, "\n") {
 		parts := strings.Split(line, "\t")
 		if len(parts) != 3 {
@@ -253,9 +258,26 @@ func (d *DockerRuntime) List() ([]metamanager.Pod, error) {
 		if ns == "" {
 			ns = "default"
 		}
-		pods = append(pods, metamanager.Pod{Namespace: ns, Name: name})
+		insts = append(insts, InstanceRef{
+			Namespace: ns,
+			Name:      name,
+			Index:     parseIndexFromName(strings.TrimSpace(parts[0])),
+		})
 	}
-	return pods, nil
+	return insts, nil
+}
+
+// parseIndexFromName 从容器名末段反解副本序号：
+// 命名规范 edgeflow-<ns>-<name>-<index>，-<index> 恒在末尾
+// （超长名截断只作用于基础名）。解析失败（如旧式无序号命名）兜底 0。
+func parseIndexFromName(containerName string) int {
+	if i := strings.LastIndexByte(containerName, '-'); i >= 0 {
+		idx, err := strconv.Atoi(containerName[i+1:])
+		if err == nil && idx >= 0 {
+			return idx
+		}
+	}
+	return 0
 }
 
 // Close 无持久资源（每次操作独立 exec），按接口要求实现。

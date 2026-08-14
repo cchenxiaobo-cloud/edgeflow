@@ -3,6 +3,7 @@ package edged
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -24,23 +25,27 @@ type PodStatus struct {
 	Err           error        // 最近一次调谐错误（nil 表示成功）
 	LastReconcile time.Time    // 最近一次调谐时间
 	RemovedAt     time.Time    // Pod 从期望集合删除的时间（零值=仍在期望集合）
+	RestartCount  int          // 健康检查累计重启次数（WBS 6.5；M2 退避策略的输入）
 }
 
 // Edged 是 Pod 生命周期管理主循环（reconciler）。
 //
 // 工作原理（声明式调谐）：
-//   - 期望状态：MetaManager 落盘的 Pod 集合（store.ListPods()）；
-//   - 实际状态：运行时上的容器集合（rt.List()）；
-//   - 每轮把实际状态向期望状态收敛：期望中存在 → EnsureRunning；
-//     本地存在但期望已删除 → EnsureStopped（孤儿清理）。
+//   - 期望状态：MetaManager 落盘的 Pod 集合（store.ListPods()），每个 Pod
+//     的期望副本数为 Replicas（缺省 1）；
+//   - 实际状态：运行时上的容器实例集合（rt.List()，按副本粒度）；
+//   - 每轮把实际状态向期望状态收敛：期望副本缺失 → 补齐创建；多余副本 →
+//     停止（从最大 index 开始）；期望副本存在但停止/未知 → 健康检查重启
+//     （WBS 6.5 自愈）；本地存在但期望已删除 → EnsureStopped（孤儿清理）。
 //
 // 启动即先调谐一次，之后按 interval 定时调谐；Stop() 可随时退出循环
 // （测试与集成装配需要）。
 //
 // 说明：
 //   - 当前用轮询起步，不依赖 MetaManager 增量订阅；订阅就绪后可在
-//     SavePod/DeletePod 回调里触发 Notify() 立即调谐（接入点见 docs/EDGED-POC.md）；
-//   - Pod.Replicas 在 POC 阶段按单副本处理（多副本展开属 M2 范围）。
+//     SavePod/DeletePod 回调里触发 Trigger() 立即调谐（接入点见 docs/EDGED-POC.md）；
+//   - 健康检查重启无退避（POC 简化：每次调谐重试；M2 完整版加
+//     CrashLoopBackOff 指数退避，见 docs/EDGED-POC.md §9）。
 type Edged struct {
 	store    *metamanager.Store
 	rt       ContainerRuntime
@@ -160,7 +165,7 @@ func (e *Edged) reconcileOnce() error {
 		return err
 	}
 
-	// 2. 实际集合：运行时上的容器（List 失败不中断：只警告，清理留到下一轮）
+	// 2. 实际集合：运行时上的容器实例（List 失败不中断：只警告，清理留到下一轮）
 	local, listErr := e.rt.List()
 	if listErr != nil {
 		log.Warnf("Edged reconcile: 列出本地容器失败（本轮跳过孤儿清理）: %v", listErr)
@@ -172,42 +177,95 @@ func (e *Edged) reconcileOnce() error {
 		desiredKeys[podKey(p.Namespace, p.Name)] = struct{}{}
 	}
 
-	running, stopped, errCount, removed := 0, 0, 0, 0
+	running, stopped, errCount, removed, restarted := 0, 0, 0, 0, 0
 
-	// 3. 期望存在 → 确保运行
+	// 3. 期望存在 → 收敛副本数 + 健康检查自愈
 	for _, pod := range desired {
 		key := podKey(pod.Namespace, pod.Name)
-		if err := e.rt.EnsureRunning(pod); err != nil {
-			e.setStatus(key, StateUnknown, err, now)
-			log.Errorf("Edged reconcile: 确保 Pod %s 运行失败: %v", key, err)
-			errCount++
-			continue
+
+		// 期望副本数：Replicas 缺省 1（云端未下发/历史数据无该字段）
+		replicas := pod.Replicas
+		if replicas <= 0 {
+			replicas = 1
 		}
-		// 拉取真实状态（容器可能刚创建即退出，如一次性任务镜像）
-		st, ierr := e.rt.Inspect(pod)
-		if ierr != nil {
-			e.setStatus(key, StateUnknown, ierr, now)
-			errCount++
-			continue
+
+		// 实际副本实例：runtime.List 按 Pod 过滤（按 index 升序，缺副本也收敛）
+		actual := filterInstances(local, pod.Namespace, pod.Name)
+
+		// 本 Pod 本轮最终状态（任一副本失败 → 以最近一次错误为准）
+		podState, podErr := StateRunning, error(nil)
+
+		// 3a. 收缩：实际 > 期望 → 停止多余副本（从最大 index 开始，
+		//     保证缩容后剩余副本是 0..Replicas-1 的连续前缀）
+		for i := len(actual) - 1; i >= replicas; i-- {
+			inst := actual[i]
+			if err := e.rt.EnsureStopped(inst.Pod(), inst.Index); err != nil {
+				podState, podErr = StateUnknown, err
+				log.Errorf("Edged reconcile: 收缩 Pod %s 多余副本 %d 失败: %v", key, inst.Index, err)
+				errCount++
+			}
 		}
-		e.setStatus(key, st, nil, now)
-		switch st {
-		case StateRunning:
-			running++
-		case StateStopped:
-			stopped++
+
+		// 3b. 补齐：实际 < 期望 → 创建缺失副本（index 从实际数开始；
+		//     存在缺口时由 3c 的健康检查兜底补齐，EnsureRunning 幂等不重复创建）
+		for idx := len(actual); idx < replicas; idx++ {
+			if err := e.rt.EnsureRunning(pod, idx); err != nil {
+				podState, podErr = StateUnknown, err
+				log.Errorf("Edged reconcile: 创建 Pod %s 副本 %d 失败: %v", key, idx, err)
+				errCount++
+				continue
+			}
 		}
+
+		// 3c. 健康检查自愈（WBS 6.5）：逐个期望副本 Inspect，非 Running 且
+		//     无错误（Stopped/Unknown/Absent）→ 视为运行异常 → EnsureRunning
+		//     重启（幂等：Stopped 走 start、Absent 走创建）。POC 简化：不做
+		//     指数退避，每次调谐都重试（M2 完整版按 RestartCount 加退避）。
+		restartedThisPod := 0
+		for idx := 0; idx < replicas; idx++ {
+			st, ierr := e.rt.Inspect(pod, idx)
+			if ierr != nil {
+				podState, podErr = StateUnknown, ierr
+				log.Errorf("Edged reconcile: 检查 Pod %s 副本 %d 状态失败: %v", key, idx, ierr)
+				errCount++
+				continue
+			}
+			if st == StateRunning {
+				running++
+				continue
+			}
+			// 运行异常（停止/未知/缺失）→ 重启
+			if rerr := e.rt.EnsureRunning(pod, idx); rerr != nil {
+				podState, podErr = StateUnknown, rerr
+				log.Errorf("Edged reconcile: 健康检查重启 Pod %s 副本 %d 失败: %v", key, idx, rerr)
+				errCount++
+				continue
+			}
+			restarted++
+			restartedThisPod++
+			if st == StateStopped {
+				stopped++ // 统计"发现时已停止"的副本数
+			}
+			log.Infof("健康检查：容器 %s 已重启", ContainerName(pod.Namespace, pod.Name, idx))
+		}
+
+		// 汇总：重启先累加 RestartCount（addRestarts 置 Running），
+		// 再以本轮最终状态覆盖（有失败则错误优先，RestartCount 不受影响）
+		if restartedThisPod > 0 {
+			e.addRestarts(key, restartedThisPod, now)
+		}
+		e.setStatus(key, podState, podErr, now)
 	}
 
-	// 4. 孤儿清理：本地存在但期望集合已删除 → 确保停止
-	for _, pod := range local {
-		key := podKey(pod.Namespace, pod.Name)
+	// 4. 孤儿清理：本地存在但期望集合已删除 → 确保停止（按副本实例逐个清理）
+	for _, inst := range local {
+		key := podKey(inst.Namespace, inst.Name)
 		if _, ok := desiredKeys[key]; ok {
 			continue // 期望中存在，交给第 3 步处理
 		}
-		if err := e.rt.EnsureStopped(pod); err != nil {
+		if err := e.rt.EnsureStopped(inst.Pod(), inst.Index); err != nil {
 			e.setStatus(key, StateUnknown, err, now)
-			log.Errorf("Edged reconcile: 清理孤儿容器 %s 失败: %v", key, err)
+			log.Errorf("Edged reconcile: 清理孤儿容器 %s 副本 %d 失败: %v", key, inst.Index, err)
 			errCount++
 			continue
 		}
@@ -220,11 +278,11 @@ func (e *Edged) reconcileOnce() error {
 
 	// 6. 摘要日志
 	if errCount > 0 {
-		log.Warnf("reconcile: %d pods, %d running, %d stopped, %d error, %d removed",
-			len(desired), running, stopped, errCount, removed)
+		log.Warnf("reconcile: %d pods, %d running, %d stopped, %d restarted, %d error, %d removed",
+			len(desired), running, stopped, restarted, errCount, removed)
 	} else {
-		log.Infof("reconcile: %d pods, %d running, %d stopped, %d error, %d removed",
-			len(desired), running, stopped, errCount, removed)
+		log.Infof("reconcile: %d pods, %d running, %d stopped, %d restarted, %d error, %d removed",
+			len(desired), running, stopped, restarted, errCount, removed)
 	}
 	return nil
 }
@@ -252,11 +310,49 @@ func (e *Edged) desiredPods() ([]metamanager.Pod, error) {
 	return pods, nil
 }
 
-// setStatus 记录单个 Pod 的调谐结果（加锁写）。
+// filterInstances 从 List 结果中筛出属于指定 Pod 的副本实例（按 index 升序）。
+// 注意：List 返回的实例按 instanceKey 字典序（"#10" < "#2"），必须按数值重排，
+// 否则"补齐从实际数开始"与"从最大 index 收缩"会错位。
+func filterInstances(instances []InstanceRef, namespace, name string) []InstanceRef {
+	out := make([]InstanceRef, 0, 2)
+	for _, inst := range instances {
+		if inst.Namespace == namespace && inst.Name == name {
+			out = append(out, inst)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Index < out[j].Index })
+	return out
+}
+
+// setStatus 记录单个 Pod 的调谐结果（保留既有 RestartCount 与 RemovedAt，加锁写）。
 func (e *Edged) setStatus(key string, state RuntimeState, err error, at time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.status[key] = PodStatus{State: state, Err: err, LastReconcile: at}
+	prev := e.status[key]
+	e.status[key] = PodStatus{
+		State:         state,
+		Err:           err,
+		LastReconcile: at,
+		RemovedAt:     prev.RemovedAt,
+		RestartCount:  prev.RestartCount,
+	}
+}
+
+// addRestarts 把本轮健康检查重启次数累加到 Pod 的重启计数（WBS 6.5），
+// 并把状态收敛为 Running（重启成功的副本已恢复运行）。
+// 注意：调用方随后会以本轮最终状态覆盖，错误优先。
+func (e *Edged) addRestarts(key string, n int, at time.Time) {
+	if n <= 0 {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	st := e.status[key]
+	st.RestartCount += n
+	st.State = StateRunning
+	st.Err = nil
+	st.LastReconcile = at
+	e.status[key] = st
 }
 
 // Status 返回全部 Pod 的最近调谐结果副本（调用方安全迭代）。

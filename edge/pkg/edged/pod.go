@@ -3,13 +3,16 @@
 // 本包是"方案 A（自研精简 kubelet）"的 POC 产物（docs/EDGED-POC.md）：
 //   - 容器运行时抽象（ContainerRuntime）+ 双实现（Mock / Docker CLI）；
 //   - Edged 主循环（reconciler）：定时读取 MetaManager 中的期望 Pod 集合，
-//     对差异执行创建/启动/删除，收敛到期望状态；
+//     对差异执行创建/启动/删除，收敛到期望状态（含多副本展开 WBS 6.4 与
+//     健康检查自愈 WBS 6.5）；
 //   - 状态记录（Status()）为后续 Pod 状态上报（WBS 6.3）预留。
 package edged
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"strconv"
 	"strings"
 
 	"edgeflow/edge/pkg/metamanager"
@@ -18,9 +21,9 @@ import (
 // PodSpec 是 Edged 消费的 Pod 规格。
 //
 // 决策：直接复用 metamanager.Pod（类型别名），不重复定义——
-//   - 避免两份定义字段漂移（POC 阶段 Pod 只有 name/namespace/image/replicas 四字段，
+//   - 避免两份定义字段漂移（Pod 有 name/namespace/image/replicas 字段，
 //     与云端 PodSync 契约一致）；
-//   - 后续 M2 扩展字段时只需改 metamanager.Pod 一处。
+//   - 后续扩展字段时只需改 metamanager.Pod 一处。
 //
 // 别名在编译期与 metamanager.Pod 完全等价，接口签名用 PodSpec 仅为可读性。
 type PodSpec = metamanager.Pod
@@ -28,7 +31,8 @@ type PodSpec = metamanager.Pod
 // 容器命名与标签常量。
 const (
 	// containerNamePrefix 是容器名前缀，完整命名规范：
-	// edgeflow-<namespace>-<name>，namespace 缺省 "default"。
+	// edgeflow-<namespace>-<name>-<index>，namespace 缺省 "default"；
+	// index 是副本序号（0..Replicas-1，单副本时恒为 0）。
 	containerNamePrefix = "edgeflow-"
 
 	// labelPod / labelNamespace 是打到容器上的标签键：
@@ -40,27 +44,38 @@ const (
 	// maxContainerNameLen 容器名长度上限。docker 限制 255 字符，
 	// 留余量取 200，超长时截断并追加 hash 后缀防碰撞。
 	maxContainerNameLen = 200
+
+	// maxNameBaseLen 基础名（不含 -<index> 副本序号）长度上限：
+	// 序号始终追加在末尾，保证 List 能按"末段数字"反解 index
+	// （超长名截断只作用于基础名，不吞掉副本序号）。
+	maxNameBaseLen = 190
 )
 
-// ContainerName 派生容器名：edgeflow-<namespace>-<name>。
+// ContainerName 派生容器名：edgeflow-<namespace>-<name>-<index>。
+//
+// index 是副本序号：一个 Pod 的 Replicas 个副本分别命名
+// edgeflow-<ns>-<name>-0 .. -<Replicas-1>；单副本（缺省 1）时恒为 -0。
 //
 // 合法化处理（docker 名要求 [a-zA-Z0-9][a-zA-Z0-9_.-]*）：
 //   - namespace 缺省 "default"（与 metamanager key 派生规则一致）；
 //   - 非法字符替换为 '-'，整体转小写；
-//   - 超长（>200）时截断并追加原始名的 sha256 前 8 位 hex 后缀，防止不同
-//     名字截断后碰撞。
-func ContainerName(namespace, name string) string {
+//   - 基础名超长（>maxNameBaseLen）时截断并追加原始名的 sha256 前 8 位
+//     hex 后缀（防止不同名字截断后碰撞），副本序号不受截断影响。
+func ContainerName(namespace, name string, index int) string {
 	if namespace == "" {
 		namespace = "default"
 	}
-	raw := containerNamePrefix + namespace + "-" + name
-	n := sanitizeDockerName(raw)
-	if len(n) <= maxContainerNameLen {
-		return n
+	if index < 0 {
+		index = 0 // 防御：非法序号兜底为 0
 	}
-	sum := sha256.Sum256([]byte(raw))
-	suffix := "-" + hex.EncodeToString(sum[:4])
-	return n[:maxContainerNameLen-len(suffix)] + suffix
+	raw := containerNamePrefix + namespace + "-" + name
+	base := sanitizeDockerName(raw)
+	if len(base) > maxNameBaseLen {
+		sum := sha256.Sum256([]byte(raw))
+		suffix := "-" + hex.EncodeToString(sum[:4])
+		base = base[:maxNameBaseLen-len(suffix)] + suffix
+	}
+	return fmt.Sprintf("%s-%d", base, index)
 }
 
 // sanitizeDockerName 把任意字符串清洗成合法 docker 容器名：
@@ -93,6 +108,20 @@ func isAlphaNum(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 }
 
+// InstanceRef 是运行时上一个具体容器实例的引用：Pod 标识 + 副本序号。
+// ContainerRuntime.List() 返回它，让 reconciler 能按副本粒度收敛
+// （补齐创建/收缩停止/逐副本健康检查）。
+type InstanceRef struct {
+	Namespace string
+	Name      string
+	Index     int
+}
+
+// Pod 返回该实例所属的 Pod 标识（不含 Image/Replicas——停止/检查用不到）。
+func (r InstanceRef) Pod() metamanager.Pod {
+	return metamanager.Pod{Namespace: r.Namespace, Name: r.Name}
+}
+
 // podKey 是调谐与状态记录的键：<namespace>/<name>。
 // namespace 缺省 "default"，与 metamanager 存储 key 规则（pods/<namespace>/<name>）
 // 对齐，保证"本地容器集合"与"期望 Pod 集合"可比对。
@@ -101,4 +130,33 @@ func podKey(namespace, name string) string {
 		namespace = "default"
 	}
 	return namespace + "/" + name
+}
+
+// instanceKey 是副本实例的键：<namespace>/<name>#<index>。
+// MockRuntime 的状态表与调用计数用它区分同一 Pod 的不同副本。
+func instanceKey(namespace, name string, index int) string {
+	return podKey(namespace, name) + "#" + strconv.Itoa(index)
+}
+
+// parseInstanceKey 把 instanceKey 拆回 InstanceRef；无 #index 时兜底副本 0
+// （兼容旧式键，如升级前的测试数据）。
+func parseInstanceKey(key string) InstanceRef {
+	if i := strings.LastIndexByte(key, '#'); i >= 0 {
+		idx, err := strconv.Atoi(key[i+1:])
+		if err == nil && idx >= 0 {
+			p := parsePodKey(key[:i])
+			return InstanceRef{Namespace: p.Namespace, Name: p.Name, Index: idx}
+		}
+	}
+	p := parsePodKey(key)
+	return InstanceRef{Namespace: p.Namespace, Name: p.Name}
+}
+
+// parsePodKey 把 podKey（<namespace>/<name>）拆回 Pod。
+func parsePodKey(key string) metamanager.Pod {
+	ns, name := "default", key
+	if i := strings.IndexByte(key, '/'); i >= 0 {
+		ns, name = key[:i], key[i+1:]
+	}
+	return metamanager.Pod{Namespace: ns, Name: name}
 }

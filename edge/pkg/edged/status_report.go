@@ -9,8 +9,6 @@ package edged
 import (
 	"sort"
 	"time"
-
-	"edgeflow/edge/pkg/metamanager"
 )
 
 // PodStatusPayload 是 Pod 状态上报消息（TypePodStatus）的负载，
@@ -107,10 +105,12 @@ func (e *Edged) BuildStatusPayload(nodeID string) []PodStatusPayload {
 //
 // 说明：Absent 终态必须在上报循环的采样窗口内可见（保留 90s），否则云端
 // 删除 Pod 后 /api/v1/pods 会永久显示陈旧状态（M2B 审查 P1 修复）。
-func (e *Edged) cleanupStatus(desiredKeys map[string]struct{}, local []metamanager.Pod, listFailed bool) {
+//
+// local 是运行时返回的容器实例（含副本序号）；只取 Pod 级 key 判断存在性。
+func (e *Edged) cleanupStatus(desiredKeys map[string]struct{}, local []InstanceRef, listFailed bool) {
 	localKeys := make(map[string]struct{}, len(local))
-	for _, p := range local {
-		localKeys[podKey(p.Namespace, p.Name)] = struct{}{}
+	for _, inst := range local {
+		localKeys[podKey(inst.Namespace, inst.Name)] = struct{}{}
 	}
 
 	e.mu.Lock()

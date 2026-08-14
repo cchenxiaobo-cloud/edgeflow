@@ -16,7 +16,9 @@
 | 真实容器生命周期 | Docker 冒烟：创建→幂等→标签发现→删除全流程通过 | ✅ 成立 |
 | 运行时不可用/超时处理 | daemon 不可用返回 `docker daemon unavailable:` 前缀错误；单命令 30s 超时 | ✅ 成立 |
 | 与现有模块衔接 | 直接消费 metamanager.Store.ListPods()，零新依赖 | ✅ 成立 |
-| 生产级细节（CRI、健康检查、多副本、镜像管理） | 未在 POC 范围 | ⚠️ M2 补齐（见 §4/§5） |
+| 多副本（Replicas 展开） | 副本命名/补齐/缩容收敛通过单测 + 真实 Docker 冒烟 | ✅ M2 完整化已实现（§9） |
+| 健康检查自愈 | 停止/未知/缺失副本自动重启 + RestartCount 计数（无退避） | ✅ M2 完整化已实现（§9） |
+| 生产级细节（CRI、健康检查退避、镜像管理） | 未在 POC/本次范围 | ⚠️ M2 补齐（见 §4/§5） |
 
 方案 A 的核心风险点（自研运行时的"最后一公里"：CRI 接入、故障自愈细节）不构成方案否决项，
 因为运行时抽象已把"状态机/调谐逻辑"与"真实运行时"解耦——后续即使从 Docker CLI 换 containerd CRI，
@@ -36,11 +38,15 @@
 
 - 四态枚举：`Absent / Running / Stopped / Unknown`（`Unknown` 用于运行时不可用、输出解析失败等不可判定场景）。
 - 状态机位于 **reconciler**（`edged.go`），而非运行时层：每轮调谐读取期望集合（MetaManager）与
-  实际集合（`rt.List()`），对差异执行 `EnsureRunning`（期望有）或 `EnsureStopped`（期望无，孤儿清理）。
+  实际集合（`rt.List()`，副本粒度），对差异执行 `EnsureRunning`（期望有）或 `EnsureStopped`（期望无，孤儿清理）。
+- **多副本（WBS 6.4）**：每个 Pod 的期望副本数为 `Replicas`（缺省 1），容器命名
+  `edgeflow-<ns>-<name>-<index>`；reconciler 按副本粒度收敛：实际 > 期望 → 从最大 index 停止多余副本，
+  实际 < 期望 → 补齐创建；**健康检查自愈（WBS 6.5）**：期望副本非 Running 且无错误 → 重启并累加
+  RestartCount（无退避，M2 加 CrashLoopBackOff，见 §9）。
 - **幂等是状态机的基石**：`EnsureRunning` 对已运行 no-op、停止态仅 `start` 不重建；`EnsureStopped` 对
   不存在 no-op；`List` 按 `label=edgeflow.pod` 过滤，只管理自己的容器。
 - 启动即调谐一次 + 周期调谐（默认 5s）；`Stop()` 可随时退出循环（edgecore 装配/测试需要）。
-- 每轮结果记录 `podKey → {State, Err, LastReconcile}`，经 `Status()` 暴露，为 WBS 6.3 Pod 状态上报预留。
+- 每轮结果记录 `podKey → {State, Err, LastReconcile, RestartCount}`，经 `Status()` 暴露，为 WBS 6.3 Pod 状态上报预留。
 
 ## 3. 验证了什么 / 没验证什么
 
@@ -70,9 +76,9 @@
 |---------|------|---------|
 | 真实 containerd CRI | 本机仅 Docker Desktop；Docker CLI 路径与 CRI 语义有差异（如无 sandbox/Pod 概念） | 接入 containerd 客户端（grpc，新增依赖）实现同一接口 |
 | 资源占用实测 | 未做容器内存/CPU/节点规模压测 | WBS 8.4 性能测试 |
-| 故障自愈细节 | 容器崩溃后重启无退避（CrashLoopBackOff）；容器内进程健康检查（liveness）未实现 | WBS 6.3 健康检查 + 重启策略 |
+| 健康检查退避 | 状态级自愈已实现（重启无退避）；容器内进程健康检查（liveness）未实现 | WBS 6.3/6.5 完整版：CrashLoopBackOff + 探针 |
 | 镜像拉取 | 依赖 docker run 自动拉取；未做拉取策略/进度/GC | 镜像管理子项 |
-| 多副本 | Pod.Replicas 按单副本处理（reconcile 按 podKey 一一对应） | WBS 6.1/6.4 副本展开 |
+| 多副本滚动更新 | 副本数收敛已实现；镜像更新（滚动策略）未做 | WBS 6.4 后续：滚动更新 |
 | 网络/存储 | 未处理 Pod 网络（CNI）、volume 挂载 | M2 依赖项（Flannel 缺口，见 ROADMAP §7 缺口 6） |
 
 ## 4. 工作量修正建议
@@ -100,11 +106,11 @@ ROADMAP WBS 3.2 原估 **30 人天**。POC 表明核心机制（状态机 + 运�
 |---|------|------|------|
 | 1 | **Docker CLI 依赖**：边缘环境不一定有 docker（生产更可能是 containerd/CRI） | 高 | 抽象层已隔离；M2 实现 CRI 版本；POC 期间 Docker CLI 仅作验证载体 |
 | 2 | **镜像拉取慢/超时**：docker run 首次拉取可能 >30s 命令超时；超时后 daemon 侧可能仍在创建 | 中 | 超时后下一轮 reconcile 自动收敛（Inspect 发现已存在即 no-op）；M2 做拉取策略与镜像仓库镜像 |
-| 3 | **容器命名冲突**：与其他工具/多节点共用 docker daemon 时名字被占用 | 中 | 命名规范 + `edgeflow.pod/namespace` 标签隔离；run 冲突时重新 Inspect 兜底 |
-| 4 | **无健康检查**：容器内进程僵死但容器未退出时无法发现 | 中 | M2 liveness 探针（依赖 WBS 6.3） |
-| 5 | **容器崩溃循环重启**：无退避，可能频繁 docker start | 中 | M2 重启策略（参照 K8s RestartPolicy + 指数退避） |
+| 3 | **容器命名冲突**：与其他工具/多节点共用 docker daemon 时名字被占用 | 中 | 命名规范（含副本序号）+ `edgeflow.pod/namespace` 标签隔离；run 冲突时重新 Inspect 兜底 |
+| 4 | **无进程级健康检查**：容器内进程僵死但容器未退出时无法发现（状态级自愈已做） | 中 | M2 liveness 探针（依赖 WBS 6.3） |
+| 5 | **容器崩溃循环重启**：状态级自愈会不停重启退出型镜像（如 busybox 一次性任务），且无退避 | 中 | M2 重启策略（参照 K8s RestartPolicy + 指数退避）；一次性任务镜像建议 RestartPolicy=Never |
 | 6 | **本地多实例互踩**：两个 edgecore 进程同机运行会争抢同名容器 | 低 | POC 不做；部署约定单实例/节点；M2 可用 nodeID 后缀 |
-| 7 | **Replicas 语义缺失**：当前 1 Pod = 1 容器 | 低 | 已记录，M2 副本展开 |
+| 7 | **旧命名容器迁移**：升级前遗留的 edgeflow-<ns>-<name>（无副本序号）容器不会被新逻辑清理 | 低 | 开发环境一次性 `docker rm -f` 清理；List 对无序号名兜底按副本 0 解析，不影响新容器 |
 
 ## 6. 建议
 
@@ -137,6 +143,72 @@ go test -race -cover ./edge/pkg/edged/
 # 真实 Docker 冒烟（需要本机 docker daemon；busybox:1.37.0 已缓存）
 EDGED_DOCKER_SMOKE=1 go test -run TestDockerRuntimeSmoke -v ./edge/pkg/edged/
 
+# 端到端冒烟（真实 Docker：多副本 + 健康检查自愈，需要 nginx:1.25-alpine 镜像）
+go run ./hack/edged-smoke
+
 # 静态检查
 go vet ./edge/pkg/edged/ && golangci-lint run ./edge/pkg/edged/...
 ```
+
+## 9. M2 完整化：多副本与健康检查自愈（WBS 6.4/6.5）
+
+> 日期：2026-08-14 ｜ 对应提交：`feat(edged): replicas support and health-check self-healing (WBS 6.4/6.5)`
+
+### 9.1 实现内容
+
+**1. 多副本（Replicas 展开，WBS 6.4）**
+
+- 容器命名规范升级：`edgeflow-<namespace>-<name>-<index>`，index = 0..Replicas-1
+  （单副本缺省 1，恒为 `-0`）；超长名截断只作用于基础名，副本序号恒在末尾，
+  保证 List 能反解 index；
+- `ContainerRuntime` 接口改为按副本粒度操作：`EnsureRunning/EnsureStopped/Inspect`
+  增加 `index int` 参数，`List()` 返回 `[]InstanceRef{Pod, Index}`；
+- reconcile 每轮对每个期望 Pod：
+  - **收缩**：实际副本数 > 期望 → 从最大 index 开始 `EnsureStopped` 多余副本
+    （缩容后剩余恒为 0..Replicas-1 连续前缀）；
+  - **补齐**：实际副本数 < 期望 → 从 index=实际数 开始补齐创建；
+  - 副本数收敛不依赖运行时额外能力，全部由 reconcile 状态机驱动，幂等。
+
+**2. 健康检查自愈（WBS 6.5）**
+
+- 每轮对每个期望副本 `Inspect`：非 Running 且无错误（Stopped/Unknown/Absent）
+  → 视为运行异常 → `EnsureRunning` 重启（幂等：Stopped 走 start、Absent 走创建，
+  缺失副本缺口也由此兜底补齐）；
+- `PodStatus` 新增 `RestartCount` 字段：每成功重启一次累加 1（供 M2 退避策略输入）；
+- 重启无退避（POC 简化）：每次调谐重试，M2 完整版按 RestartCount 加
+  CrashLoopBackOff 指数退避；
+- 日志：`健康检查：容器 <名称> 已重启`。
+
+**3. 配套改动**
+
+- MockRuntime 状态表按 `instanceKey（<ns>/<name>#<index>）` 区分副本，新增
+  `SetState/DeleteState` 测试注入接口；
+- DockerRuntime `List` 从容器名末段反解副本序号（无序号旧命名兜底 0）；
+- 孤儿清理/状态表清理（P2-1）按副本实例粒度适配新命名。
+
+### 9.2 验证结果
+
+- **单测**：`go test -race -cover ./edge/pkg/edged/` → PASS，覆盖率 **89.2%**（原 85.9%）；
+  新增/更新用例：
+  - replicas=3 → 3 副本容器全部创建，幂等轮不重复创建；
+  - replicas 3→1 → 停止多余副本（副本 0 保持），List 只剩 1 实例；
+  - Replicas 缺省（0）→ 单副本；
+  - 副本被外部停止 → 健康检查重启 + RestartCount 累加，多副本下只重启异常副本；
+  - 副本被外部删除（缺口）→ 补齐重建；
+  - 原 17 个用例全部保持通过（命名变更同步更新）；
+- **静态检查**：`go build ./...`、`go vet`、`golangci-lint`（standard 组）→ 0 issues；
+- **端到端冒烟（真实 Docker）**：`go run ./hack/edged-smoke` → SMOKE PASS：
+  - replicas=2 落盘 → `docker ps` 可见 `edgeflow-default-smoke-nginx-0`/`-1`；
+  - 外部 `docker stop` 副本 1 → 1s 内自动重启（RestartCount=1）；
+  - 删除期望 Pod → 全部副本容器清理，无残留；
+  - `EDGED_DOCKER_SMOKE=1 go test -run TestDockerRuntimeSmoke` → PASS。
+
+### 9.3 缺口与下一步（M2 完整版）
+
+| 缺口 | 说明 | 下一步 |
+|------|------|--------|
+| 重启退避 | 当前每轮调谐都重试，退出型镜像（如 busybox）会被反复拉起 | CrashLoopBackOff 指数退避（按 RestartCount 与时间窗） |
+| 镜像更新滚动 | 副本数收敛已做，镜像变更（如 nginx:1.25→1.26）仍是全量重建语义 | WBS 6.4 滚动更新策略（先建后删/分批） |
+| 进程级健康检查 | 状态级（容器退出/停止）可自愈，容器内进程僵死（liveness）无法发现 | 探针（依赖 WBS 6.3） |
+| 旧命名容器迁移 | 升级前遗留的无序号容器不会被清理 | 开发环境一次性 `docker rm -f`；生产以部署新装为准 |
+| 状态上报扩展 | RestartCount 已记录在 PodStatus，未进上报负载（契约字段不可改） | 云端契约扩字段后同步 |

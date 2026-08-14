@@ -10,7 +10,7 @@ import (
 
 // fakePodStatusHandler 是记录型 PodStatus 回调（并发安全），用于断言触发内容。
 type fakePodStatusHandler struct {
-	mu   sync.Mutex
+	mu    sync.Mutex
 	calls []PodStatusPayload
 }
 

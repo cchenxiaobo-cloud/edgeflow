@@ -43,7 +43,7 @@
 | M2 | 应用部署与边缘自治 | 🟨 **第 1-4 轮完成** | +Edged 多副本/健康自愈（6.4/6.5）| commits c9db4ba~47d9e21，见 §4E/§4F/§4H/§4I |
 | M3 | 设备管理（Device CRD/Twin/Mapper） | 🟨 **第 1-3 轮完成** | +Mapper 接入 EventBus（MQTT 数据面）| commits 7d82c0c~99b5624，见 §4G/§4H/§4I |
 | M4 | 生产化与规模化 | 🟨 **主体+收尾完成** | +升级回滚（10.2）| commits 2386fa3~4c52f4a，见 §4K/§4L |
-| M5 | MVP 发布与文档交付 | 🟨 **前置完成** | 9.2-9.5 文档定稿 + Demo 示例 | commit f090a30，见 §4L |
+| M5 | MVP 发布与文档交付 | 🟨 **发布完成** | v0.1.0 Release Notes/制品/镜像/台账 + P2 闭环 + 演练排期 | commits 28ce6ec~866f796，见 §4M |
 
 ## 4. 首个模块（M0-1）验证结果
 
@@ -459,6 +459,35 @@
 | P2-5 | manifest 文件清单无白名单校验（纵深防御） | 已修复：findBackup/listBackups 加载时校验 Files 仅含 {edgecore.env, edgecore.service, install.sh}，未知条目（绝对路径/路径穿越）拒绝加载并报「备份清单含未知文件」；restore 只恢复白名单文件 | backupWhitelist/invalidBackupFile（cmd/keadm/rollback.go）+ TestFindBackupRejectsUnknownManifestFiles / TestRollbackRejectsMaliciousManifest / TestListBackupsWarnsUnknownManifest / TestRestoreBackupSkipsNonWhitelist |
 
 > 验证：go build/vet ✅、go test -race -count=1 ./cmd/keadm/... ✅（覆盖 75.6%）、golangci-lint 0 issues；现有升级/回滚测试全部保持绿色。
+
+## 4M. M5 正式发布验证结果（v0.1.0，2026-08-14）
+
+### 发布产物
+| 模块 | 提交 | 内容 |
+|------|------|------|
+| Release Notes | 28ce6ec | 中英双语 278 行：变更/已知问题（22 条）/升级/回滚 |
+| 发布台账 | 28ce6ec+1265214+866f796 | 时间线/操作人/制品清单（实际 digest 回填）/验证/异常 |
+| 制品归档 | d17bdd5+733d0ae | release/v0.1.0/：6 二进制 + Chart 包 + checksums + sbom.json（33 组件）+ images.json |
+| 镜像 | d17bdd5 | 本地 registry 闭环：不可变 tag v0.1.0 + digest 记录 + pull 复验 |
+| P2×2 闭环 | fe093e1+ef21a98 | restoreBackup 事务化（staging 原子替换）+ manifest 白名单（路径穿越拒绝） |
+| 演练排期 | 28ce6ec | docs/DRILL-SCHEDULE.md：窗口【需确认】/范围/参与人/前置条件/回滚预案/通知模板 |
+| P1-1 处置 | 733d0ae+866f796 | 独立复核发现 keadm 不含 P2 修复 → HEAD 重建 + checksum/SBOM 重算 + Notes/台账对齐 |
+
+### 独立复核（docs/RELEASE-REVIEW.md，166 行）
+- 结论：⚠️ 有条件通过（7/10 通过、2 有条件、1 不一致）→ **P1-1 已闭环**（keadm 重建含修复，gitCommit=1265214）+ P2-1/P2-2 澄清回填 + P3 观察项清理
+- 复核证据：checksum 独立重跑 7/7、SBOM 33 组件与 go list 一致、Chart 与源码逐字节一致、回滚方案四路径一致
+
+### 验证结果
+| 项目 | 结果 |
+|------|------|
+| go test -race（24 包） | ✅ 全绿 |
+| golangci-lint | ✅ 0 issues |
+| checksum 复验 | ✅ 7/7 OK |
+| keadm 版本 | ✅ v0.1.0（gitCommit=1265214 含 P2-4/P2-5 修复） |
+
+### 环境边界（明确标注）
+- 无远程制品/镜像仓库凭据：本地归档 + 本地 registry 闭环，远程推送步骤在 RELEASE-CHECKLIST.md（CI release.yml 已就绪）
+- 生产演练仅排期建议（无运维团队确认窗口，DRILL-SCHEDULE.md 标注【需确认】）
 
 ## 5. 待办项（Backlog）
 

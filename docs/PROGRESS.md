@@ -42,7 +42,7 @@
 | M1 | 云边核心通信链路（CloudHub/EdgeHub） | ✅ **M1 一~三期完成** | +EdgeNode 对接+可靠投递 4.6+PodSync 链路 | commits e569ea1~5312253，见 §4D |
 | M2 | 应用部署与边缘自治 | 🟨 **第 1-4 轮完成** | +Edged 多副本/健康自愈（6.4/6.5）| commits c9db4ba~47d9e21，见 §4E/§4F/§4H/§4I |
 | M3 | 设备管理（Device CRD/Twin/Mapper） | 🟨 **第 1-3 轮完成** | +Mapper 接入 EventBus（MQTT 数据面）| commits 7d82c0c~99b5624，见 §4G/§4H/§4I |
-| M4 | 生产化与规模化 | ⏳ 待开发 | 依赖 M3 | — |
+| M4 | 生产化与规模化 | 🟨 **前置完成** | mTLS 安全认证 + 镜像 + Helm 完整化 | commits 3bb60ce~70d1f5e，见 §4J |
 | M5 | MVP 发布与文档交付 | ⏳ 待开发 | 依赖 M4 | — |
 
 ## 4. 首个模块（M0-1）验证结果
@@ -352,6 +352,39 @@
 - broker 晚启动时 command 订阅不自动恢复（需重启 edgecore）
 - 调谐轮串行 30s 超时延迟累积
 - 32-bit hash 碰撞、滚动更新、进程级 liveness
+
+## 4J. M4 前置验证结果（mTLS/镜像/Helm，2026-08-14）
+
+### 新增模块
+| 模块 | 提交 | 内容 |
+|------|------|------|
+| pkg/certs | 0a7fcc2 | 纯标准库证书管理：CA/服务端/客户端证书幂等生成、LoadTLSConfig 双向强制、TLS1.2+、私钥 0600、半套 fail-fast |
+| CloudHub TLS | 0a7fcc2 | WithTLS Option + tls.NewListener + mTLS 审计日志（peer CN） |
+| EdgeHub wss | 0a7fcc2 | TLSConfig 注入 + ws→wss 归一化，TLS off 完全向后兼容 |
+| 镜像构建 | 3bb60ce | 多阶段 distroless：cloudcore 16.7MB / edgecore 22.5MB、nonroot(65532) |
+| Helm 完整化 | 3bb60ce | values 真实化/资源/探针/env + /data 可写挂载（P1-3 修复） |
+| M4B P1×4+P2×2 | 70d1f5e | 文档连接串/TLS 变量修正、SAN 可注入（env+脚本）、CA 公私钥匹配校验 |
+
+### 端到端验证（真实进程）
+| 场景 | 实测结果 |
+|------|---------|
+| mTLS 双向认证 | ✅ 云侧"mTLS 连接已认证（peer CN=edgeflow-edge-tls-2）"+ 注册成功；边侧 wss:// 连接 |
+| 拒绝路径 | ✅ TLS off → bad handshake 持续退避；云侧"HTTP request to HTTPS server"记录 |
+| 证书权限 | ✅ edgecore.key 0600 |
+| 镜像 | ✅ docker run --version 输出 v0.1.0；healthz 200 容器内冒烟 |
+| Helm | ✅ lint 0 failed、template 渲染（含卷挂载）、install --dry-run 通过 |
+
+### 自动化验证
+| 项目 | 结果 |
+|------|------|
+| go test -race（20 包） | ✅ 全绿，总覆盖率 79.8%（certs 含 SAN/错配 key 测试） |
+| golangci-lint / helm lint | ✅ 0 issues / 0 failed |
+| 审查（docs/CODE-REVIEW-M4B.md） | ✅ 有条件通过（0 P0 / 4 P1 / 5 P2）→ P1×4 修复 + P2×2 修复 + P2×3 记录待办 |
+
+### P2 待办（3 项）
+- 存量压测 TestShutdownDuringNewConnections 偶发 race 观察项（10+ 复跑全绿，非本轮改动）
+- TLS 握手无超时/并发上限（net/http 固有）
+- gen-certs 与 Go 侧 CN 约定（脚本已可配 CLIENT_CN，默认对齐 edgeflow-edgecore）
 
 ## 5. 待办项（Backlog）
 

@@ -57,7 +57,7 @@ edgeflow/
 
 ## 4. 如何开发下一个模块（标准流程）
 
-1. **读计划**：`docs/ROADMAP.md` 找到下一个模块（当前建议 M4 前置：安全认证 mTLS（7.1/7.4）、Helm 完整化（8.5）、或真实协议 Mapper（5.2 Modbus））
+1. **读计划**：`docs/ROADMAP.md` 找到下一个模块（当前建议 M4 主体：keadm 基础版（8.6）、NodeController 心跳监控（2.4）、或真实协议 Mapper（5.2 Modbus））
 2. **建分支**：`git checkout -b feat/模块名`
 3. **开发**：用 AI 工具（Trae/Codex）辅助写代码，遵循现有包风格（中文注释、零第三方依赖）
 4. **验证**（每次提交前必须全跑）：
@@ -97,6 +97,11 @@ make lint       # 静态检查
 | `mosquitto_sub -t 'devices/+/+/telemetry' -v` | 订阅设备遥测流（验证 MQTT 数据面） |
 | `mosquitto_pub -t 'devices/default/sensor-01/command' -m '{"property":"targetTemp","value":22}'` | 向设备发指令（MQTT 数据面） |
 | `docker ps --filter label=edgeflow.pod` | 查看 Edged 管理的副本容器（命名 edgeflow-ns-name-index） |
+| `EDGEFLOW_CLOUDCORE_TLS=on EDGEFLOW_CLOUDCORE_CERT_DIR=/path ./bin/cloudcore` | 启用 mTLS（自动生成证书） |
+| `EDGEFLOW_EDGECORE_TLS=on EDGEFLOW_EDGECORE_CERT_DIR=/path ./bin/edgecore` | 边缘启用 wss（证书目录与云共享） |
+| `EDGEFLOW_CLOUDCORE_TLS_SAN='IP:10.0.0.5,DNS:cloudcore.svc' ./bin/cloudcore` | 跨主机部署注入服务端 SAN |
+| `docker build --target cloudcore -t edgeflow/cloudcore:v0.1.0 .` | 构建云端镜像（同理 edgecore） |
+| `helm install edgeflow ./build/charts/edgeflow --namespace edgeflow --create-namespace` | 部署 CloudCore（含 /data 可写挂载） |
 | `go run ./hack/edged-smoke` | DockerRuntime 冒烟（需 Docker daemon） |
 | `docker ps --filter label=edgeflow.pod` | 查看 Edged 管理的容器 |
 | `curl localhost:8080/api/v1/nodes` | 查询已注册边缘节点（JSON） |

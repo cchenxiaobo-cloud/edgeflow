@@ -8,6 +8,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -84,12 +85,18 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	client := edgehub.New(opts)
 
 	// 设备链路（WBS 3.5/5.3）：设备影子存储 + DeviceCommand 下发处理。
-	// 设备指令执行器（Mapper 适配器）由另一 Agent 并行开发的 Mapper 框架
-	// （edge/pkg/mapper）提供：当前以 nil 占位（指令仅更新 Twin.Desired，
-	// 见 handleDeviceCommand 注释），框架就绪后在此注入适配器即可，
-	// 无需改动消息处理与上报链路。
+	// 设备指令执行器由 Mapper 框架（edge/pkg/mapper，WBS 5.1）提供：
+	// 装配层把 Mapper 注册表适配成 devicetwin.DeviceCommandExecutor
+	// 注入（见 device_mapper.go），指令按 deviceName 路由到具体 Mapper 执行。
 	twinStore := devicetwin.NewStore()
-	var deviceExec devicetwin.DeviceCommandExecutor // Mapper 适配器占位（nil = 骨架路径）
+	mapperReg := buildMapperRegistry()
+	deviceExec := &mapperCommandExecutor{reg: mapperReg, twins: twinStore}
+	// Mapper 生命周期随 edgecore 启停：启动采集循环（内置模拟传感器每 2s
+	// 波动一次，由上报循环周期汇入影子）；启动失败只告警，不阻断主流程。
+	mapperCtx, mapperCancel := context.WithCancel(context.Background())
+	if err := mapperReg.StartAll(mapperCtx); err != nil {
+		log.Warnf("Mapper 启动部分失败: %v", err)
+	}
 
 	// 消息处理回调（WBS 4.6）：云端下发类消息（PodSync/DeviceCommand 等）→
 	// MetaManager 落盘 / 设备影子更新；处理结果由 EdgeHub 自动回 Ack
@@ -187,7 +194,7 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	deviceReportDone := make(chan struct{})
 	go func() {
 		defer close(deviceReportDone)
-		runDeviceReportLoop(client, twinStore, opts.NodeID, deviceReportInterval, deviceReportStopCh)
+		runDeviceReportLoop(client, mapperReg, twinStore, opts.NodeID, deviceReportInterval, deviceReportStopCh)
 	}()
 	log.Infof("设备上报循环已启动（周期 %s，nodeID=%s）", deviceReportInterval, opts.NodeID)
 
@@ -199,6 +206,10 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	<-reportDone // Pod 上报循环退出后不再有新消息写入通道
 	close(deviceReportStopCh)
 	<-deviceReportDone // 设备上报循环退出后不再有新消息写入通道
+	mapperCancel()
+	if err := mapperReg.StopAll(); err != nil {
+		log.Warnf("Mapper 停止部分失败: %v", err)
+	}
 	edgedSvc.Stop()
 	client.Stop()
 	if subID != 0 {

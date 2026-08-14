@@ -17,6 +17,7 @@ import (
 
 	"edgeflow/edge/pkg/devicetwin"
 	"edgeflow/edge/pkg/edgehub"
+	"edgeflow/edge/pkg/mapper"
 	"edgeflow/pkg/log"
 	"edgeflow/pkg/protocol"
 )
@@ -80,16 +81,17 @@ const deviceReportIntervalEnv = "EDGEFLOW_EDGECORE_DEVICE_REPORT_INTERVAL"
 
 // runDeviceReportLoop 是设备数据上报循环（仿 Pod 状态上报循环）：
 // 启动即上报一轮，之后每 interval 上报一轮，直到 stopCh 关闭。
-// 上报内容：从 Twin 快照生成 DeviceReport 消息，每条影子一条消息。
-func runDeviceReportLoop(client *edgehub.Client, twins *devicetwin.TwinStore, nodeID string, interval time.Duration, stopCh <-chan struct{}) {
-	reportDeviceReports(client, twins, nodeID) // 启动即上报一轮（含首次）
+// 每轮流程：Mapper 采集汇入影子（collectMapperReports）→ 从 Twin 快照
+// 生成 DeviceReport 消息，每条影子一条消息。reg 可传 nil（纯影子模式）。
+func runDeviceReportLoop(client *edgehub.Client, reg *mapper.MapperRegistry, twins *devicetwin.TwinStore, nodeID string, interval time.Duration, stopCh <-chan struct{}) {
+	reportDeviceReports(client, reg, twins, nodeID) // 启动即上报一轮（含首次）
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			reportDeviceReports(client, twins, nodeID)
+			reportDeviceReports(client, reg, twins, nodeID)
 		case <-stopCh:
 			log.Infof("设备上报循环已停止")
 			return
@@ -97,13 +99,15 @@ func runDeviceReportLoop(client *edgehub.Client, twins *devicetwin.TwinStore, no
 	}
 }
 
-// reportDeviceReports 上报一轮全部设备影子：每条影子独立成一条 DeviceReport 消息。
+// reportDeviceReports 上报一轮全部设备影子：先把 Mapper 采集值汇入影子
+// （影子是上报的唯一数据源），再把每条影子独立成一条 DeviceReport 消息。
 //
 // QoS 语义（尽力而为、最终一致，与 Pod 上报一致）：
 //   - 发送失败只记 Warn，不重试、不阻塞主流程——EdgeHub 具备断线重连
 //     能力，未上报的状态会在下一轮周期自动补报；
 //   - 单条失败不影响本轮其余条目（循环继续）。
-func reportDeviceReports(client *edgehub.Client, twins *devicetwin.TwinStore, nodeID string) {
+func reportDeviceReports(client *edgehub.Client, reg *mapper.MapperRegistry, twins *devicetwin.TwinStore, nodeID string) {
+	collectMapperReports(reg, twins, time.Now().UnixMilli())
 	for _, msg := range buildDeviceReportMessages(nodeID, twins, time.Now().UnixMilli()) {
 		if err := client.Send(msg); err != nil {
 			log.Warnf("设备上报失败: %v", err)

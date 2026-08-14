@@ -219,7 +219,7 @@ func TestRunDeviceReportLoopExitsOnStop(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runDeviceReportLoop(client, twins, "edge-dev-1", 10*time.Millisecond, stopCh)
+		runDeviceReportLoop(client, nil, twins, "edge-dev-1", 10*time.Millisecond, stopCh)
 	}()
 
 	time.Sleep(50 * time.Millisecond) // 跑几轮（Send 失败只 Warn，循环继续）

@@ -54,8 +54,8 @@
 | 5 | checksum 文件 | 全部 7 个制品 sha256 汇总 | `release/v0.1.0/checksums.txt` | `shasum -a 256 -c` 全 OK | 已归档 |
 | 6 | SBOM | go list -m all 依赖 + 制品 sha256 + 构建参数 | `release/v0.1.0/sbom.json` | 33 组件 + 7 制品 | 已归档 |
 | 7 | 镜像 digest | cloudcore/edgecore 不可变 tag + digest | `release/v0.1.0/images.json` | `sha256:2f9f2fbef9baf1188` / `sha256:227f6050438fdee43` | 已归档（pull 复验一致） |
-| 8 | 镜像 cloudcore | `edgeflow/cloudcore:v0.1.0`（amd64+arm64 manifest） | 镜像仓库 | digest：【回填】（本地验证参考：amd64 `sha256:307c75fa…` / arm64 `sha256:81df9cdb…`，见 MULTIARCH.md §7） | 待回填 |
-| 9 | 镜像 edgecore | `edgeflow/edgecore:v0.1.0`（amd64+arm64 manifest） | 镜像仓库 | digest：【回填】（本地验证参考：amd64 `sha256:28b44e44…` / arm64 `sha256:fd8b79a7…`） | 待回填 |
+| 8 | 镜像 cloudcore | `edgeflow/cloudcore:v0.1.0`（本地 registry 单架构 arm64） | localhost:5001 | digest `sha256:2f9f2fbef9baf118…`（images.json 记录） | 已归档（构建人 pull 复验） |
+| 9 | 镜像 edgecore | `edgeflow/edgecore:v0.1.0`（本地 registry 单架构 arm64） | localhost:5001 | digest `sha256:227f6050438fdee4…`（images.json 记录） | 已归档（构建人 pull 复验） |
 
 > 说明：4 二进制默认打包 linux/amd64 + linux/arm64 双架构（`make cross-build` 产物在 `dist/`，
 > 本机开发二进制在 `bin/`）；具体打包形态（单架构 tar.gz / 双架构目录）由发布制品工程师按

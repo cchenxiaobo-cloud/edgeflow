@@ -160,8 +160,8 @@ edgeflow <rev>` / image digest revert. See §5/§6.
 
 | # | 问题（来源） | 影响 | 缓解 | 跟进 |
 |---|--------------|------|------|------|
-| K1 | restoreBackup 非事务性：回滚中途失败留混合状态（M4D P2） | 极端情况下产物文件部分恢复 | 已有兜底：备份保留 + 人工 `cp` 提示 + 重跑幂等；`docs/UPGRADE.md` §3 | P2 Backlog（本轮闭环中，见 CODE-REVIEW-M4D.md） |
-| K2 | findBackup/restoreBackup 未对 manifest 文件清单做白名单校验（M4D P2） | 本地威胁模型下低危 | 备份目录仅 keadm 自身写入；纵深防御项 | P2 Backlog（本轮闭环中） |
+| K1 | restoreBackup 非事务性：回滚中途失败留混合状态（M4D P2） | 已修复（commit fe093e1：staging 原子替换） | v0.1.0 制品已含（keadm 重建 gitCommit=1265214） | ✅ 已修复（v0.1.0 含） |
+| K2 | findBackup/restoreBackup 未对 manifest 文件清单做白名单校验（M4D P2） | 已修复（commit ef21a98：白名单+路径穿越拒绝） | v0.1.0 制品已含（keadm 重建 gitCommit=1265214） | ✅ 已修复（v0.1.0 含） |
 | K3 | MQTT broker 生命周期管理缺失（M3B P2） | broker 由外部 systemd/容器管理 | 文档化部署方式（EVENTBUS-GUIDE.md）；broker 晚启动时 command 订阅需重启 edgecore 恢复 | P2 Backlog |
 | K4 | ConfigMap/Secret 同名同 ns 互覆盖（M3B P2） | 配置语义二义性 | 文档化决策：按资源类型隔离，需产品确认 | P2 Backlog（产品确认） |
 | K5 | Secret 落盘明文（M3B P2） | 边缘节点磁盘泄露风险 | 生产建议加密盘/权限控制；日志已脱敏 | P2 Backlog（后续版本） |

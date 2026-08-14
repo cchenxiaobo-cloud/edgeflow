@@ -1,0 +1,8 @@
+# LaTeX 编译中间产物（运行 compile.sh 自动生成）
+main.pdf
+main.log
+main.aux
+main.toc
+main.out
+main.lof
+main.lot

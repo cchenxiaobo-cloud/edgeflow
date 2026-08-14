@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EdgeFlow M5 发布报告 — v0.1.0</title>
+<style>
+  :root {
+    --bg: #ffffff; --text: #111; --text-2: #444; --text-3: #777;
+    --accent: #111; --border: #ddd; --grid: #ccc;
+    --green: #1a6b3c; --green-bg: #f2f6f3; --red: #8b1a1a; --red-bg: #f7f0f0;
+    --yellow: #8b6b1a; --yellow-bg: #f7f3ea; --code-bg: #f6f6f6;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+    --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.65; font-size: 14px; }
+  .container { max-width: 900px; margin: 0 auto; padding: 64px 40px; }
+  h1 { font-size: 1.7rem; font-weight: 700; letter-spacing: -0.01em; margin-bottom: 0.2rem; }
+  h2 { font-size: 0.95rem; font-weight: 700; margin: 2.5rem 0 0.8rem; padding: 0.5rem 0; border-top: 2px solid var(--accent); border-bottom: 1px solid var(--grid); text-transform: uppercase; letter-spacing: 0.08em; }
+  h3 { font-size: 0.9rem; font-weight: 700; margin: 1.4rem 0 0.5rem; }
+  p { margin-bottom: 0.7rem; color: var(--text-2); }
+  .subtitle { font-size: 0.9rem; color: var(--text-3); margin-bottom: 2rem; }
+  a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+  code { font-family: var(--mono); background: var(--code-bg); padding: 0.1em 0.35em; font-size: 0.85em; }
+  table { width: 100%; border-collapse: collapse; margin: 0.8rem 0 1.2rem; font-size: 0.83rem; }
+  th { text-align: left; font-weight: 700; padding: 0.5rem 0.6rem; border-bottom: 2px solid var(--accent); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  td { padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--border); }
+  .badge { display: inline-block; padding: 0.08em 0.5em; border: 1px solid var(--text); font-size: 0.7rem; font-weight: 700; }
+  .b-green { border-color: var(--green); color: var(--green); background: var(--green-bg); }
+  .b-yellow { border-color: var(--yellow); color: var(--yellow); background: var(--yellow-bg); }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 2px solid var(--accent); border-bottom: 1px solid var(--grid); margin: 1.2rem 0; }
+  .metric { padding: 1rem 0.8rem; border-left: 1px solid var(--grid); text-align: center; }
+  .metric:first-child { border-left: none; }
+  .metric-value { font-size: 1.4rem; font-weight: 700; }
+  .metric-label { font-size: 0.68rem; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.2rem; }
+  .panel { border: 1px solid var(--border); padding: 1rem 1.2rem; margin: 1rem 0; }
+  .panel-title { font-weight: 700; font-size: 0.85rem; margin-bottom: 0.5rem; }
+  .footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--grid); font-size: 0.72rem; color: var(--text-3); }
+  @media (max-width: 700px) { .container { padding: 32px 16px; } .metrics { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>EdgeFlow M5 发布报告</h1>
+<p class="subtitle">v0.1.0 · 2026-08-14 · 发布闭环 + P2 闭环 + 演练排期</p>
+
+<div class="metrics">
+  <div class="metric"><div class="metric-value">107</div><div class="metric-label">累计提交</div></div>
+  <div class="metric"><div class="metric-value">7/7</div><div class="metric-label">checksum 复验</div></div>
+  <div class="metric"><div class="metric-value">24</div><div class="metric-label">包测试全绿</div></div>
+  <div class="metric"><div class="metric-value">0</div><div class="metric-label">Lint / P0 / P1</div></div>
+</div>
+
+<h2>1. 发布摘要</h2>
+<p>M5 v0.1.0 发布完成：Release Notes 中英双语归档、6 二进制 + Chart 包 + checksum/SBOM 归档、镜像 digest 记录（本地 registry 闭环）、M4D P2×2 闭环、演练排期建议、发布台账完整。独立复核发现 1 项 P1（keadm 二进制不含 P2 修复）已处置闭环。</p>
+
+<h2>2. 发布制品</h2>
+<table>
+<thead><tr><th>制品</th><th>位置</th><th>校验</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td>cloudcore/edgecore/keadm × 双架构</td><td>release/v0.1.0/</td><td>--version v0.1.0（darwin 直跑 + linux 经容器）</td><td><span class="badge b-green">已归档</span></td></tr>
+<tr><td>Helm Chart 包</td><td>edgeflow-0.1.0.tgz</td><td>version=0.1.0、values 与源码逐字节一致</td><td><span class="badge b-green">已归档</span></td></tr>
+<tr><td>checksums.txt</td><td>release/v0.1.0/</td><td>shasum -c 7/7 OK（独立重跑）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>sbom.json</td><td>release/v0.1.0/</td><td>33 组件与 go list -m all 逐条一致</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>镜像 digest</td><td>images.json</td><td>cloudcore sha256:2f9f2f… / edgecore sha256:227f60…，双渠道一致 + pull 复验</td><td><span class="badge b-green">已记录</span></td></tr>
+</tbody>
+</table>
+
+<h2>3. 独立复核与 P1-1 处置</h2>
+<div class="panel">
+<p class="panel-title">复核结论（docs/RELEASE-REVIEW.md，166 行）：⚠️ 有条件通过 → P1-1 已闭环</p>
+<table>
+<thead><tr><th>发现</th><th>处置</th><th>证据</th></tr></thead>
+<tbody>
+<tr><td>P1-1：keadm 二进制构建于 P2 修复提交之前（gitCommit=ca2051b），不含 P2-4/P2-5 修复</td><td>以 HEAD 重建 keadm 双架构（gitCommit=1265214）+ 重算 checksum/SBOM + Notes/台账对齐</td><td>keadm version 输出 gitCommit=1265214；checksum 7/7 重算交叉一致；K1/K2 状态改"✅ 已修复（v0.1.0 含）"</td></tr>
+<tr><td>P2-1：镜像 arch 标注歧义 / 无 manifest 证据留存</td><td>images.json 补充 archNote（单架构 arm64 构建）+ verifiedBy 说明</td><td>images.json 已更新</td></tr>
+<tr><td>P2-2：台账时间线待回填</td><td>回填实际时间与 keadm 重建记录</td><td>RELEASE-LEDGER.md §2</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>4. P2 闭环与回滚方案</h2>
+<table>
+<thead><tr><th>项</th><th>处置</th><th>证据</th></tr></thead>
+<tbody>
+<tr><td>M4D P2-4 restoreBackup 非事务性</td><td>✅ 修复（fe093e1）</td><td>staging 原子替换 + 原子性断言测试</td></tr>
+<tr><td>M4D P2-5 manifest 白名单</td><td>✅ 修复（ef21a98）</td><td>白名单 + 路径穿越拒绝测试</td></tr>
+<tr><td>回滚方案</td><td>✅ 四路径齐备</td><td>Notes §6 ↔ UPGRADE.md 逐条一致（产物/Helm/镜像/数据）</td></tr>
+<tr><td>演练排期</td><td>✅ 建议文档</td><td>DRILL-SCHEDULE.md 六要素齐全（窗口【需确认】）</td></tr>
+</tbody>
+</table>
+
+<h2>5. 环境边界（明确标注）</h2>
+<table>
+<thead><tr><th>边界</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>远程制品/镜像仓库</td><td>无凭据：本地归档 + 本地 registry 闭环；远程推送步骤在 RELEASE-CHECKLIST.md（CI release.yml 已就绪，打 tag 即发布）</td></tr>
+<tr><td>生产演练</td><td>仅排期建议（无运维团队确认窗口）；执行需另行确认</td></tr>
+<tr><td>镜像架构</td><td>本机单架构（arm64）构建；多架构 manifest 验证见 MULTIARCH.md §7</td></tr>
+</tbody>
+</table>
+
+<h2>6. 下一步</h2>
+<table>
+<thead><tr><th>优先级</th><th>事项</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>P1</td><td>远程仓库推送 + 多架构发布</td><td>凭据就绪后按 RELEASE-CHECKLIST.md 执行</td></tr>
+<tr><td>P1</td><td>生产演练执行</td><td>与运维确认窗口后按 DRILL-SCHEDULE.md 执行</td></tr>
+<tr><td>P2</td><td>观察期跟踪</td><td>发布后设置观察期，跟踪告警与工单</td></tr>
+</tbody>
+</table>
+
+<div class="footer">
+  EdgeFlow M5 发布报告 · 生成时间 2026-08-14 20:15 (Asia/Shanghai)<br>
+  研发方式：3 路 Agent（制品/镜像 · P2 闭环 · 文档排期）+ 独立复核 + 主线 P1-1 处置<br>
+  仓库：/Users/mac/Documents/edgeflow/ · 归档：release/v0.1.0/ · 文档：docs/RELEASE-NOTES-v0.1.0.md、RELEASE-LEDGER.md、RELEASE-REVIEW.md、DRILL-SCHEDULE.md
+</div>
+
+</div>
+</body>
+</html>

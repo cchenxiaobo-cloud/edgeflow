@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,6 +16,52 @@ import (
 	"edgeflow/cloud/pkg/registry"
 	"edgeflow/pkg/config"
 )
+
+// TestParseSANList 覆盖 SAN 列表解析：合法组合 / 非法 IP / 未知前缀 / 空 DNS / 空条目
+// （M4C P2-① 修复：非法条目从 Warn 跳过改为报错）。
+func TestParseSANList(t *testing.T) {
+	// 合法：IP + DNS 混合，允许逗号后带空格
+	ips, dns, err := parseSANList("IP:192.168.1.10, DNS:cloudcore.svc")
+	if err != nil {
+		t.Fatalf("合法 SAN 不应报错: %v", err)
+	}
+	if len(ips) != 1 || !ips[0].Equal(net.ParseIP("192.168.1.10")) {
+		t.Errorf("IP 解析结果 = %v，期望 [192.168.1.10]", ips)
+	}
+	if len(dns) != 1 || dns[0] != "cloudcore.svc" {
+		t.Errorf("DNS 解析结果 = %v，期望 [cloudcore.svc]", dns)
+	}
+
+	// 非法 IP（解析失败）
+	if _, _, err := parseSANList("IP:999.1.1.1"); err == nil {
+		t.Error("非法 IP 应报错")
+	}
+	// 无法识别的前缀（M4C P2 场景：拼写错误静默透传）
+	if _, _, err := parseSANList("HOST:cloudcore"); err == nil {
+		t.Error("未知前缀应报错")
+	}
+	// 空 DNS 名
+	if _, _, err := parseSANList("DNS:"); err == nil {
+		t.Error("空 DNS 名应报错")
+	}
+	// 空条目（多余逗号）
+	if _, _, err := parseSANList("IP:1.2.3.4,"); err == nil {
+		t.Error("空条目应报错")
+	}
+}
+
+// TestRunInvalidTLSSAN 验证 TLS SAN 含非法条目时启动即报错退出（M4C P2-① fail-fast）。
+func TestRunInvalidTLSSAN(t *testing.T) {
+	t.Setenv(config.PortEnvVar, "")
+	t.Setenv(cloudhub.EnvHubPort, "0")
+	t.Setenv("EDGEFLOW_CLOUDCORE_TLS", "on")
+	t.Setenv("EDGEFLOW_CLOUDCORE_CERT_DIR", t.TempDir())
+	t.Setenv("EDGEFLOW_CLOUDCORE_TLS_SAN", "IP:192.168.1.10,DNS:cloudcore.svc,BAD:oops")
+	var stdout, stderr bytes.Buffer
+	if code := run(nil, &stdout, &stderr); code != 1 {
+		t.Fatalf("run(TLS SAN 含非法条目) 退出码 = %d，期望 1（fail-fast）", code)
+	}
+}
 
 // TestRunVersion 验证 --version 打印版本信息后以 0 退出。
 func TestRunVersion(t *testing.T) {

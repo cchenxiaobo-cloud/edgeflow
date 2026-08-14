@@ -91,6 +91,22 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		return exitRuntime
 	}
 
+	// 登记产物校验清单（M4C P2-②）：记录文件名+sha256，供 reset 删除前校验
+	// （防误删同名用户文件）。清单合并登记：join 生成的产物也会追加进来。
+	m, _, err := loadManifest(opts.OutputDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "错误: 读取校验清单失败: %v\n", err)
+		return exitRuntime
+	}
+	if err := recordGeneratedFiles(opts.OutputDir, initOutputs, m); err != nil {
+		_, _ = fmt.Fprintf(stderr, "错误: 登记产物校验和失败: %v\n", err)
+		return exitRuntime
+	}
+	if err := saveManifest(opts.OutputDir, m); err != nil {
+		_, _ = fmt.Fprintf(stderr, "错误: 写入校验清单 %s 失败: %v\n", manifestName, err)
+		return exitRuntime
+	}
+
 	_, _ = fmt.Fprintf(stdout, "keadm init 完成: 云端部署产物已生成到 %s\n", opts.OutputDir)
 	_, _ = fmt.Fprintf(stdout, "  - %s（kubectl apply -f 即可部署）\n", yamlPath)
 	_, _ = fmt.Fprintf(stdout, "  - %s（部署说明与 Helm 替代路径）\n", notesPath)

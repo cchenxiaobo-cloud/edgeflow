@@ -107,6 +107,21 @@ func runJoin(args []string, stdout, stderr io.Writer) int {
 		return exitRuntime
 	}
 
+	// 登记产物校验清单（M4C P2-②）：与 init 共用同一清单文件，追加登记 join 产物。
+	m, _, err := loadManifest(opts.OutputDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "错误: 读取校验清单失败: %v\n", err)
+		return exitRuntime
+	}
+	if err := recordGeneratedFiles(opts.OutputDir, joinOutputs, m); err != nil {
+		_, _ = fmt.Fprintf(stderr, "错误: 登记产物校验和失败: %v\n", err)
+		return exitRuntime
+	}
+	if err := saveManifest(opts.OutputDir, m); err != nil {
+		_, _ = fmt.Fprintf(stderr, "错误: 写入校验清单 %s 失败: %v\n", manifestName, err)
+		return exitRuntime
+	}
+
 	_, _ = fmt.Fprintf(stdout, "keadm join 完成: 边缘接入产物已生成到 %s\n", opts.OutputDir)
 	_, _ = fmt.Fprintf(stdout, "  - edgecore.env（环境变量文件）\n")
 	_, _ = fmt.Fprintf(stdout, "  - edgecore.service（systemd 单元）\n")

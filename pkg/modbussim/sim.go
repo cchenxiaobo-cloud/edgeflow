@@ -35,6 +35,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"edgeflow/pkg/log"
 )
 
 // 寄存器与线圈地址（模拟设备地址映射表，与 docs/MODBUS-GUIDE.md 一致）。
@@ -82,6 +84,16 @@ const (
 	excIllegalFunction = 0x01
 	excIllegalAddress  = 0x02
 	excIllegalValue    = 0x03
+	// excGatewayTarget 是"网关目标设备无响应"异常码（0x0B）：
+	// unit ID 越界（0 广播 / 248-255 保留）时按规范应答，而非任意回显。
+	excGatewayTarget = 0x0B
+
+	// unitIDMin/unitIDMax 是合法 unit ID 范围（Modbus 规范：0=广播，248-255 保留）。
+	unitIDMin = 1
+	unitIDMax = 247
+
+	// defaultMaxConns 是默认并发连接数上限（防异常/恶意客户端占满文件描述符）。
+	defaultMaxConns = 8
 )
 
 // Option 是 Simulator 的可选配置项（函数式选项）。
@@ -97,6 +109,11 @@ func WithSeed(seed int64) Option {
 	return func(s *Simulator) { s.rng = rand.New(rand.NewSource(seed)) }
 }
 
+// WithMaxConns 设置并发连接数上限（默认 8；达到上限后的新连接直接拒绝并关闭）。
+func WithMaxConns(n int) Option {
+	return func(s *Simulator) { s.maxConns = n }
+}
+
 // Simulator 是一台 Modbus TCP 模拟设备（unit ID 1）。
 type Simulator struct {
 	mu   sync.Mutex // 保护寄存器表与线圈（请求处理与波动 goroutine 并发访问）
@@ -110,6 +127,7 @@ type Simulator struct {
 	rng  *rand.Rand
 	step time.Duration
 
+	maxConns   int    // 并发连接数上限（M4C P2-③ 修复，默认 defaultMaxConns）
 	listenAddr string // 监听地址（":15020" 或测试用 "127.0.0.1:0"）
 	ln         net.Listener
 	conns      map[net.Conn]struct{} // 活跃连接（Stop 时全部断开，模拟服务端下电）
@@ -131,6 +149,7 @@ func New(listenAddr string, opts ...Option) *Simulator {
 		},
 		rng:        rand.New(rand.NewSource(time.Now().UnixNano())),
 		step:       defaultStep,
+		maxConns:   defaultMaxConns,
 		listenAddr: listenAddr,
 		conns:      make(map[net.Conn]struct{}),
 	}
@@ -242,6 +261,14 @@ func (s *Simulator) acceptLoop(ln net.Listener) {
 			return
 		}
 		s.mu.Lock()
+		// M4C P2-③ 修复：并发连接数上限——达到上限后新连接直接拒绝并关闭，
+		// 防止异常/恶意客户端占满文件描述符（单设备模拟器无需无上限连接）。
+		if len(s.conns) >= s.maxConns {
+			s.mu.Unlock()
+			_ = conn.Close()
+			log.Warnf("modbus 模拟器连接数已达上限 %d，拒绝新连接（%s）", s.maxConns, conn.RemoteAddr())
+			continue
+		}
 		s.conns[conn] = struct{}{}
 		s.mu.Unlock()
 		s.wg.Add(1)
@@ -313,8 +340,17 @@ func (s *Simulator) handleConn(conn net.Conn) {
 		unitID := header[6]
 		fc := pdu[0]
 
-		// 处理请求：respData 为正常应答数据；exc != 0 表示异常应答
-		respData, exc := s.handlePDU(fc, pdu[1:])
+		// M4C P2-③ 修复：unit ID 校验——仅接受 1-247（规范合法从站地址段）。
+		// 0 为广播（单设备模拟器不处理广播）、248-255 为保留段；
+		// 越界按规范应答异常码 0x0B（网关目标设备无响应），不处理、不回显成功。
+		var respData []byte
+		var exc byte
+		if unitID < unitIDMin || unitID > unitIDMax {
+			exc = excGatewayTarget
+		} else {
+			// 处理请求：respData 为正常应答数据；exc != 0 表示异常应答
+			respData, exc = s.handlePDU(fc, pdu[1:])
+		}
 
 		// 组应答帧：事务 ID/协议 ID 回显，长度重算
 		var respPDU []byte

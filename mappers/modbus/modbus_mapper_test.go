@@ -199,6 +199,35 @@ func TestHandleCommandCoilWriteReadback(t *testing.T) {
 	}
 }
 
+// TestHandleCommandTargetTempRounds 验证小数温度四舍五入而非截断（M4C P2-⑤）：
+// 25.55°C → 原始值 256（25.6°C），而非截断的 255（25.5°C）。
+func TestHandleCommandTargetTempRounds(t *testing.T) {
+	sim, m, _, _ := newTestEnv(t)
+	if _, err := m.HandleCommand(mapper.DeviceCommand{
+		DeviceName: DefaultDeviceName,
+		Property:   "targetTemp",
+		Value:      25.55,
+	}); err != nil {
+		t.Fatalf("写目标温度失败: %v", err)
+	}
+	// 模拟器端目标温度应为 25.6（原始值 256，四舍五入）；截断实现会是 25.5
+	if got := sim.TargetTemp(); got != 25.6 {
+		t.Errorf("写入后模拟器目标温度 = %v，期望 25.6（原始值 256，四舍五入而非截断）", got)
+	}
+
+	// 边界：99.99°C → 原始值 1000（≤ 上限 1000，不越界）
+	if _, err := m.HandleCommand(mapper.DeviceCommand{
+		DeviceName: DefaultDeviceName,
+		Property:   "targetTemp",
+		Value:      99.99,
+	}); err != nil {
+		t.Fatalf("写边界目标温度失败: %v", err)
+	}
+	if got := sim.TargetTemp(); got != 100.0 {
+		t.Errorf("写入后模拟器目标温度 = %v，期望 100.0（99.99 四舍五入到原始值 1000）", got)
+	}
+}
+
 // TestHandleCommandInvalidTargetTemp 越界目标温度被拒绝且台账记 error。
 func TestHandleCommandInvalidTargetTemp(t *testing.T) {
 	_, m, ledger, _ := newTestEnv(t)
@@ -360,6 +389,7 @@ func readCoils(t *testing.T, sim *modbussim.Simulator, start, qty uint16) byte {
 func modbusRawRead(addr string, reg, qty uint16) ([]byte, error) {
 	handler := modbus.NewTCPClientHandler(addr)
 	handler.Timeout = 2 * time.Second
+	handler.SlaveId = 1 // 模拟器仅接受 1-247（0 为广播，M4C P2-③ 后拒绝）
 	defer func() { _ = handler.Close() }()
 	return modbus.NewClient(handler).ReadHoldingRegisters(reg, qty)
 }
@@ -368,6 +398,7 @@ func modbusRawRead(addr string, reg, qty uint16) ([]byte, error) {
 func modbusRawCoils(addr string, start, qty uint16) ([]byte, error) {
 	handler := modbus.NewTCPClientHandler(addr)
 	handler.Timeout = 2 * time.Second
+	handler.SlaveId = 1 // 模拟器仅接受 1-247（0 为广播，M4C P2-③ 后拒绝）
 	defer func() { _ = handler.Close() }()
 	return modbus.NewClient(handler).ReadCoils(start, qty)
 }

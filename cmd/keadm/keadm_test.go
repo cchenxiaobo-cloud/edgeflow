@@ -287,6 +287,106 @@ func TestResetPreservesForeignFiles(t *testing.T) {
 	}
 }
 
+// TestResetSkipsTamperedFile 验证校验和不匹配的文件被跳过（M4C P2-②：防误删同名用户文件）。
+// 用户覆盖/修改过白名单同名文件（如手动编辑过 cloudcore.yaml）→ 哈希不匹配 →
+// 跳过删除并提示人工确认；未被篡改的产物与校验清单正常删除。
+func TestResetSkipsTamperedFile(t *testing.T) {
+	out, _ := tmpOut(t)
+	if code, _, stderr := runCapture([]string{"init", "--output-dir=" + out}, ""); code != 0 {
+		t.Fatalf("init 失败: %s", stderr)
+	}
+	// 用户修改/替换了 cloudcore.yaml（内容与 keadm 生成的不同）
+	if err := os.WriteFile(filepath.Join(out, "cloudcore.yaml"), []byte("# 用户自己改过的文件\n"), 0o644); err != nil {
+		t.Fatalf("覆盖 cloudcore.yaml 失败: %v", err)
+	}
+
+	code, stdout, stderr := runCapture([]string{"reset", "--force", "--output-dir=" + out}, "")
+	if code != 0 {
+		t.Fatalf("reset 退出码 = %d，期望 0；stderr=%s", code, stderr)
+	}
+	// 校验不匹配的文件保留，且提示跳过
+	if _, err := os.Stat(filepath.Join(out, "cloudcore.yaml")); err != nil {
+		t.Errorf("校验不匹配的 cloudcore.yaml 不应被删除: %v", err)
+	}
+	if !strings.Contains(stdout, "跳过") {
+		t.Errorf("应提示校验不匹配的文件已跳过: %q", stdout)
+	}
+	// 未被篡改的 NOTES.txt 与校验清单应被删除
+	if _, err := os.Stat(filepath.Join(out, "NOTES.txt")); !os.IsNotExist(err) {
+		t.Errorf("校验通过的 NOTES.txt 应被删除")
+	}
+	if _, err := os.Stat(filepath.Join(out, manifestName)); !os.IsNotExist(err) {
+		t.Errorf("校验清单应随 reset 删除")
+	}
+}
+
+// TestResetLegacyWithoutManifest 验证旧版本产物（无校验清单）保持白名单删除行为并提示。
+func TestResetLegacyWithoutManifest(t *testing.T) {
+	out, _ := tmpOut(t)
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatalf("mkdir 失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(out, "cloudcore.yaml"), []byte("旧版本产物"), 0o644); err != nil {
+		t.Fatalf("写旧版产物失败: %v", err)
+	}
+
+	code, _, stderr := runCapture([]string{"reset", "--force", "--output-dir=" + out}, "")
+	if code != 0 {
+		t.Fatalf("reset 退出码 = %d，期望 0；stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "校验清单") {
+		t.Errorf("应提示无校验清单: %q", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(out, "cloudcore.yaml")); !os.IsNotExist(err) {
+		t.Errorf("旧版行为下白名单文件应被删除: %v", err)
+	}
+}
+
+// TestManifestMergesInitAndJoin 验证 init 与 join 的校验清单合并登记（6 个产物 + 清单），
+// 且篡改任一文件后 reset 只跳过它、其余正常删除。
+func TestManifestMergesInitAndJoin(t *testing.T) {
+	out, _ := tmpOut(t)
+	if code, _, stderr := runCapture([]string{"init", "--output-dir=" + out}, ""); code != 0 {
+		t.Fatalf("init 失败: %s", stderr)
+	}
+	if code, _, stderr := runCapture([]string{
+		"join", "--cloudcore-ip=192.168.1.10", "--token=abc", "--node-id=edge-worker-01", "--output-dir=" + out,
+	}, ""); code != 0 {
+		t.Fatalf("join 失败: %s", stderr)
+	}
+
+	m, exists, err := loadManifest(out)
+	if err != nil || !exists {
+		t.Fatalf("清单应存在且可解析: exists=%v err=%v", exists, err)
+	}
+	for _, name := range generatedFileNames {
+		if name == manifestName {
+			continue // 清单自身的哈希不登记
+		}
+		if _, ok := m.Files[name]; !ok {
+			t.Errorf("清单缺少 %s 的校验和", name)
+		}
+	}
+
+	// 篡改 README.md 后 reset：README.md 跳过，其余产物与清单删除
+	if err := os.WriteFile(filepath.Join(out, "README.md"), []byte("用户内容"), 0o644); err != nil {
+		t.Fatalf("覆盖 README.md 失败: %v", err)
+	}
+	code, stdout, _ := runCapture([]string{"reset", "--force", "--output-dir=" + out}, "")
+	if code != 0 {
+		t.Fatalf("reset 退出码 = %d，期望 0", code)
+	}
+	if _, err := os.Stat(filepath.Join(out, "README.md")); err != nil {
+		t.Errorf("校验不匹配的 README.md 不应被删除: %v", err)
+	}
+	if !strings.Contains(stdout, "README.md") {
+		t.Errorf("应提示跳过 README.md: %q", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(out, "install.sh")); !os.IsNotExist(err) {
+		t.Errorf("校验通过的 install.sh 应被删除")
+	}
+}
+
 // TestVersion 验证 version 输出与退出码。
 func TestVersion(t *testing.T) {
 	code, stdout, stderr := runCapture([]string{"version"}, "")

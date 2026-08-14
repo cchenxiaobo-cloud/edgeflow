@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -289,7 +290,11 @@ func (m *ModbusMapper) handleTargetTemp(value float64) (mapper.DeviceReport, err
 			fmt.Sprintf("%v", value), "error", err.Error())
 		return mapper.DeviceReport{}, err
 	}
-	raw := uint16(value * scaleFactor)
+	// M4C P2-⑤ 修复（float 精度边界）：原始值 = round(物理值×10)，四舍五入到
+	// 最近的 0.1°C 粒度，而非直接截断（如 25.55°C → 原始值 256 而非 255）。
+	// 值域校验 [0,100] 已在前置完成，舍入后原始值仍在 [0,1000]，不会越界；
+	// 寄存器原始值精度为 0.1，写入精度边界以 0.1°C 为准。
+	raw := uint16(math.Round(value * scaleFactor))
 	var readBack uint16
 	err := m.withConn(func() error {
 		if _, err := m.client.WriteSingleRegister(RegTargetTemp, raw); err != nil {

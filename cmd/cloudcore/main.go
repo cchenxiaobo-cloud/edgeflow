@@ -98,23 +98,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		// SAN 注入（M4B P1-4）：EDGEFLOW_CLOUDCORE_TLS_SAN 支持
 		// "IP:1.2.3.4,DNS:cloudcore.svc" 逗号分隔列表；未设置时
 		// 回退默认（127.0.0.1/localhost/cloudcore，仅本机可用）。
+		// M4C P2-① 修复：非法条目从"Warn 跳过"改为"报错退出"（fail-fast）——
+		// 配错的 SAN 若被静默跳过，证书只覆盖默认 SAN（仅回环），边缘节点
+		// mTLS 会全部握手失败且难以定位，必须在启动阶段就暴露配置错误。
 		var ips []net.IP
 		var dnsNames []string
 		if san := os.Getenv("EDGEFLOW_CLOUDCORE_TLS_SAN"); san != "" {
-			for _, item := range strings.Split(san, ",") {
-				item = strings.TrimSpace(item)
-				switch {
-				case strings.HasPrefix(item, "IP:"):
-					if ip := net.ParseIP(strings.TrimPrefix(item, "IP:")); ip != nil {
-						ips = append(ips, ip)
-					} else {
-						log.Warnf("EDGEFLOW_CLOUDCORE_TLS_SAN 含非法 IP: %q，已跳过", item)
-					}
-				case strings.HasPrefix(item, "DNS:"):
-					dnsNames = append(dnsNames, strings.TrimPrefix(item, "DNS:"))
-				default:
-					log.Warnf("EDGEFLOW_CLOUDCORE_TLS_SAN 含无法识别的条目 %q（支持 IP: 与 DNS: 前缀）", item)
-				}
+			ips, dnsNames, err = parseSANList(san)
+			if err != nil {
+				log.Errorf("EDGEFLOW_CLOUDCORE_TLS_SAN 配置无效: %v", err)
+				return 1
 			}
 		}
 		if _, err := certs.EnsureServerCertWithSANs(certDir, "cloudcore", ips, dnsNames); err != nil {
@@ -274,6 +267,38 @@ func parseFlags(args []string, out io.Writer) (*options, error) {
 		}
 	})
 	return opts, nil
+}
+
+// parseSANList 解析 EDGEFLOW_CLOUDCORE_TLS_SAN 逗号分隔列表
+// （如 "IP:1.2.3.4,DNS:cloudcore.svc"），返回 IP 与 DNS 名列表。
+// 语法校验（M4C P2-①）：无法识别的前缀、IP 解析失败、空 DNS 名、
+// 空条目（多余逗号）一律返回错误——配置错误必须在启动阶段暴露，
+// 而不是静默跳过导致证书 SAN 不完整。
+func parseSANList(san string) ([]net.IP, []string, error) {
+	var ips []net.IP
+	var dnsNames []string
+	for _, item := range strings.Split(san, ",") {
+		item = strings.TrimSpace(item)
+		switch {
+		case item == "":
+			return nil, nil, fmt.Errorf("含空条目（检查是否有多余逗号）")
+		case strings.HasPrefix(item, "IP:"):
+			ip := net.ParseIP(strings.TrimPrefix(item, "IP:"))
+			if ip == nil {
+				return nil, nil, fmt.Errorf("条目 %q 不是合法 IP（格式: IP:1.2.3.4）", item)
+			}
+			ips = append(ips, ip)
+		case strings.HasPrefix(item, "DNS:"):
+			name := strings.TrimPrefix(item, "DNS:")
+			if name == "" {
+				return nil, nil, fmt.Errorf("条目 %q 的 DNS 名为空（格式: DNS:host.example.com）", item)
+			}
+			dnsNames = append(dnsNames, name)
+		default:
+			return nil, nil, fmt.Errorf("条目 %q 无法识别（仅支持 IP: 与 DNS: 前缀）", item)
+		}
+	}
+	return ips, dnsNames, nil
 }
 
 // serve 启动 HTTP 服务与 CloudHub，等待退出信号后一并优雅关闭，返回进程退出码。

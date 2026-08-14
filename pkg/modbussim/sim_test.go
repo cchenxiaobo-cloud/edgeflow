@@ -271,7 +271,7 @@ func TestErrorIllegalValue(t *testing.T) {
 	}
 }
 
-// TestUnitIDPassthrough 任意 unit ID 均应答并回显（模拟网关后设备的语义）。
+// TestUnitIDPassthrough 合法 unit ID（1-247）均应答并回显（模拟网关后设备的语义）。
 func TestUnitIDPassthrough(t *testing.T) {
 	sim := startTestSim(t)
 	resp := rawRequest(t, sim.Addr(), 17, 0x03, []byte{0x00, 0x00, 0x00, 0x01})
@@ -280,6 +280,70 @@ func TestUnitIDPassthrough(t *testing.T) {
 	}
 	if resp.unit != 17 {
 		t.Errorf("unit ID = %d，期望回显 17", resp.unit)
+	}
+}
+
+// TestUnitIDOutOfRangeRejected 越界 unit ID（0 广播 / 248-255 保留段）
+// 按规范应答异常码 0x0B（M4C P2-③ 修复：不再任意回显）。
+func TestUnitIDOutOfRangeRejected(t *testing.T) {
+	sim := startTestSim(t)
+	for _, unit := range []byte{0, 248, 255} {
+		resp := rawRequest(t, sim.Addr(), unit, 0x03, []byte{0x00, 0x00, 0x00, 0x01})
+		if resp.fc != 0x83 {
+			t.Errorf("unit=%d: 功能码 = %#x，期望异常 0x83", unit, resp.fc)
+		}
+		if len(resp.data) != 1 || resp.data[0] != excGatewayTarget {
+			t.Errorf("unit=%d: 异常码 = %v，期望 0x0B", unit, resp.data)
+		}
+		if resp.unit != unit {
+			t.Errorf("unit=%d: 应答 unit ID = %d，期望回显 %d", unit, resp.unit, unit)
+		}
+	}
+}
+
+// TestMaxConnsRejectsExcess 并发连接数超过上限后新连接被服务端直接关闭（读侧 EOF），
+// 存量连接不受影响仍可正常收发（M4C P2-③ 修复）。
+func TestMaxConnsRejectsExcess(t *testing.T) {
+	sim := New("127.0.0.1:0", WithMaxConns(2), WithSeed(42), WithStep(20*time.Millisecond))
+	if err := sim.Start(); err != nil {
+		t.Fatalf("启动模拟器失败: %v", err)
+	}
+	t.Cleanup(func() { _ = sim.Stop() })
+
+	dial := func() net.Conn {
+		t.Helper()
+		conn, err := net.DialTimeout("tcp", sim.Addr(), 2*time.Second)
+		if err != nil {
+			t.Fatalf("连接模拟器失败: %v", err)
+		}
+		return conn
+	}
+	c1 := dial()
+	defer func() { _ = c1.Close() }()
+	c2 := dial()
+	defer func() { _ = c2.Close() }()
+
+	// 第 3 条连接：超出上限，服务端应直接关闭（读侧收到 EOF/错误）
+	c3 := dial()
+	defer func() { _ = c3.Close() }()
+	_ = c3.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 1)
+	if _, err := c3.Read(buf); err == nil {
+		t.Errorf("超限连接应被服务端关闭（期望 EOF/错误），实际读到数据")
+	}
+
+	// 存量连接仍可正常收发（发读请求 → 正常应答）
+	req := []byte{0x12, 0x34, 0, 0, 0, 6, 1, 0x03, 0x00, 0x00, 0x00, 0x01}
+	if _, err := c1.Write(req); err != nil {
+		t.Fatalf("存量连接发送失败: %v", err)
+	}
+	_ = c1.SetReadDeadline(time.Now().Add(2 * time.Second))
+	head := make([]byte, 7)
+	if _, err := io.ReadFull(c1, head); err != nil {
+		t.Fatalf("存量连接读取应答失败: %v", err)
+	}
+	if head[6] != 1 {
+		t.Errorf("应答 unit ID = %d，期望 1", head[6])
 	}
 }
 

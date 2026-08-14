@@ -1,0 +1,128 @@
+# EdgeFlow 多架构镜像发布流水线（M4）
+#
+# 触发方式：
+#   1. 推送 tag（v*）：如 git tag v0.1.0 && git push origin v0.1.0
+#      → 镜像版本自动取 tag（v0.1.0）
+#   2. 手动触发（workflow_dispatch）：填写 version 输入框，如 v0.2.0
+#
+# 产物：cloudcore / edgecore 双架构镜像（linux/amd64 + linux/arm64）+ OCI manifest
+# 推送目标：默认 ghcr.io（GITHUB_TOKEN 自动注入，无需额外配置 secrets）
+#
+# ── 切换到 docker.io 的配置说明 ──────────────────────────────────────────
+#   1. 把 env.REGISTRY 改为 docker.io；
+#   2. 在仓库 Settings → Secrets and variables → Actions 配置两个 secrets：
+#      - DOCKERHUB_USERNAME（Docker Hub 用户名）
+#      - DOCKERHUB_TOKEN    （Docker Hub Access Token，需要 Read/Write 权限）
+#   登录步骤会自动切换到 secrets 认证（见下方 login 步骤的条件表达式）。
+# ─────────────────────────────────────────────────────────────────────────
+#
+# 回滚预案（发布失败）：见 docs/MULTIARCH.md「回滚预案」——
+# 快速止血 = 重新构建单架构（arm64）镜像覆盖 tag，或删除远端 tag。
+
+name: Release（多架构镜像发布）
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "镜像版本号（默认 v0.1.0；tag 触发时自动取 tag）"
+        required: false
+        default: ""
+        type: string
+
+env:
+  # 镜像仓库前缀（占位，按需修改）：
+  #   ghcr.io   → GitHub Container Registry（配 GITHUB_TOKEN 即用）
+  #   docker.io → Docker Hub（需配 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets）
+  REGISTRY: ghcr.io
+  IMAGE_ORG: edgeflow
+  # 双架构目标：边缘设备以 arm64 为主，云端/开发机多为 amd64
+  PLATFORMS: linux/amd64,linux/arm64
+
+jobs:
+  build-push:
+    name: 构建并推送 ${{ matrix.service }}（多架构）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: cloudcore
+            target: cloudcore
+          - service: edgecore
+            target: edgecore
+    permissions:
+      contents: read
+      # ghcr.io 推送必需；docker.io 用不到时可移除
+      packages: write
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # QEMU 模拟器：GitHub x86 runner 上构建/运行 arm64 目标必需
+      - name: 安装 QEMU（多架构模拟支持）
+        uses: docker/setup-qemu-action@v3
+
+      # Buildx：多架构 manifest 构建与推送
+      - name: 安装 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 登录镜像仓库：
+      #   ghcr.io   → 用户名用 github.actor，密码用自动注入的 GITHUB_TOKEN
+      #   docker.io → 使用 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets（未配置会失败）
+      - name: 登录镜像仓库
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ env.REGISTRY == 'ghcr.io' && github.actor || secrets.DOCKERHUB_USERNAME }}
+          password: ${{ env.REGISTRY == 'ghcr.io' && secrets.GITHUB_TOKEN || secrets.DOCKERHUB_TOKEN }}
+
+      # 版本号优先级：手动输入 > git tag > 默认 v0.1.0
+      - name: 计算镜像版本
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            TAG="${{ inputs.version }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="v0.1.0"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "镜像版本: ${TAG}"
+
+      # 多架构构建 + 推送：
+      #   - 版本通过 --build-arg VERSION 注入（Dockerfile 已有 ARG + ldflags 支持）
+      #   - GIT_COMMIT 注入构建对应 commit，镜像内 --version 可溯源
+      #   - build-push-action 自动产出 amd64+arm64 的 OCI manifest（单 tag 双架构）
+      - name: 构建并推送多架构镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: build/docker/Dockerfile
+          target: ${{ matrix.target }}
+          platforms: ${{ env.PLATFORMS }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.tag }}
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ steps.version.outputs.build_time }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_ORG }}/${{ matrix.service }}:${{ steps.version.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_ORG }}/${{ matrix.service }}:latest
+
+      # 发布后自检：确认 manifest 双架构齐全（不通过则任务失败）
+      - name: 校验 manifest（双架构齐全性）
+        run: |
+          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_ORG }}/${{ matrix.service }}:${{ steps.version.outputs.tag }}"
+          ARCHS=$(docker buildx imagetools inspect "${IMG}" | grep -E "Platform:" | sed 's/^[[:space:]]*Platform:[[:space:]]*//')
+          echo "==> ${IMG} 平台列表："
+          echo "${ARCHS}"
+          for p in linux/amd64 linux/arm64; do
+            echo "${ARCHS}" | grep -q "${p}" || { echo "❌ 缺少平台 ${p}"; exit 1; }
+          done
+          echo "✅ 双架构齐全"

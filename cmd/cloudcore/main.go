@@ -153,6 +153,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	mux.HandleFunc("GET /api/v1/edgenodes", api.listEdgeNodes)
 	mux.HandleFunc("GET /api/v1/edgenodes/{nodeID}", api.getEdgeNode)
 	mux.HandleFunc("POST /api/v1/nodes/{nodeID}/podsync", api.syncPod)
+	mux.HandleFunc("POST /api/v1/nodes/{nodeID}/config-sync", api.syncConfig)
 	mux.HandleFunc("GET /api/v1/pods", api.listPods)
 	mux.HandleFunc("GET /api/v1/nodes/{nodeID}/pods", api.listNodePods)
 	// 设备链路 API（WBS 5.3/2.2）：设备状态查询 + 设备指令下发
@@ -271,6 +272,93 @@ func (api *nodeAPI) syncPod(w http.ResponseWriter, r *http.Request) {
 		}
 		if errors.Is(err, cloudhub.ErrAckFailed) {
 			// 边缘明确回 error Ack（P2-2）：消息已送达但被拒绝，
+			// 与「没送达」（404/504）语义不同，映射 502 Bad Gateway。
+			http.Error(w, `{"error":"edge rejected ack"}`, http.StatusBadGateway)
+			return
+		}
+		http.Error(w, `{"error":"send failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"status":"ok","acked":true}`))
+}
+
+// configSyncRequest 是云端下发 ConfigMap/Secret 配置的请求体（M2：WBS 6.2）。
+// 与 PodSync 的 podSyncRequest 同构：operation + 配置对象。
+// config 字段与边缘 ConfigSyncPayload.config 契约一致，原样下发。
+type configSyncRequest struct {
+	Operation string     `json:"operation"` // add / update / delete
+	Config    configSpec `json:"config"`    // 配置对象（含 name/namespace/kind/data）
+}
+
+// configSpec 是配置的最小规格描述。
+// Data 是 map[string]string：ConfigMap 的 value 为原始字符串；Secret 的
+// value 按 base64 编码语义（云端负责编码，边缘原样存储）。
+type configSpec struct {
+	Name      string            `json:"name"`      // 配置名称（必填）
+	Namespace string            `json:"namespace"` // 命名空间（缺省 "default"）
+	Kind      string            `json:"kind"`      // 类型：ConfigMap / Secret（必填）
+	Data      map[string]string `json:"data"`      // 键值数据（add/update 必填）
+}
+
+// syncConfig 通过可靠投递向指定边缘节点下发 ConfigSync 消息（WBS 6.2 端到端入口）。
+// 校验规则：operation 白名单 {add,update,delete}、config.name 必填、
+// kind 白名单 {ConfigMap,Secret}、add/update 时 data 非空。
+// 响应语义与 syncPod 五态一致：200=边缘已确认（Ack ok）；400=请求非法；
+// 404=节点未注册/离线；502=边缘回 error Ack（消息已送达但被拒绝）；
+// 504=确认超时重试耗尽；500=其他发送失败。
+func (api *nodeAPI) syncConfig(w http.ResponseWriter, r *http.Request) {
+	nodeID := r.PathValue("nodeID")
+
+	var req configSyncRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json body"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Operation == "" || req.Config.Name == "" {
+		http.Error(w, `{"error":"operation and config.name are required"}`, http.StatusBadRequest)
+		return
+	}
+	// operation 白名单校验（与 syncPod 同约定：云端前置校验，
+	// 避免非法值下发到边缘，省一轮可靠投递往返）
+	switch req.Operation {
+	case "add", "update", "delete":
+	default:
+		http.Error(w, `{"error":"invalid operation: must be add/update/delete"}`, http.StatusBadRequest)
+		return
+	}
+	// kind 白名单校验：ConfigMap/Secret 之外的类型直接 400 拒绝
+	// （契约约束，防止未知类型数据落到边缘）
+	switch req.Config.Kind {
+	case "ConfigMap", "Secret":
+	default:
+		http.Error(w, `{"error":"invalid kind: must be ConfigMap/Secret"}`, http.StatusBadRequest)
+		return
+	}
+	// data 校验：add/update 必须有 data（delete 不需要，按 name 删除）
+	if req.Operation != "delete" && len(req.Config.Data) == 0 {
+		http.Error(w, `{"error":"config.data is required for add/update"}`, http.StatusBadRequest)
+		return
+	}
+
+	msg, err := protocol.NewMessage(protocol.TypeConfigSync, "cloud", nodeID, req)
+	if err != nil {
+		http.Error(w, `{"error":"build message failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if err := api.reliableSend(r.Context(), nodeID, msg, cloudhub.ReliableOptions{}); err != nil {
+		if errors.Is(err, cloudhub.ErrNodeOffline) {
+			http.Error(w, `{"error":"node offline or not registered"}`, http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, cloudhub.ErrAckTimeout) {
+			http.Error(w, `{"error":"ack timeout after retries"}`, http.StatusGatewayTimeout)
+			return
+		}
+		if errors.Is(err, cloudhub.ErrAckFailed) {
+			// 边缘明确回 error Ack：消息已送达但被拒绝，
 			// 与「没送达」（404/504）语义不同，映射 502 Bad Gateway。
 			http.Error(w, `{"error":"edge rejected ack"}`, http.StatusBadGateway)
 			return

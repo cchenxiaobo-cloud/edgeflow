@@ -105,10 +105,12 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 		switch msg.Type {
 		case protocol.TypePodSync:
 			return handlePodSync(store, msg)
+		case protocol.TypeConfigSync:
+			return handleConfigSync(store, msg)
 		case protocol.TypeDeviceCommand:
 			return handleDeviceCommand(twinStore, deviceExec, msg)
 		default:
-			// 未知下发类型（ConfigSync 等 M2 消息）：暂不处理但回 ok，
+			// 未知下发类型：暂不处理但回 ok，
 			// 避免云端视为失败无限重试；后续模块接入时在此扩展
 			log.Warnf("EdgeHub 收到未注册处理器的消息类型 %s，忽略", msg.Type)
 			return nil

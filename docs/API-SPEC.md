@@ -1,10 +1,356 @@
-# EdgeFlow API 规范（M0-2：CRD 类型定义）
+# EdgeFlow API 规范（v0.1.0 定稿）
 
-> 对应 ROADMAP 模块 1.4「API 规范定义」（CRD 定义部分，OpenAPI schema 待接入 Kubernetes 后由 controller-gen 生成）。
-> 代码位置：`apis/edge/v1alpha1/`
-> 状态：✅ 完成（2026-08-13）
+> - 对应 ROADMAP WBS 9.2「API 文档」，覆盖两部分：**REST API 参考**（cloudcore 对外 HTTP 接口）与 **CRD 类型定义**（`apis/edge/v1alpha1/`）。
+> - 状态：✅ **v0.1.0 定稿**（2026-08-14）。评审记录见 `docs/REVIEWS.md`（9.2 评审归档）。
+> - 代码位置：cloudcore 路由装配 `cmd/cloudcore/main.go`、设备 API `cmd/cloudcore/device_api.go`、CRD 类型 `apis/edge/v1alpha1/`。
+> - 版本策略：v0.1.0 为 MVP 定稿版；后续接入 Kubernetes 后由 OpenAPI schema / CRD 校验取代，见 §7。
 
-## 1. Group / Version 约定
+---
+
+# 第一部分 REST API 参考（cloudcore）
+
+## 1. 通用约定
+
+| 项 | 约定 |
+|----|------|
+| Base URL | `http://<cloudcore-ip>:8080`（端口可用 `--port` / `EDGEFLOW_CLOUDCORE_PORT` 覆盖） |
+| 数据格式 | JSON；请求 `Content-Type: application/json`；响应同样为 JSON |
+| 时间戳 | Unix 毫秒（心跳/上报/注册时间）；CRD 对象内的时间字段为 RFC3339 字符串 |
+| List 风格 | 查询类端点采用 K8s List 风格（`kind`/`apiVersion`/`items`），空数据编码为 `[]` 而非 `null` |
+| 路径参数 | `{nodeID}` 为边缘节点 ID（edgecore 注册时上报，默认 `edge-<hostname>`） |
+| 并发语义 | cloudcore 状态为内存态（节点/ Pod /设备注册表），重启即清空；边缘侧 MetaManager（SQLite）持久化 |
+
+### 1.1 端点总览
+
+| 方法 | 路径 | 说明 | 主要状态码 |
+|------|------|------|-----------|
+| GET | `/healthz` | 健康检查（探针用） | 200 |
+| GET | `/api/v1/nodes` | 全部节点（运行视角 NodeInfo 列表） | 200 |
+| GET | `/api/v1/nodes/{nodeID}` | 单节点详情 | 200 / 404 |
+| GET | `/api/v1/edgenodes` | 全部节点（CRD 对象视角，K8s List 风格） | 200 |
+| GET | `/api/v1/edgenodes/{nodeID}` | 单节点 EdgeNode 对象 | 200 / 404 |
+| GET | `/api/v1/pods` | 全部节点 Pod 状态 | 200 |
+| GET | `/api/v1/nodes/{nodeID}/pods` | 单节点 Pod 状态 | 200 / 404 |
+| GET | `/api/v1/devices` | 全部设备状态（properties + desired） | 200 |
+| GET | `/api/v1/nodes/{nodeID}/devices` | 单节点设备状态 | 200 / 404 |
+| POST | `/api/v1/nodes/{nodeID}/podsync` | 可靠下发 Pod 配置（add/update/delete） | 200 / 400 / 404 / 502 / 504 |
+| POST | `/api/v1/nodes/{nodeID}/config-sync` | 可靠下发 ConfigMap/Secret 配置 | 200 / 400 / 404 / 502 / 504 |
+| POST | `/api/v1/nodes/{nodeID}/device-command` | 下发设备指令（期望值） | 200 / 400 / 404 / 502 / 504 |
+
+### 1.2 错误码表（统一约定）
+
+| HTTP 状态码 | 语义 | 典型场景 |
+|------------|------|---------|
+| `200` | 成功；下发类接口表示**边缘已确认**（Ack ok），响应 `{"status":"ok","acked":true}` | 正常 |
+| `400` | 请求非法：JSON 解析失败 / 缺必填字段 / operation 或 kind 不在白名单 | 参数错误 |
+| `404` | 节点未注册或离线（`ErrNodeOffline`）；单资源查询不存在 | 节点不存在 |
+| `500` | 内部错误（消息构建失败、发送通道异常等兜底） | 服务端异常 |
+| `502` | 边缘明确拒绝（回 error Ack）：消息已送达但处理失败 | 边缘侧校验失败 |
+| `504` | 可靠投递确认超时（默认单次 5s × 最多 3 次尝试） | 边缘宕机/链路抖动 |
+
+错误响应统一为 JSON：`{"error":"<机器可读原因>", ...可选字段}`（`http.Error` 输出）。
+
+> 语义区分：**404 = 没送达**（节点不在线，无需重试）；**502 = 送达但被拒绝**（重试无意义）；**504 = 可能送达但未确认**（可重试，边缘侧有幂等去重）。
+
+---
+
+## 2. 健康检查
+
+### GET /healthz
+
+探针路径（Helm Chart liveness/readiness 均指向它）。成功返回 200 + 版本信息。
+
+请求：
+
+```bash
+curl http://127.0.0.1:8080/healthz
+```
+
+响应 `200`：
+
+```json
+{"status":"ok","version":{"version":"v0.1.0","gitCommit":"c880bd9","buildTime":"2026-08-14T19:08:17+0800","goVersion":"go1.26.2"}}
+```
+
+---
+
+## 3. 节点 API
+
+### 3.1 GET /api/v1/nodes —— 全部节点（NodeInfo 视图）
+
+运行视角：直接返回节点元数据数组（按 NodeID 排序），非 K8s List 风格（与 `edgenodes` 端点互补）。
+
+请求：
+
+```bash
+curl http://127.0.0.1:8080/api/v1/nodes
+```
+
+响应 `200`（示例，`[]` 表示无节点）：
+
+```json
+[
+  {
+    "nodeID": "edge-node-1",
+    "nodeName": "edge-node-1",
+    "arch": "arm64",
+    "os": "darwin",
+    "edgecoreVersion": "version=v0.1.0 gitCommit=... goVersion=go1.26.2",
+    "cpu": 8,
+    "memory": 0,
+    "ip": "127.0.0.1",
+    "registeredAt": 1786705914423,
+    "lastHeartbeatAt": 1786705914423,
+    "status": "Ready"
+  }
+]
+```
+
+字段说明：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| nodeID | string | 节点唯一 ID（edgecore 的 `EDGEFLOW_EDGECORE_NODE_ID`） |
+| nodeName | string | 云端分配的节点名（当前与 nodeID 一致） |
+| arch / os | string | edgecore 所在平台（注册时上报） |
+| edgecoreVersion | string | edgecore 版本串 |
+| cpu / memory | int / uint64 | 节点资源（内存当前恒 0，待采集接入） |
+| ip | string | 连接来源 IP |
+| registeredAt / lastHeartbeatAt | int64 | 注册 / 最近心跳时间（Unix 毫秒） |
+| status | string | `Ready` / `Unknown` / `Offline` |
+
+### 3.2 GET /api/v1/nodes/{nodeID} —— 单节点详情
+
+请求：
+
+```bash
+curl http://127.0.0.1:8080/api/v1/nodes/edge-node-1
+```
+
+响应：`200` 同上结构；节点不存在 → `404` + `{"error":"node not found","nodeID":"edge-node-1"}`。
+
+### 3.3 GET /api/v1/edgenodes —— 全部节点（EdgeNode CRD 视图）
+
+CRD 对象视角（对标 `kubectl get edgenodes`）：K8s List 风格，`items` 元素即完整 EdgeNode 对象（含 `apiVersion: edgeflow.io/v1alpha1`），可直接当作 CRD 对象消费。
+
+请求：
+
+```bash
+curl http://127.0.0.1:8080/api/v1/edgenodes
+```
+
+响应 `200`：
+
+```json
+{
+  "kind": "EdgeNodeList",
+  "apiVersion": "edgeflow.io/v1alpha1",
+  "items": [
+    {
+      "apiVersion": "edgeflow.io/v1alpha1",
+      "kind": "EdgeNode",
+      "metadata": {"name": "edge-node-1", "uid": "...", "creationTimestamp": "2026-08-14T19:11:54+08:00"},
+      "spec": {"nodeID": "edge-node-1", "role": "edge"},
+      "status": {"phase": "Running", "heartbeatTime": "...", "conditions": [{"type": "Ready", "status": "True"}]}
+    }
+  ]
+}
+```
+
+### 3.4 GET /api/v1/edgenodes/{nodeID} —— 单节点 EdgeNode 对象
+
+请求：
+
+```bash
+curl http://127.0.0.1:8080/api/v1/edgenodes/edge-node-1
+```
+
+响应：`200` 返回单个 EdgeNode 对象；节点不存在 → `404`。
+
+---
+
+## 4. Pod API
+
+### 4.1 GET /api/v1/pods —— 全部 Pod 状态
+
+请求：
+
+```bash
+curl http://127.0.0.1:8080/api/v1/pods
+```
+
+响应 `200`：
+
+```json
+{
+  "kind": "PodStatusList",
+  "apiVersion": "v1",
+  "items": [
+    {
+      "nodeID": "edge-node-1",
+      "podName": "nginx",
+      "namespace": "default",
+      "phase": "Running",
+      "message": "",
+      "lastReconcileAt": 1786705732883
+    }
+  ]
+}
+```
+
+字段说明：`phase` 取 `Running` / `Stopped` / `Absent` / `Error` / `Unknown`（未知值云端丢弃并告警）；`message` 为附加说明（如错误原因）；`lastReconcileAt` 为边缘最近一次调谐时间（Unix 毫秒）。
+
+### 4.2 GET /api/v1/nodes/{nodeID}/pods —— 单节点 Pod 状态
+
+语义约定：
+- 节点不存在（从未注册）→ `404`；
+- 节点存在但无 Pod → `200` + 空 `items`（不是 404，客户端可无分支遍历）。
+
+---
+
+## 5. 设备 API
+
+### 5.1 GET /api/v1/devices —— 全部设备状态
+
+设备影子（数字孪生）云端视图：`properties` 为设备实际上报值，`desired` 为云端下发的期望值（device-command 成功后写入；设备上报不会覆盖它）。
+
+请求：
+
+```bash
+curl http://127.0.0.1:8080/api/v1/devices
+```
+
+响应 `200`（示例：内置模拟传感器 sensor-01）：
+
+```json
+{
+  "kind": "DeviceStatusList",
+  "apiVersion": "v1",
+  "items": [
+    {
+      "nodeID": "edge-node-1",
+      "deviceName": "sensor-01",
+      "namespace": "default",
+      "properties": {"humidity": 46.39, "temperature": 29.38},
+      "desired": {"targetTemp": 25},
+      "lastReportedAt": 1786705917423
+    }
+  ]
+}
+```
+
+字段说明：`properties` / `desired` 均为 `map[string]float64`；`lastReportedAt` 为最近上报时间（Unix 毫秒）。
+
+### 5.2 GET /api/v1/nodes/{nodeID}/devices —— 单节点设备状态
+
+语义与 `nodes/{nodeID}/pods` 一致：节点不存在 → `404`；存在但无设备 → `200` + 空 `items`。
+
+### 5.3 POST /api/v1/nodes/{nodeID}/device-command —— 下发设备指令
+
+通过可靠投递向边缘下发 DeviceCommand 消息（WBS 5.3 端到端入口）。指令由边缘 Mapper 执行（内置 mock_sensor 支持 `targetTemp` / `reset`），执行结果快照写入边缘 Twin 并随周期上报回云端。
+
+请求：
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/device-command \
+  -H 'Content-Type: application/json' \
+  -d '{"deviceName":"sensor-01","property":"targetTemp","value":25}'
+```
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| deviceName | string | ✅ | 目标设备名称（路由到对应 Mapper） |
+| namespace | string | 否 | 命名空间（缺省 `default`） |
+| property | string | ✅ | 目标属性名（如 `targetTemp`） |
+| value | float64 | 否 | 期望值 |
+
+响应 `200`（边缘已确认，且期望值已写入云端设备状态存储）：
+
+```json
+{"status":"ok","acked":true}
+```
+
+错误：`400`（缺 deviceName/property、JSON 非法）、`404`（节点离线）、`502`（边缘拒绝）、`504`（确认超时）、`500`（兜底）。
+
+---
+
+## 6. 下发类 API（可靠投递）
+
+三个下发端点共用同一套可靠投递语义：消息进入 CloudHub 发送缓冲 → 边缘 EdgeHub 接收并处理 → 回 Ack（ok/error）→ 云端确认后返回 200。未确认则按 5s 超时重试最多 3 次。
+
+### 6.1 POST /api/v1/nodes/{nodeID}/podsync —— 下发 Pod 配置
+
+请求：
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/podsync \
+  -H 'Content-Type: application/json' \
+  -d '{"operation":"add","pod":{"name":"nginx","namespace":"default","image":"nginx:1.25-alpine","replicas":1}}'
+```
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| operation | string | ✅ | `add` / `update` / `delete`（白名单校验） |
+| pod.name | string | ✅ | Pod 名称（delete 时作为删除键之一） |
+| pod.namespace | string | 否 | 命名空间（缺省 `default`） |
+| pod.image | string | add/update 必填 | 容器镜像（delete 不需要） |
+| pod.replicas | int | 否 | 副本数（Edged 按此保证多副本） |
+
+响应 `200`：
+
+```json
+{"status":"ok","acked":true}
+```
+
+边缘行为：MetaManager 将 Pod 元数据落盘（SQLite），Edged 调谐启动容器（命名 `edgeflow-<ns>-<name>-<index>`，标签 `edgeflow.pod` / `edgeflow.namespace`）；`delete` 时按 namespace+name 删除元数据，Edged 回收容器。
+
+### 6.2 POST /api/v1/nodes/{nodeID}/config-sync —— 下发 ConfigMap/Secret 配置
+
+请求：
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/config-sync \
+  -H 'Content-Type: application/json' \
+  -d '{"operation":"add","config":{"name":"app-config","namespace":"default","kind":"ConfigMap","data":{"key1":"value1"}}}'
+```
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| operation | string | ✅ | `add` / `update` / `delete` |
+| config.name | string | ✅ | 配置名称 |
+| config.namespace | string | 否 | 命名空间（缺省 `default`） |
+| config.kind | string | ✅ | `ConfigMap` / `Secret`（白名单校验） |
+| config.data | map[string]string | add/update 必填 | 键值数据（Secret 的 value 当前为明文存储，生产需加密，见 PROGRESS.md 待办） |
+
+响应 `200`：`{"status":"ok","acked":true}`。
+
+边缘行为：MetaManager SQLite 存储，键 `configs/<namespace>/<name>`（与 Pod 元数据同库）。
+
+### 6.3 五态响应语义（三个下发端点通用）
+
+| 状态码 | 响应体（示例） | 含义 |
+|--------|---------------|------|
+| 200 | `{"status":"ok","acked":true}` | 边缘已确认（Ack ok） |
+| 400 | `{"error":"operation and pod.name are required"}` | 参数非法（含白名单校验失败） |
+| 404 | `{"error":"node offline or not registered"}` | 节点未注册/离线 |
+| 502 | `{"error":"edge rejected ack"}` | 边缘回 error Ack（消息已送达但被拒绝） |
+| 504 | `{"error":"ack timeout after retries"}` | 确认超时重试耗尽 |
+| 500 | `{"error":"send failed"}` | 其他内部错误 |
+
+---
+
+# 第二部分 CRD 类型定义（apis/edge/v1alpha1）
+
+> 代码位置：`apis/edge/v1alpha1/`（Group `edgeflow.io`，Version `v1alpha1`）。
+> 此部分为 M0-2 已定稿内容，随 v0.1.0 一并归档。
+
+## A. Group / Version 约定
 
 | 项 | 值 | 说明 |
 |----|----|------|
@@ -17,12 +363,12 @@
 - 命名空间：`DeviceModel` 与引用它的 `Device` 须在同一命名空间（当前由文档约束，后续由校验器强制）
 - 时间字段统一使用 RFC3339 格式字符串（如 `2026-08-13T12:00:00Z`），零依赖阶段不引入 `metav1.Time`
 
-## 2. EdgeNode（边缘节点）
+## B. EdgeNode（边缘节点）
 
 对标 KubeEdge 的 Node 相关资源（`edge.kubeedge.io`，此处为简化版）。
 边缘节点是资源承载者：设备绑定到节点，云端通过 Status 感知节点在线状态。
 
-### 2.1 Spec 字段表
+### B.1 Spec 字段表
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -32,7 +378,7 @@
 | addresses[].type | string | 是 | 地址类型：`InternalIP` / `Hostname` / `DNS` |
 | addresses[].address | string | 是 | 地址值，如 `192.168.1.10` |
 
-### 2.2 Status 字段表
+### B.2 Status 字段表
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -47,17 +393,17 @@
 | conditions[].lastTransitionTime | string (RFC3339) | 条件最近一次状态变化的时间 |
 | version | string | edgecore 版本号，便于云端识别旧版本节点 |
 
-### 2.3 默认值（SetDefaults）
+### B.3 默认值（SetDefaults）
 
 - `role` 为空 → `edge`
 - `phase` 为空 → `Pending`
 
-## 3. DeviceModel（设备型号）
+## C. DeviceModel（设备型号）
 
 对标 KubeEdge DeviceModel（`devices.kubeedge.io/v1alpha2`）。
 描述一类设备的"模板"：协议家族 + 属性定义，不含具体设备实例。
 
-### 3.1 Spec 字段表
+### C.1 Spec 字段表
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -72,16 +418,16 @@
 | properties[].maximum | string | 否 | 数值型属性最大值 |
 | properties[].unit | string | 否 | 计量单位，如 `celsius` |
 
-### 3.2 默认值（SetDefaults）
+### C.2 默认值（SetDefaults）
 
 - 属性 `accessMode` 为空 → `ReadWrite`（默认允许云端下发期望值）
 
-## 4. Device（设备实例）
+## D. Device（设备实例）
 
 对标 KubeEdge Device（`devices.kubeedge.io/v1alpha2`），数字孪生（Twin）机制的核心：
 云端下发期望值（desired），设备上报实际值（reported）。
 
-### 4.1 Spec 字段表
+### D.1 Spec 字段表
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -96,7 +442,7 @@
 | desired.value | string | 是 | 属性值（字符串形式，与型号 dataType 对应） |
 | desired.metadata | map[string]string | 否 | 附加元数据（如采集时间、单位） |
 
-### 4.2 Status 字段表
+### D.2 Status 字段表
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -106,51 +452,29 @@
 | twins[].reported | PropertyValue | 设备实际上报值 |
 | lastUpdatedTime | string (RFC3339) | 最近一次状态更新 |
 
-### 4.3 默认值
+### D.3 默认值
 
 - 必填字段（`deviceModelRef` / `nodeName`）**故意不提供默认值**，防止"看起来能跑、实际绑错对象"的隐性错误（有对应测试约束）。
 
-## 5. 与 KubeEdge 对标说明
+## E. 与 KubeEdge 对标说明
 
 | EdgeFlow | KubeEdge 对应资源 | 差异与简化 |
 |----------|-------------------|------------|
 | EdgeNode | Node（`edge.kubeedge.io`） | 仅保留 nodeID / role / addresses / status 核心字段；KubeEdge 的 certID 等字段暂不定义 |
-| DeviceModel | DeviceModel（`devices.kubeedge.io/v1alpha2`） | 属性定义基本一致；顶层 protocol 字段对标 KubeEdge v1alpha1 的 protocolType 思路（见下） |
+| DeviceModel | DeviceModel（`devices.kubeedge.io/v1alpha2`） | 属性定义基本一致；顶层 protocol 字段对标 KubeEdge v1alpha1 的 protocolType 思路 |
 | Device | Device（`devices.kubeedge.io/v1alpha2`） | desired / reported / twins 机制一致；**省略 propertyVisitors**（寄存器/地址映射，Mapper 阶段再补）；protocolConfig 用扁平键值对代替 KubeEdge 的结构化配置 |
 | 数字孪生 | KubeEdge Twin 机制 | 语义一致：desired 云端下发、reported 设备上报 |
 | ObjectMeta | metav1.ObjectMeta | 最小子集（名称/命名空间/标签/注解/UID/版本/创建时间），零依赖实现 |
 
-### 5.1 设计决策说明
+### E.1 设计决策说明
 
 - **DeviceModel 顶层保留 protocol**：KubeEdge v1alpha2 将协议信息放在 Device 上；EdgeFlow 在型号上声明协议家族（便于按协议类型筛选设备、驱动 Mapper 选型），连接参数仍在 Device 上配置。
 - **时间字段用字符串**：零依赖阶段避免引入 `metav1.Time`；接入 Kubernetes 后替换。
 - **必填字段不设默认值**：Device 的 `deviceModelRef` / `nodeName` 缺失时保持为空，便于校验器报错。
 
-## 6. 推断字段与已知缺口
+## F. 示例 YAML（示意，尚未在真实集群验证）
 
-### 6.1 推断 / 自定义字段清单（KubeEdge 无直接对应）
-
-| 字段 | 说明 |
-|------|------|
-| EdgeNode.Spec.Role | KubeEdge 无此字段（其 cloud/edge 通过组件区分），EdgeFlow 用 role 显式声明 |
-| EdgeNode.Spec.Addresses | 借鉴 Kubernetes `corev1.Node.Status.Addresses`，用于云边通信寻址 |
-| EdgeNode.Status.Phase | 借鉴 `corev1.Node` 的 phase 思路，简化节点生命周期表达 |
-| EdgeNode.Status.Conditions | 借鉴 `corev1.NodeCondition` 最小集 |
-| EdgeNode.Status.LastSeenTime | 云端观测时间（心跳超时判定辅助） |
-| DeviceModel.Spec.Protocol | 见 §5.1 设计决策 |
-| Device.Spec.Protocol.Config | 扁平键值对（KubeEdge 用结构化 protocolConfig，如 serial/mqtt 对象） |
-
-### 6.2 后续接入 Kubernetes 需要做的事
-
-1. **引入 k8s.io/apimachinery**，为三个资源实现 `runtime.Object` 接口（`DeepCopyObject()`），并将手写 DeepCopy 替换为 controller-gen 生成版本
-2. **添加 kubebuilder marker**（`// +kubebuilder:object:root=true`、`// +kubebuilder:subresource:status`、字段校验 marker），生成 CRD YAML 与 OpenAPI schema（ROADMAP 1.4 完成标准：CRD 可 `kubectl apply`）
-3. **ObjectMeta 替换**为 `metav1.ObjectMeta`（UID / ResourceVersion 等由 apiserver 维护）
-4. **校验落地**：必填字段、属性名须存在于型号、协议名一致性等，通过 CRD schema validation 或 admission webhook 强制
-5. **默认值迁移**：SetDefaults 逻辑迁移为 CRD schema `default` 或 mutating webhook
-
-## 7. 示例 YAML（示意，尚未在真实集群验证）
-
-### 7.1 EdgeNode
+### F.1 EdgeNode
 
 ```yaml
 apiVersion: edgeflow.io/v1alpha1
@@ -173,7 +497,7 @@ status:
       status: "True"
 ```
 
-### 7.2 DeviceModel
+### F.2 DeviceModel
 
 ```yaml
 apiVersion: edgeflow.io/v1alpha1
@@ -192,7 +516,7 @@ spec:
       unit: celsius
 ```
 
-### 7.3 Device
+### F.3 Device
 
 ```yaml
 apiVersion: edgeflow.io/v1alpha1
@@ -221,19 +545,30 @@ status:
   lastUpdatedTime: "2026-08-13T12:00:00Z"
 ```
 
-## 配置下发 API（WBS 6.2，M2 完整化）
+---
 
-### POST /api/v1/nodes/{nodeID}/config-sync
-向指定边缘节点下发 ConfigMap/Secret 配置（可靠投递：边缘确认后返回）。
+# 第三部分 已知缺口与后续（v0.1.0 归档说明）
 
-请求体：
-```json
-{"operation":"add","config":{"name":"app-config","namespace":"default","kind":"ConfigMap","data":{"key1":"value1"}}}
-```
-- operation：add/update/delete
-- kind：ConfigMap/Secret（delete 时可不填）
-- data：map[string]string（add/update 必填；Secret 的 value 当前为明文存储，生产环境需加密，见 PROGRESS.md 待办）
+## 7. 后续接入 Kubernetes 需要做的事
 
-响应：200 边缘已确认（Ack ok）；400 参数非法；404 节点离线/未注册；502 边缘拒绝（Ack error）；504 确认超时重试耗尽；500 内部错误。
+1. **引入 k8s.io/apimachinery**，为三个资源实现 `runtime.Object` 接口（`DeepCopyObject()`），并将手写 DeepCopy 替换为 controller-gen 生成版本
+2. **添加 kubebuilder marker**（`// +kubebuilder:object:root=true`、`// +kubebuilder:subresource:status`、字段校验 marker），生成 CRD YAML 与 OpenAPI schema（ROADMAP 1.4 完成标准：CRD 可 `kubectl apply`）
+3. **ObjectMeta 替换**为 `metav1.ObjectMeta`（UID / ResourceVersion 等由 apiserver 维护）
+4. **校验落地**：必填字段、属性名须存在于型号、协议名一致性等，通过 CRD schema validation 或 admission webhook 强制
+5. **默认值迁移**：SetDefaults 逻辑迁移为 CRD schema `default` 或 mutating webhook
 
-边缘存储：MetaManager SQLite，key=`configs/<namespace>/<name>`（与 Pod 元数据同库）。
+## 8. 已知限制（v0.1.0 定稿时确认）
+
+| 限制 | 影响 | 计划 |
+|------|------|------|
+| 云端节点/Pod/设备状态为内存态 | cloudcore 重启后查询数据清空（边缘 SQLite 不受影响） | 对接 K8s apiserver 后消除 |
+| `/api/v1/nodes` 与 `/api/v1/edgenodes` 双视图并存 | 两种响应形态，客户端需按端点区分 | 属设计取舍（运行视角 vs CRD 视角），v0.1.0 保留 |
+| device-command 的 value 为 float64 | 非数值属性（string/boolean）暂无法通过本端点下发 | Mapper 扩展时评估 |
+| config-sync 的 Secret value 明文传输存储 | 生产环境需加密 | PROGRESS.md 待办 |
+| 广播/组播下发（Target="*"）路由层已支持，API 层未暴露 | 无批量下发端点 | 后续版本 |
+
+## 9. 归档信息
+
+- 定稿版本：v0.1.0（2026-08-14）
+- 评审记录：`docs/REVIEWS.md` §9.2（评审人、已知问题、归档状态）
+- 相关文档：`docs/ARCHITECTURE.md`（9.1）、`docs/DEPLOYMENT.md`（9.3）、`docs/HANDOFF.md`（9.4）、`examples/README.md`（9.5 温度传感器 Demo 教程）

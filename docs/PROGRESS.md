@@ -41,7 +41,7 @@
 | M0-4 | Helm Chart 骨架 | ✅ **完成** | helm lint 通过 + template 渲染正确 | commit 9d78246，helm v4.2.3 |
 | M1 | 云边核心通信链路（CloudHub/EdgeHub） | ✅ **M1 一~三期完成** | +EdgeNode 对接+可靠投递 4.6+PodSync 链路 | commits e569ea1~5312253，见 §4D |
 | M2 | 应用部署与边缘自治 | 🟨 **第 1-2 轮完成** | POC 定案 + PodStatus 上报链路 + 自治验证 | commits c9db4ba~最新，见 §4E/§4F |
-| M3 | 设备管理（Device CRD/Twin/Mapper） | ⏳ 待开发 | 依赖 M2 | — |
+| M3 | 设备管理（Device CRD/Twin/Mapper） | 🟨 **启动轮完成** | Mapper 框架+模拟设备+Twin+设备链路 | commits 7d82c0c~698ee5f，见 §4G |
 | M4 | 生产化与规模化 | ⏳ 待开发 | 依赖 M3 | — |
 | M5 | MVP 发布与文档交付 | ⏳ 待开发 | 依赖 M4 | — |
 
@@ -248,6 +248,40 @@
 - 无批量上报（逐 Pod 一条消息）
 - 旧连接关闭窗口可投递（微秒级窗口，低危）
 
+## 4G. M3 启动轮验证结果（设备管理链路，2026-08-14）
+
+### 新增模块
+| 模块 | 提交 | 内容 |
+|------|------|------|
+| edge/pkg/mapper | 7d82c0c | DeviceMapper 接口 + MapperRegistry（RWMutex、幂等 StartAll/StopAll、errors.Join） |
+| mappers/mock_sensor | 7d82c0c | 模拟温湿度传感器（targetTemp 收敛、无 goroutine 泄漏、停止冻结） |
+| edge/pkg/devicetwin | 744afaa | Twin/TwinStore（SetDesired/UpsertReported 合并语义、深拷贝、自动创建） |
+| cloud/pkg/devicestatus | 744afaa | 设备状态存储（字段级合并保 desired、nodeID 权威） |
+| 设备 API | 744afaa | GET /api/v1/devices、/api/v1/nodes/{id}/devices、POST device-command（五态错误语义） |
+| edgecore 装配 | 698ee5f | mapperCommandExecutor 接 Dispatch、collectMapperReports 采样汇入影子、上报循环 |
+
+### 端到端联调（真实进程）
+| 场景 | 实测结果 |
+|------|---------|
+| 设备自动注册 | ✅ MockSensor sensor-01 启动（2s 采集） |
+| 周期上报 | ✅ /api/v1/devices 显示 properties（temperature/humidity） |
+| 指令下发 | ✅ POST device-command targetTemp=25 → 200 acked:true |
+| **指令影响** | ✅ 温度 31.05 → 25.59 向目标收敛（边缘日志"快照 2 个属性已写入影子"） |
+| desired 同步 | ✅ 云端显示 {"targetTemp": 25} |
+| 单节点 API | ✅ /api/v1/nodes/{id}/devices 返回 sensor-01 |
+| 进程清理 | ✅ 优雅退出无残留 |
+
+### 自动化验证
+| 项目 | 结果 |
+|------|------|
+| go test -race（18 包） | ✅ 全绿，总覆盖率 85.1%（devicetwin 100%、mapper 96.4%、devicestatus 95.5%） |
+| golangci-lint | ✅ 0 issues |
+| 审查（docs/CODE-REVIEW-M3A.md） | ✅ 通过（0 P0 / 0 P1 / 6 P2）→ P2×6 记录待办 |
+
+### M2 收尾状态（本轮核对）
+- ✅ 已完成：PodSync 下发→容器运行→状态上报→断网自治→恢复同步→删除收敛（M2 核心链路）
+- 📋 M2 完整化待办（列入 §5）：Edged 健康检查/多副本（6.4/6.5）、ConfigMap/Secret 下发（6.2）、镜像更新滚动策略、8.3 E2E 完整场景
+
 ## 5. 待办项（Backlog）
 
 | 优先级 | 事项 | 说明 |
@@ -255,6 +289,9 @@
 | P1 | GitHub 远程仓库关联 | 用户把 `~/.ssh/id_ed25519.pub` 粘贴到 GitHub → `git remote add origin` → push（步骤见 ENV-SETUP.md §4.2） |
 | P1 | 推送后验证 CI 首次运行 | push 后 Actions 标签页应显示 lint+test 绿勾 |
 | P2 | cmd-edgecore 覆盖率缺口（56.5%） | "注册成功→SQLite 落盘"集成链路补集成级单测（M2 前） |
+| P1 | M2 完整化（6.2/6.4/6.5） | ConfigMap/Secret 下发、Edged 健康检查/多副本、镜像更新滚动策略（8.3 E2E 完整场景） |
+| P1 | M3 二期：MQTT EventBus（3.6） | NATS MQTT POC 后接入真实 MQTT broker，替换内存模拟通道 |
+| P2 | M3A 审查 P2 项×6 | byDevice 路由含 namespace、多实例 Mapper、空 deviceName 校验、LastReportedAt 单调性、502 Desired 分叉、无 TTL/GC（见 CODE-REVIEW-M3A.md） |
 | P2 | M1C 审查 P2 项×5 | pending 交叉清理/ErrAckFailed→502/context 取消/非原子/云端 operation 校验（见 CODE-REVIEW-M1C.md） |
 | P2 | M1B 审查 P2 项×9 | LIKE 转义/WAL checkpoint/Offline TTL/WriteTimeout 等（见 CODE-REVIEW-M1B.md） |
 | P3 | 日志级别过滤（SetLevel） | pkg/log 的 Level 目前仅前缀标记，后续模块需要时实现 |

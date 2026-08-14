@@ -805,6 +805,14 @@ func (s *Server) NodeCount() int {
 	return len(s.registry)
 }
 
+// ConnCount 返回当前活跃 WebSocket 连接数（含已连接未注册的节点），
+// 供可观测性指标（edgeflow_cloudcore_active_connections）使用。
+func (s *Server) ConnCount() int {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	return len(s.conns)
+}
+
 // NodeIDs 返回已注册节点 ID 列表（排序后，保证输出确定性）。
 func (s *Server) NodeIDs() []string {
 	s.mu.RLock()

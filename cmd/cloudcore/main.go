@@ -23,8 +23,11 @@ import (
 	"time"
 
 	v1alpha1 "edgeflow/apis/edge/v1alpha1"
+	"edgeflow/cloud/pkg/audit"
+	"edgeflow/cloud/pkg/auth"
 	"edgeflow/cloud/pkg/cloudhub"
 	"edgeflow/cloud/pkg/devicestatus"
+	"edgeflow/cloud/pkg/metrics"
 	"edgeflow/cloud/pkg/nodecontroller"
 	"edgeflow/cloud/pkg/podstatus"
 	"edgeflow/cloud/pkg/registry"
@@ -203,6 +206,37 @@ func run(args []string, stdout, stderr io.Writer) int {
 		})
 	})
 
+	// 审计台账（WBS 7.5）：JSONL 追加写，记录每次管理 API 调用。
+	// 路径可用环境变量 EDGEFLOW_CLOUDCORE_AUDIT_PATH 覆盖（默认 data/audit-ledger.jsonl）；
+	// 初始化失败直接拒绝启动（审计是安全控制，静默降级会掩盖问题）。
+	auditPath := os.Getenv(audit.EnvPath)
+	if auditPath == "" {
+		auditPath = audit.DefaultPath
+	}
+	ledger, err := audit.NewLedger(auditPath)
+	if err != nil {
+		log.Errorf("审计台账初始化失败: %v", err)
+		return 1
+	}
+	defer func() { _ = ledger.Close() }()
+	log.Infof("审计台账就绪（%s，JSONL 追加写）", auditPath)
+
+	// API Token 认证（WBS 7.2）：默认关闭（向后兼容），
+	// EDGEFLOW_CLOUDCORE_AUTH=on 时启用，令牌来自 EDGEFLOW_CLOUDCORE_API_TOKEN。
+	// 开启但未配置令牌 → 拒绝启动（fail-fast，与 TLS SAN 校验同约定）。
+	authEnabled := auth.EnabledFromEnv()
+	var apiToken string
+	if authEnabled {
+		apiToken = auth.TokenFromEnv()
+		if apiToken == "" {
+			log.Errorf("%s=on 但 %s 未设置，拒绝启动（认证开启必须配置令牌）", auth.EnvAuth, auth.EnvToken)
+			return 1
+		}
+		log.Infof("API 认证已启用：/api/v1/* 需携带 Authorization: Bearer <token>")
+	} else {
+		log.Infof("API 认证未启用（默认关闭，向后兼容；%s=on 开启）", auth.EnvAuth)
+	}
+
 	// 注册路由：/healthz 健康检查 + 节点查询 API（两个视角并存）：
 	//   /api/v1/nodes      → NodeInfo 视图（运行视角：CPU/内存/IP 等）
 	//   /api/v1/edgenodes  → EdgeNode 视图（CRD 对象视角，对标 K8s Node）
@@ -214,25 +248,49 @@ func run(args []string, stdout, stderr io.Writer) int {
 		devices:      deviceStore,
 		reliableSend: hub.ReliableSendContext,
 	}
-	mux.HandleFunc("GET /api/v1/nodes", api.listNodes)
-	mux.HandleFunc("GET /api/v1/nodes/{nodeID}", api.getNode)
-	mux.HandleFunc("GET /api/v1/edgenodes", api.listEdgeNodes)
-	mux.HandleFunc("GET /api/v1/edgenodes/{nodeID}", api.getEdgeNode)
-	mux.HandleFunc("POST /api/v1/nodes/{nodeID}/podsync", api.syncPod)
-	mux.HandleFunc("POST /api/v1/nodes/{nodeID}/config-sync", api.syncConfig)
-	mux.HandleFunc("GET /api/v1/pods", api.listPods)
-	mux.HandleFunc("GET /api/v1/nodes/{nodeID}/pods", api.listNodePods)
+	// 管理 API 全部注册在独立 apiMux 上，统一挂认证 + 审计中间件链
+	// （WBS 7.5/7.2）：
+	//   - 审计在外层：请求 context 挂身份槽，未认证请求（401）同样留痕，
+	//     安全审计不丢未授权访问尝试；
+	//   - 认证在内层：校验通过后把身份写入身份槽（audit.SetIdentity），
+	//     审计落盘 operator=token。
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("GET /api/v1/nodes", api.listNodes)
+	apiMux.HandleFunc("GET /api/v1/nodes/{nodeID}", api.getNode)
+	apiMux.HandleFunc("GET /api/v1/edgenodes", api.listEdgeNodes)
+	apiMux.HandleFunc("GET /api/v1/edgenodes/{nodeID}", api.getEdgeNode)
+	apiMux.HandleFunc("POST /api/v1/nodes/{nodeID}/podsync", api.syncPod)
+	apiMux.HandleFunc("POST /api/v1/nodes/{nodeID}/config-sync", api.syncConfig)
+	apiMux.HandleFunc("GET /api/v1/pods", api.listPods)
+	apiMux.HandleFunc("GET /api/v1/nodes/{nodeID}/pods", api.listNodePods)
 	// 设备链路 API（WBS 5.3/2.2）：设备状态查询 + 设备指令下发
-	mux.HandleFunc("GET /api/v1/devices", api.listDevices)
-	mux.HandleFunc("GET /api/v1/nodes/{nodeID}/devices", api.listNodeDevices)
-	mux.HandleFunc("POST /api/v1/nodes/{nodeID}/device-command", api.sendDeviceCommand)
+	apiMux.HandleFunc("GET /api/v1/devices", api.listDevices)
+	apiMux.HandleFunc("GET /api/v1/nodes/{nodeID}/devices", api.listNodeDevices)
+	apiMux.HandleFunc("POST /api/v1/nodes/{nodeID}/device-command", api.sendDeviceCommand)
+
+	var apiHandler http.Handler = apiMux
+	if authEnabled {
+		apiHandler = auth.Middleware(apiToken)(apiHandler)
+	}
+	apiHandler = ledger.Middleware(apiHandler)
+	mux.Handle("/api/v1/", apiHandler)
+
+	// 可观测性（WBS 10.1）：/metrics 端点输出 Prometheus 文本格式指标。
+	// gauge 取值函数由装配层注入（依赖倒置，metrics 包不感知各存储实现）。
+	m := metrics.New(metrics.Providers{
+		Nodes:             nodeReg.Count,
+		Pods:              podStore.Count,
+		Devices:           deviceStore.Count,
+		ActiveConnections: hub.ConnCount,
+	})
+	mux.HandleFunc("GET /metrics", m.Handler())
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,  // 防止慢速连接长时间占用连接
-		ReadTimeout:       10 * time.Second, // 防止慢速读取长时间占用连接
+		Handler:           m.Middleware(mux), // 最外层：统计全部 HTTP 请求（含 /healthz、/metrics）
+		ReadHeaderTimeout: 5 * time.Second,   // 防止慢速连接长时间占用连接
+		ReadTimeout:       10 * time.Second,  // 防止慢速读取长时间占用连接
 	}
 	return serve(srv, hub, nc)
 }

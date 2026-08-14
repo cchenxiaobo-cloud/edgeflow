@@ -100,6 +100,17 @@ func (s *PodStatusStore) Upsert(nodeID string, ps PodStatus) {
 	byNode[podKeyOf(ps.Namespace, ps.PodName)] = ps
 }
 
+// Count 返回存储内 Pod 状态记录总数（供 /metrics 的 pods_total 指标使用）。
+func (s *PodStatusStore) Count() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, byKey := range s.pods {
+		n += len(byKey)
+	}
+	return n
+}
+
 // Get 查询单条 Pod 状态。
 //
 // 返回值是拷贝，调用方修改不会污染存储。

@@ -21,8 +21,8 @@ const (
 	TypePodStatus     = "PodStatus"     // 边→云：Pod 状态上报（M1/M2）
 	TypeDeviceReport  = "DeviceReport"  // 边→云：设备数据/状态上报（M3）
 	TypeDeviceCommand = "DeviceCommand" // 云→边：设备操作指令（M3）
-	TypeNodeJob       = "NodeJob"       // 云→边：任务分发（待定）
-	TypeNodeJobResult = "NodeJobResult" // 边→云：任务结果（待定）
+	TypeNodeJob       = "NodeJob"       // 云→边：任务分发（已关闭：v0.1.0 范围外，保留协议占位）
+	TypeNodeJobResult = "NodeJobResult" // 边→云：任务结果（已关闭：v0.1.0 范围外，保留协议占位）
 	TypeAck           = "Ack"           // 双向：通用确认
 )
 

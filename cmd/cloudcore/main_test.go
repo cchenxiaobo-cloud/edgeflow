@@ -111,6 +111,8 @@ func TestRunServerLifecycle(t *testing.T) {
 	t.Setenv(config.PortEnvVar, "")
 	// CloudHub 用随机端口，避免与开发机上的 10000 端口冲突
 	t.Setenv(cloudhub.EnvHubPort, "0")
+	// 审计台账写入临时目录，避免测试产物落在仓库内
+	t.Setenv("EDGEFLOW_CLOUDCORE_AUDIT_PATH", filepath.Join(t.TempDir(), "audit-ledger.jsonl"))
 	var stdout, stderr bytes.Buffer
 	done := make(chan int, 1)
 	go func() {

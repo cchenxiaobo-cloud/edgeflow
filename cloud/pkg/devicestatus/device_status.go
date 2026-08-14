@@ -127,6 +127,17 @@ func (s *DeviceStatusStore) SetDesired(nodeID, namespace, deviceName, property s
 	byNode[key] = ds
 }
 
+// Count 返回存储内设备状态记录总数（供 /metrics 的 devices_total 指标使用）。
+func (s *DeviceStatusStore) Count() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, byKey := range s.devices {
+		n += len(byKey)
+	}
+	return n
+}
+
 // Get 查询单台设备状态。
 //
 // 返回值是拷贝，调用方修改不会污染存储。

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EdgeFlow M2 第二轮交付报告 — PodStatus 上报与边缘自治</title>
+<style>
+  :root {
+    --bg: #fafafa; --surface: #ffffff; --text: #1a1a1a; --text-2: #6b6b6b; --text-3: #999;
+    --accent: #2563eb; --accent-light: #dbeafe; --border: #e5e5e5;
+    --green: #16a34a; --green-light: #dcfce7; --yellow: #ca8a04; --yellow-light: #fef3c7;
+    --red: #dc2626; --red-light: #fee2e2; --code-bg: #f5f5f5; --radius: 4px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+    --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.7; font-weight: 300; -webkit-font-smoothing: antialiased; }
+  .container { max-width: 880px; margin: 0 auto; padding: 80px 40px; }
+  h1 { font-size: 2.2rem; font-weight: 200; letter-spacing: -0.02em; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.3rem; font-weight: 400; letter-spacing: -0.01em; margin: 3rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.05rem; font-weight: 500; margin: 1.8rem 0 0.6rem; }
+  p { margin-bottom: 0.8rem; color: var(--text-2); }
+  .subtitle { font-size: 0.95rem; color: var(--text-3); font-weight: 300; margin-bottom: 2.5rem; }
+  a { color: var(--accent); text-decoration: none; font-weight: 400; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.85em; }
+  pre { background: var(--code-bg); padding: 1rem; border-radius: var(--radius); overflow-x: auto; margin: 1rem 0; font-size: 0.8rem; line-height: 1.5; font-family: var(--mono); }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.85rem; }
+  th { text-align: left; font-weight: 500; padding: 0.6rem 0.5rem; border-bottom: 2px solid var(--text); }
+  td { padding: 0.5rem; border-bottom: 1px solid var(--border); font-weight: 300; }
+  tr:hover td { background: var(--accent-light); }
+  .badge { display: inline-block; padding: 0.15em 0.6em; border-radius: 100px; font-size: 0.75rem; font-weight: 500; }
+  .b-green { background: var(--green-light); color: var(--green); }
+  .b-blue { background: var(--accent-light); color: var(--accent); }
+  .b-yellow { background: var(--yellow-light); color: var(--yellow); }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); margin: 1.5rem 0; }
+  .metric { background: var(--surface); padding: 1.2rem 0.8rem; text-align: center; }
+  .metric-value { font-size: 1.6rem; font-weight: 200; color: var(--accent); }
+  .metric-label { font-size: 0.7rem; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.3rem; }
+  .arch { font-family: var(--mono); font-size: 0.75rem; line-height: 1.6; background: var(--surface); border: 1px solid var(--border); padding: 1.2rem; overflow-x: auto; margin: 1rem 0; color: var(--text-2); }
+  .panel { border: 1px solid var(--border); border-left: 3px solid var(--accent); padding: 1rem 1.2rem; margin: 1rem 0; background: var(--surface); }
+  .footer { margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border); font-size: 0.78rem; color: var(--text-3); }
+  @media (max-width: 700px) { .container { padding: 40px 20px; } .metrics { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>EdgeFlow M2 第二轮交付报告</h1>
+<p class="subtitle">PodStatus 上报链路 · 边缘自治验证 · P1/P2 审查修复 · 2026-08-14</p>
+
+<div class="metrics">
+  <div class="metric"><div class="metric-value">52</div><div class="metric-label">累计提交</div></div>
+  <div class="metric"><div class="metric-value">83.0%</div><div class="metric-label">总覆盖率</div></div>
+  <div class="metric"><div class="metric-value">0</div><div class="metric-label">Lint / P0</div></div>
+  <div class="metric"><div class="metric-value">4/4</div><div class="metric-label">联调场景通过</div></div>
+</div>
+
+<h2>1. 本轮交付摘要</h2>
+<p>M2 第二轮完成 <strong>PodStatus 上报链路（WBS 6.3）</strong>：边缘 Edged 状态表 → 周期上报 → 云端存储 + 查询 API；完成 <strong>边缘自治（WBS 3.4 基础）</strong>端到端验证：断网容器持续运行、恢复后状态同步；审查发现 1 项 P1（Absent 终态不可达导致云端列表永久陈旧）已根因修复并经端到端回归确认。</p>
+
+<h2>2. PodStatus 上报链路</h2>
+<div class="arch">边缘侧（edgecore）
+  Edged.Status() ──(30s 周期, env 可配)──▶ BuildStatusPayload
+                                              │  phase 映射: Running/Stopped/Absent/Error/Unknown
+                                              ▼
+                                    EdgeHub.Send(TypePodStatus)
+                                              │  Source=nodeID, Target="cloud"
+  云端侧（cloudcore）                          ▼
+  CloudHub.handlePodStatus ──▶ handler 注入（phase 校验 + recover）
+                                    │  Absent → 删除记录（P1 修复）
+                                    ▼
+                          PodStatusStore（内存态，namespace 感知）
+                                    ▼
+                    GET /api/v1/pods · GET /api/v1/nodes/{id}/pods</div>
+
+<h2>3. 验证结果</h2>
+
+<h3>3.1 端到端联调（真实进程 + 真实 Docker）</h3>
+<table>
+<thead><tr><th>场景</th><th>实测证据</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>状态上报</td><td>PodSync add → 上报周期后 /api/v1/pods 显示 web-demo Running（3s 周期实测）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>断网自治（3.4）</td><td>停 cloudcore 40s：容器持续运行，Edged 本地调谐不受影响（reconcile 日志连续）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>恢复同步</td><td>cloudcore 重启 → edgecore 重连注册 → 上报恢复</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>删除收敛（P1 核心）</td><td>delete → 容器移除（1 removed）→ Absent 终态上报 → 云端列表 1 → <strong>0</strong></td><td><span class="badge b-green">通过</span></td></tr>
+</tbody>
+</table>
+
+<h3>3.2 自动化验证</h3>
+<table>
+<thead><tr><th>项目</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>go test -race（14 包）</td><td><span class="badge b-green">全绿</span>，总覆盖率 83.0%（podstatus 93.3%、edged 88.0%）</td></tr>
+<tr><td>golangci-lint</td><td><span class="badge b-green">0 issues</span></td></tr>
+<tr><td>关键单测</td><td>phase 映射全覆盖、JSON 契约字段断言、Absent 终态保留与窗口期满清理、恢复后终态保留</td></tr>
+</tbody>
+</table>
+
+<h3>3.3 审查与修复闭环（docs/CODE-REVIEW-M2B.md）</h3>
+<div class="panel">
+<p><strong>结论：有条件通过（0 P0 / 1 P1 / 10 P2）→ P1 已根因修复 + P2×5 修复 + P2×5 记录待办</strong></p>
+<table>
+<thead><tr><th>问题</th><th>处理</th><th>验证</th></tr></thead>
+<tbody>
+<tr><td>P1：Absent 终态不可达（云端删除 Pod 后列表永久陈旧）</td><td>边缘：删除后条目保留 90s 终态窗口（RemovedAt）再清理；云端：收到 Absent 删除记录</td><td>端到端回归：列表 1 → 0；单测：终态保留/窗口期满/删除语义</td></tr>
+<tr><td>P2：云端无 phase 校验 / 回调无 recover / 周期无上下限 / 注释路径错误</td><td>全部修复（白名单校验、recover 兜底、1s~10min 范围、hack 路径修正）</td><td>测试 + lint + build</td></tr>
+<tr><td>P2×5：store 单锁/节点残留/时钟偏差/无批量/关闭窗口</td><td>记录台账待办（有意为之或低危）</td><td>PROGRESS.md §5</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>4. 新增模块</h2>
+<table>
+<thead><tr><th>模块</th><th>提交</th><th>内容</th></tr></thead>
+<tbody>
+<tr><td>cloud/pkg/podstatus</td><td>707128f</td><td>云端 Pod 状态存储（Upsert/Get/Delete/ListByNode/ListAll，93.3% 覆盖）</td></tr>
+<tr><td>cloudcore PodStatus API</td><td>707128f</td><td>GET /api/v1/pods、GET /api/v1/nodes/{id}/pods（K8s 风格 items）</td></tr>
+<tr><td>边缘上报循环</td><td>bc58e40</td><td>30s 周期上报（env 可配）、发送失败 Warn 不重试（下轮全量补报）</td></tr>
+<tr><td>P2-1 status 清理</td><td>bc58e40 + 52e5ff5</td><td>期望集合外条目清理（P1 修复升级为终态保留窗口语义）</td></tr>
+<tr><td>P1 + P2×5 修复</td><td>52e5ff5</td><td>Absent 终态链路 + phase 校验 + recover + 周期上下限</td></tr>
+</tbody>
+</table>
+
+<h2>5. 下一步建议（M2 继续）</h2>
+<table>
+<thead><tr><th>优先级</th><th>事项</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>P1</td><td>Edged 完整化（6.4/6.5）</td><td>健康检查、多副本（Replicas）、镜像更新滚动策略</td></tr>
+<tr><td>P1</td><td>ConfigMap/Secret 下发（6.2）</td><td>协议已定义 TypeConfigSync，链路复用 PodSync 模式</td></tr>
+<tr><td>P2</td><td>上报可靠性增强</td><td>批量上报、状态持久化（重启不丢）、时钟对齐</td></tr>
+<tr><td>P2</td><td>M2 待办 P2×5</td><td>见 PROGRESS.md §5</td></tr>
+</tbody>
+</table>
+
+<div class="footer">
+  EdgeFlow M2 第二轮交付报告 · 生成时间 2026-08-14 10:45 (Asia/Shanghai)<br>
+  研发方式：多 Agent 协作（云端 PodStatus / 边缘上报 / M2B 复核）+ 主线 P1/P2 修复与回归<br>
+  仓库：/Users/mac/Documents/edgeflow/ · 审查：docs/CODE-REVIEW-M2B.md · 台账：docs/PROGRESS.md
+</div>
+
+</div>
+</body>
+</html>

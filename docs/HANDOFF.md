@@ -57,7 +57,7 @@ edgeflow/
 
 ## 4. 如何开发下一个模块（标准流程）
 
-1. **读计划**：`docs/ROADMAP.md` 找到下一个模块（当前建议 M3 三期：Mapper 接入 EventBus（设备走 MQTT 上报）、真实协议 Mapper（5.2）、或 M2 完整化剩余（Edged 健康检查/多副本））
+1. **读计划**：`docs/ROADMAP.md` 找到下一个模块（当前建议 M4 前置：安全认证 mTLS（7.1/7.4）、Helm 完整化（8.5）、或真实协议 Mapper（5.2 Modbus））
 2. **建分支**：`git checkout -b feat/模块名`
 3. **开发**：用 AI 工具（Trae/Codex）辅助写代码，遵循现有包风格（中文注释、零第三方依赖）
 4. **验证**（每次提交前必须全跑）：
@@ -93,7 +93,10 @@ make lint       # 静态检查
 | `EDGEFLOW_EDGECORE_DEVICE_REPORT_INTERVAL=10s ./bin/edgecore` | 设备状态上报周期（默认 30s） |
 | `curl -X POST localhost:8080/api/v1/nodes/{nodeID}/config-sync -d '{"operation":"add","config":{"name":"app","namespace":"default","kind":"ConfigMap","data":{"k":"v"}}}'` | 下发配置（ConfigMap/Secret） |
 | `EDGEFLOW_EDGECORE_MQTT_ADDR=tcp://127.0.0.1:1883 ./bin/edgecore` | MQTT broker 地址（EventBus，预留装配） |
-| `mosquitto -p 1883 -d` | 本地启动 MQTT broker（测试/开发用） |
+| `mosquitto -p 1883 -d` | 本地启动 MQTT broker（测试/开发用；路径 /opt/homebrew/sbin/mosquitto） |
+| `mosquitto_sub -t 'devices/+/+/telemetry' -v` | 订阅设备遥测流（验证 MQTT 数据面） |
+| `mosquitto_pub -t 'devices/default/sensor-01/command' -m '{"property":"targetTemp","value":22}'` | 向设备发指令（MQTT 数据面） |
+| `docker ps --filter label=edgeflow.pod` | 查看 Edged 管理的副本容器（命名 edgeflow-ns-name-index） |
 | `go run ./hack/edged-smoke` | DockerRuntime 冒烟（需 Docker daemon） |
 | `docker ps --filter label=edgeflow.pod` | 查看 Edged 管理的容器 |
 | `curl localhost:8080/api/v1/nodes` | 查询已注册边缘节点（JSON） |

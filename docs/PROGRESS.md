@@ -40,8 +40,8 @@
 | M0-3 | CI/CD 完整流水线 | ✅ 基础版完成 | lint+test+覆盖率门槛 | commit ab73062 |
 | M0-4 | Helm Chart 骨架 | ✅ **完成** | helm lint 通过 + template 渲染正确 | commit 9d78246，helm v4.2.3 |
 | M1 | 云边核心通信链路（CloudHub/EdgeHub） | ✅ **M1 一~三期完成** | +EdgeNode 对接+可靠投递 4.6+PodSync 链路 | commits e569ea1~5312253，见 §4D |
-| M2 | 应用部署与边缘自治 | 🟨 **第 1-3 轮完成** | +ConfigMap/Secret 下发（6.2）| commits c9db4ba~5403daa，见 §4E/§4F/§4H |
-| M3 | 设备管理（Device CRD/Twin/Mapper） | 🟨 **第 1-2 轮完成** | +MQTT EventBus（3.6）| commits 7d82c0c~2a0d0a3，见 §4G/§4H |
+| M2 | 应用部署与边缘自治 | 🟨 **第 1-4 轮完成** | +Edged 多副本/健康自愈（6.4/6.5）| commits c9db4ba~47d9e21，见 §4E/§4F/§4H/§4I |
+| M3 | 设备管理（Device CRD/Twin/Mapper） | 🟨 **第 1-3 轮完成** | +Mapper 接入 EventBus（MQTT 数据面）| commits 7d82c0c~99b5624，见 §4G/§4H/§4I |
 | M4 | 生产化与规模化 | ⏳ 待开发 | 依赖 M3 | — |
 | M5 | MVP 发布与文档交付 | ⏳ 待开发 | 依赖 M4 | — |
 
@@ -317,6 +317,41 @@
 - Secret 落盘明文（生产需加密）
 - Connect ctx 取消后 paho 后台重试无法终止（Disconnect 兜底）
 - TestQoS1Delivery 偶发端口抢占（未复现，13 连跑全绿）
+
+## 4I. M3 三期 + M2 完整化验证结果（MQTT 数据面/多副本/自愈，2026-08-14）
+
+### 新增模块
+| 模块 | 提交 | 内容 |
+|------|------|------|
+| Mapper 接入 EventBus | 99b5624 | MockSensor MQTT 模式（telemetry 发布 QoS1 + command 订阅）+ 降级本地模式 |
+| Edged 多副本 | 47d9e21 | 副本命名 edgeflow-ns-name-index、补齐/收缩策略、缺口兜底 |
+| Edged 健康自愈 | 47d9e21 | Inspect 非 Running→重启 + RestartCount（覆盖率 89.2%） |
+| P1 修复×2 | c885229 | 旧命名迁移（Index=-1 优先清理，消除 churn）+ CrashLoopBackOff（3 次阈值/30s 退避/60s 稳定重置） |
+
+### 端到端验证（真实进程 + Docker + mosquitto）
+| 场景 | 实测结果 |
+|------|---------|
+| 多副本 | ✅ podsync replicas=2 → docker 出现 -0/-1 双容器 |
+| 健康自愈 | ✅ docker stop 副本 1 → 12s 内自动重启（时间差证实） |
+| MQTT 遥测流 | ✅ mosquitto_sub 收到 devices/default/sensor-01/telemetry（temperature/humidity/ts） |
+| **MQTT 指令收敛** | ✅ 发布 command targetTemp=22 → 温度 25.99→24.21→23.07→22.97 收敛 |
+| 降级路径 | ✅ broker 缺席 → Warn + 本地模式（不退出） |
+| 进程清理 | ✅ 无残留 |
+
+### 自动化验证
+| 项目 | 结果 |
+|------|------|
+| go test -race（19 包） | ✅ 全绿，总覆盖率 81.0%（edged 89.2%、mock_sensor 91.1%） |
+| golangci-lint | ✅ 0 issues |
+| 审查（docs/CODE-REVIEW-M4A.md） | ✅ 有条件通过（0 P0 / 2 P1 / 12 P2）→ P1×2 根因修复 + 回归测试（旧命名迁移无 churn、退避不再重启） |
+
+### P2 待办（节选）
+- Replicas=0 无法表达 scale-to-zero（int 非指针）
+- RestartCount 未进 PodStatusPayload + 不持久化
+- Publish token.Wait() 半死连接窗口阻塞
+- broker 晚启动时 command 订阅不自动恢复（需重启 edgecore）
+- 调谐轮串行 30s 超时延迟累积
+- 32-bit hash 碰撞、滚动更新、进程级 liveness
 
 ## 5. 待办项（Backlog）
 

@@ -1,0 +1,36 @@
+{
+  "version": "v0.1.0",
+  "registry": "localhost:5001",
+  "generatedAt": "2026-08-14T19:58:00+08:00",
+  "notes": "本地 registry 闭环验证（无远程凭据）。digest 取自 registry API Docker-Content-Digest 与 docker inspect RepoDigests 双渠道核对一致。",
+  "images": [
+    {
+      "name": "edgeflow/cloudcore",
+      "tag": "v0.1.0",
+      "reference": "localhost:5001/edgeflow/cloudcore@sha256:2f9f2fbef9baf1188bfb4e0048c7ca192c99d20f5160f2385af09569b79712ec",
+      "digest": "sha256:2f9f2fbef9baf1188bfb4e0048c7ca192c99d20f5160f2385af09569b79712ec",
+      "size": 3673346,
+      "arch": "linux/arm64",
+      "os": "linux",
+      "buildArgs": {
+        "VERSION": "v0.1.0",
+        "GIT_COMMIT": "ca2051b",
+        "BUILD_TIME": "2026-08-14T19:52:32+0800"
+      }
+    },
+    {
+      "name": "edgeflow/edgecore",
+      "tag": "v0.1.0",
+      "reference": "localhost:5001/edgeflow/edgecore@sha256:227f6050438fdee439d0d0eb84c278c05fa4a5d6bb7abc10a2632f776e94bd4c",
+      "digest": "sha256:227f6050438fdee439d0d0eb84c278c05fa4a5d6bb7abc10a2632f776e94bd4c",
+      "size": 5401759,
+      "arch": "linux/arm64",
+      "os": "linux",
+      "buildArgs": {
+        "VERSION": "v0.1.0",
+        "GIT_COMMIT": "ca2051b",
+        "BUILD_TIME": "2026-08-14T19:52:32+0800"
+      }
+    }
+  ]
+}

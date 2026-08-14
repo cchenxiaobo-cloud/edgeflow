@@ -63,56 +63,56 @@ func runJoin(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "错误: join 不接受位置参数 %q\n", fs.Arg(0))
+		_, _ = fmt.Fprintf(stderr, "错误: join 不接受位置参数 %q\n", fs.Arg(0))
 		return exitUsage
 	}
 
 	// 参数校验：IP 合法、token 非空、node-id 非空无空白。
 	if err := opts.validate(); err != nil {
-		fmt.Fprintf(stderr, "错误: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "错误: %v\n", err)
 		return exitUsage
 	}
 
 	// 创建输出目录（已存在则复用，保证重复执行幂等）。
 	if err := os.MkdirAll(opts.OutputDir, 0o755); err != nil {
-		fmt.Fprintf(stderr, "错误: 创建输出目录 %s 失败: %v\n", opts.OutputDir, err)
+		_, _ = fmt.Fprintf(stderr, "错误: 创建输出目录 %s 失败: %v\n", opts.OutputDir, err)
 		return exitRuntime
 	}
 
 	// 生成 edgecore.env：环境变量文件，键名与 edgecore/edgehub 读取的完全一致。
 	envBytes := renderEdgeEnv(opts)
 	if err := os.WriteFile(filepath.Join(opts.OutputDir, "edgecore.env"), envBytes, 0o600); err != nil {
-		fmt.Fprintf(stderr, "错误: 写入 edgecore.env 失败: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "错误: 写入 edgecore.env 失败: %v\n", err)
 		return exitRuntime
 	}
 
 	// 生成 edgecore.service：systemd 单元（EnvironmentFile 指向节点上的固定路径）。
 	svcBytes := renderEdgeService(opts)
 	if err := os.WriteFile(filepath.Join(opts.OutputDir, "edgecore.service"), svcBytes, 0o644); err != nil {
-		fmt.Fprintf(stderr, "错误: 写入 edgecore.service 失败: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "错误: 写入 edgecore.service 失败: %v\n", err)
 		return exitRuntime
 	}
 
 	// 生成 install.sh：在边缘节点上执行的安装脚本（需 root）。
 	installBytes := renderInstallScript(opts)
 	if err := os.WriteFile(filepath.Join(opts.OutputDir, "install.sh"), installBytes, 0o755); err != nil {
-		fmt.Fprintf(stderr, "错误: 写入 install.sh 失败: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "错误: 写入 install.sh 失败: %v\n", err)
 		return exitRuntime
 	}
 
 	// 生成 README.md：接入说明（含手动安装步骤片段，供无法直接跑脚本的环境参考）。
 	readmeBytes := renderJoinReadme(opts)
 	if err := os.WriteFile(filepath.Join(opts.OutputDir, "README.md"), readmeBytes, 0o644); err != nil {
-		fmt.Fprintf(stderr, "错误: 写入 README.md 失败: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "错误: 写入 README.md 失败: %v\n", err)
 		return exitRuntime
 	}
 
-	fmt.Fprintf(stdout, "keadm join 完成: 边缘接入产物已生成到 %s\n", opts.OutputDir)
-	fmt.Fprintf(stdout, "  - edgecore.env（环境变量文件）\n")
-	fmt.Fprintf(stdout, "  - edgecore.service（systemd 单元）\n")
-	fmt.Fprintf(stdout, "  - install.sh（安装脚本，需 root 在边缘节点执行）\n")
-	fmt.Fprintf(stdout, "  - README.md（接入说明）\n")
-	fmt.Fprintf(stdout, "接入地址: %s\n", opts.cloudAddr())
+	_, _ = fmt.Fprintf(stdout, "keadm join 完成: 边缘接入产物已生成到 %s\n", opts.OutputDir)
+	_, _ = fmt.Fprintf(stdout, "  - edgecore.env（环境变量文件）\n")
+	_, _ = fmt.Fprintf(stdout, "  - edgecore.service（systemd 单元）\n")
+	_, _ = fmt.Fprintf(stdout, "  - install.sh（安装脚本，需 root 在边缘节点执行）\n")
+	_, _ = fmt.Fprintf(stdout, "  - README.md（接入说明）\n")
+	_, _ = fmt.Fprintf(stdout, "接入地址: %s\n", opts.cloudAddr())
 	return exitOK
 }
 

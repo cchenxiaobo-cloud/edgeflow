@@ -51,23 +51,23 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "错误: init 不接受位置参数 %q\n", fs.Arg(0))
+		_, _ = fmt.Fprintf(stderr, "错误: init 不接受位置参数 %q\n", fs.Arg(0))
 		return exitUsage
 	}
 
 	// 参数校验：镜像与 Service 类型非空，Service 类型取值合法。
 	if opts.Image == "" {
-		fmt.Fprintln(stderr, "错误: --cloudcore-image 不能为空")
+		_, _ = fmt.Fprintln(stderr, "错误: --cloudcore-image 不能为空")
 		return exitUsage
 	}
 	if opts.ServiceType != "NodePort" && opts.ServiceType != "ClusterIP" {
-		fmt.Fprintf(stderr, "错误: --service-type 仅支持 NodePort 或 ClusterIP，当前 %q\n", opts.ServiceType)
+		_, _ = fmt.Fprintf(stderr, "错误: --service-type 仅支持 NodePort 或 ClusterIP，当前 %q\n", opts.ServiceType)
 		return exitUsage
 	}
 
 	// 创建输出目录（已存在则复用，保证重复执行幂等）。
 	if err := os.MkdirAll(opts.OutputDir, 0o755); err != nil {
-		fmt.Fprintf(stderr, "错误: 创建输出目录 %s 失败: %v\n", opts.OutputDir, err)
+		_, _ = fmt.Fprintf(stderr, "错误: 创建输出目录 %s 失败: %v\n", opts.OutputDir, err)
 		return exitRuntime
 	}
 
@@ -75,11 +75,11 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	yamlPath := filepath.Join(opts.OutputDir, "cloudcore.yaml")
 	yamlBytes, err := renderCloudcoreYAML(opts)
 	if err != nil {
-		fmt.Fprintf(stderr, "错误: 生成 cloudcore.yaml 失败: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "错误: 生成 cloudcore.yaml 失败: %v\n", err)
 		return exitRuntime
 	}
 	if err := os.WriteFile(yamlPath, yamlBytes, 0o644); err != nil {
-		fmt.Fprintf(stderr, "错误: 写入 %s 失败: %v\n", yamlPath, err)
+		_, _ = fmt.Fprintf(stderr, "错误: 写入 %s 失败: %v\n", yamlPath, err)
 		return exitRuntime
 	}
 
@@ -87,16 +87,16 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	notesPath := filepath.Join(opts.OutputDir, "NOTES.txt")
 	notesBytes := renderInitNotes(opts)
 	if err := os.WriteFile(notesPath, notesBytes, 0o644); err != nil {
-		fmt.Fprintf(stderr, "错误: 写入 %s 失败: %v\n", notesPath, err)
+		_, _ = fmt.Fprintf(stderr, "错误: 写入 %s 失败: %v\n", notesPath, err)
 		return exitRuntime
 	}
 
-	fmt.Fprintf(stdout, "keadm init 完成: 云端部署产物已生成到 %s\n", opts.OutputDir)
-	fmt.Fprintf(stdout, "  - %s（kubectl apply -f 即可部署）\n", yamlPath)
-	fmt.Fprintf(stdout, "  - %s（部署说明与 Helm 替代路径）\n", notesPath)
+	_, _ = fmt.Fprintf(stdout, "keadm init 完成: 云端部署产物已生成到 %s\n", opts.OutputDir)
+	_, _ = fmt.Fprintf(stdout, "  - %s（kubectl apply -f 即可部署）\n", yamlPath)
+	_, _ = fmt.Fprintf(stdout, "  - %s（部署说明与 Helm 替代路径）\n", notesPath)
 	if opts.TLS {
-		fmt.Fprintln(stdout, "提示: 已启用 mTLS（cloudcore 首次启动会在 /data/certs 自动生成证书）。")
-		fmt.Fprintln(stdout, "      边缘节点接入请确保证书 SAN 覆盖访问地址（--tls-san 或部署后手动注入）。")
+		_, _ = fmt.Fprintln(stdout, "提示: 已启用 mTLS（cloudcore 首次启动会在 /data/certs 自动生成证书）。")
+		_, _ = fmt.Fprintln(stdout, "      边缘节点接入请确保证书 SAN 覆盖访问地址（--tls-san 或部署后手动注入）。")
 	}
 	return exitOK
 }

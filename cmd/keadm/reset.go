@@ -32,7 +32,7 @@ func runReset(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		return exitUsage
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "错误: reset 不接受位置参数 %q\n", fs.Arg(0))
+		_, _ = fmt.Fprintf(stderr, "错误: reset 不接受位置参数 %q\n", fs.Arg(0))
 		return exitUsage
 	}
 
@@ -40,10 +40,10 @@ func runReset(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	entries, err := os.ReadDir(opts.OutputDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Fprintf(stdout, "reset: %s 不存在，无可清理产物（幂等）\n", opts.OutputDir)
+			_, _ = fmt.Fprintf(stdout, "reset: %s 不存在，无可清理产物（幂等）\n", opts.OutputDir)
 			return exitOK
 		}
-		fmt.Fprintf(stderr, "错误: 读取目录 %s 失败: %v\n", opts.OutputDir, err)
+		_, _ = fmt.Fprintf(stderr, "错误: 读取目录 %s 失败: %v\n", opts.OutputDir, err)
 		return exitRuntime
 	}
 
@@ -61,20 +61,20 @@ func runReset(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		}
 	}
 	if len(toDelete) == 0 {
-		fmt.Fprintf(stdout, "reset: %s 下没有 keadm 生成产物，无需清理（幂等）\n", opts.OutputDir)
+		_, _ = fmt.Fprintf(stdout, "reset: %s 下没有 keadm 生成产物，无需清理（幂等）\n", opts.OutputDir)
 		return exitOK
 	}
 
 	// 删除前确认（--force 跳过）。
 	if !opts.Force && !confirmDelete(stdout, stderr, stdin, toDelete) {
-		fmt.Fprintln(stdout, "reset: 已取消，未删除任何文件")
+		_, _ = fmt.Fprintln(stdout, "reset: 已取消，未删除任何文件")
 		return exitOK
 	}
 
 	// 逐个删除（全部是普通文件，直接 os.Remove）。
 	for _, p := range toDelete {
 		if err := os.Remove(p); err != nil {
-			fmt.Fprintf(stderr, "错误: 删除 %s 失败: %v\n", p, err)
+			_, _ = fmt.Fprintf(stderr, "错误: 删除 %s 失败: %v\n", p, err)
 			return exitRuntime
 		}
 	}
@@ -82,26 +82,26 @@ func runReset(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	// 目录若已空则一并移除（非空时保留，不报错——里面可能有用户自己的文件）。
 	_ = os.Remove(opts.OutputDir) // 非空时返回错误，忽略即可
 
-	fmt.Fprintf(stdout, "reset: 已删除 %d 个 keadm 生成产物: %s\n", len(toDelete), opts.OutputDir)
+	_, _ = fmt.Fprintf(stdout, "reset: 已删除 %d 个 keadm 生成产物: %s\n", len(toDelete), opts.OutputDir)
 	return exitOK
 }
 
 // confirmDelete 向用户列出将删除的文件并请求确认（y/yes 才删除）。
 func confirmDelete(stdout, stderr io.Writer, stdin io.Reader, files []string) bool {
 	if stdin == nil {
-		fmt.Fprintln(stderr, "错误: 无法读取确认输入（无 stdin），请使用 --force 跳过确认")
+		_, _ = fmt.Fprintln(stderr, "错误: 无法读取确认输入（无 stdin），请使用 --force 跳过确认")
 		return false
 	}
-	fmt.Fprintln(stdout, "将删除以下 keadm 生成产物:")
+	_, _ = fmt.Fprintln(stdout, "将删除以下 keadm 生成产物:")
 	for _, f := range files {
-		fmt.Fprintf(stdout, "  - %s\n", f)
+		_, _ = fmt.Fprintf(stdout, "  - %s\n", f)
 	}
-	fmt.Fprint(stdout, "确认删除? [y/N] ")
+	_, _ = fmt.Fprint(stdout, "确认删除? [y/N] ")
 
 	line, err := bufio.NewReader(stdin).ReadString('\n')
 	if err != nil && line == "" {
-		fmt.Fprintln(stdout, "")
-		fmt.Fprintln(stdout, "未收到确认输入，已取消")
+		_, _ = fmt.Fprintln(stdout, "")
+		_, _ = fmt.Fprintln(stdout, "未收到确认输入，已取消")
 		return false
 	}
 	ans := strings.ToLower(strings.TrimSpace(line))

@@ -60,8 +60,8 @@ func main() {
 // stdin 仅 reset 确认删除时使用。
 func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	if len(args) == 0 {
-		fmt.Fprint(stderr, usageText)
-		fmt.Fprintln(stderr, "错误: 缺少子命令（init/join/reset/version）")
+		_, _ = fmt.Fprint(stderr, usageText)
+		_, _ = fmt.Fprintln(stderr, "错误: 缺少子命令（init/join/reset/version）")
 		return exitUsage
 	}
 
@@ -76,11 +76,11 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	case "version":
 		return runVersion(rest, stdout, stderr)
 	case "-h", "--help", "help":
-		fmt.Fprint(stdout, usageText)
+		_, _ = fmt.Fprint(stdout, usageText)
 		return exitOK
 	default:
-		fmt.Fprintf(stderr, "错误: 未知子命令 %q\n\n", cmd)
-		fmt.Fprint(stderr, usageText)
+		_, _ = fmt.Fprintf(stderr, "错误: 未知子命令 %q\n\n", cmd)
+		_, _ = fmt.Fprint(stderr, usageText)
 		return exitUsage
 	}
 }
@@ -103,7 +103,7 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "错误: version 不接受位置参数 %q\n", fs.Arg(0))
+		_, _ = fmt.Fprintf(stderr, "错误: version 不接受位置参数 %q\n", fs.Arg(0))
 		return exitUsage
 	}
 
@@ -111,12 +111,12 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 	if *asJSON {
 		b, err := jsonMarshalIndent(info)
 		if err != nil {
-			fmt.Fprintf(stderr, "错误: 序列化版本信息失败: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "错误: 序列化版本信息失败: %v\n", err)
 			return exitRuntime
 		}
-		fmt.Fprintln(stdout, string(b))
+		_, _ = fmt.Fprintln(stdout, string(b))
 		return exitOK
 	}
-	fmt.Fprintf(stdout, "keadm %s\n", info.String())
+	_, _ = fmt.Fprintf(stdout, "keadm %s\n", info.String())
 	return exitOK
 }

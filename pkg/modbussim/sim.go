@@ -193,7 +193,7 @@ func (s *Simulator) Start() error {
 
 	ln, err := net.Listen("tcp", s.listenAddr)
 	if err != nil {
-		return fmt.Errorf("Modbus 模拟器监听 %s 失败: %w", s.listenAddr, err)
+		return fmt.Errorf("modbus 模拟器监听 %s 失败: %w", s.listenAddr, err)
 	}
 	s.mu.Lock()
 	s.ln = ln

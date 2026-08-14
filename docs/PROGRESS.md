@@ -42,8 +42,8 @@
 | M1 | 云边核心通信链路（CloudHub/EdgeHub） | ✅ **M1 一~三期完成** | +EdgeNode 对接+可靠投递 4.6+PodSync 链路 | commits e569ea1~5312253，见 §4D |
 | M2 | 应用部署与边缘自治 | 🟨 **第 1-4 轮完成** | +Edged 多副本/健康自愈（6.4/6.5）| commits c9db4ba~47d9e21，见 §4E/§4F/§4H/§4I |
 | M3 | 设备管理（Device CRD/Twin/Mapper） | 🟨 **第 1-3 轮完成** | +Mapper 接入 EventBus（MQTT 数据面）| commits 7d82c0c~99b5624，见 §4G/§4H/§4I |
-| M4 | 生产化与规模化 | 🟨 **主体完成** | +keadm/NodeController/Modbus/多架构 | commits 2386fa3~499f225，见 §4J/§4K |
-| M5 | MVP 发布与文档交付 | ⏳ 待开发 | 依赖 M4 | — |
+| M4 | 生产化与规模化 | 🟨 **主体+收尾完成** | +升级回滚（10.2）| commits 2386fa3~4c52f4a，见 §4K/§4L |
+| M5 | MVP 发布与文档交付 | 🟨 **前置完成** | 9.2-9.5 文档定稿 + Demo 示例 | commit f090a30，见 §4L |
 
 ## 4. 首个模块（M0-1）验证结果
 
@@ -422,6 +422,38 @@
 | ⑥ | :latest 无 immutable 保护 / 无 cosign/SBOM | 延后 | 需镜像仓库 + cosign 签名基础设施，属 M5 发布阶段；风险已登记 MULTIARCH.md §5，待办见下表 §5 | MULTIARCH.md §5 风险表 |
 
 > 处置 commit：`fix`（①②③⑤ 代码+测试）与 `docs`（④⑥+台账）各一个，见 4K 验证记录与 git log。
+
+## 4L. M4 收尾 + M5 前置验证结果（升级回滚/文档示例/P2 处置，2026-08-14）
+
+### 新增模块
+| 模块 | 提交 | 内容 |
+|------|------|------|
+| keadm upgrade/rollback | 7aa035c | 备份模型（backups/<ts>/manifest+sha256）+ 台账（ops-ledger.jsonl 追加写）+ --simulate-failure 演练 + 异常三类兜底 |
+| keadm ops-ledger | 7aa035c | 操作台账查询（时间/版本/结果/操作人，limit 可配） |
+| P2×6 处置 | a1c619d+4f8eeab | ①TLSSAN fail-fast ②manifest 校验和 ③unit ID+连接上限 ④关闭 ⑤舍入 ⑥延后登记 |
+| M5 文档定稿 | f090a30 | 9.2-9.5 四文档（2023 行）+ examples/demo.sh（DEMO PASS×3）+ REVIEWS.md |
+| 协调点修复 | eabb360+4c52f4a | refreshManifest 合并式更新、defaultNodeID 清洗、P2-1 台账一致性、P2-3 回归测试 |
+
+### 端到端验证
+| 场景 | 实测结果 |
+|------|---------|
+| 升级→失败→回滚演练 | ✅ --simulate-failure（台账 failed、产物未动）→ rollback --latest 恢复，diff 一致 |
+| 数据不丢 | ✅ 预置 SQLite/用户文件在升级回滚全程 hash 一致 |
+| 异常三类 | ✅ 升级中途失败（台账 failed+提示）/回滚失败（备份保留+cp 提示）/产物缺失（明确错误） |
+| 台账可追踪 | ✅ ops-ledger 4 条（failed/ok/ok/ok），KEADM_OPERATOR=alice 记录 |
+| 协调点 | ✅ init→join→upgrade→reset 全链路（reset 删 7 产物、清单合并不丢 init 记录） |
+| Demo 示例 | ✅ demo.sh 干净环境 DEMO PASS×3（复核第 3 次含 MQTT 段），0 残留 |
+
+### 自动化验证
+| 项目 | 结果 |
+|------|------|
+| go test -race（24 包） | ✅ 全绿，覆盖率 77.8%（keadm 74.6%） |
+| golangci-lint | ✅ 0 issues |
+| 审查（docs/CODE-REVIEW-M4D.md） | ✅ 有条件通过（0 P0 / 0 P1 / 5 P2）→ P2×3 修复 + P2×2 记录待办 |
+
+### P2 待办（2 项）
+- restoreBackup 非事务性（中途失败留混合状态——有兜底：备份保留+cp 提示+重跑幂等）
+- findBackup/restoreBackup 未对 manifest 文件清单白名单校验（本地威胁模型低危，纵深防御项）
 
 ## 5. 待办项（Backlog）
 

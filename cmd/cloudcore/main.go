@@ -21,6 +21,7 @@ import (
 
 	v1alpha1 "edgeflow/apis/edge/v1alpha1"
 	"edgeflow/cloud/pkg/cloudhub"
+	"edgeflow/cloud/pkg/podstatus"
 	"edgeflow/cloud/pkg/registry"
 	"edgeflow/pkg/config"
 	"edgeflow/pkg/httpx"
@@ -79,6 +80,21 @@ func run(args []string, stdout, stderr io.Writer) int {
 	nodeReg := registry.New()
 	hub.SetNodeEvents(registry.NewCloudHubAdapter(nodeReg))
 
+	// Pod 状态存储（内存态，WBS 6.3）与 CloudHub 上报回调桥接：
+	// 边侧上报的 PodStatus 消息经 CloudHub 校验后注入存储，供查询 API 使用。
+	// 依赖注入（SetPodStatusHandler），CloudHub 不感知存储实现。
+	podStore := podstatus.NewStore()
+	hub.SetPodStatusHandler(func(nodeID string, ps cloudhub.PodStatusPayload) {
+		podStore.Upsert(nodeID, podstatus.PodStatus{
+			NodeID:          ps.NodeID,
+			PodName:         ps.PodName,
+			Namespace:       ps.Namespace,
+			Phase:           ps.Phase,
+			Message:         ps.Message,
+			LastReconcileAt: ps.LastReconcileAt,
+		})
+	})
+
 	// 注册路由：/healthz 健康检查 + 节点查询 API（两个视角并存）：
 	//   /api/v1/nodes      → NodeInfo 视图（运行视角：CPU/内存/IP 等）
 	//   /api/v1/edgenodes  → EdgeNode 视图（CRD 对象视角，对标 K8s Node）
@@ -86,6 +102,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	mux.HandleFunc("/healthz", httpx.Healthz())
 	api := &nodeAPI{
 		reg:          nodeReg,
+		pods:         podStore,
 		reliableSend: hub.ReliableSendContext,
 	}
 	mux.HandleFunc("GET /api/v1/nodes", api.listNodes)
@@ -93,6 +110,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	mux.HandleFunc("GET /api/v1/edgenodes", api.listEdgeNodes)
 	mux.HandleFunc("GET /api/v1/edgenodes/{nodeID}", api.getEdgeNode)
 	mux.HandleFunc("POST /api/v1/nodes/{nodeID}/podsync", api.syncPod)
+	mux.HandleFunc("GET /api/v1/pods", api.listPods)
+	mux.HandleFunc("GET /api/v1/nodes/{nodeID}/pods", api.listNodePods)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{
@@ -278,10 +297,12 @@ func shutdownAll(srv *http.Server, hub *cloudhub.Server) {
 }
 
 // nodeAPI 是节点查询 API（/api/v1/nodes）的处理器集合。
-// 通过结构体字段注入注册表（依赖注入，避免全局变量）。
+// 通过结构体字段注入注册表与 Pod 状态存储（依赖注入，避免全局变量）。
 type nodeAPI struct {
 	// reg 是节点注册表（与 CloudHub 事件桥接共享同一实例）。
 	reg *registry.Registry
+	// pods 是 Pod 状态存储（与 CloudHub 上报回调共享同一实例）。
+	pods *podstatus.PodStatusStore
 	// reliableSend 是可靠投递函数，默认指向 hub.ReliableSend（run 装配时注入）。
 	// 独立成字段是为了让 syncPod 可测：测试注入 fake 即可覆盖各错误路径
 	// （离线/超时/失败），无需真实 WebSocket 节点与 Ack 往返。
@@ -332,6 +353,68 @@ func (a *nodeAPI) listEdgeNodes(w http.ResponseWriter, _ *http.Request) {
 		Kind:       "EdgeNodeList",
 		APIVersion: v1alpha1.SchemeGroupVersion.String(),
 		Items:      a.reg.ListEdgeNodes(),
+	})
+}
+
+// podStatusList 是 Pod 状态查询 API 的响应形态。
+//
+// 选择 K8s List 风格（kind/apiVersion + items 数组）而非裸数组：
+// 与 edgenodes 接口的 edgeNodeList 形态一致，也与 apiserver 的列表响应
+// 结构一致，后续接入真实 apiserver 时客户端解析逻辑无需改动。
+// items 恒为非 nil（空数据编码为 [] 而非 null）。
+type podStatusList struct {
+	Kind       string                `json:"kind"`
+	APIVersion string                `json:"apiVersion"`
+	Items      []podstatus.PodStatus `json:"items"`
+}
+
+// listPods 处理 GET /api/v1/pods：返回全部节点的 Pod 状态
+// （按 nodeID/namespace/podName 排序）；无数据时返回空数组而非 null。
+func (a *nodeAPI) listPods(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// 存储未注入（测试等场景）时按空列表处理，避免 nil 编码为 null
+	items := make([]podstatus.PodStatus, 0)
+	if a.pods != nil {
+		items = a.pods.ListAll()
+	}
+	// 编码失败（如客户端已断开）时无需额外处理，忽略即可
+	_ = json.NewEncoder(w).Encode(podStatusList{
+		Kind:       "PodStatusList",
+		APIVersion: "v1",
+		Items:      items,
+	})
+}
+
+// listNodePods 处理 GET /api/v1/nodes/{nodeID}/pods：返回单节点的 Pod 状态。
+//
+// 语义约定：
+//   - 节点不存在（从未注册）→ 404（与 /api/v1/nodes/{nodeID} 的 404 语义一致）
+//   - 节点存在但无 Pod → 200 + 空数组（不是 404："节点健康、只是还没 Pod"
+//     与 "节点未知" 是两种语义，空数组让客户端可以无分支地遍历）
+func (a *nodeAPI) listNodePods(w http.ResponseWriter, r *http.Request) {
+	nodeID := r.PathValue("nodeID")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if a.reg == nil {
+		w.WriteHeader(http.StatusNotFound)
+		// 编码失败（如客户端已断开）时无需额外处理，忽略即可
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "node not found", "nodeID": nodeID})
+		return
+	}
+	if _, ok := a.reg.Get(nodeID); !ok {
+		w.WriteHeader(http.StatusNotFound)
+		// 编码失败（如客户端已断开）时无需额外处理，忽略即可
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "node not found", "nodeID": nodeID})
+		return
+	}
+	items := make([]podstatus.PodStatus, 0)
+	if a.pods != nil {
+		items = a.pods.ListByNode(nodeID)
+	}
+	// 编码失败（如客户端已断开）时无需额外处理，忽略即可
+	_ = json.NewEncoder(w).Encode(podStatusList{
+		Kind:       "PodStatusList",
+		APIVersion: "v1",
+		Items:      items,
 	})
 }
 

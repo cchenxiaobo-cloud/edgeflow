@@ -87,6 +87,18 @@ type HeartbeatPayload struct {
 	Timestamp int64 `json:"timestamp"` // 边侧发送时间（毫秒）
 }
 
+// PodStatusPayload 是 PodStatus 消息的负载（边→云，WBS 6.3 契约）。
+// 字段与协议契约一致，勿单独修改；存储侧对应的快照类型见
+// edgeflow/cloud/pkg/podstatus.PodStatus（由装配层做字段映射）。
+type PodStatusPayload struct {
+	NodeID          string `json:"nodeID"`          // 节点唯一 ID（应与消息 Source 一致）
+	PodName         string `json:"podName"`         // Pod 名称
+	Namespace       string `json:"namespace"`       // 命名空间（缺省按 default 处理）
+	Phase           string `json:"phase"`           // 阶段：Running/Stopped/Absent/Error
+	Message         string `json:"message"`         // 附加说明（如错误原因）
+	LastReconcileAt int64  `json:"lastReconcileAt"` // 最近一次协调时间（毫秒时间戳）
+}
+
 // HeartbeatAckPayload 是 HeartbeatAck 消息的负载（云→边）。
 type HeartbeatAckPayload struct {
 	NodeStatus string `json:"nodeStatus"` // 节点状态，M1 固定 "Ready"
@@ -125,6 +137,15 @@ type NodeEvents interface {
 	OnNodeDisconnected(nodeID string)
 }
 
+// PodStatusHandler 处理边侧上报的 PodStatus 消息（依赖注入，WBS 6.3）。
+// 与 NodeEvents 同风格：CloudHub 不感知具体存储实现，由 cmd/cloudcore
+// 装配时注入 store.Upsert 的适配函数。
+//
+// 并发与性能约定（与 NodeEvents 一致）：
+//   - 回调在 CloudHub 内部锁之外、连接处理 goroutine 中同步调用
+//   - 实现方应尽快返回、不得执行阻塞操作，也不得反向调用 CloudHub 的方法（防止死锁）
+type PodStatusHandler func(nodeID string, ps PodStatusPayload)
+
 // Server 是 CloudHub WebSocket 服务端。
 //
 // 并发安全说明：registry/nodes 由 mu 保护；连接集合由 connsMu 保护；
@@ -149,11 +170,12 @@ type Server struct {
 	// serveDone 在 Serve 返回后关闭，Shutdown 据此等待退出。
 	serveDone chan struct{}
 
-	// mu 保护注册表 registry、节点信息 nodes 与事件回调 nodeEvents。
-	mu         sync.RWMutex
-	registry   map[string]*conn     // nodeID → 活跃连接
-	nodes      map[string]*NodeInfo // nodeID → 节点信息
-	nodeEvents NodeEvents           // 节点生命周期事件回调（nil 表示未订阅）
+	// mu 保护注册表 registry、节点信息 nodes 与事件回调 nodeEvents/podStatusHandler。
+	mu               sync.RWMutex
+	registry         map[string]*conn     // nodeID → 活跃连接
+	nodes            map[string]*NodeInfo // nodeID → 节点信息
+	nodeEvents       NodeEvents           // 节点生命周期事件回调（nil 表示未订阅）
+	podStatusHandler PodStatusHandler     // PodStatus 消息回调（nil 表示未订阅）
 
 	// connsMu 保护活跃连接集合 conns（含未注册连接，供 Shutdown 统一关闭）。
 	connsMu sync.Mutex
@@ -432,6 +454,8 @@ func (s *Server) dispatch(c *conn, data []byte) {
 		s.handleRegister(c, m)
 	case protocol.TypeHeartbeat:
 		s.handleHeartbeat(c, m)
+	case protocol.TypePodStatus:
+		s.handlePodStatus(c, m)
 	case protocol.TypeAck:
 		s.handleAck(c, m)
 	default:
@@ -557,6 +581,39 @@ func (s *Server) handleHeartbeat(c *conn, m *protocol.Message) {
 	s.notifyNodeEvent(func(h NodeEvents) { h.OnNodeHeartbeat(m.Source) })
 }
 
+// handlePodStatus 处理边侧上报的 PodStatus 消息：
+//   - 未注册连接上报 → 回 not_registered Ack 拒绝
+//   - payload 解析失败 / 缺少 podName / payload.nodeID 与 Source 不一致 → 回 invalid_message Ack
+//   - 校验通过 → 调用注入的 PodStatusHandler 回调（锁外调用），不另行回 Ack
+//     （上报是单向流式语义，契约未约定应答；边缘侧无需等待确认）
+func (s *Server) handlePodStatus(c *conn, m *protocol.Message) {
+	if !c.registered.Load() {
+		s.sendTo(c, m.Source, protocol.TypeAck, m.CorrelationID,
+			AckPayload{Code: CodeNotRegistered, Message: "节点未注册，拒绝 PodStatus"})
+		return
+	}
+	var ps PodStatusPayload
+	if err := m.DecodePayload(&ps); err != nil {
+		s.sendTo(c, m.Source, protocol.TypeAck, m.CorrelationID,
+			AckPayload{Code: CodeInvalidMessage, Message: "PodStatus payload 解析失败: " + err.Error()})
+		return
+	}
+	if ps.PodName == "" {
+		s.sendTo(c, m.Source, protocol.TypeAck, m.CorrelationID,
+			AckPayload{Code: CodeInvalidMessage, Message: "PodStatus payload 缺少 podName"})
+		return
+	}
+	if ps.NodeID != "" && ps.NodeID != m.Source {
+		s.sendTo(c, m.Source, protocol.TypeAck, m.CorrelationID,
+			AckPayload{Code: CodeInvalidMessage, Message: "PodStatus payload.nodeID 与消息 Source 不一致"})
+		return
+	}
+	// payload 缺省/空 nodeID 时以消息 Source 为准（消息来源即权威）
+	ps.NodeID = m.Source
+	s.notifyPodStatus(ps.NodeID, ps)
+	log.Infof("收到节点 %s 的 PodStatus: %s/%s phase=%s", ps.NodeID, ps.Namespace, ps.PodName, ps.Phase)
+}
+
 // handleAck 处理边侧返回的通用 Ack：记录日志，并匹配可靠投递的在途等待者
 // （WBS 4.6，按 CorrelationID == 在途 msg.ID 匹配，见 resolvePending）。
 // payload 不可解析不影响确认：确认语义由信封的 CorrelationID 决定。
@@ -666,6 +723,27 @@ func (s *Server) SetNodeEvents(h NodeEvents) {
 	s.mu.Lock()
 	s.nodeEvents = h
 	s.mu.Unlock()
+}
+
+// SetPodStatusHandler 注册 PodStatus 消息回调（nil 表示取消）。可在任意时刻调用。
+// 与 SetNodeEvents 并存：NodeEvents 管节点生命周期，PodStatusHandler 管
+// Pod 状态上报，二者互不影响（向后兼容：未注册回调时 PodStatus 仅记日志）。
+func (s *Server) SetPodStatusHandler(h PodStatusHandler) {
+	s.mu.Lock()
+	s.podStatusHandler = h
+	s.mu.Unlock()
+}
+
+// notifyPodStatus 在锁外安全地调用 PodStatus 回调：先在锁内取回调快照，
+// 再在锁外执行，保证回调执行期间不持有任何 CloudHub 锁（防止回调
+// 反向调用 CloudHub 方法时死锁，与 notifyNodeEvent 同约定）。
+func (s *Server) notifyPodStatus(nodeID string, ps PodStatusPayload) {
+	s.mu.RLock()
+	h := s.podStatusHandler
+	s.mu.RUnlock()
+	if h != nil {
+		h(nodeID, ps)
+	}
 }
 
 // notifyNodeEvent 在锁外安全地调用事件回调：先在锁内取回调快照，

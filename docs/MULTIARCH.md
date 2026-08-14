@@ -134,6 +134,7 @@ docker buildx du
 | buildx 首次拉镜像 | golang/distroless 双平台镜像 + go mod 下载，单次可达数 GB | CI 有缓存（build-push-action 自动）；本地耐心等待 |
 | 版本注入遗漏 | `--version` 输出 dev，两架构不一致 | 构建必须传 `--build-arg VERSION`；CI 已固定 |
 | registry 存储格式 | 旧 registry 不支持 manifest list | 用 registry:2（OCI 兼容） |
+| :latest 可被覆盖（非 immutable）；无镜像签名/SBOM | 每次发布（含手动 dispatch）都覆盖 :latest tag，无不可变保护；未生成 cosign 签名与 SBOM | 按版本 tag 可追溯（M4C P2 记录）；签名/SBOM 依赖镜像仓库 + cosign 基础设施，**延后至 M5 发布阶段**（台账见 docs/PROGRESS.md） |
 
 ---
 

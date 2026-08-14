@@ -408,8 +408,20 @@
 | 安全扫描/质量门 | ✅ 24 包 race 全绿、lint 0、覆盖率 77.9% |
 
 ### 审查（docs/CODE-REVIEW-M4C.md，178 行）
-- 结论：✅ 有条件通过（0 P0 / 0 P1 / 9 P2）→ P2×3 修复 + P2×6 记录待办
-- P2 待办：TLSSAN 语法校验、reset 同名文件误删边界、陈旧快照窗口（已文档化）、模拟器 unit ID 校验、float 截断、:latest immutable/cosign/SBOM
+- 结论：✅ 有条件通过（0 P0 / 0 P1 / 9 P2）→ P2×3 修复 + P2×6 处置完毕（4 修复 / 1 关闭 / 1 延后）
+
+### M4C P2 处置台账（P2×6，2026-08-14）
+
+| 项 | 内容 | 方式 | 结论（一句话） | 证据 |
+|----|------|------|----------------|------|
+| ① | TLSSAN 无语法校验（非法条目 Warn 跳过） | 修复 | 非法条目 fail-fast：启动即报错退出（exit 1），不再静默跳过导致证书仅回环可用 | parseSANList + TestParseSANList/TestRunInvalidTLSSAN（cmd/cloudcore） |
+| ② | reset 白名单误删同名文件 / install.sh 无校验和 | 修复 | 产物校验清单 keadm-manifest.json 记录 sha256；reset 删除前校验，不匹配跳过并提示人工确认；旧产物无清单时保持原行为并提示 | manifest.go + TestResetSkipsTamperedFile/TestManifestMergesInitAndJoin（cmd/keadm） |
+| ③ | 模拟器 unit ID 不校验 / 无连接数上限 | 修复 | unit ID 仅接受 1-247（0 广播/248-255 保留按规范应答 0x0B）；maxConns 默认 8，超限拒连 | TestUnitIDOutOfRangeRejected/TestMaxConnsRejectsExcess（pkg/modbussim） |
+| ④ | NodeController List→MarkOffline 陈旧快照窗口 | 关闭 | 已在 docs/NODECONTROLLER.md §6 文档化为已知边界（check-then-act 概率极低、下一心跳自愈），无需改动 | NODECONTROLLER.md §6「与断开事件竞态」 |
+| ⑤ | modbus mapper float→uint16 截断 | 修复 | 写入改为四舍五入到 0.1°C 粒度（25.55→256 非 255），值域校验前置不越界 | math.Round + TestHandleCommandTargetTempRounds（mappers/modbus） |
+| ⑥ | :latest 无 immutable 保护 / 无 cosign/SBOM | 延后 | 需镜像仓库 + cosign 签名基础设施，属 M5 发布阶段；风险已登记 MULTIARCH.md §5，待办见下表 §5 | MULTIARCH.md §5 风险表 |
+
+> 处置 commit：`fix`（①②③⑤ 代码+测试）与 `docs`（④⑥+台账）各一个，见 4K 验证记录与 git log。
 
 ## 5. 待办项（Backlog）
 
@@ -427,6 +439,7 @@
 | P3 | M1 通道 P3 项×4 | newID 忽略 rand 错误 / Shutdown 撞 Start 初始化窗口 / 被踢连接标志延迟清除 / 退避重置缺单测（见 CODE-REVIEW-M1.md） |
 | P2 | edgecore 占位程序测试 | 非核心包，M1 开发时补 |
 | P2 | Helm Chart 骨架（M0-4） | 进入部署阶段前完成 |
+| P2 | M4C 审查 P2-⑥ :latest immutable / cosign / SBOM | 延后（M5 发布阶段）：需镜像仓库 + cosign 签名基础设施；风险已登记 MULTIARCH.md §5（处置台账见 4K 节） |
 
 ## 6. 里程碑状态
 

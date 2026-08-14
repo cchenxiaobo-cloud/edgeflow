@@ -532,7 +532,7 @@ func TestConcurrentSubscribeDuringReconnect(t *testing.T) {
 	}()
 
 	// 重启 broker，等待自动重连完成
-	broker = startBroker(t, port)
+	_ = startBroker(t, port) // 重启 broker（cmd 句柄不再使用，由测试结束时清理）
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if bus.IsOnline() {

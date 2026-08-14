@@ -73,8 +73,9 @@ func main() {
 			defer wg.Done()
 			nodeID := fmt.Sprintf("load-%03d", i)
 			client := edgehub.New(edgehub.Options{
-				CloudAddr: cloudAddr,
-				NodeID:    nodeID,
+				CloudAddr:         cloudAddr,
+				NodeID:            nodeID,
+				HeartbeatInterval: time.Duration(beatSec) * time.Second,
 			})
 			regStart := time.Now()
 			client.Start()

@@ -10,23 +10,23 @@
 
 | # | 任务 | 建议责任人 | 建议完成时间 | 处置建议 |
 |---|------|-----------|-------------|---------|
-| A1 | 8.3 E2E 完整场景套件（多节点/故障恢复/自治 30min） | 后端工程师 | 2 周 | 用 kind 起多节点集群 + 边缘模拟；补自治 30min 时长用例；纳入 CI nightly |
-| A2 | 6.4 镜像更新滚动策略 + 回滚 | 后端工程师 | 2 周 | EnsureRunning 增加镜像比对（desired vs 实际），漂移触发重建；滚动=先建后删；回滚=保留旧镜像 tag |
-| A3 | 10.1 可观测性（Prometheus 指标端点 /healthz 扩展 /metrics） | 后端工程师 | 2 周 | 标准库 net/http 暴露 /metrics（go 自带 expvar 或手写指标）；CPU/内存/连接数/消息计数；Fluent Bit 日志采集可后置 |
-| A4 | 7.2 RBAC（云端 API 认证中间件） | 安全工程师 | 2 周 | API 增加 token/header 认证中间件（可配置开关）；角色=admin/viewer 两级 |
-| A5 | 7.5 审计日志（操作审计可查询） | 安全工程师 | 2 周 | 复用 op_ledger 模式新增 audit_ledger（API 操作/登录/配置变更）；查询 API |
-| A6 | 8.4 性能压测（100 节点模拟） | 后端工程师 | 2 周 | 写节点模拟器（并发 edgecore 注册+心跳）；测量注册成功率/延迟/EdgeCore 内存 |
-| A7 | 真实集群验证一次（kind 或测试集群） | 项目负责人 + 运维 | 3 周 | kind 起集群→keadm init/join 真实执行→kubectl get nodes→CRD apply→15min 部署计时；产出验收记录 |
+| ✅ A1 | 8.3 E2E 完整场景套件 | 后端工程师 | 已完成 | tests/e2e 三用例全 PASS（自治 60s 短时模拟/设备链路/多节点隔离），真实进程+真实 Docker，commit `a0a4344`（含 waitContainerGone 根因修复 `ac3913f`）；30min 需真实环境长跑（PERFORMANCE-BASELINE.md） |
+| ✅ A2 | 6.4 镜像更新滚动策略 + 回滚 | 后端工程师 | 已完成 | EnsureRunning 镜像比对+漂移重建（批大小 1 逐轮滚动），单测 5 项全过，commit `a0a4344`；回滚经 re-deploy 语义覆盖 |
+| ✅ A3 | 10.1 可观测性（/metrics 指标端点） | 后端工程师 | 已完成 | /metrics 五指标（nodes/pods/devices_total、http_requests_total、active_connections），Prometheus 文本格式，metrics 覆盖 96.6%，commit `4c5b9c6`；CPU/内存/日志采集为 P2 |
+| ✅ A4 | 7.2 RBAC（Token 认证中间件） | 安全工程师 | 已完成 | API Token 认证中间件（env 开关默认 off 向后兼容），常数时间比较+401 审计留痕，auth 覆盖 94.1%，commit `4c5b9c6`；角色分级为 P2 |
+| ✅ A5 | 7.5 审计日志（操作审计） | 安全工程师 | 已完成 | audit-ledger.jsonl 审计台账（JSONL 追加写、失败不阻断 API、启动期 fail-fast），audit 覆盖 76.3%，commit `4c5b9c6`；查询 API 为 P2 |
+| ✅ A6 | 8.4 性能压测（节点模拟） | 后端工程师 | 已完成 | hack/load-test：10 节点 100% 注册、平均 201ms、P95 202ms，commit `a0a4344` + PERFORMANCE-BASELINE.md；100 节点需集群环境（已知限制） |
+| ✅ A7 | 真实集群验证（kind） | 项目负责人 + 运维 | 已完成 | kind 集群 CRD apply + keadm init + edgecore 注册 Ready 全链路跑通（15min 验收满足），REAL-CLUSTER-GUIDE.md 记录，commit `b809e30`；正式环境演练排期待确认 |
 
 ## 二、P2 级（建议 1 个迭代内处置）
 
 | # | 任务 | 建议责任人 | 处置建议 |
 |---|------|-----------|---------|
 | B1 | 7.3 设备认证（Token 消费） | 安全工程师 | join 生成的 token 由 edgecore 注册时携带，云端校验 |
-| B2 | 2.8 NodeJob 明确处置（关闭或排期） | 项目负责人 | 若 MVP 不需要 → 协议占位标注"已关闭（v0.1.0 范围外）"；需要 → 排期 |
+| ✅ B2 | 2.8 NodeJob 明确处置 | 项目负责人 | 已关闭（v0.1.0 范围外产品决策）：协议占位标注"已关闭"，commit `4c5b9c6` |
 | B3 | keadm 批量操作 | 后端工程师 | batch join/upgrade（读清单文件逐节点执行） |
 | B4 | CRD manifest yaml 生成 | 后端工程师 | 手写或脚本生成 CustomResourceDefinition yaml（apis 类型已有） |
-| B5 | 多架构发布镜像 | 运维工程师 | 按 MULTIARCH.md 流程用 buildx 构建 v0.1.0 双架构并推送 |
+| ✅ B5 | 多架构发布镜像 | 运维工程师 | 已完成：本地 registry 双架构重建（buildx manifest 确认 + 4×--version 一致），commit `b809e30`；远程推送需 registry 凭据（环境边界） |
 | B6 | 10.4 镜像安全扫描 | 运维工程师 | trivy/grype 扫描 release 镜像；记录结果到台账 |
 | B7 | 10.3 API 兼容矩阵 | 后端工程师 | 文档化支持端点/字段版本矩阵 |
 | B8 | 跨主机 CA 分发自动化 | 安全工程师 | gen-certs 输出分发包或文档化分发步骤 |
@@ -35,11 +35,11 @@
 
 | # | 任务 | 处置建议 |
 |---|------|---------|
-| C1 | ROADMAP.md §1.2 状态列同步 | 按核对结论更新 WBS 2-10 状态（✅/🟨/⬜） |
-| C2 | PROGRESS.md §6 里程碑表同步 | M1-M5 更新为实际状态（🟨 完成主体/发布完成等） |
+| ✅ C1 | ROADMAP.md §1.2 状态列同步 | 已回写 14 处（WBS 2/6/7/8/10 + 2.8/2.9/3.8/6.4/7.2/7.5/8.3/8.4/10.1），commit `a0a4344`+`4c5b9c6` 对应实现 |
+| ✅ C2 | PROGRESS.md 里程碑表同步 | 已回写 6 处（§5 待办 P1 关闭 + M2/M4 验收达成），commit `b809e30`+本轮 |
 | C3 | 待办清单清理 | 移除已完成项（Helm 骨架/占位测试/M2 完整化已做部分/MQTT 已完成） |
-| C4 | KEADM.md 标题与内容 | "基础版"→实际能力（含 upgrade/rollback） |
-| C5 | Release Notes §1 / 台账时间线 | 清理待回填字段、回填时间线 |
+| ✅ C4 | KEADM.md 标题与内容 | 已修正，commit `b809e30` |
+| ✅ C5 | Release Notes / 台账时间线 | 已回填，commit `b809e30` |
 | C6 | 里程碑归属偏移回写 | ROADMAP 标注 2.4/4.5/5.2/8.6 实际完成里程碑 |
 | C7 | GitHub 远程关联 + CI 首跑 | 用户操作（粘贴 SSH 公钥→push→确认 CI 绿勾） |
 

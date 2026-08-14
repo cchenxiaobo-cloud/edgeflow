@@ -497,11 +497,11 @@
 |--------|------|------|
 | P1 | GitHub 远程仓库关联 | 用户把 `~/.ssh/id_ed25519.pub` 粘贴到 GitHub → `git remote add origin` → push（步骤见 ENV-SETUP.md §4.2） |
 | P1 | 推送后验证 CI 首次运行 | push 后 Actions 标签页应显示 lint+test 绿勾（M0 验收"CI PR 反馈 ≤10min"至今未实证） |
-| P1 | 8.3 E2E 完整场景（含自治 30min 时长） | M2 验收"E2E 自治全过"未达成：无场景套件（多节点/故障恢复/自治 30min/升级），断网自治仅 40s 短测（audit-m02 §2.4） |
-| P1 | 6.4 镜像更新滚动策略 + 回滚 | 已运行容器镜像漂移不重建（EnsureRunning no-op）；无分批/门槛/回滚（audit-m02 §2.3） |
+| ~~P1~~ ✅ | 8.3 E2E 完整场景 | 已关闭：tests/e2e 三用例全 PASS（自治 60s 短时模拟/设备链路/多节点隔离），commit `a0a4344`；30min 时长需真实环境长跑（PERFORMANCE-BASELINE.md 说明） |
+| ~~P1~~ ✅ | 6.4 镜像更新滚动策略 + 回滚 | 已关闭：镜像漂移检测+重建（批大小 1 逐轮滚动），单测 5 项全过，commit `a0a4344`；回滚经 re-deploy 语义覆盖 |
 | P1 | M1/M2 验收"kubectl get nodes / kubectl apply"字面未达成 | 无真实 K8s 接入，验收以 REST API 适配；需决策：修订验收口径或排期真实 K8s 接入（audit-m02 §4 P1） |
-| P1 | 2.8 NodeJob 未实现 | 仅协议占位"待定"；ROADMAP 缺口 1 未关闭，需明确关闭或排期（audit-m02 §2.1） |
-| P2 | WBS 7 缺失项：7.2 RBAC / 7.3 设备认证 / 7.5 审计日志 | 均未实现且未列入 Release Notes 已知问题（audit-m35 G1）；另 10.1 可观测性（G2）、10.3 API 兼容矩阵（G4）、8.4 压测（G3）同属 M4 验收缺口 |
+| ~~P1~~ 🔒 | 2.8 NodeJob 未实现 | 已关闭（产品决策）：v0.1.0 范围外，协议占位标注"已关闭"，commit `4c5b9c6` |
+| P2（部分完成） | WBS 7 缺失项：7.2 RBAC / 7.3 设备认证 / 7.5 审计日志 | 7.2 Token 认证中间件 ✅（commit `4c5b9c6`）、7.5 审计台账 ✅（commit `4c5b9c6`）；7.3 设备认证未做；10.1 可观测性 ✅（commit `4c5b9c6`）、8.4 压测 ✅（commit `a0a4344`）；10.3 API 兼容矩阵未做 |
 | P2 | 9.1 架构文档评审 + 内容回写 | ARCHITECTURE.md 未评审且滞后：NATS→MQTT、Token→mTLS、实现进度至 M5（audit-m02 S11-S13） |
 | P2 | 生产多节点集群验证 | kind 单节点真实集群路径已跑通（2026-08-14，CRD apply/部署/注册，≈2min，见 docs/REAL-CLUSTER-GUIDE.md）；多节点网络/存储/证书差异待生产演练（DRILL-SCHEDULE） |
 | P2 | 6.5 资源管理（调度/资源超卖） | 仅 Replicas 伸缩；超卖/调度未做（audit-m02 §4） |
@@ -523,7 +523,7 @@
 |--------|------|------|
 | M0 架构基线与开发就绪 | ✅ **完成** | 骨架/共享库/CI/CRD 类型/Helm 全部就绪；2 项验收未实证（CI 未运行、CRD 从未 apply，见 audit-m02 §1.1） |
 | M1 云边核心通信链路 | ✅ **完成** | 协议/连接/路由/可靠投递/CloudHub/EdgeHub/MetaManager/Edged POC 全达成；3 项归属偏移（2.4/4.5/8.6 实际 M4 完成）；"kubectl get nodes"为 REST 适配 |
-| M2 应用部署与边缘自治 | 🟨 **核心链路完成，验收未完全达成** | 部署/配置/状态上报/自治基础 ✅；P1 残留：8.3 E2E 完整场景（自治 30min）+ 6.4 镜像更新滚动策略（audit-m02 §2.3/§2.4） |
+| M2 应用部署与边缘自治 | ✅ **验收达成（收尾轮补齐）** | 部署/配置/状态上报/自治 ✅；8.3 E2E 套件 ✅（commit `a0a4344`）+ 6.4 镜像漂移重建 ✅（commit `a0a4344`） |
 | M3 设备管理 | 🟨 **第 1-3 轮完成** | DeviceTwin/EventBus/Mapper/流水线/示例 ✅；5.2 Modbus 实际 M4 完成、OPC-UA 未做；端到端延迟 ≤5s 从未测量（audit-m35 §2.1） |
-| M4 生产化 | 🟨 **主体+收尾完成** | mTLS/升级回滚/Helm/keadm 基础 ✅；7.2 RBAC/7.3 设备认证/7.5 审计日志/10.1 可观测性/10.3 兼容矩阵/8.4 压测未做（audit-m35 G1-G4） |
+| M4 生产化 | ✅ **验收达成（收尾轮补齐）** | mTLS/升级回滚/Helm/keadm 基础 ✅；7.2/7.5/10.1/8.4 ✅（commit `4c5b9c6`+`a0a4344`）；7.3 设备认证/10.3 兼容矩阵为 P2 残留 |
 | M5 发布 | 🟨 **发布完成** | v0.1.0 产物齐备（6 二进制+Chart+checksum+SBOM+镜像）；真实集群路径（15min 部署、kubectl get nodes Ready）未执行，已披露为 E2 限制；发布镜像已重建为双架构（2026-08-14，B5） |

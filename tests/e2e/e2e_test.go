@@ -212,6 +212,9 @@ func cloudEnv(httpPort, hubPort int) []string {
 	return append(os.Environ(),
 		"EDGEFLOW_CLOUDCORE_PORT="+strconv.Itoa(httpPort),
 		"EDGEFLOW_CLOUDCORE_HUB_PORT="+strconv.Itoa(hubPort),
+		// 审计台账写入临时目录，避免污染仓库（tests/e2e/data 曾因
+		// 未设此变量被写入 2737 行死文件）。
+		"EDGEFLOW_CLOUDCORE_AUDIT_PATH="+filepath.Join(os.TempDir(), "edgeflow-e2e-audit-ledger.jsonl"),
 	)
 }
 

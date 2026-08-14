@@ -1,0 +1,129 @@
+% 第 4 章 模型管理场景
+\chapter{模型管理场景}
+
+\begin{quote}
+\textbf{本章范围声明}：EdgeFlow v0.1.0 当前\textbf{未内置}模型仓库（模型注册/存储）、模型版本管理、模型灰度发布与训练平台，模型以“容器镜像 + 配置”为载体分发。上述平台化能力处于\warn（产品 ROADMAP 已规划灰度发布等能力）。本章方案为基于现有能力的\textbf{过渡路径}，全部引用能力均来自事实基线，平台能力上线后可平滑演进，不虚构任何未实现能力。
+\end{quote}
+
+\section{业务痛点}
+
+\begin{itemize}
+  \item \textbf{模型分发靠人工}：模型文件与运行环境依赖人工拷贝、登录边缘节点手动部署，节点数量一多便不可持续，且极易因人工操作引入错误。
+  \item \textbf{版本混乱}：模型缺少统一的版本标识与台账，边缘节点“实际跑的是哪个版本”说不清，出现问题难以定位。
+  \item \textbf{边缘更新难}：边缘节点分布广、网络条件不一，逐个节点升级模型成本高、耗时长，更新窗口难以控制。
+  \item \textbf{回滚无保障}：升级失败后缺少可靠的版本回退手段，业务长时间中断风险高，运维人员不敢轻易升级。
+\end{itemize}
+
+\section{方案设计}
+
+\textbf{设计定位}：在模型管理平台（注册、版本、灰度）\warn 的前提下，利用 EdgeFlow 现成的“边缘容器管理 + 云端下发通道 + 配置同步 + 生产级升级回滚”能力，构建一套可落地的模型分发、升级、回滚与追踪链路。
+
+\textbf{模型分发链路（过渡方案，8 步）}：
+
+\begin{enumerate}
+  \item \textbf{模型打包}：模型文件与推理运行时（推理框架由用户镜像自带）打包为推理镜像，以\textbf{镜像 Tag 承载模型版本}（如 \texttt{model-x:v1.2.0}），实现“镜像即模型、Tag 即版本”。
+  \item \textbf{镜像推送}：将版本化镜像推送到镜像仓库（客户既有仓库或自建仓库），镜像仓库承担模型存储职责。
+  \item \textbf{声明下发}：云端通过 \texttt{POST /api/v1/nodes/\{nodeID\}/podsync} 下发 Pod 声明，指定镜像版本与副本数（F31）；下发链路具备可靠投递保障（F05）。
+  \item \textbf{边缘执行}：边缘节点拉取指定版本镜像运行；Edged 声明式调谐（F11，5s 周期）确保实际运行版本与声明一致，多副本补齐/收缩（F12）保证实例数量符合声明。
+  \item \textbf{参数化配置}：模型参数、阈值等通过 \texttt{POST /api/v1/nodes/\{nodeID\}/config-sync} 下发（F31），由边缘 MetaManager SQLite 持久化期望态（F17），节点重启后配置不丢失，实现“模型与参数解耦、参数可调”。
+  \item \textbf{版本升级}：新版本镜像（新 Tag）构建推送后，更新 Pod 声明中的镜像版本，\textbf{多副本分批滚动}替换（F12），减少业务中断。
+  \item \textbf{版本回滚}：将 Pod 声明恢复为旧版本 Tag 重新下发，边缘自动收敛回旧版本（应用级回滚）；同时可配合 keadm upgrade/rollback 的产品级回滚（F39）恢复节点软件状态。
+  \item \textbf{版本追踪}：以镜像 Tag + ops-ledger 操作留痕 + 审计台账（F39）形成“版本—节点—时间”全链路记录。
+\end{enumerate}
+
+\textbf{灰度发布规划路径}：
+
+\begin{itemize}
+  \item 产品 ROADMAP 已规划模型灰度发布能力（\warn），届时支持按节点/按比例的正式灰度能力。
+  \item \textbf{过渡期方案}：利用多副本与分批下发能力，按“试点节点（1 台）$\rightarrow$ 小批节点 $\rightarrow$ 全量”的人工分批方式推进，实现等效灰度效果；灰度发布能力上线后可无缝切换。
+\end{itemize}
+
+\section{产品特性引用}
+
+\textbf{表 4-1：模型管理场景特性引用}
+
+{\small\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}p{1.6cm}p{0.8cm}p{3.4cm}p{8.8cm}@{}}
+\toprule
+环节 & F 编号 & 产品能力 & 说明\\
+\midrule
+声明下发 & F31 & 云端 API 下发通道 & \seqsplit{\texttt{POST /api/v1/nodes/\{nodeID\}/podsync}} 下发 Pod 声明（镜像版本+副本数）、\seqsplit{\texttt{POST /api/v1/nodes/\{nodeID\}/config-sync}} 下发模型参数/阈值；为云端 13 个 HTTP 端点之一\\
+可靠投递 & F05 & 下发通道可靠投递 & 保证 Pod 声明与配置下发不丢失，支撑升级/回滚指令可靠到达\\
+期望态持久化 & F17 & 边缘 MetaManager SQLite 持久化 & 期望态（含模型参数配置）落盘，节点重启后仍按声明收敛\\
+声明式调谐 & F11 & 声明式调谐（5s 周期） & 模型版本、副本数变更后边缘自动收敛至期望状态\\
+多副本管理 & F12 & 多副本补齐/收缩 & 模型服务多副本部署，升级分批滚动、异常自动补齐\\
+健康自愈 & F13 & 健康自愈自动重启 & 模型实例异常自动重启恢复，减少人工介入\\
+异常退避 & F14 & CrashLoopBackOff（3 次/30s 退避/60s 稳定重置） & 模型加载失败等场景下避免无限重启、保护节点\\
+镜像漂移防护 & F15 & 镜像漂移检测自动重建 & 模型镜像被篡改/漂移时自动重建，保障模型完整性与可信\\
+生产部署 & F36 / F37 & keadm 部署 / Helm 部署 & 边缘节点批量部署与集群化安装，支撑模型服务规模化落地\\
+多架构支持 & F38 & amd64 + arm64 多架构镜像 & 同一模型镜像覆盖异构边缘设备\\
+升级回滚 & F39 & 产品级升级回滚机制 & 备份 \seqsplit{\texttt{manifest.json+sha256}}、\seqsplit{\texttt{--simulate-failure}} 演练、KEADM\_OPERATOR 审计、staging 原子替换、ops-ledger 留痕\\
+模型仓库/版本管理/灰度 & --- & 模型管理平台（注册、版本、灰度） & \warn，v0.1.0 不提供；本章以“镜像 Tag + config-sync + ops-ledger 台账”为过渡替代路径\\
+\bottomrule
+\end{tabular}}
+
+\begin{quote}
+\textcolor{efred}{\textbf{明确标注}}：模型仓库（模型注册/存储）、模型版本管理、模型灰度发布、训练平台——\warn，当前版本不提供。4.2 方案为基于现有能力的过渡路径，相关平台能力上线后可直接演进，不构成对未发布功能的承诺。
+\end{quote}
+
+\section{部署方式}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.94\textwidth]{../diagrams/scenario-model-mgmt.png}
+  \caption{模型管理场景：镜像化模型分发链路}
+  \label{fig:model-mgmt}
+\end{figure}
+
+\textbf{（1）构建并推送模型镜像}（示意命令，通用行业实践）：
+
+\begin{lstlisting}
+docker build -t registry.example.com/edgeflow/models/defect-detector:v1.2.0 .
+docker push registry.example.com/edgeflow/models/defect-detector:v1.2.0
+\end{lstlisting}
+
+\textbf{（2）下发模型服务声明}（podsync，字段示意；完整声明格式以产品文档为准）：
+
+\begin{lstlisting}
+POST /api/v1/nodes/{nodeID}/podsync
+  image:   registry.example.com/edgeflow/models/defect-detector:v1.2.0
+  replicas: 2
+\end{lstlisting}
+
+\textbf{（3）下发模型参数配置}（config-sync，字段示意）：
+
+\begin{lstlisting}
+POST /api/v1/nodes/{nodeID}/config-sync
+  # 模型阈值/参数（如告警阈值、推理超参），由边缘 SQLite 持久化（F17）
+\end{lstlisting}
+
+\textbf{（4）部署验证}：查询节点状态与副本就绪情况；声明下发后 Edged 在 5s 调谐周期内收敛（F11）。
+
+\textbf{（5）升级（版本更新）}：构建并推送新版本镜像（如 \texttt{v1.3.0}）$\rightarrow$ 更新 Pod 声明镜像 Tag $\rightarrow$ 多副本分批滚动替换（F12）；产品级升级通过 keadm 执行，升级前可用 \texttt{--simulate-failure} 演练验证（F39）：
+
+\begin{lstlisting}
+# 示意命令，以产品文档为准
+keadm upgrade --version <目标版本> --simulate-failure   # 升级演练
+keadm upgrade --version <目标版本>                      # 正式升级
+\end{lstlisting}
+
+\textbf{（6）回滚}：
+
+\begin{itemize}
+  \item \textbf{应用级回滚}：将 Pod 声明镜像 Tag 恢复为旧版本（如 \texttt{v1.2.0}）重新下发，边缘自动收敛回旧版本；
+  \item \textbf{产品级回滚}：\texttt{keadm rollback} 恢复至升级前状态（备份 manifest.json+sha256、staging 原子替换，F39）；
+  \item 升级/回滚建议在 KEADM\_OPERATOR 审计模式下执行，ops-ledger 自动留痕（F39）。
+\end{itemize}
+
+\begin{quote}
+以上命令与字段均为示意用法，具体语法以产品文档为准。
+\end{quote}
+
+\section{客户价值}
+
+\begin{itemize}
+  \item \textbf{版本可追踪}：镜像 Tag + ops-ledger + 审计台账构成完整版本记录，任一节点当前模型版本与变更历史可查，问题可追溯（结果性描述）。
+  \item \textbf{更新可控}：云端声明式下发、边缘自动收敛，多副本分批滚动降低更新对业务的影响，更新窗口可管理。
+  \item \textbf{回滚有保障}：旧版本 Tag 重下发（应用级）与 keadm rollback（产品级）双通道回退，升级失败可快速恢复，敢升级、能回退。
+  \item \textbf{升级留痕}：\texttt{--simulate-failure} 演练 + KEADM\_OPERATOR 审计 + ops-ledger 留痕，升级过程全程可审计，满足运维与合规追溯要求。
+\end{itemize}

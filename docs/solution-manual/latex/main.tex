@@ -1,0 +1,150 @@
+% =====================================================================
+% EdgeFlow 物联网解决方案手册 v1.0.0
+% 编译方式（见 compile.sh）：
+%   xelatex -interaction=nonstopmode main.tex   （连续执行两遍生成目录）
+% 依赖：TeX Live 2025+（ctexbook、xeCJK、booktabs、longtable、
+%        tabularx、tcolorbox、listings、fancyhdr、hyperref、enumitem）
+% 字体：PingFang SC（macOS 系统字体）+ Helvetica Neue
+% 图片：../diagrams/*.png（6 张，与正文图号一一对应）
+% =====================================================================
+\documentclass[10.5pt,a4paper,openany]{ctexbook}
+
+% ---------- 页面与版心 ----------
+\usepackage[top=2.4cm,bottom=2.4cm,left=2.2cm,right=2.2cm]{geometry}
+
+% ---------- 字体：极简阅读排版（系统无衬线） ----------
+\renewcommand{\familydefault}{\sfdefault}
+\setsansfont{Helvetica Neue}[
+  BoldFont=Helvetica Neue Bold,
+  ItalicFont=Helvetica Neue Italic]
+\setCJKmainfont{PingFang SC}[
+  BoldFont=PingFang SC Semibold,
+  ItalicFont=PingFang SC Light]
+\setCJKsansfont{PingFang SC}[BoldFont=PingFang SC Semibold]
+\setCJKmonofont{PingFang SC}
+
+% ---------- 颜色（黑/灰为主，红色仅用于规划中/警示标注） ----------
+\usepackage{xcolor}
+\definecolor{efblack}{HTML}{111111}
+\definecolor{efgray}{HTML}{666666}
+\definecolor{efred}{HTML}{E30613}
+\definecolor{eflight}{HTML}{F5F5F5}
+\definecolor{efborder}{HTML}{BBBBBB}
+
+% ---------- 标题样式：左对齐、无装饰 ----------
+\usepackage{titlesec}
+\titleformat{\chapter}[block]
+  {\Large\bfseries}{\thechapter\quad}{0pt}{}
+  [\vspace{2pt}{\color{efblack}\rule{\textwidth}{1.5pt}}]
+\titlespacing*{\chapter}{0pt}{6pt}{18pt}
+\titleformat{\section}[block]
+  {\large\bfseries}{\thesection\quad}{0pt}{}
+\titlespacing*{\section}{0pt}{16pt}{8pt}
+\titleformat{\subsection}[block]
+  {\normalsize\bfseries}{\thesubsection\quad}{0pt}{}
+\titlespacing*{\subsection}{0pt}{12pt}{6pt}
+
+% ---------- 目录 ----------
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=efblack,
+  urlcolor=efgray,
+  bookmarksnumbered=true,
+  pdftitle={EdgeFlow 物联网解决方案手册 v1.0.0},
+  pdfauthor={EdgeFlow 方案与产品团队}}
+
+% ---------- 页眉页脚 ----------
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\sffamily EdgeFlow 物联网解决方案手册}
+\fancyhead[R]{\small\sffamily v1.0.0}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{efblack}\leaders\hrule height \headrulewidth\hfill}}
+\fancypagestyle{plain}{\fancyhf{}\fancyfoot[C]{\small\thepage}\renewcommand{\headrulewidth}{0pt}}
+
+% ---------- 表格 ----------
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{makecell}
+\renewcommand{\arraystretch}{1.25}
+\setlength{\tabcolsep}{5pt}
+\usepackage{caption}
+\captionsetup{font=small,labelfont=bf,skip=6pt}
+
+% ---------- 列表 ----------
+\usepackage{enumitem}
+\setlist{itemsep=2pt,topsep=4pt,parsep=0pt}
+
+% ---------- 代码块 ----------
+\usepackage[most]{tcolorbox}
+\usepackage{listings}
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  backgroundcolor=\color{eflight},
+  frame=single,
+  rulecolor=\color{efborder},
+  breaklines=true,
+  columns=fullflexible,
+  xleftmargin=6pt,xrightmargin=6pt,
+  aboveskip=8pt,belowskip=8pt}
+\newtcbox{\warnbox}{nobeforeman,after=\hspace{2pt},colback=efred!8,
+  colframe=efred,boxrule=0.4pt,arc=0pt,left=3pt,right=3pt,top=2pt,bottom=2pt}
+
+% ---------- 自定义命令 ----------
+\usepackage{seqsplit}
+\newcommand{\warn}{\textcolor{efred}{\textbf{⚠ 规划中/即将上线}}}
+\newcommand{\fn}[1]{\textbf{F#1}}
+\newcommand{\env}[1]{{\ttfamily\seqsplit{#1}}}
+
+% ---------- 正文 ----------
+\begin{document}
+
+% ---------- 封面 ----------
+\begin{titlepage}
+\thispagestyle{empty}
+\vspace*{3.2cm}
+{\Huge\bfseries EdgeFlow 物联网解决方案手册\par}
+\vspace{10pt}
+{\LARGE 四场景：物联网数据采集 · 弱网自治 · 模型管理 · 模型应用\par}
+\vspace{3.2cm}
+\begin{tabular}{ll}
+产品版本基线 & EdgeFlow v0.1.0（2026-08-14 发布）\\
+手册版本 & v1.0.0\\
+密级 & 公开（售前/客户技术交流）\\
+适用范围 & 售前方案设计、客户技术决策、PoC 部署参考\\
+\end{tabular}
+\vfill
+{\small 声明：本手册所有能力、参数与数字均以 EdgeFlow v0.1.0（2026-08-14 发布）已核验实现为准；
+规划中/尚未实现的能力一律明确标注“规划中/即将上线”，不构成交付承诺。
+文中命令与字段均为示意用法，具体语法以产品文档为准。}
+\end{titlepage}
+
+% ---------- 修订记录 ----------
+\chapter*{修订记录}
+\addcontentsline{toc}{chapter}{修订记录}
+\begin{tabularx}{\textwidth}{p{1.4cm}p{2.2cm}p{3cm}X}
+\toprule
+版本 & 日期 & 修订人 & 说明\\
+\midrule
+v1.0.0 & 2026-08-14 & 方案与产品团队 & 首版定稿：四场景 × 五部分结构、数据链路与台账口径、特性-场景映射表\\
+\bottomrule
+\end{tabularx}
+
+% ---------- 目录 ----------
+\tableofcontents
+
+% ---------- 正文各章 ----------
+\input{chapters/ch01-overview}
+\input{chapters/ch02-collect}
+\input{chapters/ch03-weaknet}
+\input{chapters/ch04-model-mgmt}
+\input{chapters/ch05-model-app}
+\input{chapters/ch06-dataflow}
+\input{chapters/appendix}
+
+\end{document}

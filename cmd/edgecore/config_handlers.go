@@ -41,8 +41,16 @@ func handleConfigSync(store *metamanager.Store, msg *protocol.Message) error {
 		if err := store.SaveConfig(configJSON); err != nil {
 			return fmt.Errorf("保存配置元数据失败: %w", err)
 		}
-		log.Infof("MetaManager 已保存配置元数据（operation=%s, config=%s）",
-			payload.Operation, configJSON)
+		// M3B P1-1 修复：只记录脱敏摘要（name/namespace/kind），
+		// Secret 的密钥材料（data）绝不进日志。
+		var meta struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+			Kind      string `json:"kind"`
+		}
+		_ = json.Unmarshal([]byte(configJSON), &meta) // 解析失败不影响已落盘
+		log.Infof("MetaManager 已保存配置元数据（operation=%s, ns=%s, name=%s, kind=%s）",
+			payload.Operation, meta.Namespace, meta.Name, meta.Kind)
 		return nil
 	case "delete":
 		// delete 时 config 对象通常只携带 name/namespace；提取后按命名空间+名称删除

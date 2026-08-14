@@ -177,12 +177,15 @@ func (b *EventBus) onConnect(_ mqtt.Client) {
 	b.mu.Lock()
 	b.online = true
 	b.mu.Unlock()
+	// 全程持读锁（M3B P1-2 修复）：subscribeLocked 约定调用方持有 b.mu，
+	// 与 Subscribe/Unsubscribe 的写锁互斥，杜绝重连窗口并发订阅导致的
+	// map 并发读写 fatal panic。paho 的 Subscribe 异步回调不依赖本锁，无死锁。
 	b.mu.RLock()
+	defer b.mu.RUnlock()
 	subs := make([]string, 0, len(b.subs))
 	for topic := range b.subs {
 		subs = append(subs, topic)
 	}
-	b.mu.RUnlock()
 	for _, topic := range subs {
 		if err := b.subscribeLocked(topic); err != nil {
 			log.Warnf("eventbus: 重连后恢复订阅 %q 失败: %v", topic, err)

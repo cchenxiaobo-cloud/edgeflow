@@ -220,3 +220,20 @@ status:
         value: "29.5"
   lastUpdatedTime: "2026-08-13T12:00:00Z"
 ```
+
+## 配置下发 API（WBS 6.2，M2 完整化）
+
+### POST /api/v1/nodes/{nodeID}/config-sync
+向指定边缘节点下发 ConfigMap/Secret 配置（可靠投递：边缘确认后返回）。
+
+请求体：
+```json
+{"operation":"add","config":{"name":"app-config","namespace":"default","kind":"ConfigMap","data":{"key1":"value1"}}}
+```
+- operation：add/update/delete
+- kind：ConfigMap/Secret（delete 时可不填）
+- data：map[string]string（add/update 必填；Secret 的 value 当前为明文存储，生产环境需加密，见 PROGRESS.md 待办）
+
+响应：200 边缘已确认（Ack ok）；400 参数非法；404 节点离线/未注册；502 边缘拒绝（Ack error）；504 确认超时重试耗尽；500 内部错误。
+
+边缘存储：MetaManager SQLite，key=`configs/<namespace>/<name>`（与 Pod 元数据同库）。

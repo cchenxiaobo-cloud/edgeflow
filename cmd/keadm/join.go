@@ -133,6 +133,17 @@ func (o joinOptions) validate() error {
 	if strings.ContainsAny(o.NodeID, " \t\n") {
 		return fmt.Errorf("--node-id=%q 含空白字符，节点 ID 不允许空格", o.NodeID)
 	}
+	// M4C P2-①：NodeID 字符白名单（字母/数字/-/_）。nodeID 会写入 systemd
+	// EnvironmentFile 与容器名等位置，限制字符集可防注入（如 $ 展开）与
+	// 非法容器名（docker 名称仅允许 [a-zA-Z0-9][a-zA-Z0-9_.-]）。
+	for _, r := range o.NodeID {
+		valid := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' ||
+			r >= '0' && r <= '9' || r == '-' || r == '_'
+		if !valid {
+			return fmt.Errorf("--node-id=%q 含非法字符 %q（仅允许字母/数字/连字符/下划线，如 edge-worker-01）",
+				o.NodeID, r)
+		}
+	}
 	return nil
 }
 

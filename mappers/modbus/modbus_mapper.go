@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -324,8 +325,15 @@ func (m *ModbusMapper) handleTargetTemp(value float64) (mapper.DeviceReport, err
 
 // handleCoil 写线圈（coil0..coil3 → 0x0020-0x0023）并回读验证。
 func (m *ModbusMapper) handleCoil(property string, value float64) (mapper.DeviceReport, error) {
-	var idx int
-	if _, err := fmt.Sscanf(property, "coil%d", &idx); err != nil || idx < 0 || idx >= CoilCount {
+	// M4C P2-⑥：严格精确匹配 coil0..coil3（Sscanf 会误接受 "coil2x"）
+	if !strings.HasPrefix(property, "coil") {
+		err := fmt.Errorf("不支持的线圈属性 %q（支持 coil0..coil%d）", property, CoilCount-1)
+		m.saveOp(metamanager.DirDown, property, "", "error", err.Error())
+		return mapper.DeviceReport{}, err
+	}
+	idxStr := strings.TrimPrefix(property, "coil")
+	idx, err := strconv.Atoi(idxStr)
+	if err != nil || idx < 0 || idx >= CoilCount {
 		err := fmt.Errorf("不支持的线圈属性 %q（支持 coil0..coil%d）", property, CoilCount-1)
 		m.saveOp(metamanager.DirDown, property, "", "error", err.Error())
 		return mapper.DeviceReport{}, err
@@ -337,7 +345,7 @@ func (m *ModbusMapper) handleCoil(property string, value float64) (mapper.Device
 		coilVal = 0xFF00
 	}
 	var readBack bool
-	err := m.withConn(func() error {
+	err = m.withConn(func() error {
 		if _, err := m.client.WriteSingleCoil(addr, coilVal); err != nil {
 			return err
 		}

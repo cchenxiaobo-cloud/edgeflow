@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EdgeFlow 收尾审计报告 — 2026-08-14</title>
+<style>
+  :root {
+    --bg: #fafafa; --surface: #ffffff; --text: #1a1a1a; --text-2: #555; --text-3: #888;
+    --accent: #1a4f8b; --accent-light: #e8eef5; --border: #d8dde3; --rule: #b9c2cc;
+    --green: #1a6b3c; --green-light: #e6f2ea; --red: #8b1a1a; --red-light: #f5e8e8;
+    --yellow: #8b6b1a; --yellow-light: #f5efe0; --code-bg: #f4f5f7; --radius: 2px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+    --serif: Georgia, 'Times New Roman', serif;
+    --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.65; font-weight: 400; font-size: 15px; -webkit-font-smoothing: antialiased; }
+  .container { max-width: 940px; margin: 0 auto; padding: 64px 48px; }
+  h1 { font-family: var(--serif); font-size: 1.9rem; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.05rem; font-weight: 600; margin: 2.5rem 0 0.8rem; padding-bottom: 0.4rem; border-bottom: 1.5px solid var(--rule); letter-spacing: 0.02em; }
+  h3 { font-size: 0.95rem; font-weight: 600; margin: 1.5rem 0 0.5rem; }
+  p { margin-bottom: 0.7rem; color: var(--text-2); }
+  .subtitle { font-family: var(--serif); font-size: 0.95rem; color: var(--text-3); font-style: italic; margin-bottom: 2.5rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 2px; font-size: 0.85em; }
+  table { width: 100%; border-collapse: collapse; margin: 0.8rem 0 1.2rem; font-size: 0.85rem; }
+  th { text-align: left; font-weight: 600; padding: 0.5rem 0.6rem; border-bottom: 1.5px solid var(--rule); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-2); }
+  td { padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--border); }
+  tr:hover td { background: var(--accent-light); }
+  .badge { display: inline-block; padding: 0.1em 0.5em; border-radius: 2px; font-size: 0.72rem; font-weight: 600; }
+  .b-green { background: var(--green-light); color: var(--green); }
+  .b-yellow { background: var(--yellow-light); color: var(--yellow); }
+  .b-red { background: var(--red-light); color: var(--red); }
+  .b-blue { background: var(--accent-light); color: var(--accent); }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); margin: 1.2rem 0; }
+  .metric { background: var(--surface); padding: 1rem 0.8rem; text-align: center; }
+  .metric-value { font-family: var(--serif); font-size: 1.7rem; font-weight: 600; color: var(--accent); }
+  .metric-label { font-size: 0.72rem; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.2rem; }
+  .arch { font-family: var(--mono); font-size: 0.75rem; line-height: 1.6; background: var(--surface); border: 1px solid var(--border); padding: 1.2rem; overflow-x: auto; margin: 1rem 0; color: var(--text-2); }
+  .panel { border: 1px solid var(--border); border-left: 3px solid var(--accent); padding: 1rem 1.2rem; margin: 1rem 0; background: var(--surface); }
+  .panel-title { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.4rem; }
+  .footer { margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1.5px solid var(--rule); font-size: 0.78rem; color: var(--text-3); }
+  @media (max-width: 700px) { .container { padding: 32px 18px; } .metrics { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>EdgeFlow 收尾审计报告</h1>
+<p class="subtitle">产品开发计划逐项核对 · 2026-08-14 · 核对人：审计员 A/B + 复核审计员</p>
+
+<div class="metrics">
+  <div class="metric"><div class="metric-value">75</div><div class="metric-label">核对项</div></div>
+  <div class="metric"><div class="metric-value">59%</div><div class="metric-label">整体完成度</div></div>
+  <div class="metric"><div class="metric-value">10/10</div><div class="metric-label">复核一致</div></div>
+  <div class="metric"><div class="metric-value">0</div><div class="metric-label">误判</div></div>
+</div>
+
+<h2>1. 核对方法与范围</h2>
+<p>以 ROADMAP.md 的 WBS 任务清单（WBS 1-10）与 M0-M5 六里程碑验收标准为原始基线，逐项比对实际执行状态。证据链：git log 108 commits、代码目录、测试实际运行、审查报告、发布归档。全程只读，未修改代码/文档/制品。交叉复核 10 项关键缺口结论（独立实证）<strong>10/10 一致、0 误判</strong>。</p>
+
+<h2>2. 核对统计</h2>
+<table>
+<thead><tr><th>里程碑</th><th>核对项</th><th>✅ 完成</th><th>🟨 部分</th><th>⬜ 未做</th><th>⚠️ 归属/滞后</th><th>完成度</th></tr></thead>
+<tbody>
+<tr><td>M0 架构基线</td><td>12</td><td>9</td><td>3</td><td>0</td><td>1</td><td>75%</td></tr>
+<tr><td>M1 云边通信</td><td>17</td><td>12</td><td>3</td><td>1</td><td>2</td><td>71%</td></tr>
+<tr><td>M2 应用部署与自治</td><td>15</td><td>7</td><td>6</td><td>2</td><td>0</td><td>47%</td></tr>
+<tr><td>M3 设备管理</td><td>9</td><td>6</td><td>2</td><td>1</td><td>1</td><td>67%</td></tr>
+<tr><td>M4 生产化</td><td>12</td><td>5</td><td>4</td><td>3</td><td>2</td><td>42%</td></tr>
+<tr><td>M5 发布</td><td>10</td><td>5</td><td>4</td><td>1</td><td>4</td><td>50%</td></tr>
+<tr style="font-weight:600"><td>合计</td><td>75</td><td>44</td><td>22</td><td>8</td><td>10</td><td>59%</td></tr>
+</tbody>
+</table>
+
+<h2>3. 核心缺口（P1 级 ×7）</h2>
+<table>
+<thead><tr><th>#</th><th>缺口</th><th>影响</th></tr></thead>
+<tbody>
+<tr><td>G1</td><td>8.3 E2E 完整场景套件未做（自治 30min 时长）</td><td>M2 验收未达成</td></tr>
+<tr><td>G2</td><td>6.4 镜像更新滚动策略 + 回滚未做</td><td>镜像漂移不触发重建</td></tr>
+<tr><td>G3</td><td>10.1 可观测性未做（Prometheus/Fluent Bit）</td><td>M4 验收未达成</td></tr>
+<tr><td>G4</td><td>7.2 RBAC / 7.3 设备认证 / 7.5 审计日志未做</td><td>API 无认证、设备无认证、审计不可查</td></tr>
+<tr><td>G5</td><td>8.4 性能压测未做（100 节点/内存 ≤256MB）</td><td>M4 三项指标未验证</td></tr>
+<tr><td>G6</td><td>真实集群验证全部未执行</td><td>kubectl/keadm/CRD/15min 部署字面验收未达成</td></tr>
+<tr><td>G7</td><td>2.8 NodeJob 未做（仅协议占位）</td><td>计划内任务未处置</td></tr>
+</tbody>
+</table>
+
+<h2>4. 文档滞后（P2 ×7）</h2>
+<div class="panel">
+<p>ROADMAP §1.2 状态列（WBS 2-10 全 ⬜ 含已完成项）、PROGRESS §6 里程碑表（M1-M5 标"未开始"）、KEADM.md 标题"基础版"、里程碑归属偏移（2.4/4.5/5.2/8.6 实际 M4 完成）、Release Notes §1 待回填、发布台账时间线、待办清单含已完成未清理项。</p>
+</div>
+
+<h2>5. 已完成项验收证据（抽查）</h2>
+<table>
+<thead><tr><th>项</th><th>证据</th></tr></thead>
+<tbody>
+<tr><td>M0 共享库/骨架</td><td>pkg 四包 100% 覆盖（98a50a6/f49ce32）</td></tr>
+<tr><td>M1 可靠投递 4.6</td><td>ReliableSend + 重试同 ID 断言；8s 重连实测</td></tr>
+<tr><td>M2 配置下发 6.2</td><td>config-sync 五态 + sqlite3 落盘实测</td></tr>
+<tr><td>M3 设备链路</td><td>指令 targetTemp=25 → 温度 31.05→25.59 收敛</td></tr>
+<tr><td>M4 mTLS / 升级回滚</td><td>双向认证实测；升级→失败→回滚 diff/数据一致</td></tr>
+<tr><td>M5 发布</td><td>RELEASE-REVIEW 10 项复核（P1-1 已闭环）</td></tr>
+</tbody>
+</table>
+
+<h2>6. 结论与行动</h2>
+<div class="panel">
+<p class="panel-title">整体评估</p>
+<p>核心功能完成约 90%（云边通道/可靠投递/应用部署/自治/设备/安全/升级回滚/发布产物全部有证据）；<strong>验收/安全/运维完整性缺口拉低整体完成度至 59%</strong>。最大系统性风险：全部验证在单机模拟环境，真实集群路径未执行。</p>
+<p style="margin-top:0.5rem">行动指向：P1×7（E2E 套件/滚动策略/可观测性/RBAC/审计/压测/真实集群）→ P2×10 → P3 文档同步。责任人与排期见 CLOSE-OUT-ACTIONS.md（需项目负责人确认）。</p>
+</div>
+
+<h2>7. 交付物索引</h2>
+<table>
+<thead><tr><th>文档</th><th>内容</th></tr></thead>
+<tbody>
+<tr><td><a href="CLOSE-OUT-REPORT.md">收尾核对报告</a></td><td>75 项核对、完成度统计、G1-G17 缺口、证据抽查</td></tr>
+<tr><td><a href="CLOSE-OUT-ACTIONS.md">整改建议清单</a></td><td>P1×7/P2×10/P3×7，责任人（建议）+ 时间线</td></tr>
+<tr><td><a href="CLOSE-OUT-LEDGER.md">检查记录台账</a></td><td>4 批次核对记录、10 项交叉验证、待确认项 W1-W4</td></tr>
+<tr><td><a href="CLOSE-OUT-RISKS.md">风险与异常建议</a></td><td>R1-R10 风险、依赖缺失、异常路径、回滚预案</td></tr>
+<tr><td><a href="CLOSE-OUT-HANDOFF.md">部署与交接建议</a></td><td>三阶段部署计划、回滚三环节、交接检查单</td></tr>
+<tr><td>audit-m02.md / audit-m35.md / audit-review.md</td><td>核对原始证据（44 项 + 31 项 + 10 项交叉验证）</td></tr>
+</tbody>
+</table>
+
+<div class="footer">
+  EdgeFlow 收尾审计报告 · 2026-08-14 · 核对链：audit-m02/m35 → audit-review → CLOSE-OUT 五件套<br>
+  仓库：/Users/mac/Documents/edgeflow/ · 108 commits · 47 docs · 24 包测试全绿
+</div>
+
+</div>
+</body>
+</html>

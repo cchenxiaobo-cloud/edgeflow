@@ -3,7 +3,7 @@
 > - 对应 ROADMAP WBS 9.3「部署指南」：快速开始（5 分钟跑通）、镜像构建（WBS 8.5）、Helm Chart 部署、mTLS 启用、keadm 安装、升级回滚、卸载清理。
 > - 状态：✅ **v0.1.0 定稿**（2026-08-14）。评审记录见 `docs/REVIEWS.md`（9.3 评审归档）。
 > - 组件：`cloudcore`（云端）、`edgecore`（边缘端）、`keadm`（安装管理 CLI）。
-> - 配套文档：`docs/KEADM.md`（keadm 完整用法）、`docs/UPGRADE.md`（升级回滚专项，M5 并行任务）、`examples/README.md`（温度传感器 Demo 教程）。
+> - 配套文档：`docs/KEADM.md`（keadm 完整用法）、`docs/UPGRADE.md`（升级回滚专项，已实现 WBS 10.2）、`examples/README.md`（温度传感器 Demo 教程）。
 
 ---
 
@@ -247,7 +247,7 @@ bash keadm-out/install.sh
 ./bin/keadm reset --output-dir=./keadm-out
 ```
 
-> 升级/回滚命令（`keadm upgrade` / `keadm rollback`）由 M5 并行任务实现，用法见 `docs/UPGRADE.md`。
+> 升级/回滚命令（`keadm upgrade` / `keadm rollback`）已实现（WBS 10.2），用法见 `docs/UPGRADE.md`。
 
 ---
 
@@ -287,7 +287,7 @@ bash hack/gen-certs.sh --help
 
 ## 5. 升级 / 回滚
 
-> 本仓库升级回滚专项（keadm 侧 `upgrade`/`rollback` 命令 + 二进制 OTA 流程）见 **`docs/UPGRADE.md`**（M5 并行任务产出）。
+> 本仓库升级回滚专项（keadm 侧 `upgrade`/`rollback` 命令 + 二进制 OTA 流程）见 **`docs/UPGRADE.md`**（已实现 WBS 10.2）。
 
 ### 5.1 Helm 管理面（现有可用路径）
 
@@ -383,5 +383,5 @@ rm -f data/edgeflow.db
 |----------|------|------|
 | 镜像未推送到公共/私有仓库 | 单机构建可用，集群拉取需先推送 | 发布流程（M5 发布物） |
 | mTLS 证书自动生成默认 SAN 仅本机 | 跨主机部署必须注入 `EDGEFLOW_CLOUDCORE_TLS_SAN` | 文档已覆盖，后续支持配置文件方式 |
-| 云边升级回滚专项依赖 UPGRADE.md | keadm upgrade/rollback 由 M5 并行任务实现 | 合入后本文档 §5 保持引用 |
+| 云边升级回滚专项依赖 UPGRADE.md | keadm upgrade/rollback 已实现（WBS 10.2） | 本文档 §5 保持引用 |
 | 边缘节点资源上报（CPU/内存）未采集 | `/api/v1/nodes` 的 memory 恒 0 | 后续版本 |

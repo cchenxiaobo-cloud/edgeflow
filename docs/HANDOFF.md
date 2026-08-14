@@ -194,6 +194,9 @@ make lint       # 静态检查（golangci-lint）
 | `helm install edgeflow ./build/charts/edgeflow --namespace edgeflow --create-namespace` | 部署 CloudCore |
 | `./bin/keadm init --output-dir=./keadm-out` | 生成云端部署产物（cloudcore.yaml） |
 | `./bin/keadm join --cloudcore-ip=<ip> --token=<token> --node-id=edge-01` | 生成边缘接入产物（env+systemd） |
+| `./bin/keadm upgrade --version=v0.2.0` | 升级产物（备份+版本标记+台账；--simulate-failure 演练） |
+| `./bin/keadm rollback --latest` | 回滚到最近备份（完整性校验+恢复+台账） |
+| `./bin/keadm ops-ledger` | 查询升级/回滚操作台账 |
 | `./bin/keadm reset --output-dir=./keadm-out` | 清理 keadm 生成产物 |
 | `go run ./hack/modbus-sim` | 启动 Modbus 模拟器（默认 127.0.0.1:15020） |
 | `EDGEFLOW_MODBUS_ADDR=127.0.0.1:15020 ./bin/edgecore` | 启用 Modbus Mapper（设备 mb-sensor-01） |
@@ -219,7 +222,7 @@ make lint       # 静态检查（golangci-lint）
 | 日志级别过滤 | Level 仅前缀标记，未实现 SetLevel 过滤（P2） |
 | 云端状态内存态 | cloudcore 重启后节点/Pod/设备查询数据清空（边缘 SQLite 不受影响） |
 | 节点资源上报（CPU/内存） | `/api/v1/nodes` 的 memory 恒 0，待采集接入 |
-| 升级回滚专项（keadm upgrade/rollback） | M5 并行任务实现，见 docs/UPGRADE.md |
+| 升级回滚专项（keadm upgrade/rollback） | ✅ 已实现（WBS 10.2），见 docs/UPGRADE.md |
 | 可观测性基建（10.1） | M5/M6 内容：Prometheus 指标、Fluent Bit 日志、告警 |
 
 ## 11. 交接检查单（接手人逐项确认）

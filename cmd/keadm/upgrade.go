@@ -311,9 +311,10 @@ func runUpgrade(args []string, stdout, stderr io.Writer) int {
 	//     人工确认——这里重新登记当前产物哈希，保持升级后 reset 可用。
 	if err := refreshManifest(opts.OutputDir, backupFiles); err != nil {
 		_, _ = fmt.Fprintf(stderr, "错误: 刷新校验清单失败: %v（升级已完成；执行 keadm rollback --latest 可回滚）\n", err)
+		// M4D P2-1：退出码非 0 的路径台账必须记 failed（台账与退出码一致性）
 		_ = appendLedger(opts.OutputDir, ledgerEntry{
 			TS: time.Now().Format(time.RFC3339), Action: "upgrade",
-			From: current, To: opts.Version, Result: "ok", Note: backupNote + "; 校验清单刷新失败",
+			From: current, To: opts.Version, Result: "failed", Note: backupNote + "; 校验清单刷新失败",
 		})
 		return exitRuntime
 	}

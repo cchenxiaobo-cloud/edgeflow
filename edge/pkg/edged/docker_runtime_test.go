@@ -229,7 +229,7 @@ func TestDockerListParse(t *testing.T) {
 		"edgeflow-default-nginx-0\tnginx\tdefault", // 副本 0
 		"edgeflow-default-nginx-1\tnginx\tdefault", // 副本 1
 		"edgeflow-prod-redis-3\tredis\tprod",       // 副本 3（缩容前的残余也正确识别）
-		"edgeflow-default-legacy\tlegacy\tdefault", // 旧式命名（无序号）→ 兜底 0
+		"edgeflow-default-legacy\tlegacy\tdefault", // 旧式命名（无序号）→ Index=-1（P1-1）
 		"",         // 空行忽略
 		"odd-line", // 字段数不符忽略
 	}, "\n") + "\n"
@@ -246,7 +246,7 @@ func TestDockerListParse(t *testing.T) {
 		{Namespace: "default", Name: "nginx", Index: 0},
 		{Namespace: "default", Name: "nginx", Index: 1},
 		{Namespace: "prod", Name: "redis", Index: 3},
-		{Namespace: "default", Name: "legacy", Index: 0},
+		{Namespace: "default", Name: "legacy", Index: -1},
 	}
 	for i, w := range want {
 		if insts[i] != w {
@@ -268,7 +268,7 @@ func TestDockerListEmpty(t *testing.T) {
 }
 
 // TestParseIndexFromName 验证副本序号反解：-<index> 恒在末尾可解析；
-// 无序号/非法序号兜底 0。
+// 无序号/非法序号返回 -1（M4A P1-1：旧式命名实例由 reconcile 优先清理）。
 func TestParseIndexFromName(t *testing.T) {
 	cases := []struct {
 		name string
@@ -277,11 +277,11 @@ func TestParseIndexFromName(t *testing.T) {
 		{"edgeflow-default-nginx-0", 0},
 		{"edgeflow-default-nginx-1", 1},
 		{"edgeflow-default-nginx-10", 10},
-		{"edgeflow-default-nginx", 0},     // 旧式命名（无序号）
-		{"edgeflow-default-nginx-x", 0},   // 末段非数字
-		{"edgeflow-default-nginx-", 0},    // 以 '-' 结尾（末段为空）
-		{"edgeflow-default-nginx-abc", 0}, // 末段为字母
-		{"abc", 0},
+		{"edgeflow-default-nginx", -1},     // 旧式命名（无序号，P1-1 语义）
+		{"edgeflow-default-nginx-x", -1},   // 末段非数字
+		{"edgeflow-default-nginx-", -1},    // 以 '-' 结尾（末段为空）
+		{"edgeflow-default-nginx-abc", -1}, // 末段为字母
+		{"abc", -1},
 	}
 	for _, c := range cases {
 		if got := parseIndexFromName(c.name); got != c.want {

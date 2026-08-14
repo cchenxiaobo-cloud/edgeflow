@@ -5,6 +5,10 @@
 //     部署说明 NOTES.txt），并给出 Helm Chart 替代路径；
 //   - keadm join  生成边缘接入产物（edgecore.env 环境变量文件 + edgecore.service
 //     systemd 单元 + install.sh 安装脚本 + 接入说明 README.md）；
+//   - keadm upgrade 升级边缘产物版本：备份产物到 backups/ + 更新 env 版本标记 +
+//     操作台账（WBS 10.2，--simulate-failure 可演练失败与回滚）；
+//   - keadm rollback 从 backups/ 恢复产物文件（--backup=<id> 或 --latest，WBS 10.2）；
+//   - keadm ops-ledger 查询操作台账（ops-ledger.jsonl，最近 N 条，WBS 10.2）；
 //   - keadm reset 清理 output-dir 下由 keadm 生成的产物（确认后删除，幂等）；
 //   - keadm version 输出版本信息（复用 pkg/version）。
 //
@@ -30,6 +34,9 @@ const usageText = `keadm 是 EdgeFlow 的安装管理 CLI（WBS 8.6 基础版）
 命令:
   init     生成云端部署产物（cloudcore.yaml + NOTES.txt）
   join     生成边缘接入产物（edgecore.env + edgecore.service + install.sh）
+  upgrade  升级边缘产物版本（备份产物 + 更新版本标记 + 台账，WBS 10.2）
+  rollback 从备份回滚边缘产物（--backup=<id> 或 --latest，WBS 10.2）
+  ops-ledger 查询操作台账（ops-ledger.jsonl，最近 N 条默认 20，WBS 10.2）
   reset    清理 output-dir 下的 keadm 生成产物（确认后删除，幂等）
   version  打印版本信息
 
@@ -40,6 +47,10 @@ const usageText = `keadm 是 EdgeFlow 的安装管理 CLI（WBS 8.6 基础版）
 示例:
   keadm init --tls --output-dir=./keadm-out
   keadm join --cloudcore-ip=192.168.1.10 --token=abc123 --tls --output-dir=./keadm-out
+  keadm upgrade --version=v0.2.0 --output-dir=./keadm-out
+  keadm upgrade --version=v0.2.0 --simulate-failure --output-dir=./keadm-out
+  keadm rollback --latest --output-dir=./keadm-out
+  keadm ops-ledger --output-dir=./keadm-out
   keadm reset --output-dir=./keadm-out --force
 `
 
@@ -71,6 +82,12 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		return runInit(rest, stdout, stderr)
 	case "join":
 		return runJoin(rest, stdout, stderr)
+	case "upgrade":
+		return runUpgrade(rest, stdout, stderr)
+	case "rollback":
+		return runRollback(rest, stdout, stderr)
+	case "ops-ledger":
+		return runOpsLedger(rest, stdout, stderr)
 	case "reset":
 		return runReset(rest, stdout, stderr, stdin)
 	case "version":

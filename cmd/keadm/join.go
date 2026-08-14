@@ -186,8 +186,10 @@ func (o joinOptions) cloudAddr() string {
 
 // edgeEnvTemplate 生成 edgecore.env：键名与 edgehub/metamanager/eventbus
 // 读取的环境变量一一对应；EDGEFLOW_EDGECORE_TOKEN 为预留字段（当前未消费）。
+// 首行下的版本标记行（envVersionLine）供 upgrade 更新 / rollback 恢复（WBS 10.2）。
 var edgeEnvTemplate = template.Must(template.New("edgecore.env").Parse(`# 由 keadm join 生成（EdgeFlow WBS 8.6）。安装到 {{ .EnvPath }}。
 # 键名与 edgecore 读取的环境变量一一对应，请勿修改。
+{{ .VersionLine }}
 
 # 边缘节点 ID（唯一标识本节点，云端注册用）
 EDGEFLOW_EDGECORE_NODE_ID={{ .NodeID }}
@@ -215,21 +217,23 @@ EDGEFLOW_EDGECORE_CERT_DIR={{ .CertDir }}
 func renderEdgeEnv(o joinOptions) []byte {
 	var buf strings.Builder
 	if err := edgeEnvTemplate.Execute(&buf, struct {
-		NodeID    string
-		CloudAddr string
-		DBPath    string
-		Token     string
-		TLS       bool
-		CertDir   string
-		EnvPath   string
+		NodeID      string
+		CloudAddr   string
+		DBPath      string
+		Token       string
+		TLS         bool
+		CertDir     string
+		EnvPath     string
+		VersionLine string
 	}{
-		NodeID:    o.NodeID,
-		CloudAddr: o.cloudAddr(),
-		DBPath:    edgeDBPath,
-		Token:     o.Token,
-		TLS:       o.TLS,
-		CertDir:   edgeCertDir,
-		EnvPath:   edgeEnvPath,
+		NodeID:      o.NodeID,
+		CloudAddr:   o.cloudAddr(),
+		DBPath:      edgeDBPath,
+		Token:       o.Token,
+		TLS:         o.TLS,
+		CertDir:     edgeCertDir,
+		EnvPath:     edgeEnvPath,
+		VersionLine: envVersionLine(edgeEnvVersion),
 	}); err != nil {
 		// 模板是编译期固定的，运行期不会失败；失败时返回错误文本兜底。
 		return []byte("# 渲染 edgecore.env 失败: " + err.Error() + "\n")

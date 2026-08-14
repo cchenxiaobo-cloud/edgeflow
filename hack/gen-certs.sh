@@ -77,14 +77,20 @@ else
   if [[ -e "$SERVER_CRT" || -e "$SERVER_KEY" ]]; then
     die "cloudcore 证书/私钥不完整（只存在其一），请人工检查 $CERT_DIR"
   fi
-  log "签发 cloudcore 服务端证书（CN=cloudcore，${LEAF_DAYS} 天，SAN 127.0.0.1/localhost/cloudcore）..."
+  if [ -n "$TLS_SAN" ]; then
+    SAN_LIST="$TLS_SAN"
+    log "签发 cloudcore 服务端证书（CN=cloudcore，${LEAF_DAYS} 天，SAN 自定义: $TLS_SAN）..."
+  else
+    SAN_LIST="IP:127.0.0.1,DNS:localhost,DNS:cloudcore"
+    log "签发 cloudcore 服务端证书（CN=cloudcore，${LEAF_DAYS} 天，SAN 默认 127.0.0.1/localhost/cloudcore）..."
+  fi
   SERVER_CSR="$(tmpfile)"
   SERVER_EXT="$(tmpfile)"
   openssl req -newkey rsa:"$KEY_BITS" -nodes \
     -keyout "$SERVER_KEY" -out "$SERVER_CSR" \
     -subj "/CN=cloudcore"
   cat > "$SERVER_EXT" <<EOF
-subjectAltName=IP:127.0.0.1,DNS:localhost,DNS:cloudcore
+subjectAltName=$SAN_LIST
 extendedKeyUsage=serverAuth
 EOF
   openssl x509 -req -in "$SERVER_CSR" \
@@ -101,12 +107,12 @@ else
   if [[ -e "$CLIENT_CRT" || -e "$CLIENT_KEY" ]]; then
     die "edgecore 证书/私钥不完整（只存在其一），请人工检查 $CERT_DIR"
   fi
-  log "签发 edgecore 客户端证书（CN=edgeflow-edgecore，${LEAF_DAYS} 天，EKU clientAuth）..."
+  log "签发 edgecore 客户端证书（CN=${CLIENT_CN}，${LEAF_DAYS} 天，EKU clientAuth）..."
   CLIENT_CSR="$(tmpfile)"
   CLIENT_EXT="$(tmpfile)"
   openssl req -newkey rsa:"$KEY_BITS" -nodes \
     -keyout "$CLIENT_KEY" -out "$CLIENT_CSR" \
-    -subj "/CN=edgeflow-edgecore"
+    -subj "/CN=${CLIENT_CN}"
   cat > "$CLIENT_EXT" <<EOF
 extendedKeyUsage=clientAuth
 EOF

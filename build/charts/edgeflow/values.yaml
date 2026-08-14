@@ -69,7 +69,8 @@ cloudcore:
 
   # 环境变量透传（key: value 形式）：
   #   EDGEFLOW_CLOUDCORE_PORT / EDGEFLOW_CLOUDCORE_HUB_PORT 是 cloudcore 的最高优先级配置来源，
-  #   mTLS 证书路径等新变量可直接在此追加（或走 extraEnv 引用 Secret）
+  #   mTLS 启用：EDGEFLOW_CLOUDCORE_TLS=on + EDGEFLOW_CLOUDCORE_CERT_DIR=/data/certs
+  #   （/data 已挂载可写 emptyDir；生产建议 Secret 预置证书，见 docs/DEPLOYMENT.md）
   env:
     EDGEFLOW_CLOUDCORE_PORT: "8080"
     EDGEFLOW_CLOUDCORE_HUB_PORT: "10000"

@@ -137,7 +137,7 @@ curl http://127.0.0.1:8080/healthz
 2. 边缘节点运行 `edgecore`（二进制或容器均可），通过环境变量连接：
 
    ```bash
-   export EDGEFLOW_EDGECORE_CLOUD_ADDR=ws://<节点IP>:<NodePort>/edgehub
+   export EDGEFLOW_EDGECORE_CLOUD_ADDR=ws://<节点IP>:<NodePort>/v1/edge
    export EDGEFLOW_EDGECORE_NODE_ID=edge-node-1
    ./bin/edgecore
    ```
@@ -146,7 +146,7 @@ curl http://127.0.0.1:8080/healthz
 
    ```bash
    docker run -d --name edgecore \
-     -e EDGEFLOW_EDGECORE_CLOUD_ADDR=ws://<节点IP>:<NodePort>/edgehub \
+     -e EDGEFLOW_EDGECORE_CLOUD_ADDR=ws://<节点IP>:<NodePort>/v1/edge \
      -e EDGEFLOW_EDGECORE_NODE_ID=edge-node-1 \
      -v /var/lib/edgeflow:/data \
      edgeflow/edgecore:v0.1.0
@@ -160,7 +160,9 @@ curl http://127.0.0.1:8080/healthz
   容器内默认不内置配置文件，通过 Chart 的 `cloudcore.env` 透传环境变量即可完成端口等配置；
   需要更复杂配置时，可将配置文件以 ConfigMap 挂载并用 `--config` 覆盖（`extraEnv` 或 args 传入）。
 - **mTLS（并行任务）**：CloudHub（10000 端口）启用 mTLS 后：
-  - 证书可通过 `cloudcore.extraEnv`（如 `EDGEFLOW_CLOUDCORE_TLS_CERT/KEY` 指向挂载路径）注入；
+  - 证书可通过 `cloudcore.env` 启用（`EDGEFLOW_CLOUDCORE_TLS=on` + `EDGEFLOW_CLOUDCORE_CERT_DIR=/data/certs`，
+    /data 已挂载可写 emptyDir，首次启动自动生成证书）；生产环境建议把证书预置为
+    Secret 并以 extraEnv 注入 `EDGEFLOW_CLOUDCORE_CERT_DIR` 指向只读挂载路径；
   - 证书文件以 Secret 挂载（`volumeMounts` + `volumes`，Chart 预留了 `extraEnv` 扩展位，
     卷挂载可按需在模板中追加，或后续版本内置 `cloudcore.tls` 字段）；
   - edgecore 侧 `EDGEFLOW_EDGECORE_CLOUD_ADDR` 相应改为 `wss://...` 并配置客户端证书。

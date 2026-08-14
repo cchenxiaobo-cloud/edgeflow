@@ -164,9 +164,17 @@ func EnsureCA(certDir string) (*CA, error) {
 //     SAN 含 IP:127.0.0.1、DNS:localhost、DNS:cloudcore，有效期 1 年，
 //     EKU 含 ServerAuth（供边缘侧验证云身份）。
 //
-// 需要 CA 已就绪（内部调用 EnsureCA）。
+// 需要 CA 已就绪（内部调用 EnsureCA）。跨主机部署时请使用
+// EnsureServerCertWithSANs 注入集群 Service DNS / 节点 IP（M4B P1-4）。
 func EnsureServerCert(certDir, cn string) (*tls.Certificate, error) {
-	return ensureLeafCert(certDir, cn, x509.ExtKeyUsageServerAuth, FileServerCert, FileServerKey)
+	return EnsureServerCertWithSANs(certDir, cn, nil, nil)
+}
+
+// EnsureServerCertWithSANs 同 EnsureServerCert，但允许显式注入 SAN：
+// ips 与 dnsNames 为空时回退默认（127.0.0.1/localhost/cloudcore）。
+// 供跨主机/集群 Service 场景使用（环境变量 EDGEFLOW_CLOUDCORE_TLS_SAN）。
+func EnsureServerCertWithSANs(certDir, cn string, ips []net.IP, dnsNames []string) (*tls.Certificate, error) {
+	return ensureLeafCert(certDir, cn, x509.ExtKeyUsageServerAuth, FileServerCert, FileServerKey, ips, dnsNames)
 }
 
 // EnsureClientCert 确保 edgecore 客户端证书存在（edgecore.crt/key）：
@@ -179,11 +187,12 @@ func EnsureServerCert(certDir, cn string) (*tls.Certificate, error) {
 // （nodeID 与证书绑定属后续增强，见 docs/SECURITY.md）。
 // 需要 CA 已就绪（内部调用 EnsureCA）。
 func EnsureClientCert(certDir, cn string) (*tls.Certificate, error) {
-	return ensureLeafCert(certDir, cn, x509.ExtKeyUsageClientAuth, FileClientCert, FileClientKey)
+	return ensureLeafCert(certDir, cn, x509.ExtKeyUsageClientAuth, FileClientCert, FileClientKey, nil, nil)
 }
 
 // ensureLeafCert 是服务端/客户端证书的公共实现（幂等生成或加载）。
-func ensureLeafCert(certDir, cn string, eku x509.ExtKeyUsage, certFile, keyFile string) (*tls.Certificate, error) {
+func ensureLeafCert(certDir, cn string, eku x509.ExtKeyUsage, certFile, keyFile string,
+	ips []net.IP, dnsNames []string) (*tls.Certificate, error) {
 	if cn == "" {
 		cn = "edgeflow-leaf" // 兜底 CN，正常装配都会显式传入
 	}
@@ -222,10 +231,15 @@ func ensureLeafCert(certDir, cn string, eku x509.ExtKeyUsage, certFile, keyFile 
 		ExtKeyUsage:  []x509.ExtKeyUsage{eku},
 	}
 	if eku == x509.ExtKeyUsageServerAuth {
-		// 服务端证书 SAN：覆盖本机回环与容器内 DNS 名（云边通道默认连接
-		// 方式为 wss://127.0.0.1:10000，边缘侧按地址校验 ServerName）。
-		tmpl.DNSNames = []string{"localhost", "cloudcore"}
-		tmpl.IPAddresses = []net.IP{net.ParseIP("127.0.0.1")}
+		// 服务端证书 SAN：显式注入优先；为空回退本机回环与容器内 DNS 名
+		// （云边通道默认连接方式为 wss://127.0.0.1:10000，边缘侧按地址
+		// 校验 ServerName）。跨主机部署必须显式注入（M4B P1-4）。
+		tmpl.DNSNames = dnsNames
+		tmpl.IPAddresses = ips
+		if len(dnsNames) == 0 && len(ips) == 0 {
+			tmpl.DNSNames = []string{"localhost", "cloudcore"}
+			tmpl.IPAddresses = []net.IP{net.ParseIP("127.0.0.1")}
+		}
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.Cert, &key.PublicKey, ca.Key)
 	if err != nil {
@@ -310,6 +324,11 @@ func loadCA(certDir string) (*CA, error) {
 	}
 	if !cert.IsCA {
 		return nil, fmt.Errorf("CA 证书 %s 的 IsCA 为 false，不是合法 CA", caCertPath)
+	}
+	// M4B P2-1：校验 CA 证书与私钥确实配对（防止目录里混入错配文件后
+	// 静默启动，直到签发时才 fail）。tls.X509KeyPair 会校验公钥匹配。
+	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
+		return nil, fmt.Errorf("CA 证书与私钥不匹配（%s/%s）: %w", caCertPath, caKeyPath, err)
 	}
 	return &CA{CertDir: certDir, Cert: cert, Key: key}, nil
 }

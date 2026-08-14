@@ -14,9 +14,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -92,7 +94,29 @@ func run(args []string, stdout, stderr io.Writer) int {
 			log.Errorf("CA 初始化失败（certDir=%s）: %v", certDir, err)
 			return 1
 		}
-		if _, err := certs.EnsureServerCert(certDir, "cloudcore"); err != nil {
+		// SAN 注入（M4B P1-4）：EDGEFLOW_CLOUDCORE_TLS_SAN 支持
+		// "IP:1.2.3.4,DNS:cloudcore.svc" 逗号分隔列表；未设置时
+		// 回退默认（127.0.0.1/localhost/cloudcore，仅本机可用）。
+		var ips []net.IP
+		var dnsNames []string
+		if san := os.Getenv("EDGEFLOW_CLOUDCORE_TLS_SAN"); san != "" {
+			for _, item := range strings.Split(san, ",") {
+				item = strings.TrimSpace(item)
+				switch {
+				case strings.HasPrefix(item, "IP:"):
+					if ip := net.ParseIP(strings.TrimPrefix(item, "IP:")); ip != nil {
+						ips = append(ips, ip)
+					} else {
+						log.Warnf("EDGEFLOW_CLOUDCORE_TLS_SAN 含非法 IP: %q，已跳过", item)
+					}
+				case strings.HasPrefix(item, "DNS:"):
+					dnsNames = append(dnsNames, strings.TrimPrefix(item, "DNS:"))
+				default:
+					log.Warnf("EDGEFLOW_CLOUDCORE_TLS_SAN 含无法识别的条目 %q（支持 IP: 与 DNS: 前缀）", item)
+				}
+			}
+		}
+		if _, err := certs.EnsureServerCertWithSANs(certDir, "cloudcore", ips, dnsNames); err != nil {
 			log.Errorf("cloudcore 服务端证书初始化失败: %v", err)
 			return 1
 		}

@@ -1,9 +1,13 @@
 package certs
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -412,4 +416,63 @@ func hasExtKeyUsage(cert *x509.Certificate, want x509.ExtKeyUsage) bool {
 		}
 	}
 	return false
+}
+
+// TestEnsureServerCertWithSANs 验证 M4B P1-4：显式 SAN 注入生效。
+func TestEnsureServerCertWithSANs(t *testing.T) {
+	dir := t.TempDir()
+	ip := net.ParseIP("10.0.0.5")
+	if _, err := EnsureServerCertWithSANs(dir, "cloudcore", []net.IP{ip}, []string{"cloudcore.svc"}); err != nil {
+		t.Fatalf("EnsureServerCertWithSANs 失败: %v", err)
+	}
+	certPath := filepath.Join(dir, FileServerCert)
+	pemBytes, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatalf("读取证书失败: %v", err)
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		t.Fatal("证书 PEM 解码失败")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("解析证书失败: %v", err)
+	}
+	foundIP, foundDNS := false, false
+	for _, v := range cert.IPAddresses {
+		if v.Equal(ip) {
+			foundIP = true
+		}
+	}
+	for _, d := range cert.DNSNames {
+		if d == "cloudcore.svc" {
+			foundDNS = true
+		}
+	}
+	if !foundIP || !foundDNS {
+		t.Errorf("SAN 注入未生效：IP=%v DNS=%v（证书 SAN: %v / %v）", foundIP, foundDNS, cert.IPAddresses, cert.DNSNames)
+	}
+}
+
+// TestLoadCAMismatchedKey 验证 M4B P2-1：CA 证书与私钥错配时加载报错。
+func TestLoadCAMismatchedKey(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := EnsureCA(dir)
+	if err != nil {
+		t.Fatalf("EnsureCA 失败: %v", err)
+	}
+	// 用另一把新私钥覆盖 CA 私钥（制造错配）
+	newKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("生成错配私钥失败: %v", err)
+	}
+	keyPath := filepath.Join(dir, FileCAKey)
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(newKey)})
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatalf("覆盖私钥失败: %v", err)
+	}
+	if _, err := loadCA(dir); err == nil {
+		t.Fatal("错配 key 应报错（P2-1），实际静默通过")
+	}
+	_ = ca
 }

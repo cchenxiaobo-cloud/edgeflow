@@ -129,3 +129,19 @@
 - `edgehub` 集成测试：mTLS 上连接→注册→心跳全流程、不信任服务端证书被拒、
   地址归一化（ws:// → wss://）；
 - 端到端：cloudcore + edgecore 双进程实测（见交付说明 §7）。
+
+## 已知限制与跨主机部署（M4B P1-4）
+
+服务端证书 SAN 默认仅含本机回环（127.0.0.1/localhost/cloudcore），**mTLS 通道默认只在本机可用**。跨主机/集群部署必须显式注入 SAN：
+
+```bash
+# Go 装配（cloudcore 启动前设置）
+export EDGEFLOW_CLOUDCORE_TLS_SAN="IP:10.0.0.5,DNS:cloudcore.edgeflow.svc"
+
+# 或预置证书脚本
+TLS_SAN="IP:10.0.0.5,DNS:cloudcore.edgeflow.svc" ./hack/gen-certs.sh
+```
+
+- 边缘侧连接的地址（`EDGEFLOW_EDGECORE_CLOUD_ADDR=wss://<host>:<port>`）必须在服务端证书 SAN 内，否则握手失败。
+- CA 私钥仅文件权限保护（0600）；生产建议离线签发或接入 KMS。
+- 证书轮换需人工编排（备份→删除旧证书→滚动重启，先云后边）；吊销（CRL/OCSP）未实现。

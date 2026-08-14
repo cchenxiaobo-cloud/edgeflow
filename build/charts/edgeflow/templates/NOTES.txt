@@ -22,7 +22,7 @@ CloudCore 已部署：
      helm upgrade {{ .Release.Name }} {{ .Chart.Name }} \
        --set service.hubEnabled=true --set service.type=NodePort
   2. edgecore 通过环境变量连接云端：
-     EDGEFLOW_EDGECORE_CLOUD_ADDR=ws://<node-ip>:<hub-node-port>/edgehub
+     EDGEFLOW_EDGECORE_CLOUD_ADDR=ws://<node-ip>:<hub-node-port>/v1/edge
 
 升级 / 回滚:
 

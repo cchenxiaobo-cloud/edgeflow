@@ -6,7 +6,7 @@ metadata:
     {{- include "edgeflow.labels" . | nindent 4 }}
     app.kubernetes.io/component: cloudcore
 spec:
-  replicas: {{ .Values.cloudcore.replicas }}
+  replicas: {{ .Values.cloudcore.replicaCount }}
   selector:
     matchLabels:
       {{- include "edgeflow.selectorLabels" . | nindent 6 }}
@@ -21,22 +21,48 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.cloudcore.terminationGracePeriodSeconds }}
+      {{- with .Values.cloudcore.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cloudcore.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cloudcore.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: cloudcore
           image: "{{ .Values.cloudcore.image.repository }}:{{ .Values.cloudcore.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.cloudcore.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.cloudcore.securityContext | nindent 12 }}
           ports:
             - name: http
-              containerPort: {{ .Values.cloudcore.port.containerPort }}
+              containerPort: {{ .Values.cloudcore.port.http }}
               protocol: TCP
-          {{- with .Values.cloudcore.env }}
+            - name: hub
+              containerPort: {{ .Values.cloudcore.port.hub }}
+              protocol: TCP
+          {{- if or (len .Values.cloudcore.env) (len .Values.cloudcore.extraEnv) }}
           env:
+            {{- range $key, $value := .Values.cloudcore.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- with .Values.cloudcore.extraEnv }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
-              port: {{ .Values.cloudcore.port.healthPort }}
+              port: http
             initialDelaySeconds: {{ .Values.cloudcore.livenessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.cloudcore.livenessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.cloudcore.livenessProbe.timeoutSeconds }}
@@ -44,7 +70,7 @@ spec:
           readinessProbe:
             httpGet:
               path: /healthz
-              port: {{ .Values.cloudcore.port.healthPort }}
+              port: http
             initialDelaySeconds: {{ .Values.cloudcore.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.cloudcore.readinessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.cloudcore.readinessProbe.timeoutSeconds }}

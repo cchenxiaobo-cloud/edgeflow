@@ -1,48 +1,64 @@
-# EdgeFlow Chart 默认配置
-# 可通过 helm install -f 自定义文件 或 --set key=value 覆盖
+# ============================================================================
+# EdgeFlow Chart 默认配置（WBS 8.5）
+# 覆盖方式：helm install -f custom.yaml，或 --set key=value
+# ============================================================================
 
 ## 全局配置（可被各组件引用）
 global:
-  # 部署环境标签：production / staging / dev 等
+  # 部署环境标签：production / staging / dev（当前仅作标注，后续可驱动资源档位）
   environment: production
+
+## 镜像拉取凭据（私有仓库时需要，默认空）
+imagePullSecrets: []
+
+## 资源命名覆盖
+nameOverride: ""
+fullnameOverride: ""
+
+## Pod 级安全上下文：与 distroless nonroot 运行镜像匹配（uid 65532）
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  # 挂载卷时统一属主（cloudcore 默认无卷，预留）
+  fsGroup: 65532
 
 ## CloudCore（云端组件）配置
 cloudcore:
+  # 副本数：云边通信为有状态长连接，生产建议 1；多副本需配合会话粘性（后续版本支持）
+  replicaCount: 1
+
+  # 优雅退出宽限期：cloudcore 收到 SIGTERM 后需时间排空存量连接
+  terminationGracePeriodSeconds: 30
+
   # 镜像配置
   image:
-    # 占位镜像：真实镜像构建为后续任务（M4 之后），构建完成后替换为正式仓库地址
+    # 镜像仓库：构建命令见 docs/DEPLOYMENT.md；推送到私有仓库后改为完整地址
     repository: edgeflow/cloudcore
-    # 镜像标签，默认跟随 Chart appVersion
+    # 镜像标签：默认跟随 Chart appVersion（.Chart.AppVersion）
     tag: "v0.1.0"
-    # 拉取策略：Always 便于开发期频繁更新；生产可改为 IfNotPresent
+    # 拉取策略：IfNotPresent 生产推荐；本地频繁构建调试可改 Always
     pullPolicy: IfNotPresent
 
-  # 副本数：云边通信为有状态长连接，生产建议 1，后续引入会话粘性后再扩展
-  replicas: 1
-
-  # 端口配置
+  # 监听端口（与 Dockerfile EXPOSE / cloudcore 默认值对齐）
   port:
-    # 容器内监听端口（与 cloudcore --port 默认值一致）
-    containerPort: 8080
-    # 健康检查端口（当前与业务端口共用，后续分离时可单独配置）
-    healthPort: 8080
+    # HTTP API + /healthz 健康检查
+    http: 8080
+    # CloudHub（云边 WebSocket 通道）
+    hub: 10000
 
   # 健康检查：cloudcore 暴露 /healthz 接口
   livenessProbe:
-    enabled: true
-    initialDelaySeconds: 5
+    initialDelaySeconds: 10
     periodSeconds: 10
     timeoutSeconds: 3
     failureThreshold: 3
-
   readinessProbe:
-    enabled: true
-    initialDelaySeconds: 3
+    initialDelaySeconds: 5
     periodSeconds: 5
     timeoutSeconds: 3
     failureThreshold: 3
 
-  # 资源配置：骨架阶段给保守值，后续按实测调整
+  # 资源配额：当前为保守值，生产建议先压测再收紧
   resources:
     requests:
       cpu: 100m
@@ -51,20 +67,50 @@ cloudcore:
       cpu: 500m
       memory: 512Mi
 
-  # 环境变量（透传给容器，如 EDGEFLOW_CLOUDCORE_PORT）
-  env: []
+  # 环境变量透传（key: value 形式）：
+  #   EDGEFLOW_CLOUDCORE_PORT / EDGEFLOW_CLOUDCORE_HUB_PORT 是 cloudcore 的最高优先级配置来源，
+  #   mTLS 证书路径等新变量可直接在此追加（或走 extraEnv 引用 Secret）
+  env:
+    EDGEFLOW_CLOUDCORE_PORT: "8080"
+    EDGEFLOW_CLOUDCORE_HUB_PORT: "10000"
+  # 扩展环境变量（标准 env 列表格式，用于 valueFrom/secretKeyRef 等复杂场景）
+  extraEnv: []
+  # 示例：
+  # extraEnv:
+  #   - name: EDGEFLOW_CLOUDCORE_TLS_CERT
+  #     value: /etc/edgeflow/tls/tls.crt
+  #   - name: EDGEFLOW_CLOUDCORE_TLS_KEY
+  #     valueFrom:
+  #       secretKeyRef:
+  #         name: edgeflow-tls
+  #         key: tls.key
+
+  # 容器安全上下文（与 distroless nonroot 双重保险；cloudcore 不写文件系统）
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+  # 节点调度（可选）：把 cloudcore 固定到指定节点
+  # nodeSelector:
+  #   kubernetes.io/os: linux
+
+  # 污点容忍（可选）
+  # tolerations:
+  #   - key: CriticalAddonsOnly
+  #     operator: Exists
+
+  # 亲和性（可选）
+  # affinity: {}
 
 ## Service 配置
 service:
-  # 类型：骨架阶段仅集群内访问；对外暴露（NodePort/LoadBalancer）后续按需开启
+  # 类型：ClusterIP 仅集群内访问；边缘节点在集群外时改 NodePort/LoadBalancer
   type: ClusterIP
-  port: 8080
-  # 目标端口：指向容器监听端口
-  targetPort: 8080
-
-## 镜像拉取凭据（私有仓库时需要，骨架阶段留空）
-imagePullSecrets: []
-
-## 资源命名前缀
-nameOverride: ""
-fullnameOverride: ""
+  # HTTP 管理端口（集群内访问 /healthz 与查询 API）
+  httpPort: 8080
+  # CloudHub WebSocket 端口：云边通信入口
+  hubPort: 10000
+  # 是否暴露 CloudHub 端口（边缘节点跨集群接入时开启，并同步防火墙）
+  hubEnabled: false

@@ -12,6 +12,12 @@ spec:
     app.kubernetes.io/component: cloudcore
   ports:
     - name: http
-      port: {{ .Values.service.port }}
-      targetPort: {{ .Values.service.targetPort }}
+      port: {{ .Values.service.httpPort }}
+      targetPort: http
       protocol: TCP
+    {{- if .Values.service.hubEnabled }}
+    - name: hub
+      port: {{ .Values.service.hubPort }}
+      targetPort: hub
+      protocol: TCP
+    {{- end }}

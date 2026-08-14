@@ -1,20 +1,31 @@
-感谢使用 EdgeFlow Chart（骨架版）！
+感谢使用 EdgeFlow Chart（WBS 8.5 完整版）！
 
-CloudCore 已部署（或待部署）：
+CloudCore 已部署：
 
   名称: {{ include "edgeflow.fullname" . }}-cloudcore
-  副本: {{ .Values.cloudcore.replicas }}
+  副本: {{ .Values.cloudcore.replicaCount }}
   镜像: {{ .Values.cloudcore.image.repository }}:{{ .Values.cloudcore.image.tag | default .Chart.AppVersion }}
+  环境: {{ .Values.global.environment }}
 
-集群内访问方式:
+集群内验证:
 
-  # 进入任一 Pod 或使用 kubectl port-forward 验证
-  kubectl port-forward svc/{{ include "edgeflow.fullname" . }}-cloudcore {{ .Values.service.port }}:{{ .Values.service.port }}
-  curl http://127.0.0.1:{{ .Values.service.port }}/healthz
+  # 端口转发后访问健康检查
+  kubectl port-forward svc/{{ include "edgeflow.fullname" . }}-cloudcore {{ .Values.service.httpPort }}:{{ .Values.service.httpPort }}
+  curl http://127.0.0.1:{{ .Values.service.httpPort }}/healthz
 
-查看部署状态:
+  # 查看部署状态
+  kubectl get deploy,svc,pods -l app.kubernetes.io/instance={{ .Release.Name }}
 
-  kubectl get deploy,svc -l app.kubernetes.io/instance={{ .Release.Name }}
+边缘节点接入（集群外）:
 
-注意：当前为 M4 骨架，镜像 edgeflow/cloudcore:v0.1.0 尚未构建，
-请先执行 make cross-build / docker build 构建并推送镜像后再安装。
+  1. 打开 CloudHub 端口并暴露 Service（NodePort/LoadBalancer）：
+     helm upgrade {{ .Release.Name }} {{ .Chart.Name }} \
+       --set service.hubEnabled=true --set service.type=NodePort
+  2. edgecore 通过环境变量连接云端：
+     EDGEFLOW_EDGECORE_CLOUD_ADDR=ws://<node-ip>:<hub-node-port>/edgehub
+
+升级 / 回滚:
+
+  helm upgrade --install {{ .Release.Name }} {{ .Chart.Name }} -f values-prod.yaml
+  helm history {{ .Release.Name }}        # 查看发布历史
+  helm rollback {{ .Release.Name }} 1     # 回滚到第 1 个版本

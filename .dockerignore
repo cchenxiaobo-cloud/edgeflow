@@ -1,0 +1,37 @@
+# ============================================================================
+# .dockerignore —— Docker 构建上下文过滤（WBS 8.5）
+# 构建上下文 = 仓库根目录，只把 Go 源码送入构建，减小上下文体积、加速构建
+# ============================================================================
+
+# VCS 与 CI
+.git/
+.github/
+.gitignore
+
+# 编译产物（与 .gitignore 保持一致）
+bin/
+dist/
+*.exe
+
+# 运行时数据（edgecore 的 SQLite 元数据库，本地开发产生）
+data/
+
+# 文档与交付物（镜像构建不需要，按需挂载即可）
+docs/
+*.md
+*.html
+
+# 本地配置（不含密钥，仅占位）
+*.local
+
+# IDE / 系统文件
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Helm Chart 与 Docker 构建产物（Chart 单独打包，不进入镜像）
+build/charts/
+build/docker/
+*.tgz

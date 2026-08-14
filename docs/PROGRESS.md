@@ -433,6 +433,7 @@
 | P2×6 处置 | a1c619d+4f8eeab | ①TLSSAN fail-fast ②manifest 校验和 ③unit ID+连接上限 ④关闭 ⑤舍入 ⑥延后登记 |
 | M5 文档定稿 | f090a30 | 9.2-9.5 四文档（2023 行）+ examples/demo.sh（DEMO PASS×3）+ REVIEWS.md |
 | 协调点修复 | eabb360+4c52f4a | refreshManifest 合并式更新、defaultNodeID 清洗、P2-1 台账一致性、P2-3 回归测试 |
+| M4D P2×2 处置 | fe093e1 | P2-4 restoreBackup 事务化（staging+原子替换）、P2-5 备份清单白名单校验（见下） |
 
 ### 端到端验证
 | 场景 | 实测结果 |
@@ -449,11 +450,15 @@
 |------|------|
 | go test -race（24 包） | ✅ 全绿，覆盖率 77.8%（keadm 74.6%） |
 | golangci-lint | ✅ 0 issues |
-| 审查（docs/CODE-REVIEW-M4D.md） | ✅ 有条件通过（0 P0 / 0 P1 / 5 P2）→ P2×3 修复 + P2×2 记录待办 |
+| 审查（docs/CODE-REVIEW-M4D.md） | ✅ 有条件通过（0 P0 / 0 P1 / 5 P2）→ P2×5 全部修复（P2×3 + P2×2，见下） |
 
-### P2 待办（2 项）
-- restoreBackup 非事务性（中途失败留混合状态——有兜底：备份保留+cp 提示+重跑幂等）
-- findBackup/restoreBackup 未对 manifest 文件清单白名单校验（本地威胁模型低危，纵深防御项）
+### M4D P2×2 处置（2026-08-14，commit fe093e1）
+| # | 问题 | 结论（一句话） | 证据 |
+|----|------|----------------|------|
+| P2-4 | restoreBackup 非事务性（中途失败留混合状态） | 已修复：先复制到 staging（.restore-staging-<pid>/）全部回读校验通过后 os.Rename 原子替换（同目录同设备），任一失败清理 staging、备份保留、目标文件不被部分覆盖；权限恢复在 staging 阶段完成（env 0600 / service 0644 / install.sh 0755） | restoreBackup（cmd/keadm/rollback.go）+ TestRestoreBackupTransactional / TestRestoreBackupFailureAtomic |
+| P2-5 | manifest 文件清单无白名单校验（纵深防御） | 已修复：findBackup/listBackups 加载时校验 Files 仅含 {edgecore.env, edgecore.service, install.sh}，未知条目（绝对路径/路径穿越）拒绝加载并报「备份清单含未知文件」；restore 只恢复白名单文件 | backupWhitelist/invalidBackupFile（cmd/keadm/rollback.go）+ TestFindBackupRejectsUnknownManifestFiles / TestRollbackRejectsMaliciousManifest / TestListBackupsWarnsUnknownManifest / TestRestoreBackupSkipsNonWhitelist |
+
+> 验证：go build/vet ✅、go test -race -count=1 ./cmd/keadm/... ✅（覆盖 75.6%）、golangci-lint 0 issues；现有升级/回滚测试全部保持绿色。
 
 ## 5. 待办项（Backlog）
 

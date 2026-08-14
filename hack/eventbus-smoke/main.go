@@ -118,7 +118,7 @@ func startBroker(mosq string, port int) *exec.Cmd {
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 			return cmd
 		}
 		time.Sleep(20 * time.Millisecond)

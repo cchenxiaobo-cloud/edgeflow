@@ -73,7 +73,7 @@ func freePort(t *testing.T) int {
 	if err != nil {
 		t.Fatalf("申请空闲端口失败: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 	return l.Addr().(*net.TCPAddr).Port
 }
 
@@ -95,7 +95,7 @@ func startBroker(t *testing.T, port int) *exec.Cmd {
 		for time.Now().Before(deadline) {
 			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
 			if err == nil {
-				conn.Close()
+				_ = conn.Close()
 				ready = true
 				break
 			}

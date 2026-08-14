@@ -177,7 +177,7 @@ func TestConfigPersistenceAcrossReopen(t *testing.T) {
 func TestConfigKeyNamespaceIsolation(t *testing.T) {
 	s := newTestStore(t)
 
-	cfgDefault := configJSON("app-config", "ConfigMap", map[string]string{"k": "v"})       // ns=default
+	cfgDefault := configJSON("app-config", "ConfigMap", map[string]string{"k": "v"})        // ns=default
 	cfgProd := configJSONNS("prod", "app-config", "ConfigMap", map[string]string{"k": "v"}) // ns=prod，同名不同 ns
 
 	// 同名配置存入两个命名空间：应各存各的，互不覆盖

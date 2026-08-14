@@ -1,6 +1,6 @@
 # EdgeFlow 项目进度台账（PROGRESS）
 
-> 最后更新：2026-08-13 09:25 (Asia/Shanghai)
+> 最后更新：2026-08-14 20:46 (Asia/Shanghai)
 > 维护规则：每个模块完成验证后更新本表；验证证据（命令输出）保留在对应模块记录中。
 
 ---
@@ -491,29 +491,39 @@
 
 ## 5. 待办项（Backlog）
 
+> 2026-08-14 收尾审计清理：已完成项已移除（Helm 骨架✅、edgecore 占位测试✅、M2 完整化已做部分✅、M3 MQTT EventBus✅、cmd-edgecore 覆盖率✅ 74.6%）；并新增 audit-m02/audit-m35 缺口跟踪项。完整缺口分级见 docs/audit-m02.md §4、docs/audit-m35.md §4。
+
 | 优先级 | 事项 | 说明 |
 |--------|------|------|
 | P1 | GitHub 远程仓库关联 | 用户把 `~/.ssh/id_ed25519.pub` 粘贴到 GitHub → `git remote add origin` → push（步骤见 ENV-SETUP.md §4.2） |
-| P1 | 推送后验证 CI 首次运行 | push 后 Actions 标签页应显示 lint+test 绿勾 |
-| P2 | cmd-edgecore 覆盖率缺口（56.5%） | "注册成功→SQLite 落盘"集成链路补集成级单测（M2 前） |
-| P1 | M2 完整化（6.2/6.4/6.5） | ConfigMap/Secret 下发、Edged 健康检查/多副本、镜像更新滚动策略（8.3 E2E 完整场景） |
-| P1 | M3 二期：MQTT EventBus（3.6） | NATS MQTT POC 后接入真实 MQTT broker，替换内存模拟通道 |
+| P1 | 推送后验证 CI 首次运行 | push 后 Actions 标签页应显示 lint+test 绿勾（M0 验收"CI PR 反馈 ≤10min"至今未实证） |
+| P1 | 8.3 E2E 完整场景（含自治 30min 时长） | M2 验收"E2E 自治全过"未达成：无场景套件（多节点/故障恢复/自治 30min/升级），断网自治仅 40s 短测（audit-m02 §2.4） |
+| P1 | 6.4 镜像更新滚动策略 + 回滚 | 已运行容器镜像漂移不重建（EnsureRunning no-op）；无分批/门槛/回滚（audit-m02 §2.3） |
+| P1 | M1/M2 验收"kubectl get nodes / kubectl apply"字面未达成 | 无真实 K8s 接入，验收以 REST API 适配；需决策：修订验收口径或排期真实 K8s 接入（audit-m02 §4 P1） |
+| P1 | 2.8 NodeJob 未实现 | 仅协议占位"待定"；ROADMAP 缺口 1 未关闭，需明确关闭或排期（audit-m02 §2.1） |
+| P2 | WBS 7 缺失项：7.2 RBAC / 7.3 设备认证 / 7.5 审计日志 | 均未实现且未列入 Release Notes 已知问题（audit-m35 G1）；另 10.1 可观测性（G2）、10.3 API 兼容矩阵（G4）、8.4 压测（G3）同属 M4 验收缺口 |
+| P2 | 9.1 架构文档评审 + 内容回写 | ARCHITECTURE.md 未评审且滞后：NATS→MQTT、Token→mTLS、实现进度至 M5（audit-m02 S11-S13） |
+| P2 | 生产多节点集群验证 | kind 单节点真实集群路径已跑通（2026-08-14，CRD apply/部署/注册，≈2min，见 docs/REAL-CLUSTER-GUIDE.md）；多节点网络/存储/证书差异待生产演练（DRILL-SCHEDULE） |
+| P2 | 6.5 资源管理（调度/资源超卖） | 仅 Replicas 伸缩；超卖/调度未做（audit-m02 §4） |
+| P2 | Flannel/边缘容器网络（缺口 6） | M2 交付物从未实现（Docker bridge 方案），需明确关闭或排期 CNI（audit-m02 §4） |
+| P2 | 4.4 压缩显式延后登记 | 压缩未实现（计划内延后 gzip M2+/Protobuf M4+），补显式延后跟踪（audit-m02 §4） |
 | P2 | M3A 审查 P2 项×6 | byDevice 路由含 namespace、多实例 Mapper、空 deviceName 校验、LastReportedAt 单调性、502 Desired 分叉、无 TTL/GC（见 CODE-REVIEW-M3A.md） |
-| P2 | M1C 审查 P2 项×5 | pending 交叉清理/ErrAckFailed→502/context 取消/非原子/云端 operation 校验（见 CODE-REVIEW-M1C.md） |
+| P2 | M1C 审查 P2 项×5 | pending 交叉清理/ErrAckFailed→502/context 取消/非原子/云端 operation 校验（见 CODE-REVIEW-M1C.md；其中 pending 交叉清理与 502 映射已在 8321b0e 修复） |
 | P2 | M1B 审查 P2 项×9 | LIKE 转义/WAL checkpoint/Offline TTL/WriteTimeout 等（见 CODE-REVIEW-M1B.md） |
+| P2 | 多架构发布镜像补 linux-arm64 二进制 | release/v0.1.0 仅 darwin-arm64 + linux-amd64 二进制；边缘 arm64 平台需自行交叉编译（audit-m35 G13） |
 | P3 | 日志级别过滤（SetLevel） | pkg/log 的 Level 目前仅前缀标记，后续模块需要时实现 |
 | P3 | M1 通道 P3 项×4 | newID 忽略 rand 错误 / Shutdown 撞 Start 初始化窗口 / 被踢连接标志延迟清除 / 退避重置缺单测（见 CODE-REVIEW-M1.md） |
-| P2 | edgecore 占位程序测试 | 非核心包，M1 开发时补 |
-| P2 | Helm Chart 骨架（M0-4） | 进入部署阶段前完成 |
-| P2 | M4C 审查 P2-⑥ :latest immutable / cosign / SBOM | 延后（M5 发布阶段）：需镜像仓库 + cosign 签名基础设施；风险已登记 MULTIARCH.md §5（处置台账见 4K 节） |
+| P2 | M4C 审查 P2-⑥ :latest immutable / cosign / SBOM | SBOM 已补（M5）；cosign 签名延后：需镜像仓库 + cosign 签名基础设施；风险已登记 MULTIARCH.md §5（处置台账见 4K 节） |
 
 ## 6. 里程碑状态
 
+> 2026-08-14 收尾审计回写：此前 M1-M5 全部标"⏳ 未开始"与 §3 模块表矛盾；以下按 audit-m02/audit-m35 实际核对结论更新。
+
 | 里程碑 | 状态 | 说明 |
 |--------|------|------|
-| M0 架构基线与开发就绪 | ✅ **完成** | 骨架/共享库/CI/CRD/Helm/架构文档全部就绪 |
-| M1 云边核心通信链路 | ⏳ 未开始 | 依赖 M0 收尾 |
-| M2 应用部署与边缘自治 | ⏳ 未开始 | — |
-| M3 设备管理 | ⏳ 未开始 | — |
-| M4 生产化 | ⏳ 未开始 | — |
-| M5 发布 | ⏳ 未开始 | — |
+| M0 架构基线与开发就绪 | ✅ **完成** | 骨架/共享库/CI/CRD 类型/Helm 全部就绪；2 项验收未实证（CI 未运行、CRD 从未 apply，见 audit-m02 §1.1） |
+| M1 云边核心通信链路 | ✅ **完成** | 协议/连接/路由/可靠投递/CloudHub/EdgeHub/MetaManager/Edged POC 全达成；3 项归属偏移（2.4/4.5/8.6 实际 M4 完成）；"kubectl get nodes"为 REST 适配 |
+| M2 应用部署与边缘自治 | 🟨 **核心链路完成，验收未完全达成** | 部署/配置/状态上报/自治基础 ✅；P1 残留：8.3 E2E 完整场景（自治 30min）+ 6.4 镜像更新滚动策略（audit-m02 §2.3/§2.4） |
+| M3 设备管理 | 🟨 **第 1-3 轮完成** | DeviceTwin/EventBus/Mapper/流水线/示例 ✅；5.2 Modbus 实际 M4 完成、OPC-UA 未做；端到端延迟 ≤5s 从未测量（audit-m35 §2.1） |
+| M4 生产化 | 🟨 **主体+收尾完成** | mTLS/升级回滚/Helm/keadm 基础 ✅；7.2 RBAC/7.3 设备认证/7.5 审计日志/10.1 可观测性/10.3 兼容矩阵/8.4 压测未做（audit-m35 G1-G4） |
+| M5 发布 | 🟨 **发布完成** | v0.1.0 产物齐备（6 二进制+Chart+checksum+SBOM+镜像）；真实集群路径（15min 部署、kubectl get nodes Ready）未执行，已披露为 E2 限制；发布镜像已重建为双架构（2026-08-14，B5） |

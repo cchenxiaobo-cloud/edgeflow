@@ -1,0 +1,129 @@
+# Device CRD（edgeflow.io/v1alpha1）
+#
+# 由 apis/edge/v1alpha1/device.go 类型生成（手写 OpenAPI v3 schema）。
+# 应用：kubectl apply -f config/crd/devices.edgeflow.io.yaml
+#
+# Device 是数字孪生（Twin）机制的核心：Spec.Properties 声明云端期望值（desired），
+# Status.Twins 记录设备实际上报值（reported）。
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: devices.edgeflow.io
+spec:
+  group: edgeflow.io
+  names:
+    kind: Device
+    listKind: DeviceList
+    plural: devices
+    singular: device
+    shortNames:
+      - dev
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - deviceModelRef
+                - nodeName
+              properties:
+                deviceModelRef:
+                  description: 引用的设备型号名称（必填，须与 DeviceModel 同命名空间）
+                  type: string
+                nodeName:
+                  description: 设备绑定的边缘节点名称（必填）
+                  type: string
+                protocol:
+                  description: 设备连接信息（协议名 + 连接参数）
+                  type: object
+                  properties:
+                    protocolName:
+                      description: 协议名，须与 DeviceModel.Spec.Protocol 一致
+                      type: string
+                    config:
+                      description: 协议连接参数（键值对）
+                      type: object
+                      additionalProperties:
+                        type: string
+                properties:
+                  description: 设备实例上各属性的期望值（属性名须在 DeviceModel 中定义）
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - name
+                    properties:
+                      name:
+                        description: 属性名（须在 DeviceModel.Spec.Properties 中定义）
+                        type: string
+                      desired:
+                        description: 云端下发的期望值（数字孪生 desired 侧）
+                        type: object
+                        required:
+                          - value
+                        properties:
+                          value:
+                            description: 属性值（字符串形式，与 DataType 对应）
+                            type: string
+                          metadata:
+                            description: 附加元数据（如采集时间、单位）
+                            type: object
+                            additionalProperties:
+                              type: string
+            status:
+              description: 设备运行时状态（设备上报，云端只读）
+              type: object
+              properties:
+                twins:
+                  description: 数字孪生属性列表（desired 与 reported 对照）
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - propertyName
+                    properties:
+                      propertyName:
+                        description: 属性名
+                        type: string
+                      desired:
+                        description: 云端下发的期望值
+                        type: object
+                        required:
+                          - value
+                        properties:
+                          value:
+                            type: string
+                          metadata:
+                            type: object
+                            additionalProperties:
+                              type: string
+                      reported:
+                        description: 设备实际上报值
+                        type: object
+                        required:
+                          - value
+                        properties:
+                          value:
+                            type: string
+                          metadata:
+                            type: object
+                            additionalProperties:
+                              type: string
+                lastUpdatedTime:
+                  description: 最近一次状态更新时间（RFC3339）
+                  type: string
+                  format: date-time

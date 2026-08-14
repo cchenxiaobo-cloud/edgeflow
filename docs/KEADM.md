@@ -1,7 +1,8 @@
-# keadm 使用文档（WBS 8.6 基础版）
+# keadm 使用文档（WBS 8.6 基础版 + 升级回滚）
 
-`keadm` 是 EdgeFlow 的安装管理 CLI（对标 KubeEdge 的 keadm）。当前为**基础版**：
-只做**离线产物生成**（不直接操作集群/节点），生成物由用户拿到真实集群/边缘节点上执行。
+`keadm` 是 EdgeFlow 的安装管理 CLI（对标 KubeEdge 的 keadm）。当前为**基础版 + 升级回滚**：
+只做**离线产物生成**（不直接操作集群/节点），生成物由用户拿到真实集群/边缘节点上执行；
+`keadm upgrade` / `rollback` 在产物层面提供升级与回滚（备份模型 + 操作台账，见 docs/UPGRADE.md）。
 
 - 云端：生成可直接 `kubectl apply -f` 的 `cloudcore.yaml`（Deployment + Service），
   与 `build/charts/edgeflow` 的容器约定完全一致（`/healthz` 探针、`/data` 卷、TLS env 透传）；
@@ -33,8 +34,14 @@ go build -ldflags "-X edgeflow/pkg/version.Version=v0.1.0 \
 | --- | --- | --- |
 | `keadm init` | 生成云端部署产物 | `cloudcore.yaml`、`NOTES.txt` |
 | `keadm join` | 生成边缘接入产物 | `edgecore.env`、`edgecore.service`、`install.sh`、`README.md` |
+| `keadm upgrade` | 产物升级（先备份 + 写操作台账） | `backups/<id>/`、`ops-ledger.jsonl` |
+| `keadm rollback` | 产物回滚（从备份恢复，事务化） | 恢复产物文件 |
+| `keadm ops-ledger` | 查询操作台账（时间/版本/结果/操作人） | — |
 | `keadm reset` | 清理 output-dir 下的 keadm 生成产物（确认后删除，幂等） | — |
 | `keadm version` | 输出版本信息（`--json` 结构化输出） | — |
+
+> 升级/回滚为 M4-M5 补充能力（commits `7aa035c`/`fe093e1`，WBS 10.2）；完整机制说明与
+> 演练记录见 docs/UPGRADE.md。批量 init/join 与跨版本配置迁移未实现（见 audit-m35 G8）。
 
 退出码约定：`0` 成功；`1` 运行时错误（IO/生成失败）；`2` 参数/用法错误。
 
@@ -180,6 +187,27 @@ keadm version --json   # 结构化 JSON，供脚本解析
 | `kubectl apply` 报 schema 校验失败 | 集群 API 版本与本地 kubectl 不匹配 | 检查 kubectl 版本与集群兼容性 |
 | edgecore 起不来 | 网络不通/配置错误 | `journalctl -u edgecore -e` 查看；确认可达 `--cloudcore-ip` 的 hub 端口；确认 env 文件键值未被手改 |
 | 云边连接被拒（TLS） | 证书 SAN 未覆盖访问地址 | 云端以 `--tls-san=IP:<访问IP>` 重新 init 并 apply |
+| 升级/回滚异常 | 备份缺失/校验失败/中途失败 | 见 docs/UPGRADE.md §3 异常路径表（含人工 cp 兜底命令） |
+
+## 5.1 升级与回滚（产物层面）
+
+```bash
+# 升级产物到新版本（执行前自动备份 + 写台账）
+keadm upgrade --version=v0.2.0 --operator=alice --output-dir=./keadm-out
+
+# 模拟失败演练（不改动产物，验证异常路径）
+keadm upgrade --version=v0.2.0 --simulate-failure --output-dir=./keadm-out
+
+# 回滚到最近一次备份（staging 校验通过后原子替换）
+keadm rollback --latest --output-dir=./keadm-out
+
+# 查询操作台账
+keadm ops-ledger --limit=10
+```
+
+机制要点（详见 docs/UPGRADE.md）：备份模型 `backups/<ts>/manifest.json+sha256`；
+回滚仅恢复白名单文件（env/service/install.sh），事务化 restore（staging + 原子替换）；
+`--simulate-failure` 演练路径与真实失败行为一致。
 
 ## 6. 本机验证边界（无集群环境）
 

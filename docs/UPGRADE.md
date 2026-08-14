@@ -155,7 +155,8 @@ KEADM_OPERATOR=alice keadm upgrade --version=v0.2.0 --output-dir=./keadm-out
   （升级前快照、升级后校验）；
 - **真实部署升级未覆盖**：镜像 tag 变更、edgecore 二进制替换、节点侧
   `install.sh` 的实际执行均不在 keadm 产物级机制内；本机制保证的是
-  「离线产物」可恢复，真实节点回滚需结合发布流程（留待 M5）；
+  「离线产物」可恢复，真实节点回滚需结合发布流程（v0.1.0 已发布，见
+  docs/DEPLOYMENT.md §5.2 与 docs/REAL-CLUSTER-GUIDE.md）；
 - **人工介入入口**：任何自动恢复不可用的场景，备份目录保留完整快照，
   可直接用 `cp` 命令手动恢复（错误提示中给出逐文件命令示例）；
 - **reset 交互**：`keadm reset` 按校验清单删除产物；`upgrade` 更新 env 后其

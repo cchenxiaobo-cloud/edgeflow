@@ -1,6 +1,6 @@
 # EdgeFlow v0.1.0 Release Notes（发布说明）
 
-> 状态：✅ 已编制（2026-08-14）｜发布制品制作中，制品字段待发布制品工程师回填。
+> 状态：✅ 已定稿（2026-08-14，制品归档与 keadm 重建后全部字段已回填）
 > 配套文档：`docs/DEPLOYMENT.md`（部署）、`docs/UPGRADE.md`（升级回滚）、`docs/MULTIARCH.md`（多架构镜像）、
 > `docs/RELEASE-LEDGER.md`（发布台账）、`docs/DRILL-SCHEDULE.md`（生产演练排期）。
 
@@ -28,7 +28,7 @@ runtime dependencies. This first MVP release delivers:
 - **M5 – Release documents**: API spec, deployment guide, handoff guide, examples
   (WBS 9.2–9.5), release notes, ledger and drill schedule.
 
-**Quality gates**: 98 commits; 24 packages race-enabled tests green; total coverage
+**Quality gates**: 108 commits; 24 packages race-enabled tests green; total coverage
 77.8%; golangci-lint 0 issues; 0 P0 / 0 P1 review findings; end-to-end demo
 `examples/demo.sh` passes 3×.
 
@@ -49,11 +49,11 @@ edgeflow <rev>` / image digest revert. See §5/§6.
 | 版本号 | **v0.1.0**（Chart `appVersion: v0.1.0`，Makefile `VERSION=v0.1.0`） |
 | 发布类型 | MVP 首发（First MVP Release） |
 | 编制日期 | 2026-08-14 |
-| 发布日期 | 【待回填】由发布制品工程师在制品归档完成时填写 |
-| 发布基线 commit | `ca2051b`（docs: add M4-finish M5-prep delivery report，98 提交） |
-| 发布制品 commit | 【待回填】制品归档对应的 commit |
-| 制品位置 | `release/v0.1.0/`（【待回填】由发布制品工程师归档后生效，见 `docs/RELEASE-LEDGER.md`） |
-| 镜像 | `edgeflow/cloudcore:v0.1.0`、`edgeflow/edgecore:v0.1.0`（多架构，见 §7） |
+| 发布日期 | **2026-08-14**（制品归档 commit `d17bdd5` 后生效） |
+| 发布基线 commit | `ca2051b`（编制时 98 提交；最终 HEAD `147de5f`，108 提交） |
+| 发布制品 commit | **`733d0ae`**（keadm 重建含 P2-4/P2-5 修复；SBOM/checksum 刷新 `e29e1ce`；制品归档 `d17bdd5`） |
+| 制品位置 | `release/v0.1.0/`（已归档，含 6 二进制 + Chart 包 + checksums.txt + sbom.json + images.json） |
+| 镜像 | `edgeflow/cloudcore:v0.1.0`、`edgeflow/edgecore:v0.1.0`（**双架构 linux/amd64+arm64，2026-08-14 重建**，见 §7 与 `release/v0.1.0/images.json`） |
 | Helm Chart | `build/charts/edgeflow`（version 0.1.0） |
 
 ---
@@ -119,7 +119,7 @@ edgeflow <rev>` / image digest revert. See §5/§6.
 
 | 指标 | 结果 | 依据 |
 |------|------|------|
-| Git 提交 | 98（基线 commit `ca2051b`） | `git log` |
+| Git 提交 | 108（最终 HEAD `147de5f`；编制时基线 `ca2051b` 为 98） | `git log` |
 | 包测试 | 24 包 `go test -race` 全绿 | PROGRESS §4K/§4L |
 | 总覆盖率 | **77.8%**（门槛 ≥70%） | `go test -race -cover ./...` |
 | Lint | `golangci-lint run ./...` 0 issues | — |
@@ -152,7 +152,7 @@ edgeflow <rev>` / image digest revert. See §5/§6.
 | # | 问题 | 影响 | 缓解 | 跟进 |
 |---|------|------|------|------|
 | E1 | **镜像未推送到远端仓库**（仅本地 registry 验证） | 真实集群无法拉取镜像，Helm 部署不可用 | 发布流程推送 ghcr.io 或私有仓库（`docs/MULTIARCH.md` §3）；Chart 配置 `imagePullSecrets` | 发布制品工程师（本轮） |
-| E2 | **真实集群安装未执行**（helm 仅 `--dry-run=client` + 单机 Demo） | 集群环境差异（网络/存储/证书）未暴露 | 生产演练排期验证（`docs/DRILL-SCHEDULE.md`）；先测试环境全量演练 | 运维 + 研发（演练窗口，需确认） |
+| E2 | **生产多节点集群未验证**（kind 单节点真实集群路径已于 2026-08-14 跑通：CRD apply/部署/节点注册，见 docs/REAL-CLUSTER-GUIDE.md） | 多节点网络/存储/证书差异未暴露 | 生产演练排期验证（`docs/DRILL-SCHEDULE.md`）；先测试环境全量演练 | 运维 + 研发（演练窗口，需确认） |
 | E3 | **远程仓库未推送**（GitHub remote 未配置） | CI（lint+test+release.yml）未在真实远端运行 | 用户配置 SSH key → `git remote add origin` → push（ENV-SETUP.md §4.2） | 用户（P1 Backlog） |
 | E4 | 镜像 `:latest` 无 immutable 保护、无 cosign 签名/SBOM | tag 可被覆盖，供应链可追溯性弱 | 按版本 tag 引用；签名/SBOM 依赖 registry + cosign 基础设施 | M4C P2-⑥，延后至 M5 发布阶段（本轮 SBOM 随制品产出，签名仍缺） |
 
@@ -275,4 +275,4 @@ docker buildx imagetools inspect <registry>/edgeflow/cloudcore:v0.1.0   # amd64+
 1. **发布前确认**：E1（镜像推送）与 E3（远程仓库）完成后方可对外发布；E2 由生产演练补足。
 2. **已知问题清单**随发布制品归档同步更新（`docs/RELEASE-LEDGER.md` 复核栏）。
 3. **本文件为发布基线文档**；制品字段（发布日期/制品 commit/checksum/SBOM/镜像 digest）
-   由发布制品工程师回填，回填后本文件与台账保持一致。
+   已于 2026-08-14 制品归档后全部回填，与 `docs/RELEASE-LEDGER.md` 一致。

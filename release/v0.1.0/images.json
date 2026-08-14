@@ -1,40 +1,46 @@
 {
   "version": "v0.1.0",
   "registry": "localhost:5001",
-  "generatedAt": "2026-08-14T19:58:00+08:00",
-  "notes": "本地 registry 闭环验证（无远程凭据）。digest 取自 registry API Docker-Content-Digest 与 docker inspect RepoDigests 双渠道核对一致。",
+  "generatedAt": "2026-08-14T21:05:00+08:00",
+  "notes": "本地 registry 闭环验证（无远程凭据）。v0.1.0 发布镜像已于 2026-08-14 由单架构 arm64 重建为双架构（B5）：buildx（docker-container driver）构建 linux/amd64+linux/arm64 OCI manifest 单 tag 双平台（--provenance=false 无 attestation 条目）；构建基线 commit 147de5f（git archive 干净提交，未含并行 WIP）。",
   "images": [
     {
       "name": "edgeflow/cloudcore",
       "tag": "v0.1.0",
-      "reference": "localhost:5001/edgeflow/cloudcore@sha256:2f9f2fbef9baf1188bfb4e0048c7ca192c99d20f5160f2385af09569b79712ec",
-      "digest": "sha256:2f9f2fbef9baf1188bfb4e0048c7ca192c99d20f5160f2385af09569b79712ec",
-      "size": 3673346,
-      "arch": "linux/arm64",
-      "os": "linux",
+      "reference": "localhost:5001/edgeflow/cloudcore@sha256:6d01b329a8343fc26c31ff81238702be93c95a9529284f4158ef46586e720308",
+      "digest": "sha256:6d01b329a8343fc26c31ff81238702be93c95a9529284f4158ef46586e720308",
+      "manifest": {
+        "schemaVersion": 2,
+        "platforms": [
+          { "os": "linux", "architecture": "amd64", "digest": "sha256:84fd1e725e520444c1d926c818834eb884bba95ceb18bf9d71ed37715daa0ab1", "size": 3948010 },
+          { "os": "linux", "architecture": "arm64", "digest": "sha256:373fba1ccf7282f0b8932f71e2eb53ddd9b3f2a3b60d289b9f96c957fa3aef17", "size": 3669368 }
+        ]
+      },
       "buildArgs": {
         "VERSION": "v0.1.0",
-        "GIT_COMMIT": "ca2051b",
-        "BUILD_TIME": "2026-08-14T19:52:32+0800"
+        "GIT_COMMIT": "147de5f",
+        "BUILD_TIME": "2026-08-14T20:57:45+0800"
       },
-      "archNote": "本机 arm64 单架构构建（docker build，非 buildx 多架构）；多架构 manifest 验证见 docs/MULTIARCH.md §7（commit 301daee，gitCommit=f71684e 的历史构建）",
-      "verifiedBy": "独立复核：digest 双渠道一致 + pull 复验（构建人），registry 已清理无法二次复验"
+      "verifiedBy": "docker manifest inspect 双架构齐全 + docker run --platform linux/amd64,linux/arm64 --version 输出一致（version=v0.1.0 gitCommit=147de5f）+ kind 集群实测部署运行（REAL-CLUSTER-GUIDE.md §0）"
     },
     {
       "name": "edgeflow/edgecore",
       "tag": "v0.1.0",
-      "reference": "localhost:5001/edgeflow/edgecore@sha256:227f6050438fdee439d0d0eb84c278c05fa4a5d6bb7abc10a2632f776e94bd4c",
-      "digest": "sha256:227f6050438fdee439d0d0eb84c278c05fa4a5d6bb7abc10a2632f776e94bd4c",
-      "size": 5401759,
-      "arch": "linux/arm64",
-      "os": "linux",
+      "reference": "localhost:5001/edgeflow/edgecore@sha256:62e378b659d79052e0efcbaffbe9eae4b207a0e80647d7fac7d14d928d44541d",
+      "digest": "sha256:62e378b659d79052e0efcbaffbe9eae4b207a0e80647d7fac7d14d928d44541d",
+      "manifest": {
+        "schemaVersion": 2,
+        "platforms": [
+          { "os": "linux", "architecture": "amd64", "digest": "sha256:6f7701cd503bce52e1af6a71e315744de6a879ad3473999461e473dd2eff362f", "size": 5686974 },
+          { "os": "linux", "architecture": "arm64", "digest": "sha256:e8325eca5e3c9d937508d7b1701df41d3d27ebf03d719bba4c2b934e725fff0d", "size": 5397594 }
+        ]
+      },
       "buildArgs": {
         "VERSION": "v0.1.0",
-        "GIT_COMMIT": "ca2051b",
-        "BUILD_TIME": "2026-08-14T19:52:32+0800"
+        "GIT_COMMIT": "147de5f",
+        "BUILD_TIME": "2026-08-14T20:57:45+0800"
       },
-      "archNote": "本机 arm64 单架构构建（docker build，非 buildx 多架构）；多架构 manifest 验证见 docs/MULTIARCH.md §7（commit 301daee，gitCommit=f71684e 的历史构建）",
-      "verifiedBy": "独立复核：digest 双渠道一致 + pull 复验（构建人），registry 已清理无法二次复验"
+      "verifiedBy": "docker manifest inspect 双架构齐全 + docker run --platform linux/amd64,linux/arm64 --version 输出一致（version=v0.1.0 gitCommit=147de5f）"
     }
   ]
 }

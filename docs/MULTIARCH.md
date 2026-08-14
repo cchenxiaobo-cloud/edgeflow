@@ -200,6 +200,47 @@ $ curl -s http://127.0.0.1:5001/v2/_catalog
 
 注：本地验证未传 BUILD_TIME（默认 unknown）；CI 已注入构建时间。
 
+### 7.1 v0.1.0 发布镜像双架构重建证据（2026-08-14 B5，commit 147de5f）
+
+> 上述 §7 证据对应**历史构建**（commit 301daee，gitCommit=f71684e）；v0.1.0 发布镜像
+> 最初为单架构 arm64（docker build，images.json 已注明），2026-08-14 按 audit-m35 G5
+> 重建为双架构，证据如下（构建基线 = git archive HEAD `147de5f`，未含并行 WIP；
+> `--provenance=false` 使 manifest 仅含 amd64/arm64 两项）：
+
+```text
+$ docker manifest inspect --insecure localhost:5001/edgeflow/cloudcore:v0.1.0
+   linux/amd64  digest=sha256:84fd1e725e520444c1d926c818834eb884bba95ceb18bf9d71ed37715daa0ab1
+   linux/arm64  digest=sha256:373fba1ccf7282f0b8932f71e2eb53ddd9b3f2a3b60d289b9f96c957fa3aef17
+   索引 digest = sha256:6d01b329a8343fc26c31ff81238702be93c95a9529284f4158ef46586e720308
+
+$ docker manifest inspect --insecure localhost:5001/edgeflow/edgecore:v0.1.0
+   linux/amd64  digest=sha256:6f7701cd503bce52e1af6a71e315744de6a879ad3473999461e473dd2eff362f
+   linux/arm64  digest=sha256:e8325eca5e3c9d937508d7b1701df41d3d27ebf03d719bba4c2b934e725fff0d
+   索引 digest = sha256:62e378b659d79052e0efcbaffbe9eae4b207a0e80647d7fac7d14d928d44541d
+
+$ docker run --rm localhost:5001/edgeflow/cloudcore:v0.1.0 --version        # arm64 原生
+version=v0.1.0 gitCommit=147de5f buildTime=2026-08-14T20:57:45+0800 goVersion=go1.26.6
+
+$ docker run --platform linux/amd64 --rm localhost:5001/edgeflow/cloudcore:v0.1.0 --version  # QEMU
+version=v0.1.0 gitCommit=147de5f buildTime=2026-08-14T20:57:45+0800 goVersion=go1.26.6
+
+$ docker run --rm localhost:5001/edgeflow/edgecore:v0.1.0 --version
+version=v0.1.0 gitCommit=147de5f buildTime=2026-08-14T20:57:45+0800 goVersion=go1.26.6
+
+$ docker run --platform linux/amd64 --rm localhost:5001/edgeflow/edgecore:v0.1.0 --version
+version=v0.1.0 gitCommit=147de5f buildTime=2026-08-14T20:57:45+0800 goVersion=go1.26.6
+
+$ curl -s http://127.0.0.1:5001/v2/_catalog
+{"repositories":["edgeflow/cloudcore","edgeflow/edgecore"]}
+```
+
+集群实测（kind v1.32.2 + 本地 registry mirror，见 docs/REAL-CLUSTER-GUIDE.md）：
+cloudcore 双架构镜像经 registry mirror 被 kind 节点拉取并部署运行（rollout 1/1）、
+healthz 200、edgecore 经 NodePort 接入注册 Ready。
+
+> 注：构建注入 BUILD_TIME 导致同一 commit 重建 digest 不同（内容寻址）；引用请用
+> images.json 中记录的**最终索引 digest**。
+
 ---
 
 ## 8. 验收清单（M4）

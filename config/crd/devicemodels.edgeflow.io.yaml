@@ -1,0 +1,84 @@
+# DeviceModel CRD（edgeflow.io/v1alpha1）
+#
+# 由 apis/edge/v1alpha1/device_model.go 类型生成（手写 OpenAPI v3 schema）。
+# 应用：kubectl apply -f config/crd/devicemodels.edgeflow.io.yaml
+#
+# DeviceModel 描述一类设备的"模板"：协议家族 + 属性定义，不涉及具体实例。
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: devicemodels.edgeflow.io
+spec:
+  group: edgeflow.io
+  names:
+    kind: DeviceModel
+    listKind: DeviceModelList
+    plural: devicemodels
+    singular: devicemodel
+    shortNames:
+      - dm
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              properties:
+                protocol:
+                  description: 设备通信协议家族，如 modbus / opcua / bluetooth / mqtt
+                  type: string
+                properties:
+                  description: 该型号支持的属性列表
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - name
+                      - dataType
+                    properties:
+                      name:
+                        description: 属性名（同一型号内唯一）
+                        type: string
+                      description:
+                        description: 属性的人类可读说明
+                        type: string
+                      dataType:
+                        description: 数据类型：int / string / double / float / boolean
+                        type: string
+                        enum:
+                          - int
+                          - string
+                          - double
+                          - float
+                          - boolean
+                      accessMode:
+                        description: 访问模式：ReadOnly / ReadWrite（默认 ReadWrite）
+                        type: string
+                        enum:
+                          - ReadOnly
+                          - ReadWrite
+                      defaultValue:
+                        description: 默认值（字符串形式，与 dataType 对应）
+                        type: string
+                      minimum:
+                        description: 数值型属性最小值（字符串形式）
+                        type: string
+                      maximum:
+                        description: 数值型属性最大值（字符串形式）
+                        type: string
+                      unit:
+                        description: 计量单位，如 celsius
+                        type: string

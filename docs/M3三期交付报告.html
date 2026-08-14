@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EdgeFlow M3 三期交付报告 — MQTT 数据面与 Edged 完整化</title>
+<style>
+  :root {
+    --bg: #fafafa; --surface: #ffffff; --text: #1a1a1a; --text-2: #6b6b6b; --text-3: #999;
+    --accent: #2563eb; --accent-light: #dbeafe; --border: #e5e5e5;
+    --green: #16a34a; --green-light: #dcfce7; --yellow: #ca8a04; --yellow-light: #fef3c7;
+    --red: #dc2626; --red-light: #fee2e2; --code-bg: #f5f5f5; --radius: 4px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+    --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.7; font-weight: 300; -webkit-font-smoothing: antialiased; }
+  .container { max-width: 880px; margin: 0 auto; padding: 80px 40px; }
+  h1 { font-size: 2.2rem; font-weight: 200; letter-spacing: -0.02em; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.3rem; font-weight: 400; letter-spacing: -0.01em; margin: 3rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.05rem; font-weight: 500; margin: 1.8rem 0 0.6rem; }
+  p { margin-bottom: 0.8rem; color: var(--text-2); }
+  .subtitle { font-size: 0.95rem; color: var(--text-3); font-weight: 300; margin-bottom: 2.5rem; }
+  a { color: var(--accent); text-decoration: none; font-weight: 400; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.85em; }
+  pre { background: var(--code-bg); padding: 1rem; border-radius: var(--radius); overflow-x: auto; margin: 1rem 0; font-size: 0.8rem; line-height: 1.5; font-family: var(--mono); }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.85rem; }
+  th { text-align: left; font-weight: 500; padding: 0.6rem 0.5rem; border-bottom: 2px solid var(--text); }
+  td { padding: 0.5rem; border-bottom: 1px solid var(--border); font-weight: 300; }
+  tr:hover td { background: var(--accent-light); }
+  .badge { display: inline-block; padding: 0.15em 0.6em; border-radius: 100px; font-size: 0.75rem; font-weight: 500; }
+  .b-green { background: var(--green-light); color: var(--green); }
+  .b-blue { background: var(--accent-light); color: var(--accent); }
+  .b-yellow { background: var(--yellow-light); color: var(--yellow); }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); margin: 1.5rem 0; }
+  .metric { background: var(--surface); padding: 1.2rem 0.8rem; text-align: center; }
+  .metric-value { font-size: 1.6rem; font-weight: 200; color: var(--accent); }
+  .metric-label { font-size: 0.7rem; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.3rem; }
+  .arch { font-family: var(--mono); font-size: 0.75rem; line-height: 1.6; background: var(--surface); border: 1px solid var(--border); padding: 1.2rem; overflow-x: auto; margin: 1rem 0; color: var(--text-2); }
+  .panel { border: 1px solid var(--border); border-left: 3px solid var(--accent); padding: 1rem 1.2rem; margin: 1rem 0; background: var(--surface); }
+  .footer { margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border); font-size: 0.78rem; color: var(--text-3); }
+  @media (max-width: 700px) { .container { padding: 40px 20px; } .metrics { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>EdgeFlow M3 三期交付报告</h1>
+<p class="subtitle">Mapper 接入 EventBus（MQTT 数据面）· Edged 多副本与健康自愈 · 2026-08-14</p>
+
+<div class="metrics">
+  <div class="metric"><div class="metric-value">73</div><div class="metric-label">累计提交</div></div>
+  <div class="metric"><div class="metric-value">81.0%</div><div class="metric-label">总覆盖率</div></div>
+  <div class="metric"><div class="metric-value">0</div><div class="metric-label">Lint / P0</div></div>
+  <div class="metric"><div class="metric-value">6/6</div><div class="metric-label">联调场景通过</div></div>
+</div>
+
+<h2>1. 本轮交付摘要</h2>
+<p>本轮完成两个方向：<strong>Mapper 接入 EventBus（设备 MQTT 数据面真实化）</strong>——模拟传感器通过 MQTT 发布遥测、订阅指令（M3 验收"MQTT 读写设备"落地）；<strong>Edged 完整化（多副本 + 健康自愈）</strong>——replicas 展开/收缩、容器异常自动重启。审查发现 2 项 P1（旧命名容器 churn 无限循环、退出型镜像无限重启）已根因修复并补回归测试。</p>
+
+<h2>2. 新增能力</h2>
+<div class="arch">MQTT 数据面（M3 验收：MQTT 读写设备）            Edged 完整化（M2 6.4/6.5）
+设备（模拟）                                     期望 Pod（replicas=N）
+  │ 采集循环 2s                                    │ reconcile（5s 周期+订阅触发）
+  ▼                                                ▼
+EventBus.Publish（telemetry QoS1）           副本展开：edgeflow-ns-name-0..N-1
+devices/default/sensor-01/telemetry             收缩：从最大 index 停止
+  ▲                                               健康自愈：Inspect 非 Running→重启
+  │ EventBus.Subscribe（command QoS1）            +RestartCount + CrashLoopBackOff
+devices/default/sensor-01/command               （3 次阈值 / 30s 退避 / 60s 稳定重置）
+  │ mosquitto_pub 下发 {"property":"targetTemp","value":22}
+  ▼
+温度向目标收敛（实测 25.99→22.97）</div>
+
+<h2>3. 验证结果</h2>
+
+<h3>3.1 端到端联调（真实进程 + Docker + mosquitto）</h3>
+<table>
+<thead><tr><th>场景</th><th>实测证据</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>多副本</td><td>podsync replicas=2 → docker 出现 edgeflow-default-web-0 / -1</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>健康自愈</td><td>docker stop 副本 1 → 12s 内自动重启（docker ps 时间差证实）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>MQTT 遥测流</td><td>mosquitto_sub 收到 devices/default/sensor-01/telemetry（temperature/humidity/ts）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td><strong>MQTT 指令收敛</strong></td><td>发布 command targetTemp=22 → 温度 25.99→24.21→23.07→22.97</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>降级路径</td><td>broker 缺席 → Warn + 本地模式（不退出，云边链路不受影响）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>进程清理</td><td>双端 + broker + 容器无残留</td><td><span class="badge b-green">通过</span></td></tr>
+</tbody>
+</table>
+
+<h3>3.2 自动化验证</h3>
+<table>
+<thead><tr><th>项目</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>go test -race（19 包）</td><td><span class="badge b-green">全绿</span>，总覆盖率 81.0%（edged 89.2%、mock_sensor 91.1%）</td></tr>
+<tr><td>golangci-lint</td><td><span class="badge b-green">0 issues</span></td></tr>
+<tr><td>关键单测</td><td>MQTT 6 个集成用例真实 mosquitto、副本展开/收缩/缺口、自愈 RestartCount、旧命名迁移无 churn、退避不再重启</td></tr>
+</tbody>
+</table>
+
+<h3>3.3 审查与修复闭环（docs/CODE-REVIEW-M4A.md，341 行）</h3>
+<div class="panel">
+<p><strong>结论：有条件通过（0 P0 / 2 P1 / 12 P2）→ P1×2 已根因修复（commit c885229）</strong></p>
+<table>
+<thead><tr><th>P1 问题</th><th>修复</th><th>验证</th></tr></thead>
+<tbody>
+<tr><td>旧命名容器与 -0 槽位冲突（replicas≥2 每轮创建/删除无限循环）</td><td>parseIndexFromName 无序号→-1；reconcile 优先清理 Index&lt;0 实例（重建为规范名）；mock 同步语义</td><td>TestEdgedLegacyContainerMigration（迁移 + 第二轮无 churn 断言）</td></tr>
+<tr><td>退出型镜像每 5s 无限重启（生产硬缺口）</td><td>CrashLoopBackOff：3 次阈值 → 30s 退避窗口 → 60s 稳定运行重置</td><td>TestEdgedCrashLoopBackOff（退避期 EnsureRunning 不再调用 + Err 记录）</td></tr>
+</tbody>
+</table>
+<p style="margin-top:0.5rem;font-size:0.82rem">P2×12 记录台账待办（scale-to-zero、RestartCount 上报、Publish 阻塞窗口、滚动更新、进程级 liveness 等）。</p>
+</div>
+
+<h2>4. 下一步建议</h2>
+<table>
+<thead><tr><th>优先级</th><th>事项</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>P1</td><td>M4 前置：安全认证 mTLS（7.1/7.4）</td><td>云边通道证书签发与轮换（M4 验收项）</td></tr>
+<tr><td>P1</td><td>真实协议 Mapper（5.2）</td><td>Modbus 模拟设备 + 适配器</td></tr>
+<tr><td>P2</td><td>Helm 完整化（8.5）</td><td>Chart 接入真实镜像与配置</td></tr>
+<tr><td>P2</td><td>M4A P2×12</td><td>见 PROGRESS.md §5</td></tr>
+</tbody>
+</table>
+
+<div class="footer">
+  EdgeFlow M3 三期交付报告 · 生成时间 2026-08-14 14:30 (Asia/Shanghai)<br>
+  研发方式：多 Agent 协作（Mapper-EB 集成 / Edged 完整化 / M4A 复核）+ 主线 P1 修复与回归<br>
+  仓库：/Users/mac/Documents/edgeflow/ · 审查：docs/CODE-REVIEW-M4A.md · 台账：docs/PROGRESS.md
+</div>
+
+</div>
+</body>
+</html>

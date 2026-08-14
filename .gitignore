@@ -30,3 +30,6 @@ vendor/
 
 # 运行时数据（edgecore 的 SQLite 元数据库默认写入 data/）
 /data/
+
+# openssl 序列号文件（hack/gen-certs.sh 生成）
+*.srl

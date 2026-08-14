@@ -7,12 +7,15 @@
 //   - 心跳超时（默认 90s 无消息）断开连接
 //   - 维护节点注册表，供 EdgeController 等后续模块查询
 //
-// 认证说明：M1 基础版不校验连接来源（CheckOrigin 全放行），
-// Token/mTLS 校验在 WBS 4.5 引入，届时在本包内叠加即可。
+// 认证说明：M1 基础版不校验连接来源（CheckOrigin 全放行）。
+// mTLS（WBS 7.4）已落地：EDGEFLOW_CLOUDCORE_TLS=on 时经 WithTLS 注入
+// tls.Config，监听层强制要求并验证客户端证书（RequireAndVerifyClientCert），
+// CheckOrigin 仍全放行（TLS 层已认证身份，应用层不重复校验）。
 package cloudhub
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -155,6 +158,9 @@ type Server struct {
 	addr string
 	// upgrader 负责把 HTTP 连接升级为 WebSocket。
 	upgrader websocket.Upgrader
+	// tlsConfig 非 nil 时监听层启用 mTLS（WBS 7.4）：
+	// 服务端证书 + 强制要求并验证客户端证书。由装配层经 WithTLS 注入。
+	tlsConfig *tls.Config
 	// heartbeatTimeout 是连接失活判定阈值（可经 Option 覆盖，测试用）。
 	heartbeatTimeout time.Duration
 	// monitorInterval 是心跳监控的扫描周期。
@@ -200,6 +206,23 @@ func WithHeartbeatTimeout(d time.Duration) Option {
 		if d > 0 {
 			s.heartbeatTimeout = d
 		}
+	}
+}
+
+// WithTLS 为云边通道启用 mTLS（WBS 7.1/7.4）：
+//   - 传 nil 等价于不调用（保持纯 WebSocket 行为，向后兼容）；
+//   - 传入由 certs.LoadTLSConfig 构造的 tls.Config（服务端形态：
+//     携带 cloudcore 证书 + ClientCAs + RequireAndVerifyClientCert）后，
+//     Start 时监听层自动启用 TLS，边缘侧必须携带 CA 签发的客户端证书
+//     才能完成握手。
+//
+// 实现选择：Start 内用 tls.NewListener 包装底层监听器再交给
+// http.Server.Serve（与 net/http 的 ListenAndServeTLS 内部同构）：
+// 证书来自内存 tls.Config 而非文件路径，握手错误只影响单条连接，
+// Shutdown 的关闭语义与纯 TCP 监听完全一致。
+func WithTLS(tlsConfig *tls.Config) Option {
+	return func(s *Server) {
+		s.tlsConfig = tlsConfig
 	}
 }
 
@@ -261,6 +284,13 @@ func (s *Server) Start() error {
 	srv := &http.Server{
 		Handler:           s.handler(),
 		ReadHeaderTimeout: readHeaderTimeout,
+	}
+	// mTLS：WithTLS 注入 tls.Config 时用 tls.NewListener 包装监听器。
+	// 握手失败由 net/http 在单连接上处理（写回错误并关闭），不影响其他连接；
+	// 握手成功的连接 r.TLS 会被填充（serveWS 据此记录对端证书身份）。
+	if s.tlsConfig != nil {
+		srv.TLSConfig = s.tlsConfig
+		ln = tls.NewListener(ln, s.tlsConfig)
 	}
 	s.stateMu.Lock()
 	if s.started {
@@ -358,6 +388,12 @@ func (s *Server) handler() http.Handler {
 // 保证 Shutdown 的 wg.Wait 永不因漏关连接而长阻塞；同时 wg.Add 严格
 // 先于 Shutdown 的 wg.Wait（WaitGroup 禁止零计数时 Add 与 Wait 并发）。
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
+	// mTLS 身份旁证：TLS 握手成功后 r.TLS 携带对端证书链（WBS 7.4）。
+	// 记录客户端证书 CN（edgeflow-<nodeID>）便于审计与排查。
+	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+		peerCN := r.TLS.PeerCertificates[0].Subject.CommonName
+		log.Infof("mTLS 连接已认证（peer CN=%s, 来源 %s）", peerCN, r.RemoteAddr)
+	}
 	ws, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Warnf("WebSocket 升级失败（来源 %s）: %v", r.RemoteAddr, err)

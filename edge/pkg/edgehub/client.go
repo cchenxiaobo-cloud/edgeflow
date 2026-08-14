@@ -4,15 +4,18 @@
 // 通道，负责连接建立、节点注册、心跳保活与断线重连，并把云端下发的
 // 非应答类消息（如未来的 PodSync）分发给上层模块（MetaManager/Edged）。
 //
-// 与 CloudHub 的通道契约（WBS 4.1-4.6）：
+// 与 CloudHub 的通道契约（WBS 4.1-4.6）与安全约定（WBS 7.1/7.4）：
 //   - 通道：WebSocket，路径 /v1/edge，端口 10000（云端地址可配置）
 //   - 边缘主动连接云端；连接建立后第一条消息是 Register
 //   - 心跳：每 30s 发 Heartbeat，云回 HeartbeatAck
 //   - 断线重连：指数退避 1s/2s/4s/…上限 60s，注册成功后重置退避
+//   - mTLS：Options.TLSConfig 非 nil 或地址为 wss:// 时，拨号器自动携带
+//     客户端证书并校验收到的服务端证书（由装配层注入 certs 加载的配置）
 package edgehub
 
 import (
 	"bufio"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
@@ -99,6 +102,22 @@ func ensureChannelPath(addr string) string {
 	return u.String()
 }
 
+// normalizeTLSScheme 在 mTLS 启用（opts.TLSConfig 非 nil）时把 ws:// 地址
+// 升级为 wss://：装配层（EDGEFLOW_EDGECORE_TLS=on）只负责注入证书配置，
+// 地址形态统一由客户端归一化，避免调用方改地址出错。
+// 地址已是 wss:// 或非 ws/wss 协议时原样返回。
+func normalizeTLSScheme(addr string, tlsCfg *tls.Config) string {
+	if tlsCfg == nil {
+		return addr
+	}
+	u, err := url.Parse(addr)
+	if err != nil || u.Scheme != "ws" {
+		return addr
+	}
+	u.Scheme = "wss"
+	return u.String()
+}
+
 // RegisterPayload 是 Register 消息的负载（字段名与 CloudHub 契约一致，不可改）。
 type RegisterPayload struct {
 	NodeID          string `json:"nodeID"`
@@ -138,6 +157,10 @@ type Options struct {
 	CloudAddr string
 	// NodeID 是边缘节点 ID，注册与消息 Source 使用。
 	NodeID string
+	// TLSConfig 是 mTLS 拨号配置（WBS 7.4，由装配层经 certs.LoadTLSConfig
+	// 加载：RootCAs + edgecore 客户端证书）。nil 时保持纯 ws:// 行为（向后兼容）。
+	// 非 nil 时：ws:// 地址自动升级为 wss://，拨号器携带客户端证书并校验服务端证书。
+	TLSConfig *tls.Config
 	// HeartbeatInterval 是心跳发送间隔。
 	HeartbeatInterval time.Duration
 	// RegisterTimeout 是发出 Register 后等待 RegisterAck 的超时。
@@ -192,6 +215,8 @@ func New(opts Options) *Client {
 		opts.CloudAddr = DefaultCloudAddrFromEnv()
 	}
 	opts.CloudAddr = ensureChannelPath(opts.CloudAddr)
+	// mTLS：注入 TLSConfig 时把 ws:// 归一化为 wss://（见 normalizeTLSScheme）
+	opts.CloudAddr = normalizeTLSScheme(opts.CloudAddr, opts.TLSConfig)
 	if opts.NodeID == "" {
 		opts.NodeID = DefaultNodeID()
 	}
@@ -211,13 +236,29 @@ func New(opts Options) *Client {
 		opts.BackoffBase = opts.BackoffMax // 初始间隔不超过上限
 	}
 	if opts.Dialer == nil {
-		// 默认拨号器：握手超时 10s，避免对不可达地址无限阻塞
-		opts.Dialer = &websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+		// 默认拨号器：握手超时 10s，避免对不可达地址无限阻塞。
+		// mTLS 启用判定：显式注入 TLSConfig（EDGEFLOW_EDGECORE_TLS=on 装配路径），
+		// 或地址本身是 wss://（直连 TLS 网关/反向代理场景）。
+		// 两种情况都把配置挂到 gorilla Dialer.TLSClientConfig 上（其内部即
+		// tls.Dialer 语义：RootCAs 校验服务端证书 + 携带客户端证书）。
+		// wss:// 但未注入 TLSConfig 时 TLSClientConfig 为 nil：走系统根证书
+		// 池默认校验（自签 CA 场景会失败——这是正确行为，提示必须配置证书）。
+		d := &websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+		if opts.TLSConfig != nil || isWSS(opts.CloudAddr) {
+			d.TLSClientConfig = opts.TLSConfig
+		}
+		opts.Dialer = d
 	}
 	return &Client{
 		opts:   opts,
 		stopCh: make(chan struct{}),
 	}
+}
+
+// isWSS 判断地址是否为 wss:// 协议。
+func isWSS(addr string) bool {
+	u, err := url.Parse(addr)
+	return err == nil && u.Scheme == "wss"
 }
 
 // IsConnected 返回是否已连接且注册成功（供 MetaManager/Edged 订阅连接状态）。

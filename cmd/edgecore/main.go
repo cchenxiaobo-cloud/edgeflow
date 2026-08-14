@@ -25,6 +25,7 @@ import (
 	"edgeflow/edge/pkg/edgehub"
 	"edgeflow/edge/pkg/eventbus"
 	"edgeflow/edge/pkg/metamanager"
+	"edgeflow/pkg/certs"
 	"edgeflow/pkg/log"
 	"edgeflow/pkg/protocol"
 	"edgeflow/pkg/version"
@@ -61,6 +62,36 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	opts := edgehub.Options{
 		CloudAddr: edgehub.DefaultCloudAddrFromEnv(),
 		NodeID:    edgehub.DefaultNodeID(),
+	}
+
+	// 云边通道 mTLS（WBS 7.1 证书管理 + 7.4 云边认证）：
+	// EDGEFLOW_EDGECORE_TLS=on 时携带本 CA 签发的客户端证书以 wss:// 连接
+	// 云端（ws:// 地址自动升级为 wss://，见 edgehub.New 的地址归一化）。
+	//   - 证书目录：EDGEFLOW_EDGECORE_CERT_DIR（默认 data/certs/）
+	//   - 首次运行自动生成/加载 CA 与 edgecore 客户端证书（幂等）
+	//   - 客户端证书 CN 按约定为 edgeflow-<nodeID>（云端认证依据是 CA 签名，
+	//     CN 仅作可读标识；已有证书时直接加载，不因 nodeID 变化重签）
+	//   - 未开启时行为与之前完全一致（纯 ws://，向后兼容）
+	if os.Getenv("EDGEFLOW_EDGECORE_TLS") == "on" {
+		certDir := os.Getenv("EDGEFLOW_EDGECORE_CERT_DIR")
+		if certDir == "" {
+			certDir = certs.DefaultCertDir
+		}
+		if _, err := certs.EnsureCA(certDir); err != nil {
+			log.Errorf("CA 初始化失败（certDir=%s）: %v", certDir, err)
+			return 1
+		}
+		if _, err := certs.EnsureClientCert(certDir, "edgeflow-"+opts.NodeID); err != nil {
+			log.Errorf("edgecore 客户端证书初始化失败: %v", err)
+			return 1
+		}
+		tlsCfg, err := certs.LoadTLSConfig(certDir, false)
+		if err != nil {
+			log.Errorf("加载 TLS 配置失败: %v", err)
+			return 1
+		}
+		opts.TLSConfig = tlsCfg
+		log.Infof("EdgeHub TLS 已启用（certDir=%s, CN=edgeflow-%s）", certDir, opts.NodeID)
 	}
 
 	// 启动 MetaManager：打开 SQLite 元数据存储（目录不存在自动创建，

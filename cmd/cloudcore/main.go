@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -24,6 +25,7 @@ import (
 	"edgeflow/cloud/pkg/devicestatus"
 	"edgeflow/cloud/pkg/podstatus"
 	"edgeflow/cloud/pkg/registry"
+	"edgeflow/pkg/certs"
 	"edgeflow/pkg/config"
 	"edgeflow/pkg/httpx"
 	"edgeflow/pkg/log"
@@ -73,7 +75,34 @@ func run(args []string, stdout, stderr io.Writer) int {
 		log.Errorf("CloudHub 端口配置无效: %v", err)
 		return 1
 	}
-	hub := cloudhub.New(fmt.Sprintf(":%d", hubPort))
+
+	// 云边通道 mTLS（WBS 7.1 证书管理 + 7.4 云边认证）：
+	// EDGEFLOW_CLOUDCORE_TLS=on 时启用 TLS 监听，并要求边缘侧携带
+	// 本 CA 签发的客户端证书（双向认证）。
+	//   - 证书目录：EDGEFLOW_CLOUDCORE_CERT_DIR（默认 data/certs/）
+	//   - 首次运行自动生成 CA 与 cloudcore 服务端证书；已存在则加载（幂等）
+	//   - 未开启时行为与之前完全一致（纯 ws://，向后兼容）
+	var hubTLS *tls.Config
+	if os.Getenv("EDGEFLOW_CLOUDCORE_TLS") == "on" {
+		certDir := os.Getenv("EDGEFLOW_CLOUDCORE_CERT_DIR")
+		if certDir == "" {
+			certDir = certs.DefaultCertDir
+		}
+		if _, err := certs.EnsureCA(certDir); err != nil {
+			log.Errorf("CA 初始化失败（certDir=%s）: %v", certDir, err)
+			return 1
+		}
+		if _, err := certs.EnsureServerCert(certDir, "cloudcore"); err != nil {
+			log.Errorf("cloudcore 服务端证书初始化失败: %v", err)
+			return 1
+		}
+		if hubTLS, err = certs.LoadTLSConfig(certDir, true); err != nil {
+			log.Errorf("加载 TLS 配置失败: %v", err)
+			return 1
+		}
+		log.Infof("CloudHub TLS 已启用（certDir=%s, mTLS: 强制要求并验证客户端证书）", certDir)
+	}
+	hub := cloudhub.New(fmt.Sprintf(":%d", hubPort), cloudhub.WithTLS(hubTLS))
 
 	// 节点注册表（内存态）与 CloudHub 事件桥接：
 	// 节点注册/心跳/断开时实时维护节点元数据，供查询 API 使用。

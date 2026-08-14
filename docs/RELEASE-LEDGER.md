@@ -42,18 +42,18 @@
 
 ## 3. 制品清单（Artifacts）
 
-> 路径均以 `release/v0.1.0/` 为根（当前未归档，为**占位引用**）；
+> 路径以 `release/v0.1.0/` 为根（已归档，commit d17bdd5）；镜像为本地 registry（localhost:5001）闭环验证，远程推送步骤见 RELEASE-CHECKLIST.md。
 > 文件存在性/checksum/digest 由发布制品工程师归档时回填。
 
 | # | 制品 | 说明 | 路径（release/v0.1.0/） | checksum / digest | 回填状态 |
 |---|------|------|--------------------------|--------------------|----------|
-| 1 | cloudcore | 云端二进制（linux/amd64 + arm64） | `bin/` 或 `dist/` 对应包 | 【回填】sha256 | 待回填 |
-| 2 | edgecore | 边缘二进制（linux/amd64 + arm64） | 同上 | 【回填】sha256 | 待回填 |
-| 3 | keadm | 安装管理 CLI（含 upgrade/rollback） | 同上 | 【回填】sha256 | 待回填 |
-| 4 | mock-cloudhub | 联调辅助工具（测试用） | 同上 | 【回填】sha256 | 待回填 |
-| 5 | Chart 包 | `edgeflow-0.1.0.tgz`（`helm package build/charts/edgeflow`） | `edgeflow-0.1.0.tgz` | 【回填】sha256 | 待回填 |
-| 6 | checksum 文件 | 全部制品 sha256 汇总（`SHA256SUMS`） | `SHA256SUMS` | 【回填】 | 待回填 |
-| 7 | SBOM | 依赖清单（go.mod + 镜像 SBOM，格式待定：CycloneDX/SPDX） | `edgeflow-v0.1.0.sbom.*` | 【回填】 | 待回填 |
+| 1 | cloudcore | 云端二进制（darwin-arm64 + linux-amd64） | `release/v0.1.0/cloudcore-darwin-arm64` 等 | `63e089f75556` 等 | 已归档（d17bdd5） |
+| 2 | edgecore | 边缘二进制（darwin-arm64 + linux-amd64） | `release/v0.1.0/edgecore-darwin-arm64` 等 | `fb8e3945ea3e` 等 | 已归档 |
+| 3 | keadm | 安装管理 CLI（含 upgrade/rollback） | `release/v0.1.0/keadm-darwin-arm64` 等 | `0406b67def35` 等 | 已归档 |
+| 4 | Chart 包 | `edgeflow-0.1.0.tgz`（helm package） | `release/v0.1.0/edgeflow-0.1.0.tgz` | `ba2fd0e7fb21` | 已归档 |
+| 5 | checksum 文件 | 全部 7 个制品 sha256 汇总 | `release/v0.1.0/checksums.txt` | `shasum -a 256 -c` 全 OK | 已归档 |
+| 6 | SBOM | go list -m all 依赖 + 制品 sha256 + 构建参数 | `release/v0.1.0/sbom.json` | 33 组件 + 7 制品 | 已归档 |
+| 7 | 镜像 digest | cloudcore/edgecore 不可变 tag + digest | `release/v0.1.0/images.json` | `sha256:2f9f2fbef9baf1188` / `sha256:227f6050438fdee43` | 已归档（pull 复验一致） |
 | 8 | 镜像 cloudcore | `edgeflow/cloudcore:v0.1.0`（amd64+arm64 manifest） | 镜像仓库 | digest：【回填】（本地验证参考：amd64 `sha256:307c75fa…` / arm64 `sha256:81df9cdb…`，见 MULTIARCH.md §7） | 待回填 |
 | 9 | 镜像 edgecore | `edgeflow/edgecore:v0.1.0`（amd64+arm64 manifest） | 镜像仓库 | digest：【回填】（本地验证参考：amd64 `sha256:28b44e44…` / arm64 `sha256:fd8b79a7…`） | 待回填 |
 

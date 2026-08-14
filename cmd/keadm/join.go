@@ -163,11 +163,39 @@ func (o joinOptions) validate() error {
 }
 
 // defaultNodeID 与 edgehub.DefaultNodeID 的兜底逻辑对齐：edge-<主机名>，失败时 edge-local。
+//
+// 注意（P2-① 回归修复）：主机名可能含白名单外字符（macOS 主机名如
+// "MacdeMacBook-Pro.local" 含点号），直接拼接会被 join 校验拒绝。
+// 这里先把主机名清洗为白名单字符集（非法字符替换为 '-'），
+// 保证默认值始终可用；显式传入的 --node-id 仍走严格校验。
 func defaultNodeID() string {
 	if h, err := os.Hostname(); err == nil && h != "" {
-		return "edge-" + h
+		cleaned := sanitizeNodeIDChars(h)
+		if cleaned == "" {
+			return "edge-local"
+		}
+		return "edge-" + cleaned
 	}
 	return "edge-local"
+}
+
+// sanitizeNodeIDChars 把非白名单字符（非字母/数字/连字符/下划线）替换为连字符，
+// 并压缩连续连字符（保持默认 node-id 可读）。
+func sanitizeNodeIDChars(s string) string {
+	var b strings.Builder
+	prevDash := false
+	for _, r := range s {
+		valid := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' ||
+			r >= '0' && r <= '9' || r == '-' || r == '_'
+		if valid {
+			b.WriteRune(r)
+			prevDash = false
+		} else if !prevDash {
+			b.WriteByte('-')
+			prevDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 // cloudAddr 生成 edgecore 的云端地址：ws://<ip>:<port>/v1/edge，

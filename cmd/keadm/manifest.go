@@ -26,6 +26,30 @@ type manifest struct {
 	Files map[string]string `json:"files"`
 }
 
+// refreshManifest 更新一批产物的 sha256 并保存清单（幂等）：
+// 用于 upgrade/rollback 修改产物内容后同步清单，避免 reset 因哈希
+// 不匹配跳过文件（P2-② 协调点，见 docs/UPGRADE.md §4）。
+//
+// 注意：必须先加载现有清单再合并更新——整体重建会丢失其他产物
+// （如 init 的 cloudcore.yaml/NOTES.txt）的校验记录，导致 reset
+// 对它们失去哈希保护（回归实测发现并修复）。
+func refreshManifest(outputDir string, names []string) error {
+	existing, exists, err := loadManifest(outputDir)
+	if err != nil {
+		return err
+	}
+	m := &manifest{Files: make(map[string]string)}
+	if exists {
+		for k, v := range existing.Files {
+			m.Files[k] = v
+		}
+	}
+	if err := recordGeneratedFiles(outputDir, names, m); err != nil {
+		return err
+	}
+	return saveManifest(outputDir, m)
+}
+
 // loadManifest 读取产物目录下的校验清单。
 // 返回 (清单, 清单文件是否存在, 错误)：清单不存在时返回空清单 + exists=false
 // （调用方据此走旧版行为）；存在但解析失败时返回错误（保守处理，见 runReset）。

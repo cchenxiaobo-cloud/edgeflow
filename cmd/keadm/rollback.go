@@ -229,6 +229,13 @@ func runRollback(args []string, stdout, stderr io.Writer) int {
 		return fail("恢复失败", err.Error())
 	}
 
+	// 刷新 reset 校验清单（P2-② 协调点）：恢复后的产物哈希与清单一致，
+	//     保证回滚后 reset 仍可按校验删除。
+	if err := refreshManifest(opts.OutputDir, backupFiles); err != nil {
+		_, _ = fmt.Fprintf(stderr, "错误: 刷新校验清单失败: %v（回滚本身已完成）\n", err)
+		return exitRuntime
+	}
+
 	// 台账记录成功。
 	if err := appendLedger(opts.OutputDir, ledgerEntry{
 		TS: time.Now().Format(time.RFC3339), Action: "rollback",

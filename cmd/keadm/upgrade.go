@@ -74,7 +74,7 @@ func appendLedger(outputDir string, e ledgerEntry) error {
 	if err != nil {
 		return fmt.Errorf("打开台账文件失败: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := f.Write(append(b, '\n')); err != nil {
 		return fmt.Errorf("追加台账记录失败: %w", err)
 	}
@@ -302,6 +302,18 @@ func runUpgrade(args []string, stdout, stderr io.Writer) int {
 		_ = appendLedger(opts.OutputDir, ledgerEntry{
 			TS: time.Now().Format(time.RFC3339), Action: "upgrade",
 			From: current, To: opts.Version, Result: "failed", Note: backupNote + "; " + msg,
+		})
+		return exitRuntime
+	}
+
+	// ③b 刷新 reset 校验清单（P2-② 协调点）：env 版本标记已更新，
+	//     其 sha256 与 keadm-manifest.json 记录不一致会让 reset 跳过并提示
+	//     人工确认——这里重新登记当前产物哈希，保持升级后 reset 可用。
+	if err := refreshManifest(opts.OutputDir, backupFiles); err != nil {
+		_, _ = fmt.Fprintf(stderr, "错误: 刷新校验清单失败: %v（升级已完成；执行 keadm rollback --latest 可回滚）\n", err)
+		_ = appendLedger(opts.OutputDir, ledgerEntry{
+			TS: time.Now().Format(time.RFC3339), Action: "upgrade",
+			From: current, To: opts.Version, Result: "ok", Note: backupNote + "; 校验清单刷新失败",
 		})
 		return exitRuntime
 	}

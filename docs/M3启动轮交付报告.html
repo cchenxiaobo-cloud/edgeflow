@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EdgeFlow M2 收尾 + M3 启动轮交付报告</title>
+<style>
+  :root {
+    --bg: #fafafa; --surface: #ffffff; --text: #1a1a1a; --text-2: #6b6b6b; --text-3: #999;
+    --accent: #2563eb; --accent-light: #dbeafe; --border: #e5e5e5;
+    --green: #16a34a; --green-light: #dcfce7; --yellow: #ca8a04; --yellow-light: #fef3c7;
+    --red: #dc2626; --red-light: #fee2e2; --code-bg: #f5f5f5; --radius: 4px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+    --mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.7; font-weight: 300; -webkit-font-smoothing: antialiased; }
+  .container { max-width: 880px; margin: 0 auto; padding: 80px 40px; }
+  h1 { font-size: 2.2rem; font-weight: 200; letter-spacing: -0.02em; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.3rem; font-weight: 400; letter-spacing: -0.01em; margin: 3rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.05rem; font-weight: 500; margin: 1.8rem 0 0.6rem; }
+  p { margin-bottom: 0.8rem; color: var(--text-2); }
+  .subtitle { font-size: 0.95rem; color: var(--text-3); font-weight: 300; margin-bottom: 2.5rem; }
+  a { color: var(--accent); text-decoration: none; font-weight: 400; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); background: var(--code-bg); padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.85em; }
+  pre { background: var(--code-bg); padding: 1rem; border-radius: var(--radius); overflow-x: auto; margin: 1rem 0; font-size: 0.8rem; line-height: 1.5; font-family: var(--mono); }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.85rem; }
+  th { text-align: left; font-weight: 500; padding: 0.6rem 0.5rem; border-bottom: 2px solid var(--text); }
+  td { padding: 0.5rem; border-bottom: 1px solid var(--border); font-weight: 300; }
+  tr:hover td { background: var(--accent-light); }
+  .badge { display: inline-block; padding: 0.15em 0.6em; border-radius: 100px; font-size: 0.75rem; font-weight: 500; }
+  .b-green { background: var(--green-light); color: var(--green); }
+  .b-blue { background: var(--accent-light); color: var(--accent); }
+  .b-yellow { background: var(--yellow-light); color: var(--yellow); }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); margin: 1.5rem 0; }
+  .metric { background: var(--surface); padding: 1.2rem 0.8rem; text-align: center; }
+  .metric-value { font-size: 1.6rem; font-weight: 200; color: var(--accent); }
+  .metric-label { font-size: 0.7rem; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.3rem; }
+  .arch { font-family: var(--mono); font-size: 0.75rem; line-height: 1.6; background: var(--surface); border: 1px solid var(--border); padding: 1.2rem; overflow-x: auto; margin: 1rem 0; color: var(--text-2); }
+  .panel { border: 1px solid var(--border); border-left: 3px solid var(--accent); padding: 1rem 1.2rem; margin: 1rem 0; background: var(--surface); }
+  .footer { margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border); font-size: 0.78rem; color: var(--text-3); }
+  @media (max-width: 700px) { .container { padding: 40px 20px; } .metrics { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>EdgeFlow M2 收尾 + M3 启动轮</h1>
+<p class="subtitle">设备管理链路：Mapper 框架 · 模拟传感器 · DeviceTwin · 云端设备 API · 2026-08-14</p>
+
+<div class="metrics">
+  <div class="metric"><div class="metric-value">57</div><div class="metric-label">累计提交</div></div>
+  <div class="metric"><div class="metric-value">85.1%</div><div class="metric-label">总覆盖率</div></div>
+  <div class="metric"><div class="metric-value">0</div><div class="metric-label">Lint / P0 / P1</div></div>
+  <div class="metric"><div class="metric-value">7/7</div><div class="metric-label">联调场景通过</div></div>
+</div>
+
+<h2>1. M2 收尾核对</h2>
+<div class="panel">
+<p><strong>M2 核心链路已完成</strong>（下发→运行→上报→自治→恢复→删除收敛，全部端到端实测）。完整化待办（6.2 ConfigMap 下发、Edged 健康检查/多副本、镜像更新、E2E 完整场景）已列入台账 P1 待办，不阻塞 M3 启动。</p>
+<table>
+<thead><tr><th>M2 验收项</th><th>状态</th><th>证据</th></tr></thead>
+<tbody>
+<tr><td>应用下发（PodSync）</td><td><span class="badge b-green">✅</span></td><td>POST podsync → 200 acked → 容器创建运行</td></tr>
+<tr><td>断网自治</td><td><span class="badge b-green">✅</span></td><td>停 cloudcore 40s 容器持续运行（机制成立，30min 为时长验证）</td></tr>
+<tr><td>恢复同步</td><td><span class="badge b-green">✅</span></td><td>重连注册 → 上报恢复</td></tr>
+<tr><td>删除收敛</td><td><span class="badge b-green">✅</span></td><td>Absent 终态 → 云端列表 1→0</td></tr>
+<tr><td>ConfigMap/Secret 下发（6.2）</td><td><span class="badge b-yellow">📋 待办</span></td><td>协议已定义 TypeConfigSync，链路复用 PodSync 模式</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>2. M3 启动轮：设备管理链路</h2>
+<div class="arch">云端管理 API                         边缘（edgecore）
+POST device-command ──可靠投递──▶ edgehub ──▶ mapperCommandExecutor
+                                        │           ▼
+                                        │     MapperRegistry.Dispatch
+                                        │           ▼
+                                        │     MockSensor（模拟设备）
+                                        │     采集循环 2s · 命令收敛
+                                        │           ▼
+                                        │     DeviceTwin（影子）
+                                        │     Desired ← 命令 · Reported ← 采集
+                                        │           ▼
+GET /api/v1/devices ◀──DeviceReport─── 周期上报（30s, env 可配）
+（properties + desired）</div>
+
+<h2>3. 验证结果</h2>
+
+<h3>3.1 端到端联调（真实进程，7/7 场景）</h3>
+<table>
+<thead><tr><th>场景</th><th>实测证据</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>设备自动注册</td><td>MockSensor sensor-01 启动（2s 采集间隔）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>周期上报</td><td>/api/v1/devices 显示 properties（temperature 31.05 / humidity 59.27）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>指令下发</td><td>POST device-command targetTemp=25 → 200 acked:true（可靠投递）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td><strong>指令影响</strong></td><td>温度 31.05 → <strong>25.59</strong> 向目标收敛（边缘日志"快照 2 个属性已写入影子"）</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>desired 同步</td><td>云端显示 {"targetTemp": 25}</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>单节点设备 API</td><td>/api/v1/nodes/{id}/devices 返回 sensor-01</td><td><span class="badge b-green">通过</span></td></tr>
+<tr><td>进程清理</td><td>优雅退出无残留</td><td><span class="badge b-green">通过</span></td></tr>
+</tbody>
+</table>
+
+<h3>3.2 自动化验证</h3>
+<table>
+<thead><tr><th>项目</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>go test -race（18 包）</td><td><span class="badge b-green">全绿</span>，总覆盖率 85.1%（devicetwin 100%、mapper 96.4%、devicestatus 95.5%、mock_sensor 95.3%）</td></tr>
+<tr><td>golangci-lint</td><td><span class="badge b-green">0 issues</span></td></tr>
+<tr><td>关键单测</td><td>收敛逻辑双向断言（35 高温/20 低温）、Stop 无 goroutine 泄漏、Upsert 保 desired（TestUpsertPreservesDesired）、API 五态错误语义</td></tr>
+</tbody>
+</table>
+
+<h3>3.3 审查结论（docs/CODE-REVIEW-M3A.md，164 行）</h3>
+<div class="panel">
+<p><strong>✅ 通过（0 P0 / 0 P1 / 6 P2）</strong>——P2 项已记录台账待办：byDevice 路由不含 namespace、单实例 Mapper 限制、空 deviceName 透传、LastReportedAt 无单调性保护、502 路径 Desired 分叉、无 TTL/GC。</p>
+</div>
+
+<h2>4. 新增模块</h2>
+<table>
+<thead><tr><th>模块</th><th>提交</th><th>内容</th></tr></thead>
+<tbody>
+<tr><td>edge/pkg/mapper</td><td>7d82c0c</td><td>DeviceMapper 接口 + MapperRegistry（RWMutex、幂等生命周期、errors.Join）</td></tr>
+<tr><td>mappers/mock_sensor</td><td>7d82c0c</td><td>模拟温湿度传感器（targetTemp 收敛、停止冻结）</td></tr>
+<tr><td>edge/pkg/devicetwin</td><td>744afaa</td><td>设备影子（Desired/Reported 合并语义、深拷贝、自动创建）</td></tr>
+<tr><td>cloud/pkg/devicestatus</td><td>744afaa</td><td>云端设备状态（字段级合并保 desired、nodeID 权威）</td></tr>
+<tr><td>设备 API</td><td>744afaa</td><td>GET /api/v1/devices、/nodes/{id}/devices、POST device-command</td></tr>
+<tr><td>edgecore 装配</td><td>698ee5f</td><td>命令分发接 Mapper、采集汇入影子、设备上报循环</td></tr>
+</tbody>
+</table>
+
+<h2>5. 下一步建议</h2>
+<table>
+<thead><tr><th>优先级</th><th>事项</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>P1</td><td>M3 二期：MQTT EventBus（3.6）</td><td>NATS MQTT POC 后接入真实 MQTT broker，替换内存模拟通道</td></tr>
+<tr><td>P1</td><td>真实协议 Mapper（5.2）</td><td>Modbus/OPC-UA 适配器模板（协议已分层）</td></tr>
+<tr><td>P1</td><td>M2 完整化（6.2/6.4/6.5）</td><td>ConfigMap/Secret 下发、Edged 健康检查/多副本</td></tr>
+<tr><td>P2</td><td>M3A P2×6</td><td>见 PROGRESS.md §5</td></tr>
+</tbody>
+</table>
+
+<div class="footer">
+  EdgeFlow M2 收尾 + M3 启动轮 · 生成时间 2026-08-14 11:20 (Asia/Shanghai)<br>
+  研发方式：多 Agent 协作（Mapper 框架 / DeviceTwin / M3A 复核）+ 主线联调与收尾<br>
+  仓库：/Users/mac/Documents/edgeflow/ · 审查：docs/CODE-REVIEW-M3A.md · 台账：docs/PROGRESS.md · Mapper 指南：docs/MAPPER-GUIDE.md
+</div>
+
+</div>
+</body>
+</html>

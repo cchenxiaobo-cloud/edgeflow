@@ -143,8 +143,10 @@ eventTopic, _     := eventbus.EventTopic("metamanager", "pod-updated") // edgefl
 收指令、设备往 telemetry 主题发数据**（真实 MQTT 设备接入同理，只是把
 "内存模拟设备"换成真设备固件）。
 
-> 本轮（WBS 3.6）只交付 EventBus 包本身；以下为下一轮 Mapper 接入的改造步骤
-> 示例，**不在本轮提交中执行**。
+> ✅ 已实现（2026-08-14，`feat(mapper): wire mock sensor to MQTT event bus data plane`）：
+> mock_sensor 已提供 `WithEventBus` 选项（MQTT 模式：遥测发布 + 指令订阅），
+> edgecore 装配与降级策略见 docs/MAPPER-GUIDE.md §8；本节以下为改造思路，
+> 仍适用于真实设备 Mapper 的接入参考。
 
 ### 步骤 1：MockSensor 增加 EventBus 接入（模拟设备"上线"）
 
@@ -244,9 +246,11 @@ go test -race -cover ./edge/pkg/eventbus/...
 
 ## 7. 后续工作（不在本轮）
 
-1. **edgecore 装配**：`cmd/edgecore/main.go` 创建 EventBus 单例（地址取
-   `EDGEFLOW_EDGECORE_MQTT_ADDR`），随 EdgeCore 启停（下一轮）；
-2. **Mapper 接入**：按 §5 把 mock_sensor 与真实设备 Mapper 挂到总线；
+1. ~~**edgecore 装配**~~ ✅ 已实现：`cmd/edgecore/main.go` 创建 EventBus 单例
+   （地址取 `EDGEFLOW_EDGECORE_MQTT_ADDR`，默认 tcp://127.0.0.1:1883），
+   随 EdgeCore 启停（先停 Mapper 再断总线）；连接失败自动降级为纯本地模式；
+2. ~~**Mapper 接入**~~ ✅ 已实现：mock_sensor `WithEventBus`（见 docs/MAPPER-GUIDE.md §8）；
+   真实设备 Mapper 按 §5 同理挂到总线；
 3. **broker 生命周期**：EdgeCore 侧管理 mosquitto 进程（systemd/容器内嵌），
    或支持连接外部 broker；
 4. **安全**：broker 开启认证时用 `WithCredentials`；TLS（mqtts://）按需扩展。

@@ -16,6 +16,7 @@ import (
 	"fmt"
 
 	"edgeflow/edge/pkg/devicetwin"
+	"edgeflow/edge/pkg/eventbus"
 	"edgeflow/edge/pkg/mapper"
 	"edgeflow/pkg/log"
 
@@ -57,16 +58,25 @@ func (e *mapperCommandExecutor) ExecuteCommand(deviceName, namespace, property s
 
 // buildMapperRegistry 构造 Mapper 注册表并注册内置设备。
 //
-// 当前注册模拟温湿度传感器（sensor-01，mappers/mock_sensor），用于在
-// 真实设备接入前打通"云→边指令、边→云上报"的 M3 端到端链路；
+// 当前注册模拟温湿度传感器（sensor-01，mappers/mock_sensor）：
+//   - bus 非 nil：传感器进入 MQTT 模式（WBS 3.6 设备数据面）——采集结果
+//     同时发布到 devices/default/sensor-01/telemetry，订阅 command 主题
+//     接收本地指令；云边通道（DeviceCommand/DeviceReport）照常工作，
+//     构成双通道（语义见 docs/MAPPER-GUIDE.md §8）；
+//   - bus 为 nil（未装配或连接失败降级）：纯本地模式（默认行为）。
+//
 // 真实设备接入时以对应 Mapper 实现替换本函数内的注册即可
 // （协议适配只新增 DeviceMapper 实现，框架与装配无需改动）。
-func buildMapperRegistry() *mapper.MapperRegistry {
+func buildMapperRegistry(bus *eventbus.EventBus) *mapper.MapperRegistry {
 	reg := mapper.NewRegistry()
-	if err := reg.Register(mocksensor.New("sensor-01")); err != nil {
+	if err := reg.Register(mocksensor.New("sensor-01", mocksensor.WithEventBus(bus))); err != nil {
 		// 注册失败只告警：设备链路退化为"指令找不到 Mapper → 502"，
 		// 不影响 edgecore 其余能力（Pod/节点链路）。
 		log.Warnf("注册模拟传感器失败: %v", err)
+	}
+	if bus != nil {
+		log.Infof("Mapper 注册完成：mock-sensor 已启用 MQTT 数据面（遥测 %s，指令 %s）",
+			"devices/default/sensor-01/telemetry", "devices/default/sensor-01/command")
 	}
 	return reg
 }

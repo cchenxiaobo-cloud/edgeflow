@@ -27,6 +27,9 @@ func TestRunVersion(t *testing.T) {
 // 数据库重定向到临时目录，避免测试污染仓库内 data/。
 func TestRunStartsEdgeHubAndExitsOnSignal(t *testing.T) {
 	t.Setenv("EDGEFLOW_EDGECORE_DB_PATH", filepath.Join(t.TempDir(), "edgeflow.db"))
+	// 测试环境没有 broker：缩短 EventBus 建连等待，让 run() 快速进入降级路径
+	// （否则 Connect 默认等待 5s，超出本用例的退出超时窗口）。
+	t.Setenv("EDGEFLOW_EDGECORE_MQTT_CONNECT_TIMEOUT", "1s")
 	sigCh := make(chan os.Signal, 1)
 	done := make(chan int, 1)
 	var stdout, stderr bytes.Buffer

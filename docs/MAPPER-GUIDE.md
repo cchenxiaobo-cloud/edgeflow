@@ -1,7 +1,7 @@
-# Mapper 框架指南（WBS 5.1 / 5.5）
+# Mapper 框架指南（WBS 5.1 / 5.5，含 MQTT 数据面 §8）
 
-> 日期：2026-08-14 ｜ 范围：`edge/pkg/mapper/`（框架）+ `mappers/mock_sensor/`（示例模拟设备）
-> 对应提交：`feat(mapper): device mapper framework and mock sensor (WBS 5.1/5.5)`
+> 日期：2026-08-14 ｜ 范围：`edge/pkg/mapper/`（框架）+ `mappers/mock_sensor/`（示例模拟设备，含 MQTT 数据面模式）
+> 对应提交：`feat(mapper): device mapper framework and mock sensor (WBS 5.1/5.5)`、`feat(mapper): wire mock sensor to MQTT event bus data plane`
 > 协作契约：与 DeviceTwin Agent 约定（见 §6，字段不可改）
 
 ## 1. 概述
@@ -180,27 +180,119 @@ report, err := r.Dispatch(cmd) // 路由 + 处理，找不到设备返回 error 
 | `targetTemp` | [20, 35] | 设置目标温度，后续采集向新目标收敛；越界报错 |
 | `reset` | — | 恢复出厂：温度/湿度重新随机，目标温度回默认 28 |
 
-**选项**（函数式）：`WithNamespace` / `WithInterval`（默认 2s）/ `WithSeed`（测试确定性）。
+**选项**（函数式）：`WithNamespace` / `WithInterval`（默认 2s）/ `WithSeed`（测试确定性）/ `WithEventBus`（开启 MQTT 数据面，见 §8）。
 
 **默认参数**：注册名 `mock-sensor`、命名空间 `default`、目标温度 28、波动周期 2s。
 
-## 8. 验证
+## 8. MQTT 数据面模式（WBS 3.6 集成，双通道语义）
+
+> 对应提交：`feat(mapper): wire mock sensor to MQTT event bus data plane`
+> 依赖：`edge/pkg/eventbus`（MQTT EventBus 封装）+ 边缘侧 MQTT broker（如 mosquitto）
+
+### 8.1 何时用 MQTT 模式
+
+MQTT 数据面把模拟传感器的“设备侧行为”真实化：遥测不再是内部状态，而是
+真正**发布到 MQTT 总线**上可被任何订阅者（mosquitto_sub、真实设备网关、
+其他边缘模块）消费的数据流；指令也可通过总线从“边缘本地操作者”下发。
+适合：
+
+- **M3 验收“MQTT 读写设备”**：mosquitto_sub 订阅遥测、mosquitto_pub 下发指令，
+  直接验证边缘设备数据面；
+- **真实 MQTT 设备接入前的协议演练**：把 MockSensor 当作“假装是 MQTT 设备的
+  程序”，验证 broker/主题/QoS 约定后再接真设备；
+- **多消费者场景**：遥测在总线上广播，除云端周期上报外，本地监控/告警模块
+  可独立消费。
+
+纯本地模式（默认）适用于不需要设备数据面的场景：状态只在内存中波动，
+仅经云边通道（DeviceCommand/DeviceReport）与云端交互。
+
+### 8.2 如何开启（装配层职责）
+
+```go
+bus := eventbus.New(eventbus.DefaultBrokerAddrFromEnv()) // 默认 tcp://127.0.0.1:1883
+if err := bus.Connect(ctx); err != nil { /* 失败 → 降级为纯本地模式 */ }
+reg := mapper.NewRegistry()
+reg.Register(mocksensor.New("sensor-01", mocksensor.WithEventBus(bus)))
+reg.StartAll(ctx)
+// ... 优雅退出：先 reg.StopAll() 再 bus.Disconnect()
+```
+
+要点：
+
+- **Connect 由装配层负责**（MockSensor 不建连）；`Start` 前总线须已连接，
+  订阅才会成功；
+- **降级决策**：EventBus 连接失败时 EdgeCore 记 Warn 并**不退出**，
+  Mapper 以纯本地模式继续运行（云边设备链路不受影响）；降级是装配期决策，
+  broker 之后才可用时 Mapper 不会自动切换，重启 edgecore 即恢复；
+- 总线断线重连后的订阅恢复由 EventBus 自动完成（paho 重连 + 订阅表恢复），
+  Mapper 无感知。
+
+### 8.3 主题与负载格式
+
+| 方向 | 主题 | 负载 | QoS |
+|------|------|------|-----|
+| 设备 → 边缘 | `devices/<namespace>/<deviceName>/telemetry` | `{"temperature":25.5,"humidity":60,"ts":1755168000000}` | 1 |
+| 边缘 → 设备 | `devices/<namespace>/<deviceName>/command` | `{"property":"targetTemp","value":25}` / `{"property":"reset"}` | 1 |
+
+- `ts` 为采集时刻的 Unix 毫秒时间戳；
+- 指令 `property` 取值与云边通道一致：`targetTemp`（范围 [20,35]，越界忽略并告警）/ `reset`；
+- 命名空间/设备名缺省为 `default`/注册时指定，主题由
+  `eventbus.TelemetryTopic/CommandTopic` 构造（段值非法自动回退纯本地模式）。
+
+### 8.4 双通道语义（重要）
+
+MQTT 模式下传感器有**两个指令入口、一个遥测出口**：
+
+```
+云端（管理面）                                 边缘本地（数据面）
+POST /device-command ──► EdgeHub ──► HandleCommand ─┐        ┌──► MQTT command 主题 ◄── mosquitto_pub
+                                                     ├─► 同一份目标状态（targetTemp）
+                                                     └──► 采集循环 ◄── 遥测发布到 MQTT telemetry 主题
+```
+
+| 通道 | 入口 | 可靠性 | 语义 |
+|------|------|--------|------|
+| 云边通道 | `HandleCommand`（DeviceCommand 消息） | 可靠投递 + Ack（失败云端可见） | 管理面：云端运维/应用下发 |
+| MQTT 数据面 | `command` 主题订阅 | QoS 1（至少一次，本地） | 数据面：边缘本地操作者/设备网关下发 |
+
+- 两通道都写**同一份目标温度**（`targetTemp`），后到者生效（last-write-wins）；
+  不存在“通道优先级”，业务上按需选用；
+- 遥测只有 MQTT 数据面一个出口（每次采样发布，QoS1）；云端看到的 DeviceReport
+  由采集结果聚合后走云边通道，两者数值一致（同一份状态）；
+- 总线断开时采集循环照常波动，发布跳过并告警，不 panic；恢复后自动续发。
+
+### 8.5 验证方法（mosquitto）
+
+```bash
+mosquitto_sub -t 'devices/+/sensor-01/telemetry' -v   # 应看到温度数据流
+mosquitto_pub -t devices/default/sensor-01/command -m '{"property":"targetTemp","value":25}'
+# 对比发布前后 telemetry 温度：向 25 收敛
+```
+
+## 9. 验证
 
 ```bash
 go build ./...
-go vet ./edge/pkg/mapper/... ./mappers/...
-go test -race -cover ./edge/pkg/mapper/... ./mappers/...
-golangci-lint run ./edge/pkg/mapper/... ./mappers/...
+go vet ./edge/pkg/mapper/... ./mappers/... ./edge/pkg/eventbus/...
+go test -race -cover ./edge/pkg/mapper/... ./mappers/... ./edge/pkg/eventbus/...
+golangci-lint run ./edge/pkg/mapper/... ./mappers/... ./edge/pkg/eventbus/...
 ```
 
-## 9. 下一步（缺口与风险）
+> MQTT 模式集成用例（`mappers/mock_sensor/mqtt_mode_test.go`）需要本机
+> mosquitto（`brew install mosquitto`），缺省自动 `t.Skip`。
+
+## 10. 下一步（缺口与风险）
 
 - **MQTT 接入点**：`DeviceMapper` 的 `Start/Collect/HandleCommand` 即 MQTT 适配器
   的挂载点——`Start` 里订阅 topic，`Collect` 里读本地影子值，`HandleCommand` 里
   publish 写操作；框架无需改动；
 - **真实设备协议适配**：Modbus/OPC-UA 只需新增 `DeviceMapper` 实现，注册名与
   设备名规划需与 DeviceTwin 的设备模型（属性字典）对齐；
-- **EdgeCore 装配**：main.go 注册/启动/停止注册表 + DeviceTwin 指令分发与周期上报
-  （下一轮集成，接口已就绪）；
+- **双通道竞态**：云边通道与数据面同时写目标温度时按 last-write-wins 收敛，
+  无跨通道互斥；若未来需要“管理面优先”，可在 HandleCommand 侧加通道优先级；
+- **broker 依赖**：MQTT 模式强依赖边缘侧 broker 可用；broker 缺席时自动降级为
+  纯本地模式（不退出），但**不会**在 broker 恢复后自动升级（装配期决策，
+  重启 edgecore 恢复）；另注意 Connect 超时后 paho 仍在后台重连，日志出现
+  “已连接”不代表 Mapper 处于 MQTT 模式；
 - **多设备共享 Mapper**：`DeviceNames()` 已支持一台 Mapper 管多台设备，真实接入时
-  需为每台设备维护独立状态（map[deviceName]state）。
+  需为每台设备维护独立状态（map[deviceName]state），MQTT 主题按设备名区分。

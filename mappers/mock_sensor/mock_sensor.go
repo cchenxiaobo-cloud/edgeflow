@@ -6,12 +6,14 @@ package mocksensor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
 	"sync"
 	"time"
 
+	"edgeflow/edge/pkg/eventbus"
 	"edgeflow/edge/pkg/mapper"
 	"edgeflow/pkg/log"
 )
@@ -57,6 +59,22 @@ func WithSeed(seed int64) Option {
 	return func(m *MockSensor) { m.rng = rand.New(rand.NewSource(seed)) }
 }
 
+// WithEventBus 设置 MQTT 数据面（WBS 3.6）：传入装配层已连接的 EventBus，
+// 传感器进入 MQTT 模式——
+//   - 采集循环每次采样后把遥测发布到 devices/<ns>/<deviceName>/telemetry（QoS1）；
+//   - Start 时订阅 devices/<ns>/<deviceName>/command（QoS1），收到
+//     {"property":"targetTemp","value":25} 格式 JSON 指令后设置目标温度
+//     （复用与云边通道 HandleCommand 相同的 targetTemp/reset 逻辑）；
+//   - 总线断开/未连接时采集循环照常运行（本地波动），发布自动跳过并告警，不 panic。
+//
+// 不设置（或传 nil）则保持纯本地模式（默认，向后兼容）：不订阅、不发布，
+// 仅由 HandleCommand/Collect 与云边通道交互。
+// 注意：EventBus 的 Connect 由装配层负责（MockSensor 不负责建连），
+// 使用方须保证 Start 前总线已连接（订阅才能成功）。
+func WithEventBus(bus *eventbus.EventBus) Option {
+	return func(m *MockSensor) { m.bus = bus }
+}
+
 // MockSensor 是模拟温湿度传感器 Mapper。
 type MockSensor struct {
 	mu sync.RWMutex
@@ -73,6 +91,26 @@ type MockSensor struct {
 	started bool          // Start 是否已调用（幂等标记）
 	stopCh  chan struct{} // 停止信号
 	doneCh  chan struct{} // 采集循环退出信号
+
+	// MQTT 数据面（WBS 3.6）：nil = 纯本地模式（默认）。
+	// 主题在 New 时按 namespace/deviceName 构造（见 initMqttTopics）。
+	bus            *eventbus.EventBus
+	telemetryTopic string
+	commandTopic   string
+}
+
+// mqttCommandPayload 是 MQTT 数据面指令负载：字段与云边通道的
+// DeviceCommand（property/value）对齐，语义同义复用。
+type mqttCommandPayload struct {
+	Property string  `json:"property"` // 目标属性名，如 targetTemp / reset
+	Value    float64 `json:"value"`    // 属性目标值（reset 可省略）
+}
+
+// mqttTelemetryPayload 是 MQTT 数据面遥测负载：温度/湿度 + 毫秒时间戳。
+type mqttTelemetryPayload struct {
+	Temperature float64 `json:"temperature"`
+	Humidity    float64 `json:"humidity"`
+	TS          int64   `json:"ts"` // 采集时刻（Unix 毫秒）
 }
 
 // New 创建模拟传感器 Mapper。deviceName 是设备名（注册表路由键）。
@@ -87,8 +125,40 @@ func New(deviceName string, opts ...Option) *MockSensor {
 	for _, o := range opts {
 		o(m)
 	}
+	m.initMqttTopics()
 	m.resetLocked()
 	return m
+}
+
+// initMqttTopics 按命名空间/设备名构造 MQTT 主题；
+// 段值非法（含 / + # 等）时记警告并回退为纯本地模式（主题无法安全构造）。
+// 与 EventBus 主题约定一致（见 edge/pkg/eventbus.TelemetryTopic）。
+func (m *MockSensor) initMqttTopics() {
+	if m.bus == nil {
+		return
+	}
+	tel, err := eventbus.TelemetryTopic(m.namespace, m.deviceName)
+	if err != nil {
+		log.Warnf("MockSensor %s: 构造遥测主题失败（%v），回退为纯本地模式", m.deviceName, err)
+		m.bus = nil
+		return
+	}
+	cmd, err := eventbus.CommandTopic(m.namespace, m.deviceName)
+	if err != nil {
+		log.Warnf("MockSensor %s: 构造指令主题失败（%v），回退为纯本地模式", m.deviceName, err)
+		m.bus = nil
+		return
+	}
+	m.telemetryTopic = tel
+	m.commandTopic = cmd
+}
+
+// MqttEnabled 返回是否处于 MQTT 模式（装配了 EventBus）。
+// 供装配层/测试确认数据面配置生效。
+func (m *MockSensor) MqttEnabled() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.bus != nil
 }
 
 // Name 返回注册名（注册表唯一键）。
@@ -152,6 +222,17 @@ func (m *MockSensor) Start(ctx context.Context) error {
 	m.mu.Unlock()
 
 	log.Infof("MockSensor %s 启动（interval=%s）", m.deviceName, interval)
+	// MQTT 模式：先订阅指令主题（QoS1），再启动采集循环。
+	// 订阅失败只告警不阻断：采集照常进行（遥测发布依赖总线在线状态）。
+	// 总线断线重连后的订阅恢复由 EventBus 自动完成，无需在此处理。
+	if m.bus != nil {
+		if err := m.bus.Subscribe(m.commandTopic, m.handleCommandMsg); err != nil {
+			log.Warnf("MockSensor %s: 订阅指令主题 %s 失败（%v），数据面指令不可达，遥测发布不受影响",
+				m.deviceName, m.commandTopic, err)
+		} else {
+			log.Infof("MockSensor %s: 已订阅数据面指令主题 %s（MQTT 模式）", m.deviceName, m.commandTopic)
+		}
+	}
 	go m.run(ctx, interval, stopCh, doneCh)
 	return nil
 }
@@ -165,11 +246,79 @@ func (m *MockSensor) run(ctx context.Context, interval time.Duration, stopCh, do
 		select {
 		case <-ticker.C:
 			m.tick()
+			m.publishTelemetry() // MQTT 模式：每次采样后发布遥测（纯本地模式为 no-op）
 		case <-stopCh:
 			return
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// publishTelemetry 把最新采样发布到遥测主题（QoS1，payload 见 mqttTelemetryPayload）。
+// 纯本地模式（bus 为 nil）或总线不在线时直接跳过；发布失败只告警不重试
+// （下一采样周期会再发布，业务侧按最新值消费即可）。
+// 快照在锁外构建，避免网络阻塞采集循环。
+func (m *MockSensor) publishTelemetry() {
+	if m.bus == nil {
+		return
+	}
+	m.mu.RLock()
+	payload := mqttTelemetryPayload{
+		Temperature: m.temperature,
+		Humidity:    m.humidity,
+		TS:          time.Now().UnixMilli(),
+	}
+	m.mu.RUnlock()
+
+	// 总线断开（断线窗口/已 Disconnect）：跳过本轮，不 panic；重连后自动恢复
+	if !m.bus.IsOnline() {
+		return
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Warnf("MockSensor %s: 遥测序列化失败: %v", m.deviceName, err)
+		return
+	}
+	if err := m.bus.Publish(m.telemetryTopic, data); err != nil {
+		log.Warnf("MockSensor %s: 遥测发布到 %s 失败: %v", m.deviceName, m.telemetryTopic, err)
+	}
+}
+
+// handleCommandMsg 处理 MQTT 数据面指令（EventBus 消息分发 goroutine 中调用，
+// 只做加锁状态更新，不做阻塞操作）：
+//   - property=targetTemp：设置目标温度（范围校验与云边通道一致）；
+//   - property=reset：恢复出厂状态。
+//
+// 与云边通道（HandleCommand）构成双通道：二者写同一份目标状态，
+// 后到者生效（last-write-wins），语义见 docs/MAPPER-GUIDE.md。
+func (m *MockSensor) handleCommandMsg(topic string, payload []byte) {
+	var cmd mqttCommandPayload
+	if err := json.Unmarshal(payload, &cmd); err != nil {
+		log.Warnf("MockSensor %s: 数据面指令 JSON 解析失败（%v）: %s", m.deviceName, err, string(payload))
+		return
+	}
+	switch cmd.Property {
+	case "targetTemp":
+		m.mu.Lock()
+		if cmd.Value < minTemp || cmd.Value > maxTemp {
+			m.mu.Unlock()
+			log.Warnf("MockSensor %s: 数据面指令 targetTemp=%v 超出合法范围 [%v, %v]，已忽略",
+				m.deviceName, cmd.Value, minTemp, maxTemp)
+			return
+		}
+		m.targetTemp = cmd.Value
+		m.mu.Unlock()
+		log.Infof("MockSensor %s: 数据面指令生效 targetTemp=%v（topic=%s）", m.deviceName, cmd.Value, topic)
+	case "reset":
+		m.mu.Lock()
+		m.resetLocked()
+		m.mu.Unlock()
+		log.Infof("MockSensor %s: 数据面指令生效 reset（topic=%s）", m.deviceName, topic)
+	case "":
+		log.Warnf("MockSensor %s: 数据面指令缺少 property 字段: %s", m.deviceName, string(payload))
+	default:
+		log.Warnf("MockSensor %s: 不支持的指令属性 %q（数据面）", m.deviceName, cmd.Property)
 	}
 }
 
@@ -199,6 +348,13 @@ func (m *MockSensor) Stop() error {
 
 	close(stopCh)
 	<-doneCh // 等待采集循环退出，保证停止后状态不再变化
+	// MQTT 模式：取消指令订阅（总线已断开时失败仅告警——连接断开后订阅
+	// 本就不复存在，EventBus 重连恢复只针对存活订阅表）。
+	if m.bus != nil {
+		if err := m.bus.Unsubscribe(m.commandTopic); err != nil {
+			log.Warnf("MockSensor %s: 取消订阅 %s 失败（%v），忽略", m.deviceName, m.commandTopic, err)
+		}
+	}
 	log.Infof("MockSensor %s 已停止", m.deviceName)
 	return nil
 }

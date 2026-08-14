@@ -23,6 +23,7 @@ import (
 	"edgeflow/edge/pkg/devicetwin"
 	"edgeflow/edge/pkg/edged"
 	"edgeflow/edge/pkg/edgehub"
+	"edgeflow/edge/pkg/eventbus"
 	"edgeflow/edge/pkg/metamanager"
 	"edgeflow/pkg/log"
 	"edgeflow/pkg/protocol"
@@ -84,12 +85,32 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 
 	client := edgehub.New(opts)
 
+	// 启动 EventBus（WBS 3.6：边缘设备 MQTT 数据面接入点）。
+	// 地址默认 tcp://127.0.0.1:1883，环境变量 EDGEFLOW_EDGECORE_MQTT_ADDR 覆盖。
+	// Connect 失败（超时/拒绝）→ 告警并降级：Mapper 保持纯本地模式继续运行，
+	// 云边设备链路（DeviceCommand/DeviceReport）不受影响，edgecore 不退出。
+	// 决策依据：MQTT 数据面是设备接入的可选增强，管理面可用即可交付；
+	// 注意：paho 在 Connect 超时后仍会在后台重试（broker 可能晚于 edgecore
+	// 启动），但 Mapper 不会自动切换模式——降级是装配期决策，
+	// 重启 edgecore（broker 就绪后）即可恢复 MQTT 数据面。
+	bus := eventbus.New(eventbus.DefaultBrokerAddrFromEnv())
+	connectCtx, cancelConnect := context.WithTimeout(context.Background(), mqttConnectTimeout())
+	connectErr := bus.Connect(connectCtx)
+	cancelConnect()
+	if connectErr != nil {
+		log.Warnf("EventBus 连接失败: %v", connectErr)
+		log.Warnf("Mapper 降级为纯本地模式：设备数据不走 MQTT 数据面（云边设备链路不受影响，edgecore 继续运行）")
+		bus = nil
+	} else {
+		log.Infof("EventBus 已连接（%s），Mapper 启用 MQTT 数据面", bus.BrokerAddr())
+	}
+
 	// 设备链路（WBS 3.5/5.3）：设备影子存储 + DeviceCommand 下发处理。
 	// 设备指令执行器由 Mapper 框架（edge/pkg/mapper，WBS 5.1）提供：
 	// 装配层把 Mapper 注册表适配成 devicetwin.DeviceCommandExecutor
 	// 注入（见 device_mapper.go），指令按 deviceName 路由到具体 Mapper 执行。
 	twinStore := devicetwin.NewStore()
-	mapperReg := buildMapperRegistry()
+	mapperReg := buildMapperRegistry(bus)
 	deviceExec := &mapperCommandExecutor{reg: mapperReg, twins: twinStore}
 	// Mapper 生命周期随 edgecore 启停：启动采集循环（内置模拟传感器每 2s
 	// 波动一次，由上报循环周期汇入影子）；启动失败只告警，不阻断主流程。
@@ -212,6 +233,11 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	if err := mapperReg.StopAll(); err != nil {
 		log.Warnf("Mapper 停止部分失败: %v", err)
 	}
+	// 优雅退出顺序：先停 Mapper 再断 EventBus——保证断线窗口内没有
+	// 采集循环再向总线发布/订阅（避免发布失败告警刷屏与幽灵订阅）。
+	if bus != nil {
+		bus.Disconnect()
+	}
 	edgedSvc.Stop()
 	client.Stop()
 	if subID != 0 {
@@ -219,6 +245,14 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	}
 	log.Infof("edgecore exited")
 	return 0
+}
+
+// mqttConnectTimeout 是 EventBus 建连等待上限：默认与 eventbus 一致（5s），
+// 可用环境变量 EDGEFLOW_EDGECORE_MQTT_CONNECT_TIMEOUT 覆盖
+// （复用 durationFromEnv 的 1s~10min 上下限校验）。
+// 设小可让"broker 缺席"的部署快速进入降级路径（测试/CI 常用）。
+func mqttConnectTimeout() time.Duration {
+	return durationFromEnv("EDGEFLOW_EDGECORE_MQTT_CONNECT_TIMEOUT", eventbus.DefaultConnectTimeout)
 }
 
 // PodSyncPayload 是 PodSync 消息的负载（与云端契约一致，字段不可改）：

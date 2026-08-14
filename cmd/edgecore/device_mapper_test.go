@@ -8,8 +8,11 @@ import (
 	"testing"
 
 	"edgeflow/edge/pkg/devicetwin"
+	"edgeflow/edge/pkg/eventbus"
 	"edgeflow/edge/pkg/mapper"
 	"edgeflow/pkg/protocol"
+
+	mocksensor "edgeflow/mappers/mock_sensor"
 )
 
 // fakeMapper 是测试用 DeviceMapper：记录收到的指令、可配置失败、
@@ -194,11 +197,39 @@ func TestHandleDeviceCommandFullChain(t *testing.T) {
 // TestBuildMapperRegistry 验证内置装配：注册表含模拟传感器且可按
 // 设备名路由（M3 端到端演示链路的默认装配）。
 func TestBuildMapperRegistry(t *testing.T) {
-	reg := buildMapperRegistry()
+	reg := buildMapperRegistry(nil) // 未装配 EventBus：纯本地模式
 	if len(reg.List()) != 1 {
 		t.Fatalf("注册 Mapper 数 = %d，期望 1（模拟传感器）", len(reg.List()))
 	}
 	if _, ok := reg.Route("sensor-01"); !ok {
 		t.Error("模拟传感器应按设备名 sensor-01 可路由")
+	}
+}
+
+// TestBuildMapperRegistryMqttMode 装配 EventBus 后：传感器进入 MQTT 模式
+// （无需真实 broker——本用例只验证装配形态，连接/收发由 mocksensor 的
+// 集成用例覆盖）。
+func TestBuildMapperRegistryMqttMode(t *testing.T) {
+	bus := eventbus.New("tcp://127.0.0.1:1") // 仅验证装配，不 Connect
+	reg := buildMapperRegistry(bus)
+	if len(reg.List()) != 1 {
+		t.Fatalf("注册 Mapper 数 = %d，期望 1（模拟传感器）", len(reg.List()))
+	}
+	m, ok := reg.Get("mock-sensor")
+	if !ok {
+		t.Fatal("mock-sensor 应已注册")
+	}
+	sensor, ok := m.(*mocksensor.MockSensor)
+	if !ok {
+		t.Fatalf("注册的 Mapper 类型 = %T，期望 *mocksensor.MockSensor", m)
+	}
+	if !sensor.MqttEnabled() {
+		t.Error("装配 EventBus 后传感器应处于 MQTT 模式")
+	}
+	// 降级路径：bus 为 nil 时传感器为纯本地模式
+	reg2 := buildMapperRegistry(nil)
+	m2, _ := reg2.Get("mock-sensor")
+	if m2.(*mocksensor.MockSensor).MqttEnabled() {
+		t.Error("未装配 EventBus 时传感器不应处于 MQTT 模式")
 	}
 }

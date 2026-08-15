@@ -231,6 +231,20 @@ make lint       # 静态检查（golangci-lint）
 - [ ] `go build ./... && go test ./... && make lint` 全部通过
 - [ ] `./bin/cloudcore` 启动后 `curl localhost:8080/healthz` 返回 200
 - [ ] `bash examples/demo.sh` 输出 **DEMO PASS** 且清理后无残留
+## 12. 2026-08-15 后续开发轮交接（新增能力速览）
+
+> 本轮 10 个提交（`f6b4898..09e4707`），完整台账见 `.cluster/c2ede049/DELIVERY/DELIVERY-MANIFEST-20260815.md`，处置总登记见 `docs/ROADMAP.md §8`。
+
+| 能力 | 用法/说明 | commit |
+|------|-----------|--------|
+| 配置热重载（2.7） | SIGHUP + 60s mtime 轮询；cloudcore HTTP 端口热切换（失败回滚旧监听）；edgecore 上报周期热生效，cloudAddr/nodeID/reconcileInterval 变更需重启（回写旧值+告警） | `2d0a903` |
+| gzip 消息压缩（4.4） | 默认开启（cloudcore 配置 `compress`，变更需重启）；Register 协商式双向（旧端自动明文互操作）；EFGZ 帧 + 1MiB 双限防炸弹；<256B 回落明文 | `37f34f9`+`5ac07f8` |
+| 证书轮换（7.1） | `keadm cert rotate --node <CN> [--cert-dir]`；备份先行（`backups/<ts>/`+manifest）、事务化重签、幂等；回退=备份覆盖 | `2c877d4` |
+| 灰度升级（10.2） | `keadm upgrade --batch-size N --pause-between 30s`（batch 模式生效）；fail-fast + 清单 + rollback 衔接 | `2c877d4` |
+| 审查遗留修复 | metamanager List 范围扫描（LIKE 通配字面）；registry Offline TTL/GC（默认 24h，`WithOfflineTTL` 可调）；serveWS/Shutdown 竞态；写 API 1MiB 413；newID 兜底；离线时钟不重置 | `37fbaf4`+`d9bc9ec`+`8f1bc80` |
+
+**仍待用户操作**：C7 GitHub 远程关联 + CI 首跑（`git remote add origin <url> && git push -u origin main`）。
+
 - [ ] `docs/ROADMAP.md` 明确了下一个模块任务
 - [ ] `docs/PROGRESS.md` 记录了全部历史验证结果
 - [ ] Git 仓库干净，远程已关联（或已知未关联）

@@ -460,6 +460,7 @@ func (c *Client) register(conn *websocket.Conn, closed <-chan struct{}, regAckCh
 		CPU:             runtime.NumCPU(),
 		Memory:          totalMemoryBytes(),
 		Token:           c.opts.Token,
+		Compression:     "gzip", // WBS 4.4 压缩协商：声明 gzip 能力，云端回带确认后启用双向压缩
 	}
 	msg, err := protocol.NewMessage(protocol.TypeRegister, c.opts.NodeID, targetCloud, payload)
 	if err != nil {

@@ -44,8 +44,18 @@ func TestCompressionNegotiatedUplink(t *testing.T) {
 	})
 	client.Start()
 	defer client.Stop()
-	mock.waitRegister(t)
+	reg := mock.waitRegister(t)
 	waitConnected(t, client)
+
+	// Register 帧必须声明 gzip 能力（协商起点，WBS 4.4）：
+	// 云端据此决定是否回带 compression=gzip；缺失则协商链断裂、压缩永不启用。
+	var regPayload RegisterPayload
+	if err := reg.DecodePayload(&regPayload); err != nil {
+		t.Fatalf("解析 Register 负载失败: %v", err)
+	}
+	if regPayload.Compression != "gzip" {
+		t.Fatalf("Register 应声明 compression=gzip，实际 %q", regPayload.Compression)
+	}
 
 	// 大消息上行：应为压缩帧
 	big, err := protocol.NewMessage(protocol.TypePodStatus, "compress-node", targetCloud,

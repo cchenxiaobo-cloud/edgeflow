@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -64,6 +65,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// 加载配置：--port > 环境变量 EDGEFLOW_CLOUDCORE_PORT > 配置文件 > 默认值
+	// （CloudHub 端口同构：EDGEFLOW_CLOUDCORE_HUB_PORT > 配置文件 hubPort > 默认 10000）
 	cfg, err := config.Load(opts.config, opts.port, opts.portSet)
 	if err != nil {
 		log.Errorf("配置加载失败: %v", err)
@@ -73,14 +75,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// 打印启动信息与生效配置（含端口来源，便于排查）
 	info := version.Get()
 	log.Infof("cloudcore starting, %s", info.String())
-	log.Infof("生效配置: 端口 %d（来源: %s）", cfg.Port, cfg.PortSource)
-
-	// 解析 CloudHub 端口：环境变量 EDGEFLOW_CLOUDCORE_HUB_PORT > 默认 10000
-	hubPort, err := cloudhub.PortFromEnv()
-	if err != nil {
-		log.Errorf("CloudHub 端口配置无效: %v", err)
-		return 1
-	}
+	log.Infof("生效配置: HTTP 端口 %d（来源: %s）, CloudHub 端口 %d（来源: %s）",
+		cfg.Port, cfg.PortSource, cfg.HubPort, cfg.HubPortSource)
 
 	// 云边通道 mTLS（WBS 7.1 证书管理 + 7.4 云边认证）：
 	// EDGEFLOW_CLOUDCORE_TLS=on 时启用 TLS 监听，并要求边缘侧携带
@@ -123,7 +119,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		log.Infof("CloudHub TLS 已启用（certDir=%s, mTLS: 强制要求并验证客户端证书）", certDir)
 	}
-	hub := cloudhub.New(fmt.Sprintf(":%d", hubPort), cloudhub.WithTLS(hubTLS),
+	hub := cloudhub.New(fmt.Sprintf(":%d", cfg.HubPort), cloudhub.WithTLS(hubTLS),
 		// WBS 7.3 设备认证：EDGEFLOW_CLOUDCORE_NODE_TOKEN 非空时启用节点接入
 		// 令牌校验（edgecore 注册必须携带相同 token）；未设置保持向后兼容。
 		cloudhub.WithNodeToken(os.Getenv("EDGEFLOW_CLOUDCORE_NODE_TOKEN")))
@@ -289,13 +285,37 @@ func run(args []string, stdout, stderr io.Writer) int {
 	mux.HandleFunc("GET /metrics", m.Handler())
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
+	// 显式创建监听（而非 ListenAndServe）：热重载（WBS 2.7）需要持有
+	// listener 才能热切换端口（见 httpReloader.swapPort）。绑定失败在
+	// 启动阶段 fail-fast（避免静默跑错端口）。
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Errorf("HTTP 监听 %s 失败: %v", addr, err)
+		return 1
+	}
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           m.Middleware(mux), // 最外层：统计全部 HTTP 请求（含 /healthz、/metrics）
 		ReadHeaderTimeout: 5 * time.Second,   // 防止慢速连接长时间占用连接
 		ReadTimeout:       10 * time.Second,  // 防止慢速读取长时间占用连接
 	}
-	return serve(srv, hub, nc)
+
+	// 配置热重载（WBS 2.7）：SIGHUP 强制重载 + 每 60s 检查文件 mtime 自动重载。
+	// 热生效范围与策略见 applyConfigReload：HTTP 端口热切换监听；
+	// CloudHub 端口变更需重启（记录警告并保持旧值）。
+	// 重载失败（JSON 错误/端口绑定失败）保持旧配置继续运行（fail-safe）。
+	hr := &httpReloader{srv: srv, ln: ln}
+	rel := config.NewReloader(opts.config, cfg,
+		func() (*config.Config, error) { return config.LoadReload(opts.config, opts.port, opts.portSet) },
+		func(old, next *config.Config) error { return applyConfigReload(old, next, hr) })
+	rel.Start(config.DefaultWatchInterval)
+	defer rel.Stop()
+	stopHUP := config.WatchSIGHUP(func() error { return rel.Reload() })
+	defer stopHUP()
+	log.Infof("配置热重载已启用: 修改 %s 后发送 SIGHUP 立即生效，或等待 %v 自动检查",
+		opts.config, config.DefaultWatchInterval)
+
+	return serve(srv, ln, hub, nc)
 }
 
 // options 是命令行参数解析结果。
@@ -363,6 +383,19 @@ func parseSANList(san string) ([]net.IP, []string, error) {
 }
 
 // serve 启动 HTTP 服务与 CloudHub，等待退出信号后一并优雅关闭，返回进程退出码。
+// maxWriteBodyBytes 是 Cloud API 写操作（podsync/config-sync/device-command）
+// 请求体的大小上限（1 MiB，与云边通道单条消息上限 maxMessageBytes 对齐，
+// M1C P2-5）。超限请求立即 413 拒绝，防止超大请求体拖垮解码与后续下发。
+const maxWriteBodyBytes = 1 << 20
+
+// decodeWriteBody 解码写操作请求体：先套 http.MaxBytesReader 施加大小限制
+// （超限时解码返回 *http.MaxBytesError），再按需返回错误。返回的错误由
+// 调用方映射：*http.MaxBytesError → 413（请求体过大），其余 → 400（非法 JSON）。
+func decodeWriteBody(w http.ResponseWriter, r *http.Request, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxWriteBodyBytes)
+	return json.NewDecoder(r.Body).Decode(dst)
+}
+
 // podSyncRequest 是云端下发 Pod 配置的请求体（M2 应用管理雏形）。
 type podSyncRequest struct {
 	Operation string  `json:"operation"` // add / update / delete
@@ -385,7 +418,12 @@ func (api *nodeAPI) syncPod(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.PathValue("nodeID")
 
 	var req podSyncRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeWriteBody(w, r, &req); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, `{"error":"request body too large (limit 1MiB)"}`, http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, `{"error":"invalid json body"}`, http.StatusBadRequest)
 		return
 	}
@@ -393,7 +431,8 @@ func (api *nodeAPI) syncPod(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"operation and pod.name are required"}`, http.StatusBadRequest)
 		return
 	}
-	// operation 白名单校验（WBS 4.6 P2：云端前置校验，避免非法值下发到边缘）
+	// operation 白名单校验（M1C P2-3）：云端前置校验，非法值直接 400，
+	// 避免下发后等一轮可靠投递往返（最长 ~15s）才以 502 暴露。
 	switch req.Operation {
 	case "add", "update", "delete":
 	default:
@@ -403,14 +442,6 @@ func (api *nodeAPI) syncPod(w http.ResponseWriter, r *http.Request) {
 	// 镜像校验：add/update 必须有 image（delete 不需要，按 name 删除）
 	if req.Operation != "delete" && req.Pod.Image == "" {
 		http.Error(w, `{"error":"pod.image is required for add/update"}`, http.StatusBadRequest)
-		return
-	}
-	// 云端校验 operation 取值（P2-5）：非法值直接 400 拒绝，
-	// 避免下发后等一轮可靠投递往返（最长 ~15s）才以 502 暴露。
-	switch req.Operation {
-	case "add", "update", "delete":
-	default:
-		http.Error(w, `{"error":"invalid operation: must be add, update or delete"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -471,7 +502,12 @@ func (api *nodeAPI) syncConfig(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.PathValue("nodeID")
 
 	var req configSyncRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeWriteBody(w, r, &req); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, `{"error":"request body too large (limit 1MiB)"}`, http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, `{"error":"invalid json body"}`, http.StatusBadRequest)
 		return
 	}
@@ -530,12 +566,14 @@ func (api *nodeAPI) syncConfig(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"ok","acked":true}`))
 }
 
-func serve(srv *http.Server, hub *cloudhub.Server, nc *nodecontroller.NodeController) int {
-	// 在独立 goroutine 中启动 HTTP 服务与 CloudHub，错误通过 channel 上报主流程
+func serve(srv *http.Server, ln net.Listener, hub *cloudhub.Server, nc *nodecontroller.NodeController) int {
+	// 在独立 goroutine 中启动 HTTP 服务与 CloudHub，错误通过 channel 上报主流程。
+	// 热重载端口切换（WBS 2.7）会关闭旧监听并另起 Serve：监听被主动关闭
+	// （net.ErrClosed）与优雅退出（ErrServerClosed）都不是致命错误。
 	errCh := make(chan error, 2)
 	go func() {
-		log.Infof("HTTP server listening on %s", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Infof("HTTP server listening on %s", ln.Addr())
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 			errCh <- err
 		}
 	}()
@@ -591,6 +629,68 @@ func shutdownAll(srv *http.Server, hub *cloudhub.Server, nc *nodecontroller.Node
 		log.Errorf("CloudHub 关闭失败: %v", err)
 	}
 	nc.Stop()
+}
+
+// httpReloader 持有 HTTP 服务的当前监听，支持热切换监听端口（WBS 2.7）。
+//
+// 热切换语义：先在新端口建立监听并开始 Serve（新连接走新端口），再关闭
+// 旧监听——旧监听上已建立的连接继续处理完（关闭 listener 不影响活动连接），
+// 但不再接受新连接。新端口绑定失败时返回错误，旧监听保持不变（fail-safe，
+// 重载被整体拒绝）。
+type httpReloader struct {
+	mu  sync.Mutex
+	srv *http.Server
+	ln  net.Listener
+}
+
+// swapPort 把 HTTP 服务切换到新端口（幂等：端口未变时直接返回 nil）。
+func (h *httpReloader) swapPort(port int) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if ta, ok := h.ln.Addr().(*net.TCPAddr); ok && ta.Port == port {
+		return nil
+	}
+	newLn, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return fmt.Errorf("新端口 %d 绑定失败: %w", port, err)
+	}
+	oldLn := h.ln
+	h.ln = newLn
+	h.srv.Addr = newLn.Addr().String()
+	// 新监听先开始 Serve；随后关闭旧监听（其 Serve 返回 net.ErrClosed，
+	// 主 serve goroutine 已将其视为非致命错误）
+	go func() { _ = h.srv.Serve(newLn) }()
+	if err := oldLn.Close(); err != nil {
+		log.Warnf("旧监听 %s 关闭失败: %v", oldLn.Addr(), err)
+	}
+	log.Infof("HTTP 监听端口热切换: %s → %s", oldLn.Addr(), newLn.Addr())
+	return nil
+}
+
+// applyConfigReload 是 cloudcore 的热重载策略（Reloader 的提交前钩子）：
+//
+//   - port（HTTP/healthz/API 监听端口）：热切换监听（swapPort）——这是
+//     本实现评估后认为可安全热生效的端口类配置：新端口绑定失败即拒绝
+//     重载、旧监听保持，切换过程不丢活动连接；
+//   - hubPort（CloudHub WS 监听端口）：需重启生效——CloudHub 服务端不支持
+//     运行期重建监听（cloud/pkg/cloudhub 未提供该能力，改动其内部超出
+//     WBS 2.7 范围），因此记录警告并把旧值回写进 next（快照始终反映
+//     运行中真实监听端口，不撒谎）。
+//
+// 返回错误时本次重载被整体拒绝（快照保持旧配置）。
+func applyConfigReload(old, next *config.Config, hr *httpReloader) error {
+	if next.HubPort != old.HubPort {
+		log.Warnf("hubPort 变更（%d → %d）需重启 cloudcore 生效，本次重载保持 %d（CloudHub 不支持运行期重建监听）",
+			old.HubPort, next.HubPort, old.HubPort)
+		next.HubPort = old.HubPort
+		next.HubPortSource = old.HubPortSource
+	}
+	if next.Port != old.Port {
+		if err := hr.swapPort(next.Port); err != nil {
+			return fmt.Errorf("HTTP 端口 %d 热切换失败（保持 %d）: %w", next.Port, old.Port, err)
+		}
+	}
+	return nil
 }
 
 // nodeAPI 是节点查询 API（/api/v1/nodes）的处理器集合。

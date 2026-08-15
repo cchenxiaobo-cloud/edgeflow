@@ -101,7 +101,12 @@ func (a *nodeAPI) sendDeviceCommand(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.PathValue("nodeID")
 
 	var req deviceCommandRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeWriteBody(w, r, &req); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, `{"error":"request body too large (limit 1MiB)"}`, http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, `{"error":"invalid json body"}`, http.StatusBadRequest)
 		return
 	}

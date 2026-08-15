@@ -2,18 +2,18 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"edgeflow/cloud/pkg/cloudhub"
-	"edgeflow/cloud/pkg/nodecontroller"
-	"edgeflow/cloud/pkg/registry"
 	"edgeflow/pkg/config"
 )
 
@@ -151,14 +151,22 @@ func TestRunServerLifecycle(t *testing.T) {
 	}
 }
 
-// TestServeListenError 验证监听失败（非法地址）时 serve 返回 1。
-func TestServeListenError(t *testing.T) {
-	srv := &http.Server{Addr: ":99999", Handler: http.NewServeMux()}
-	hub := cloudhub.New("127.0.0.1:0")
-	// NodeController 用空注册表即可：本测试只验证监听失败路径
-	nc := nodecontroller.New(registry.New())
-	if code := serve(srv, hub, nc); code != 1 {
-		t.Fatalf("serve 退出码 = %d，期望 1", code)
+// TestRunPortInUse 验证启动时 HTTP 监听端口已被占用 → 退出码 1
+// （监听失败 fail-fast，替代原 TestServeListenError 的监听错误路径）。
+func TestRunPortInUse(t *testing.T) {
+	t.Setenv(config.PortEnvVar, "")
+	t.Setenv(cloudhub.EnvHubPort, "0")
+	// 占住一个通配地址端口（macOS 上仅占 127.0.0.1 无法阻止 :PORT 绑定）
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("占位监听失败: %v", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--port", strconv.Itoa(port), "--config", "not-exist.json"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("run(端口被占用) 退出码 = %d，期望 1（监听失败 fail-fast）", code)
 	}
 }
 
@@ -201,4 +209,197 @@ func TestParseFlags(t *testing.T) {
 	if _, err := parseFlags([]string{"--nope"}, &buf); err == nil {
 		t.Error("未知参数应报错")
 	}
+}
+
+// ---- WBS 2.7：配置热重载（SIGHUP + 端口热切换） ----
+
+// waitHealthy 轮询指定端口 /healthz，直到返回 200 或超时。
+func waitHealthy(t *testing.T, port int, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return true
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+// TestRunConfigHotReload 验证端到端热重载：修改配置文件 + SIGHUP →
+// HTTP 监听端口热切换（新端口 /healthz 200，旧端口停止服务）。
+func TestRunConfigHotReload(t *testing.T) {
+	t.Setenv(config.PortEnvVar, "")
+	t.Setenv(config.HubPortEnvVar, "0") // CloudHub 随机端口，避免冲突
+	t.Setenv("EDGEFLOW_CLOUDCORE_AUDIT_PATH", filepath.Join(t.TempDir(), "audit-ledger.jsonl"))
+	cfgPath := filepath.Join(t.TempDir(), "cloudcore.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"port": 18181}`), 0o644); err != nil {
+		t.Fatalf("写入配置文件失败: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- run([]string{"--config", cfgPath}, &stdout, &stderr)
+	}()
+
+	if !waitHealthy(t, 18181, 5*time.Second) {
+		t.Fatal("初始端口 18181 未在超时时间内就绪")
+	}
+
+	// 修改配置文件（端口 18181 → 18182）并发送 SIGHUP
+	if err := os.WriteFile(cfgPath, []byte(`{"port": 18182}`), 0o644); err != nil {
+		t.Fatalf("改写配置文件失败: %v", err)
+	}
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGHUP); err != nil {
+		t.Fatalf("发送 SIGHUP 失败: %v", err)
+	}
+
+	if !waitHealthy(t, 18182, 5*time.Second) {
+		t.Fatal("SIGHUP 后新端口 18182 未就绪（热切换未生效）")
+	}
+	// 旧端口应已停止接受连接
+	if resp, err := http.Get("http://127.0.0.1:18181/healthz"); err == nil {
+		_ = resp.Body.Close()
+		t.Errorf("旧端口 18181 仍可访问，期望热切换后已关闭（status=%d）", resp.StatusCode)
+	}
+
+	// 优雅退出
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("发送 SIGTERM 失败: %v", err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("run 退出码 = %d，期望 0", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run 未在超时时间内退出")
+	}
+}
+
+// TestRunConfigReloadInvalidKeepsRunning 验证重载失败 fail-safe：
+// 配置文件写坏 + SIGHUP → 进程继续运行（旧端口仍服务），退出码不受影响。
+func TestRunConfigReloadInvalidKeepsRunning(t *testing.T) {
+	t.Setenv(config.PortEnvVar, "")
+	t.Setenv(config.HubPortEnvVar, "0")
+	t.Setenv("EDGEFLOW_CLOUDCORE_AUDIT_PATH", filepath.Join(t.TempDir(), "audit-ledger.jsonl"))
+	cfgPath := filepath.Join(t.TempDir(), "cloudcore.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"port": 18183}`), 0o644); err != nil {
+		t.Fatalf("写入配置文件失败: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- run([]string{"--config", cfgPath}, &stdout, &stderr)
+	}()
+
+	if !waitHealthy(t, 18183, 5*time.Second) {
+		t.Fatal("初始端口 18183 未就绪")
+	}
+	// 写坏配置 + SIGHUP：重载失败，旧配置继续运行
+	if err := os.WriteFile(cfgPath, []byte(`{"port": 99999`), 0o644); err != nil {
+		t.Fatalf("写入坏配置失败: %v", err)
+	}
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGHUP); err != nil {
+		t.Fatalf("发送 SIGHUP 失败: %v", err)
+	}
+	if !waitHealthy(t, 18183, 3*time.Second) {
+		t.Fatal("重载失败后旧端口 18183 应继续服务（fail-safe）")
+	}
+
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("发送 SIGTERM 失败: %v", err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("run 退出码 = %d，期望 0", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run 未在超时时间内退出")
+	}
+}
+
+// TestApplyConfigReload 验证热重载策略（纯单元）：
+// hubPort 变更需重启（保持旧值）、port 热切换、绑定失败拒绝重载。
+func TestApplyConfigReload(t *testing.T) {
+	t.Setenv(config.PortEnvVar, "")
+	t.Setenv(config.HubPortEnvVar, "")
+
+	// 起一个真实的 HTTP 服务供 httpReloader 使用
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("监听失败: %v", err)
+	}
+	oldPort := ln.Addr().(*net.TCPAddr).Port
+	srv := &http.Server{Handler: http.NewServeMux()}
+	go func() { _ = srv.Serve(ln) }()
+	hr := &httpReloader{srv: srv, ln: ln}
+	old := &config.Config{Port: oldPort, PortSource: config.SourceFile, HubPort: 10000, HubPortSource: config.SourceDefault}
+
+	t.Run("hubPort 变更需重启：保持旧值不报错", func(t *testing.T) {
+		next := &config.Config{Port: oldPort, PortSource: config.SourceFile, HubPort: 20000, HubPortSource: config.SourceFile}
+		if err := applyConfigReload(old, next, hr); err != nil {
+			t.Fatalf("hubPort 变更不应报错: %v", err)
+		}
+		if next.HubPort != 10000 || next.HubPortSource != config.SourceDefault {
+			t.Errorf("hubPort 应回写旧值 10000（来源默认值），实际 %d/%q", next.HubPort, next.HubPortSource)
+		}
+		if hr.ln.Addr().(*net.TCPAddr).Port != oldPort {
+			t.Error("hubPort 变更不应触发监听切换")
+		}
+	})
+
+	t.Run("port 变更热切换监听", func(t *testing.T) {
+		// 找一个空闲端口作为目标
+		freeLn, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("探测空闲端口失败: %v", err)
+		}
+		newPort := freeLn.Addr().(*net.TCPAddr).Port
+		_ = freeLn.Close()
+
+		next := &config.Config{Port: newPort, PortSource: config.SourceFile, HubPort: 10000, HubPortSource: config.SourceDefault}
+		if err := applyConfigReload(old, next, hr); err != nil {
+			t.Fatalf("端口热切换不应报错: %v", err)
+		}
+		if got := hr.ln.Addr().(*net.TCPAddr).Port; got != newPort {
+			t.Errorf("切换后监听端口 = %d，期望 %d", got, newPort)
+		}
+	})
+
+	t.Run("端口被占用：拒绝重载保持旧监听", func(t *testing.T) {
+		busyLn, err := net.Listen("tcp", ":0")
+		if err != nil {
+			t.Fatalf("占位监听失败: %v", err)
+		}
+		defer busyLn.Close()
+		busyPort := busyLn.Addr().(*net.TCPAddr).Port
+		before := hr.ln.Addr().(*net.TCPAddr).Port
+
+		next := &config.Config{Port: busyPort, PortSource: config.SourceFile, HubPort: 10000, HubPortSource: config.SourceDefault}
+		if err := applyConfigReload(old, next, hr); err == nil {
+			t.Fatal("目标端口被占用时应拒绝重载")
+		}
+		if got := hr.ln.Addr().(*net.TCPAddr).Port; got != before {
+			t.Errorf("拒绝重载后监听端口 = %d，应保持 %d", got, before)
+		}
+	})
+
+	t.Run("配置未变化：no-op", func(t *testing.T) {
+		cur := hr.ln.Addr().(*net.TCPAddr).Port
+		next := &config.Config{Port: cur, PortSource: config.SourceFile, HubPort: 10000, HubPortSource: config.SourceDefault}
+		if err := applyConfigReload(old, next, hr); err != nil {
+			t.Fatalf("未变化不应报错: %v", err)
+		}
+		if hr.ln.Addr().(*net.TCPAddr).Port != cur {
+			t.Error("未变化不应触发监听切换")
+		}
+	})
 }

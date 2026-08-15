@@ -27,16 +27,19 @@ const (
 )
 
 // runStatusReportLoop 是 Pod 状态上报循环：
-// 启动即上报一轮，之后每 interval 上报一轮，直到 stopCh 关闭。
+// 启动即上报一轮，之后每 intervalFn() 返回的周期上报一轮，直到 stopCh 关闭。
 //
 // 设计决策（与调谐解耦，简化）：
 //   - 不在 Edged.Trigger 后额外立即上报：调谐每 5s 收敛一次状态表，上报
 //     每 30s 采样一轮——触发即刻上报只把最坏延迟从 30s 降到 5s，却让上报
 //     节奏与调谐耦合（触发频率、并发与调试复杂度上升），收益有限；
-//   - 固定周期含首次上报：edgecore 启动后云端无需等待即可看到 Pod 状态。
-func runStatusReportLoop(client *edgehub.Client, edgedSvc *edged.Edged, nodeID string, interval time.Duration, stopCh <-chan struct{}) {
+//   - 固定周期含首次上报：edgecore 启动后云端无需等待即可看到 Pod 状态；
+//   - 周期支持热重载（WBS 2.7）：每次 tick 后重新读取 intervalFn，
+//     周期变化即重置 ticker（下一轮起按新周期），上报循环无感知。
+func runStatusReportLoop(client *edgehub.Client, edgedSvc *edged.Edged, nodeID string, intervalFn func() time.Duration, stopCh <-chan struct{}) {
 	reportPodStatuses(client, edgedSvc, nodeID) // 启动即上报一轮（含首次）
 
+	interval := safeInterval(intervalFn())
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -47,7 +50,23 @@ func runStatusReportLoop(client *edgehub.Client, edgedSvc *edged.Edged, nodeID s
 			log.Infof("Pod 状态上报循环已停止")
 			return
 		}
+		// 热重载：周期变更后重置 ticker（在同一个 goroutine 内、tick 之后调用，
+		// 符合 Ticker.Reset 的使用约束）
+		if d := safeInterval(intervalFn()); d != interval {
+			interval = d
+			ticker.Reset(d)
+			log.Infof("Pod 状态上报周期热更新: %v", d)
+		}
 	}
+}
+
+// safeInterval 防御非法周期：非正数回落默认周期（配置层已做 1s~10min 校验，
+// 此处兜底防止未来调用方传入非法值导致 time.NewTicker panic）。
+func safeInterval(d time.Duration) time.Duration {
+	if d <= 0 {
+		return defaultReportInterval
+	}
+	return d
 }
 
 // reportPodStatuses 上报一轮全部 Pod 状态：每条状态独立成一条 PodStatus 消息。

@@ -67,6 +67,11 @@ const (
 	maxMessageBytes = 1 << 20
 	// readHeaderTimeout 是升级握手前的读请求头超时。
 	readHeaderTimeout = 10 * time.Second
+	// connGoroutineWaitTimeout 是 Shutdown 等待连接 goroutine 退出的超时
+	// 上限（P2-1 兜底）：正常路径下连接被 closeAllConns 关闭后，读循环/
+	// 写循环/心跳监控立即退出，无需等待这么久；超时只是防御性兜底，
+	// 防止任何未预期路径把 Shutdown 卡死。
+	connGoroutineWaitTimeout = 5 * time.Second
 )
 
 // RegisterPayload 是 Register 消息的负载（边→云）。
@@ -380,7 +385,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// 直接关闭 pending 通道唤醒等待者返回 ErrShuttingDown，避免 Shutdown
 	// 期间 HTTP 处理器（如 syncPod）空等至单次超时（默认 5s）。
 	s.failAllPending()
-	s.wg.Wait()
+	// 等待连接 goroutine 退出，带超时兜底（P2-1）：trackConn 已保证
+	// 不漏关连接、wg 计数守恒，理论上 Wait 必然快速返回；超时仅防止
+	// 未预期路径把 Shutdown 无限阻塞。
+	if !s.waitConnections(connGoroutineWaitTimeout) {
+		log.Warnf("CloudHub Shutdown：等待连接 goroutine 退出超时（%v），继续关闭流程", connGoroutineWaitTimeout)
+	}
 	return firstErr
 }
 
@@ -397,10 +407,11 @@ func (s *Server) handler() http.Handler {
 //
 // 竞态说明（P2-1）：http.Server.Shutdown 不等待已 hijack 的连接，
 // 若 Shutdown 恰在 Upgrade 与 trackConn 之间执行，closeAllConns 的
-// 快照会漏掉本连接。因此这里先 wg.Add 再 trackConn，且 trackConn 在
-// connsMu 内复查 shuttingDown：被快照漏掉的连接由本路径立即关闭，
-// 保证 Shutdown 的 wg.Wait 永不因漏关连接而长阻塞；同时 wg.Add 严格
-// 先于 Shutdown 的 wg.Wait（WaitGroup 禁止零计数时 Add 与 Wait 并发）。
+// 快照会漏掉本连接。trackConn 在 connsMu 内复查 shuttingDown 并完成
+// wg.Add(3)：被快照漏掉的连接由本路径立即关闭（不启动 goroutine），
+// 且 wg.Add 与 Shutdown 的 wg.Wait 互斥于 connsMu，不存在 WaitGroup
+// 禁止的「零计数时 Add 与 Wait 并发」。Shutdown 侧另有
+// waitConnections 超时兜底，任何漏网连接都不会让 Shutdown 无限阻塞。
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	// mTLS 身份旁证：TLS 握手成功后 r.TLS 携带对端证书链（WBS 7.4）。
 	// 记录客户端证书 CN（edgeflow-<nodeID>）便于审计与排查。
@@ -415,11 +426,9 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	}
 	ws.SetReadLimit(maxMessageBytes)
 	c := newConn(ws, remoteIP(r.RemoteAddr))
-	s.wg.Add(3)
 	if !s.trackConn(c) {
 		// Shutdown 已开始：本连接不在 closeAllConns 快照内，
-		// 撤销 goroutine 计数并立即关闭，不启动任何连接 goroutine。
-		s.wg.Add(-3)
+		// 立即关闭，不启动任何连接 goroutine（wg 计数未被占用）。
 		c.close()
 		return
 	}
@@ -749,6 +758,12 @@ func (s *Server) unregister(c *conn) {
 // 再纳入，closeAllConns 的快照可能已执行完毕），调用方应立即关闭连接。
 // 在 connsMu 内复查 shuttingDown 可保证：返回 true 的连接必然出现在
 // 之后任意一次 closeAllConns 的快照中（二者互斥于同一把锁）。
+//
+// wg.Add(3) 同样在 connsMu 内完成（读循环/写循环/心跳监控三个 goroutine
+// 的计数）：与 Shutdown 的 wg.Wait 之间满足「零计数时 Add 先于 Wait」——
+// 要么本连接的 Add 先于 closeAllConns 的快照完成（Wait 时计数 >0，
+// 必然被等待），要么 trackConn 看到 shuttingDown 已置位而返回 false
+// （不 Add）。两种情况下都不存在 WaitGroup 禁止的 Add(正值) 与 Wait 并发。
 func (s *Server) trackConn(c *conn) bool {
 	s.connsMu.Lock()
 	defer s.connsMu.Unlock()
@@ -756,6 +771,7 @@ func (s *Server) trackConn(c *conn) bool {
 		return false
 	}
 	s.conns[c] = struct{}{}
+	s.wg.Add(3)
 	return true
 }
 
@@ -775,6 +791,24 @@ func (s *Server) closeAllConns() {
 	s.connsMu.Unlock()
 	for _, c := range conns {
 		c.close()
+	}
+}
+
+// waitConnections 等待全部连接 goroutine 退出，带超时兜底（P2-1）。
+// 返回 true 表示全部退出；超时返回 false（调用方记录日志后继续，
+// 不阻塞 Shutdown 主流程）。超时后后台等待 goroutine 不会泄漏：
+// 连接最终关闭、wg 计数归零后自行退出。
+func (s *Server) waitConnections(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
 	}
 }
 

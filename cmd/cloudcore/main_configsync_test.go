@@ -242,3 +242,21 @@ func TestSyncConfigUnexpectedError(t *testing.T) {
 		t.Errorf("500 响应文案不符: %s", body)
 	}
 }
+
+// TestSyncConfigBodyTooLarge 验证 P2-5：config-sync 请求体超过 1MiB 上限时
+// 返回 413（与 syncPod 共用 decodeWriteBody 的大小限制）。
+func TestSyncConfigBodyTooLarge(t *testing.T) {
+	srv := newConfigSyncServer(t, func(context.Context, string, *protocol.Message, cloudhub.ReliableOptions) error {
+		t.Error("超大请求体不应触发可靠投递")
+		return nil
+	})
+	body := `{"operation":"add","config":{"name":"big","namespace":"default","kind":"ConfigMap","data":{"pad":"` +
+		strings.Repeat("x", maxWriteBodyBytes) + `"}}}`
+	resp := postConfigSync(t, srv, "node-1", body)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("状态码 = %d，期望 413", resp.StatusCode)
+	}
+	if body := readBody(t, resp); !strings.Contains(body, "too large") {
+		t.Errorf("413 响应文案不符: %s", body)
+	}
+}

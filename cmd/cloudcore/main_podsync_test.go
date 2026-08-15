@@ -251,3 +251,41 @@ func TestSyncPodUnexpectedError(t *testing.T) {
 		t.Errorf("500 响应文案不符: %s", body)
 	}
 }
+
+// TestSyncPodBodyTooLarge 验证 P2-5：请求体超过 1MiB 上限时返回 413
+// （http.MaxBytesReader 生效），且不触发可靠投递。
+func TestSyncPodBodyTooLarge(t *testing.T) {
+	srv := newPodSyncServer(t, registry.New(), func(context.Context, string, *protocol.Message, cloudhub.ReliableOptions) error {
+		t.Error("超大请求体不应触发可靠投递")
+		return nil
+	})
+	// 请求体略超 1MiB：字段合法，仅体积超限（pad 字段填满剩余空间）
+	body := `{"operation":"add","pod":{"name":"big","namespace":"default","image":"busybox","pad":"` +
+		strings.Repeat("x", maxWriteBodyBytes) + `"}}`
+	resp := postPodSync(t, srv, "node-1", body)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("状态码 = %d，期望 413", resp.StatusCode)
+	}
+	if body := readBody(t, resp); !strings.Contains(body, "too large") {
+		t.Errorf("413 响应文案不符: %s", body)
+	}
+}
+
+// TestSyncPodBodyAtLimit 验证边界：请求体恰好不超过 1MiB 上限时正常处理
+// （上限是包含边界的，防止误伤合法大请求）。
+func TestSyncPodBodyAtLimit(t *testing.T) {
+	srv := newPodSyncServer(t, registry.New(), func(context.Context, string, *protocol.Message, cloudhub.ReliableOptions) error {
+		return nil // 合法请求应走到可靠投递
+	})
+	// 构造恰好 <= 1MiB 的合法请求体（pad 填充到接近上限）
+	padLen := maxWriteBodyBytes - 200
+	body := `{"operation":"add","pod":{"name":"big","namespace":"default","image":"busybox","pad":"` +
+		strings.Repeat("x", padLen) + `"}}`
+	if len(body) > maxWriteBodyBytes {
+		t.Fatalf("测试构造错误：body %d > 上限 %d", len(body), maxWriteBodyBytes)
+	}
+	resp := postPodSync(t, srv, "node-1", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200（未超限的请求不应被拒绝）", resp.StatusCode)
+	}
+}

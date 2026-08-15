@@ -75,17 +75,16 @@ func handleDeviceCommand(twins *devicetwin.TwinStore, exec devicetwin.DeviceComm
 	return nil
 }
 
-// deviceReportIntervalEnv 是设备上报周期的环境变量名。
-// 上下限校验复用 Pod 上报的 durationFromEnv（见 status_report.go）。
-const deviceReportIntervalEnv = "EDGEFLOW_EDGECORE_DEVICE_REPORT_INTERVAL"
-
 // runDeviceReportLoop 是设备数据上报循环（仿 Pod 状态上报循环）：
-// 启动即上报一轮，之后每 interval 上报一轮，直到 stopCh 关闭。
+// 启动即上报一轮，之后每 intervalFn() 返回的周期上报一轮，直到 stopCh 关闭。
 // 每轮流程：Mapper 采集汇入影子（collectMapperReports）→ 从 Twin 快照
 // 生成 DeviceReport 消息，每条影子一条消息。reg 可传 nil（纯影子模式）。
-func runDeviceReportLoop(client *edgehub.Client, reg *mapper.MapperRegistry, twins *devicetwin.TwinStore, nodeID string, interval time.Duration, stopCh <-chan struct{}) {
+// 周期支持热重载（WBS 2.7）：每次 tick 后重新读取 intervalFn，
+// 周期变化即重置 ticker（下一轮起按新周期）。
+func runDeviceReportLoop(client *edgehub.Client, reg *mapper.MapperRegistry, twins *devicetwin.TwinStore, nodeID string, intervalFn func() time.Duration, stopCh <-chan struct{}) {
 	reportDeviceReports(client, reg, twins, nodeID) // 启动即上报一轮（含首次）
 
+	interval := safeInterval(intervalFn())
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -95,6 +94,12 @@ func runDeviceReportLoop(client *edgehub.Client, reg *mapper.MapperRegistry, twi
 		case <-stopCh:
 			log.Infof("设备上报循环已停止")
 			return
+		}
+		// 热重载：周期变更后重置 ticker（同一 goroutine 内、tick 之后调用）
+		if d := safeInterval(intervalFn()); d != interval {
+			interval = d
+			ticker.Reset(d)
+			log.Infof("设备上报周期热更新: %v", d)
 		}
 	}
 }

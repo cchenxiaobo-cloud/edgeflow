@@ -612,6 +612,78 @@ func TestShutdownDuringNewConnections(t *testing.T) {
 	}
 }
 
+// TestWaitConnectionsTimeout 验证 P2-1 兜底：wg.Wait 带超时——存在未退出的
+// 连接 goroutine 时，waitConnections 在超时后返回 false（Shutdown 不被无限
+// 阻塞）；计数归零后返回 true。
+func TestWaitConnectionsTimeout(t *testing.T) {
+	srv := New("127.0.0.1:0")
+	// 模拟一个迟迟不退出的连接 goroutine
+	srv.wg.Add(1)
+	if srv.waitConnections(50 * time.Millisecond) {
+		t.Fatal("存在未退出 goroutine 时 waitConnections 应超时返回 false")
+	}
+	srv.wg.Done()
+	if !srv.waitConnections(time.Second) {
+		t.Fatal("计数归零后 waitConnections 应返回 true")
+	}
+}
+
+// TestShutdownDuringActiveDial 强化 P2-1 并发窗口：Shutdown 进行期间持续
+// 发起新拨号（覆盖「Upgrade 之后、trackConn 之前」与「wg.Add 与 wg.Wait
+// 交错」的窗口），Shutdown 必须快速返回且 Start 正常退出（配合 -race
+// 验证 wg 计数与 conns 快照无竞态、无漏关连接）。
+func TestShutdownDuringActiveDial(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		srv := New("127.0.0.1:0")
+		done := make(chan error, 1)
+		go func() { done <- srv.Start() }()
+		waitFor(t, 3*time.Second, func() bool { return srv.Addr() != "" }, "CloudHub 未开始监听")
+
+		url := "ws://" + srv.Addr() + PathEdge
+		// 拨号 goroutine 在 Shutdown 期间持续尝试建连，直到监听器关闭
+		// （拨号失败退出）或收到 stop 信号
+		var dialWG sync.WaitGroup
+		for j := 0; j < 4; j++ {
+			dialWG.Add(1)
+			go func() {
+				defer dialWG.Done()
+				for {
+					ws, _, err := websocket.DefaultDialer.Dial(url, nil)
+					if err != nil {
+						return // 监听器已关闭：拨号失败属正常
+					}
+					_ = ws.Close()
+				}
+			}()
+		}
+
+		// 拨号与 Shutdown 同时进行：不等待拨号完成，最大化交错窗口
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownDone := make(chan error, 1)
+		go func() { shutdownDone <- srv.Shutdown(ctx) }()
+		select {
+		case err := <-shutdownDone:
+			if err != nil {
+				cancel()
+				t.Fatalf("第 %d 轮：Shutdown 返回错误: %v", i, err)
+			}
+		case <-time.After(3 * time.Second):
+			cancel()
+			t.Fatalf("第 %d 轮：Shutdown 阻塞超过 3s（新建连接窗口竞态未修复）", i)
+		}
+		cancel()
+		dialWG.Wait()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("第 %d 轮：Start 返回错误: %v", i, err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("第 %d 轮：Start 未在 Shutdown 后退出", i)
+		}
+	}
+}
+
 // TestRegisterMemoryAsUint64 验证 P2-3：Memory 字段契约统一为 uint64——
 // 超过 int64 正数上限的内存字节数（1<<63，8 EiB）也能无损解析并记录
 // （int64 时代该值会导致 JSON 解码失败、注册被拒）。

@@ -4,6 +4,7 @@ package main
 
 import (
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -70,7 +71,7 @@ func TestRunStatusReportLoopExitsOnStop(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runStatusReportLoop(client, edgedSvc, "edge-001", 10*time.Millisecond, stopCh)
+		runStatusReportLoop(client, edgedSvc, "edge-001", func() time.Duration { return 10 * time.Millisecond }, stopCh)
 	}()
 
 	// 至少跑几轮（每轮 Send 失败 → Warn，循环应继续），然后停止
@@ -101,5 +102,55 @@ func TestDurationFromEnv(t *testing.T) {
 		if got := durationFromEnv(key, 30*time.Second); got != c.want {
 			t.Errorf("durationFromEnv(%q) = %v，期望 %v", c.val, got, c.want)
 		}
+	}
+}
+
+// TestRunStatusReportLoopHotInterval 验证周期热重载（WBS 2.7）：
+// intervalFn 返回值变化后，ticker 周期被重置——用 intervalFn 调用频率
+// 断言：10ms 周期时高频调用，切到 1s 后调用频率骤降。
+func TestRunStatusReportLoopHotInterval(t *testing.T) {
+	t.Setenv("EDGEFLOW_EDGECORE_DB_PATH", filepath.Join(t.TempDir(), "edgeflow.db"))
+	store, err := metamanager.Open(filepath.Join(t.TempDir(), "edgeflow.db"))
+	if err != nil {
+		t.Fatalf("打开 Store 失败: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	client := edgehub.New(edgehub.Options{CloudAddr: "ws://127.0.0.1:1", NodeID: "edge-001"})
+	edgedSvc := edged.New(store, edged.NewMockRuntime(), time.Hour)
+
+	var calls atomic.Int64
+	var period atomic.Int64
+	period.Store(int64(10 * time.Millisecond))
+	intervalFn := func() time.Duration {
+		calls.Add(1)
+		return time.Duration(period.Load())
+	}
+	stopCh := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runStatusReportLoop(client, edgedSvc, "edge-001", intervalFn, stopCh)
+	}()
+
+	// 10ms 周期下跑 60ms：intervalFn 应被高频调用（初始 + 每 tick 一次）
+	time.Sleep(60 * time.Millisecond)
+	fastCalls := calls.Load()
+	if fastCalls < 3 {
+		t.Fatalf("10ms 周期下 intervalFn 调用次数 = %d，期望 ≥3（周期未生效？）", fastCalls)
+	}
+
+	// 热切换：周期改为 1s；随后 100ms 内不应再有高频调用
+	period.Store(int64(time.Second))
+	time.Sleep(100 * time.Millisecond)
+	if after := calls.Load(); after-fastCalls > 2 {
+		t.Errorf("周期切换后 intervalFn 仍被高频调用（+%d 次），ticker 未重置", after-fastCalls)
+	}
+
+	close(stopCh)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("关闭 stopCh 后上报循环未退出")
 	}
 }

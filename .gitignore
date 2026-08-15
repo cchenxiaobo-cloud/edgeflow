@@ -33,3 +33,6 @@ vendor/
 
 # openssl 序列号文件（hack/gen-certs.sh 生成）
 *.srl
+
+# 测试运行时数据
+/cmd/cloudcore/data/

@@ -7,7 +7,10 @@
 // 配置文件为 JSON 格式，默认路径 config/cloudcore.json（可用 --config 覆盖），
 // 例如：
 //
-//	{"port": 8080, "hubPort": 10000}
+//	{"port": 8080, "hubPort": 10000, "compress": true}
+//
+// compress 为云边通道 gzip 压缩开关（WBS 4.4），缺省 true（默认开启）；
+// 显式 false 关闭（边缘经协商自动回落明文，旧版本互操作不受影响）。
 //
 // 文件不存在时静默使用默认值；文件存在但内容无法解析时返回错误，
 // 避免用户配置写错却毫不知情地跑在错误端口上。
@@ -65,6 +68,11 @@ type Config struct {
 	HubPort int
 	// HubPortSource 记录 CloudHub 端口最终来源。
 	HubPortSource PortSource
+	// Compress 是云边通道 gzip 压缩开关（WBS 4.4）：默认开启（true）。
+	// 关闭后云端不向边缘确认压缩能力，边缘经协商自动回落明文——
+	// 单开关控制双向，与旧版本（v1.0）互操作不受影响。
+	// 变更需重启生效（热重载时保持旧值，与 hubPort 同策略）。
+	Compress bool
 }
 
 // fileConfig 对应配置文件（config/cloudcore.json）的磁盘格式。
@@ -73,6 +81,9 @@ type fileConfig struct {
 	Port int `json:"port"`
 	// HubPort 是 CloudHub 监听端口（可选：缺省回落环境变量/默认值；0 表示随机端口）。
 	HubPort *int `json:"hubPort"`
+	// Compress 是云边通道压缩开关（可选：缺省 true，即默认开启）。
+	// 指针区分「未声明」与「显式 false」：未声明回落默认值 true。
+	Compress *bool `json:"compress"`
 }
 
 // Load 按优先级加载配置：命令行 --port > 环境变量 > 配置文件 > 默认值。
@@ -98,7 +109,8 @@ func LoadReload(filePath string, flagPort int, flagSet bool) (*Config, error) {
 }
 
 func load(filePath string, flagPort int, flagSet bool, missingIsError bool) (*Config, error) {
-	cfg := &Config{Port: DefaultPort, PortSource: SourceDefault, HubPort: DefaultHubPort, HubPortSource: SourceDefault}
+	cfg := &Config{Port: DefaultPort, PortSource: SourceDefault, HubPort: DefaultHubPort,
+		HubPortSource: SourceDefault, Compress: true} // 压缩默认开启（WBS 4.4）
 
 	// 第 1 优先级：命令行 --port（显式指定后不再看其他来源）
 	if flagSet {
@@ -134,7 +146,7 @@ func load(filePath string, flagPort int, flagSet bool, missingIsError bool) (*Co
 	if filePath == "" {
 		filePath = DefaultPath
 	}
-	port, hubPort, err := loadFile(filePath, missingIsError)
+	port, hubPort, compress, err := loadFile(filePath, missingIsError)
 	if err != nil {
 		return nil, err
 	}
@@ -145,6 +157,9 @@ func load(filePath string, flagPort int, flagSet bool, missingIsError bool) (*Co
 	if hubPort != nil {
 		cfg.HubPort = *hubPort
 		cfg.HubPortSource = SourceFile
+	}
+	if compress != nil {
+		cfg.Compress = *compress
 	}
 
 	// CloudHub 端口：环境变量 EDGEFLOW_CLOUDCORE_HUB_PORT 覆盖文件/默认值
@@ -173,32 +188,32 @@ func resolveHubPortFromEnv(cfg *Config) error {
 	return nil
 }
 
-// loadFile 读取并解析配置文件，返回其中声明的 port 与 hubPort。
-// 文件不存在时返回 (0, nil, nil)（表示"未提供配置"，调用方使用默认值）；
+// loadFile 读取并解析配置文件，返回其中声明的 port、hubPort 与 compress。
+// 文件不存在时返回 (0, nil, nil, nil)（表示"未提供配置"，调用方使用默认值）；
 // missingIsError=true 时文件不存在视为错误（热重载语义）。
 // 解析失败/字段非法时返回错误。
-func loadFile(filePath string, missingIsError bool) (int, *int, error) {
+func loadFile(filePath string, missingIsError bool) (int, *int, *bool, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			if missingIsError {
-				return 0, nil, fmt.Errorf("配置文件 %s 不存在（热重载失败，保持旧配置）", filePath)
+				return 0, nil, nil, fmt.Errorf("配置文件 %s 不存在（热重载失败，保持旧配置）", filePath)
 			}
-			return 0, nil, nil
+			return 0, nil, nil, nil
 		}
-		return 0, nil, fmt.Errorf("读取配置文件 %s 失败: %w", filePath, err)
+		return 0, nil, nil, fmt.Errorf("读取配置文件 %s 失败: %w", filePath, err)
 	}
 	var fc fileConfig
 	if err := json.Unmarshal(data, &fc); err != nil {
-		return 0, nil, fmt.Errorf("解析配置文件 %s 失败（请检查 JSON 格式与字段类型）: %w", filePath, err)
+		return 0, nil, nil, fmt.Errorf("解析配置文件 %s 失败（请检查 JSON 格式与字段类型）: %w", filePath, err)
 	}
 	if err := validatePort(fc.Port); err != nil {
-		return 0, nil, fmt.Errorf("配置文件 %s 中的端口非法: %w", filePath, err)
+		return 0, nil, nil, fmt.Errorf("配置文件 %s 中的端口非法: %w", filePath, err)
 	}
 	if fc.HubPort != nil && (*fc.HubPort < 0 || *fc.HubPort > 65535) {
-		return 0, nil, fmt.Errorf("配置文件 %s 中的 hubPort 非法（范围 0-65535，0 表示随机端口）: %d", filePath, *fc.HubPort)
+		return 0, nil, nil, fmt.Errorf("配置文件 %s 中的 hubPort 非法（范围 0-65535，0 表示随机端口）: %d", filePath, *fc.HubPort)
 	}
-	return fc.Port, fc.HubPort, nil
+	return fc.Port, fc.HubPort, fc.Compress, nil
 }
 
 // validatePort 校验端口是否在合法范围 1-65535 内。

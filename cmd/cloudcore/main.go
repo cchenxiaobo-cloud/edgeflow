@@ -75,8 +75,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// 打印启动信息与生效配置（含端口来源，便于排查）
 	info := version.Get()
 	log.Infof("cloudcore starting, %s", info.String())
-	log.Infof("生效配置: HTTP 端口 %d（来源: %s）, CloudHub 端口 %d（来源: %s）",
-		cfg.Port, cfg.PortSource, cfg.HubPort, cfg.HubPortSource)
+	log.Infof("生效配置: HTTP 端口 %d（来源: %s）, CloudHub 端口 %d（来源: %s）, 通道压缩 %v",
+		cfg.Port, cfg.PortSource, cfg.HubPort, cfg.HubPortSource, cfg.Compress)
 
 	// 云边通道 mTLS（WBS 7.1 证书管理 + 7.4 云边认证）：
 	// EDGEFLOW_CLOUDCORE_TLS=on 时启用 TLS 监听，并要求边缘侧携带
@@ -122,7 +122,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	hub := cloudhub.New(fmt.Sprintf(":%d", cfg.HubPort), cloudhub.WithTLS(hubTLS),
 		// WBS 7.3 设备认证：EDGEFLOW_CLOUDCORE_NODE_TOKEN 非空时启用节点接入
 		// 令牌校验（edgecore 注册必须携带相同 token）；未设置保持向后兼容。
-		cloudhub.WithNodeToken(os.Getenv("EDGEFLOW_CLOUDCORE_NODE_TOKEN")))
+		cloudhub.WithNodeToken(os.Getenv("EDGEFLOW_CLOUDCORE_NODE_TOKEN")),
+		// WBS 4.4 云边通道 gzip 压缩：配置 compress（缺省 true 默认开启）。
+		// 协商式兼容：旧边缘不声明能力 → 云端对其保持明文下发，互操作不受影响。
+		cloudhub.WithCompress(cfg.Compress))
 
 	// 节点注册表（内存态）与 CloudHub 事件桥接：
 	// 节点注册/心跳/断开时实时维护节点元数据，供查询 API 使用。
@@ -675,7 +678,10 @@ func (h *httpReloader) swapPort(port int) error {
 //   - hubPort（CloudHub WS 监听端口）：需重启生效——CloudHub 服务端不支持
 //     运行期重建监听（cloud/pkg/cloudhub 未提供该能力，改动其内部超出
 //     WBS 2.7 范围），因此记录警告并把旧值回写进 next（快照始终反映
-//     运行中真实监听端口，不撒谎）。
+//     运行中真实监听端口，不撒谎）；
+//   - compress（云边通道压缩开关）：需重启生效——压缩协商发生在连接
+//     注册时，运行期切换会让新旧连接协商状态不一致（已协商连接保持
+//     压缩、新连接回落明文），因此与 hubPort 同策略：警告并回写旧值。
 //
 // 返回错误时本次重载被整体拒绝（快照保持旧配置）。
 func applyConfigReload(old, next *config.Config, hr *httpReloader) error {
@@ -684,6 +690,11 @@ func applyConfigReload(old, next *config.Config, hr *httpReloader) error {
 			old.HubPort, next.HubPort, old.HubPort)
 		next.HubPort = old.HubPort
 		next.HubPortSource = old.HubPortSource
+	}
+	if next.Compress != old.Compress {
+		log.Warnf("compress 变更（%v → %v）需重启 cloudcore 生效，本次重载保持 %v（压缩协商在连接注册时确定）",
+			old.Compress, next.Compress, old.Compress)
+		next.Compress = old.Compress
 	}
 	if next.Port != old.Port {
 		if err := hr.swapPort(next.Port); err != nil {

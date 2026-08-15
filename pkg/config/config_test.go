@@ -385,3 +385,63 @@ func TestLoadReloadEnvPriority(t *testing.T) {
 		t.Errorf("重载时 env 覆盖应保留: port=%d source=%q", cfg.Port, cfg.PortSource)
 	}
 }
+
+// TestLoadCompressDefault 验证压缩开关缺省为开启（true）：
+// 无配置文件、文件未声明 compress 字段两种情况下默认值一致。
+func TestLoadCompressDefault(t *testing.T) {
+	t.Setenv(PortEnvVar, "")
+
+	// 无配置文件 → 默认开启
+	cfg, err := Load(missingFile(t), 0, false)
+	if err != nil {
+		t.Fatalf("Load 不应报错: %v", err)
+	}
+	if !cfg.Compress {
+		t.Errorf("无配置文件时 Compress 应默认 true，实际 %v", cfg.Compress)
+	}
+
+	// 文件存在但未声明 compress → 默认开启（指针 nil 回落默认值）
+	cfg, err = Load(writeFile(t, `{"port": 8080}`), 0, false)
+	if err != nil {
+		t.Fatalf("Load 不应报错: %v", err)
+	}
+	if !cfg.Compress {
+		t.Errorf("未声明 compress 时 Compress 应默认 true，实际 %v", cfg.Compress)
+	}
+}
+
+// TestLoadCompressFromFile 验证配置文件显式声明 compress 被正确读取。
+func TestLoadCompressFromFile(t *testing.T) {
+	t.Setenv(PortEnvVar, "")
+
+	// 显式 true
+	cfg, err := Load(writeFile(t, `{"port": 8080, "compress": true}`), 0, false)
+	if err != nil {
+		t.Fatalf("Load 不应报错: %v", err)
+	}
+	if !cfg.Compress {
+		t.Errorf("compress=true 应生效，实际 %v", cfg.Compress)
+	}
+
+	// 显式 false（关闭压缩）
+	cfg, err = Load(writeFile(t, `{"port": 8080, "compress": false}`), 0, false)
+	if err != nil {
+		t.Fatalf("Load 不应报错: %v", err)
+	}
+	if cfg.Compress {
+		t.Errorf("compress=false 应生效，实际 %v", cfg.Compress)
+	}
+}
+
+// TestLoadReloadCompress 验证重载入口同样解析 compress（与 Load 语义一致）。
+func TestLoadReloadCompress(t *testing.T) {
+	t.Setenv(PortEnvVar, "")
+
+	cfg, err := LoadReload(writeFile(t, `{"port": 9090, "compress": false}`), 0, false)
+	if err != nil {
+		t.Fatalf("LoadReload 不应报错: %v", err)
+	}
+	if cfg.Compress {
+		t.Errorf("重载时 compress=false 应生效，实际 %v", cfg.Compress)
+	}
+}

@@ -29,6 +29,9 @@ type mockConfig struct {
 	// sendOversized 为 true 时注册成功后向客户端推送一条超过
 	// maxReadBytes（1 MiB）的消息，验证客户端 SetReadLimit 生效。
 	sendOversized bool
+	// compressAck 为 true 时 RegisterAck 回带 compression=gzip（模拟
+	// 新云端启用通道压缩，WBS 4.4 协商）；客户端随后应压缩上行消息。
+	compressAck bool
 }
 
 // mockCloud 是进程内的模拟 CloudHub 服务端：
@@ -45,6 +48,7 @@ type mockCloud struct {
 	upgrades   int                    // 累计建立的连接数（第几个连接）
 	conn       *websocket.Conn        // 最近一次升级的连接（测试主动推送用）
 	received   chan *protocol.Message // 收到的所有消息
+	rawFrames  chan []byte            // 收到的原始帧字节（压缩协商断言用）
 	registers  chan *protocol.Message // 收到的 Register（带缓冲，服务端不阻塞）
 	heartbeats chan struct{}          // 每收到一条 Heartbeat 通知一次
 	connCount  chan struct{}          // 每次建立新连接通知一次
@@ -57,6 +61,7 @@ func startMockCloud(t *testing.T, cfg mockConfig) *mockCloud {
 		t:          t,
 		cfg:        cfg,
 		received:   make(chan *protocol.Message, 256),
+		rawFrames:  make(chan []byte, 256),
 		registers:  make(chan *protocol.Message, 64),
 		heartbeats: make(chan struct{}, 256),
 		connCount:  make(chan struct{}, 64),
@@ -92,7 +97,12 @@ func (m *mockCloud) handle(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return // 客户端断开
 		}
-		msg, err := protocol.Decode(data)
+		// 记录原始帧（压缩协商断言用）：非阻塞投递，缓冲满则跳过
+		select {
+		case m.rawFrames <- data:
+		default:
+		}
+		msg, err := protocol.DecodeCompressed(data)
 		if err != nil {
 			m.t.Errorf("mock cloud 收到无法解析的消息: %v", err)
 			continue
@@ -104,6 +114,10 @@ func (m *mockCloud) handle(w http.ResponseWriter, r *http.Request) {
 			ackPayload := RegisterAckPayload{Accepted: true, NodeName: "cloud-" + m.nodeIDOf(msg), Message: "ok"}
 			if m.cfg.rejectRegister {
 				ackPayload = RegisterAckPayload{Accepted: false, NodeName: "", Message: "node not authorized"}
+			}
+			if m.cfg.compressAck {
+				// 新云端启用压缩：回带能力，客户端随后压缩上行消息（WBS 4.4）
+				ackPayload.Compression = "gzip"
 			}
 			ack, _ := protocol.NewMessage(protocol.TypeRegisterAck, targetCloud, msg.Source, ackPayload)
 			if err := m.send(conn, ack); err != nil {

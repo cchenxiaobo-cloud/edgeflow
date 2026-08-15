@@ -36,7 +36,7 @@ EdgeFlow 借鉴 KubeEdge 的整体架构（CloudHub/EdgeHub 云边通信、Edged
 |------|----------|---------------------------|
 | 边缘消息总线 | MQTT Broker（mosquitto） | **MQTT（mosquitto broker + paho 客户端）**，仅作边缘设备数据面，不跨云边（WBS 3.6，commit `2a0d0a3`） |
 | 云端元数据 | apiserver + etcd | **无真实 K8s 接入**：内存态 registry + REST API 适配（WBS 2.3/2.6，决策记录 R1） |
-| 消息序列化 | Protobuf | **JSON（信封 + payload 全 JSON）**；gzip/Protobuf 显式延后（WBS 4.4，决策记录 R9） |
+| 消息序列化 | Protobuf | **JSON（信封 + payload 全 JSON）**；gzip 已实现（WBS 4.4，2026-08-15，协商式兼容）；Protobuf 显式延后（决策记录 R9） |
 | 安全演进 | 默认 mTLS | **M1-M3 通道无认证（历史事实）→ M4 完整 mTLS**；7.3 设备认证（Register.token）2026-08-15 闭环；API Token 认证中间件默认 off（决策记录 R6/R7） |
 
 ### 1.3 三大设计目标
@@ -311,9 +311,15 @@ v0.1.0 **未采用 NATS**（决策记录 R4），路由按两侧分工实现：
 
 ```
 M1（现状）: JSON（信封 + payload 全 JSON）        ← 已实现，零依赖可读
-M2+/规模化: gzip/snappy 压缩（WBS 4.4）          ← 未实现，显式延后（决策记录 R9）
+M2+/规模化: gzip/snappy 压缩（WBS 4.4）          ← gzip 已实现（2026-08-15），snappy 未做
 M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，显式延后（决策记录 R9）
 ```
+
+**gzip 压缩（WBS 4.4，2026-08-15 落地，`pkg/protocol/compress.go`）**：
+
+- **帧格式**：`"EFGZ"(4B) + flags(1B) + gzip(明文信封)`；明文信封恒以 `{` 开头，与 magic 无碰撞，接收端按前缀无损区分。
+- **兼容策略（协商式，v1.0 兼容性优先）**：Register/RegisterAck 恒为明文协商信道；边缘在 Register 声明 `compression="gzip"`，云端仅对已声明连接的应答回带同字段——旧云不回带（新边保持明文上行）、旧边不声明（新云保持明文下发），四象限互操作不受影响；小消息（<256B）或压缩不缩小时自动回落明文。
+- **开关与 ReadLimit 交互**：cloudcore 配置 `compress`（缺省 true，单开关控双向，变更需重启）；WebSocket 层 1 MiB 读限制作用于线缆（压缩）字节，解压层对明文输出设同样 1 MiB 上限防压缩炸弹——消息体量上限与 v1.0 明文通道一致。
 
 ---
 
@@ -460,7 +466,7 @@ M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，�
 | R6 | **里程碑归属偏移** | 2.4 NodeController、4.5 TLS、8.6 keadm 基础**实际均在 M4 完成**（原计划 M1）；5.2 Modbus 实际在 M4 完成（原计划 M3） | ROADMAP §3 注；audit-m02 §2.2 |
 | R7 | **M1-M3 通道无认证（历史事实）** | 原计划"M1 Token 过渡"从未实现；M4 直接完整 mTLS。M1-M3 为明文 WS（仅限开发拓扑） | audit-m02 §2.2/S13 |
 | R8 | **验收口径 REST 化** | "kubectl get nodes Ready" 等 K8s 验收以 REST 端点语义适配；真实 K8s 接入排后续版本 | audit-m02 §4 P1（待产品确认） |
-| R9 | **序列化仅 JSON，压缩/Protobuf 显式延后** | gzip/Protobuf 未实现且无隐式承诺，显式登记延后 | audit-m02 §4 |
+| R9 | **序列化仅 JSON，压缩/Protobuf 显式延后** | gzip 于 2026-08-15 落地（协商式兼容，见 §4.6）；Protobuf 仍延后 | audit-m02 §4；commit（gzip 实现） |
 | R10 | **自治验收时长口径** | 30min 断网自治以 tests/e2e 60s 短时窗口模拟验证（判定逻辑与 30min 一致）；真实长跑待环境 | tests/e2e/autonomy_test.go |
 | R11 | **可观测性合并** | 2.9/3.8 与 10.1 合并为云端 /metrics 五指标，边缘不独立暴露 | commit `4c5b9c6`；ROADMAP §1.1 |
 | R12 | **双视图 API 并存** | `/api/v1/nodes`（运行视角 NodeInfo）与 `/api/v1/edgenodes`（CRD 对象视角）并存，属设计取舍 | API-SPEC §3/§8 |

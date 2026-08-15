@@ -75,6 +75,9 @@ const (
 )
 
 // RegisterPayload 是 Register 消息的负载（边→云）。
+// Compression 是新增可选字段（WBS 4.4 压缩协商，旧云端忽略未知字段）：
+// 边缘声明 "gzip" 表示支持通道压缩；云端仅在 RegisterAck 回带同值时
+// 才启用双向压缩（见 server.go encodeFor 与 compress.go 文件头注释）。
 type RegisterPayload struct {
 	NodeID          string `json:"nodeID"`          // 节点唯一 ID
 	Arch            string `json:"arch"`            // CPU 架构（如 arm64/amd64）
@@ -85,13 +88,20 @@ type RegisterPayload struct {
 	// Token 是接入令牌（WBS 7.3 设备认证）：edgecore 注册时携带，
 	// 服务端 nodeToken 非空时校验，不匹配拒绝注册（accepted=false）。
 	Token string `json:"token"`
+	// Compression 是压缩能力声明（可选）："gzip" 表示支持云边通道
+	// gzip 压缩（WBS 4.4）。旧版本（v1.0）不发送该字段，云端保持明文下发。
+	Compression string `json:"compression,omitempty"`
 }
 
 // RegisterAckPayload 是 RegisterAck 消息的负载（云→边）。
+// Compression 与 RegisterPayload.Compression 对应：云端启用压缩时回带
+// "gzip"，边缘据此启用上行压缩（协商闭环，见 compress.go 文件头注释）。
 type RegisterAckPayload struct {
 	Accepted bool   `json:"accepted"` // 是否接受注册
 	NodeName string `json:"nodeName"` // 云端分配的节点名（M1 与 nodeID 一致）
 	Message  string `json:"message"`  // 附加说明（拒绝原因 / 欢迎语）
+	// Compression 是压缩能力确认（可选）："gzip" 表示云端已启用通道压缩。
+	Compression string `json:"compression,omitempty"`
 }
 
 // HeartbeatPayload 是 Heartbeat 消息的负载（边→云）。
@@ -177,6 +187,10 @@ type Server struct {
 	// nodeToken 是节点接入令牌（WBS 7.3 设备认证）；非空时注册必须携带
 	// 相同 Token，否则拒绝注册。空值向后兼容（不校验）。
 	nodeToken string
+	// compressEnabled 是云边通道压缩开关（WBS 4.4）：默认开启；关闭后
+	// 不向边缘回带压缩能力（RegisterAck 无 compression 字段），边缘
+	// 经协商自动保持明文——单开关控制双向（见 pkg/protocol/compress.go）。
+	compressEnabled bool
 
 	// stateMu 保护以下启动/停止相关字段。
 	stateMu sync.Mutex
@@ -245,6 +259,17 @@ func WithTLS(tlsConfig *tls.Config) Option {
 	}
 }
 
+// WithCompress 设置云边通道压缩开关（WBS 4.4）：默认开启，传 false 关闭。
+// 关闭语义：云端不再向边缘确认压缩能力（RegisterAck 不带 compression
+// 字段），已协商连接之外的边缘经协商自动回落明文——单开关控双向，
+// 与旧版本（v1.0）互操作不受影响（协商式兼容，见 pkg/protocol/compress.go）。
+// 注意：配置变更需重启生效（与 hubPort 同策略，热重载时保持旧值）。
+func WithCompress(enabled bool) Option {
+	return func(s *Server) {
+		s.compressEnabled = enabled
+	}
+}
+
 // New 创建 CloudHub 服务端，addr 形如 ":10000"。
 func New(addr string, opts ...Option) *Server {
 	s := &Server{
@@ -261,6 +286,10 @@ func New(addr string, opts ...Option) *Server {
 		nodes:            make(map[string]*NodeInfo),
 		conns:            make(map[*conn]struct{}),
 		pending:          make(map[string]*pendingEntry),
+		// 压缩默认开启（WBS 4.4）；经 WithCompress(false) 关闭。
+		// 默认开启的兼容性由协商机制保证：旧边缘不声明能力 → 明文；
+		// 旧云端不回带能力 → 新边缘保持明文。
+		compressEnabled: true,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -504,8 +533,10 @@ func (s *Server) monitor(c *conn) {
 }
 
 // dispatch 解码并分发消息：Register/Heartbeat/Ack 之外的类型 M1 暂不支持。
+// 解码走 DecodeCompressed：带压缩 magic 的帧自动解压，明文帧回落原路径
+// （旧版本互操作，见 pkg/protocol/compress.go）。
 func (s *Server) dispatch(c *conn, data []byte) {
-	m, err := protocol.Decode(data)
+	m, err := protocol.DecodeCompressed(data)
 	if err != nil {
 		s.rejectInvalid(c, data, err)
 		return
@@ -527,6 +558,8 @@ func (s *Server) dispatch(c *conn, data []byte) {
 }
 
 // rejectInvalid 处理无法通过协议校验的消息：尽力回发 Ack 说明原因，不中断连接。
+// 压缩帧解码失败时（损坏/超限），先用 Decompress 提取明文再做元信息解析：
+// 解压本身失败（帧损坏）则无法拿到 source，仅记录日志（与明文同路径）。
 func (s *Server) rejectInvalid(c *conn, data []byte, cause error) {
 	log.Warnf("收到非法消息（%s），来源 %s", cause, c.remoteIP)
 	// 解码失败时无法拿到完整信封，尽量从原始数据提取 source 用于回 Ack
@@ -534,8 +567,15 @@ func (s *Server) rejectInvalid(c *conn, data []byte, cause error) {
 		Source        string `json:"source"`
 		CorrelationID string `json:"correlationId"`
 	}
-	if err := json.Unmarshal(data, &meta); err != nil || meta.Source == "" {
+	if protocol.IsCompressed(data) {
+		if plain, err := protocol.Decompress(data); err == nil {
+			_ = json.Unmarshal(plain, &meta) // 尽力提取；解压后仍非法则放弃
+		}
+	} else if err := json.Unmarshal(data, &meta); err != nil || meta.Source == "" {
 		// 连 source 都没有：无法回 Ack（Ack 信封要求 Target 非空），仅记录日志
+		return
+	}
+	if meta.Source == "" {
 		return
 	}
 	s.sendTo(c, meta.Source, protocol.TypeAck, meta.CorrelationID,
@@ -570,6 +610,9 @@ func (s *Server) handleRegister(c *conn, m *protocol.Message) {
 		s.rejectRegister(c, m, "接入令牌校验失败（token 缺失或不匹配）")
 		return
 	}
+	// WBS 4.4 压缩协商：边缘声明 gzip 且云端开关开启 → 本连接启用压缩。
+	// 协商结果同时决定下发编码（encodeFor）与 RegisterAck 回带字段。
+	c.compression.Store(s.compressEnabled && reg.Compression == "gzip")
 
 	info := &NodeInfo{
 		NodeID:          reg.NodeID,
@@ -620,7 +663,20 @@ func (s *Server) handleRegister(c *conn, m *protocol.Message) {
 	log.Infof("节点 %s 注册成功（ip=%s arch=%s os=%s edgecore=%s）",
 		reg.NodeID, c.remoteIP, reg.Arch, reg.OS, reg.EdgecoreVersion)
 	s.sendTo(c, reg.NodeID, protocol.TypeRegisterAck, m.ID,
-		RegisterAckPayload{Accepted: true, NodeName: reg.NodeID, Message: "注册成功"})
+		RegisterAckPayload{Accepted: true, NodeName: reg.NodeID, Message: "注册成功",
+			Compression: s.ackCompression(c)})
+}
+
+// ackCompression 返回 RegisterAck 应回带的压缩能力：仅当本连接已协商
+// gzip（云端开关开启 && 边缘声明 gzip，见 handleRegister 的 Store）时回
+// "gzip"，否则为空串。回带值即本连接协商结果——旧边缘不声明 → 空串
+// （保持明文）；云端关闭 → 空串（边缘不上行压缩）。边缘侧仅在收到
+// "gzip" 后才启用上行压缩。
+func (s *Server) ackCompression(c *conn) string {
+	if c.compression.Load() {
+		return "gzip"
+	}
+	return ""
 }
 
 // rejectRegister 回发 RegisterAck（accepted=false）并记录日志。
@@ -704,7 +760,8 @@ func (s *Server) kick(c *conn, reason string) {
 		m, err := protocol.NewMessage(protocol.TypeAck, "cloud", target,
 			AckPayload{Code: CodeConflict, Message: reason})
 		if err == nil {
-			if data, err := protocol.Encode(m); err == nil {
+			// 按被踢连接的协商结果编码（旧边缘未协商 → 明文）
+			if data, err := s.encodeFor(c, m); err == nil {
 				if err := c.write(data); err != nil {
 					log.Warnf("向被踢连接 %s 发送冲突通知失败: %v", target, err)
 				}
@@ -723,7 +780,7 @@ func (s *Server) sendTo(c *conn, target, msgType, correlationID string, payload 
 		return
 	}
 	m.CorrelationID = correlationID
-	data, err := protocol.Encode(m)
+	data, err := s.encodeFor(c, m)
 	if err != nil {
 		log.Errorf("编码 %s 消息失败: %v", msgType, err)
 		return
@@ -731,6 +788,21 @@ func (s *Server) sendTo(c *conn, target, msgType, correlationID string, payload 
 	if !c.trySend(data) {
 		log.Warnf("向 %s 投递 %s 失败：连接已关闭或发送缓冲已满", target, msgType)
 	}
+}
+
+// encodeFor 按连接压缩协商结果编码下发消息：
+//   - 未协商（旧边缘 / 压缩关闭）或 RegisterAck（协商信道）→ 明文 Encode；
+//   - 已协商 gzip → EncodeCompressed（内含小消息跳过：心跳等小消息
+//     仍走明文，对旧路径完全透明）。
+//
+// Register/RegisterAck 恒为明文是协商式兼容的基石（见
+// pkg/protocol/compress.go 文件头注释）：即使未来压缩实现出问题，
+// 注册/应答这条协商信道也不受影响。
+func (s *Server) encodeFor(c *conn, m *protocol.Message) ([]byte, error) {
+	if c.compression.Load() && m.Type != protocol.TypeRegisterAck {
+		return protocol.EncodeCompressed(m)
+	}
+	return protocol.Encode(m)
 }
 
 // unregister 在连接断开时从注册表移除节点（仅当注册表仍指向该连接时才删除，
@@ -916,6 +988,10 @@ type conn struct {
 	registered atomic.Bool
 	// dead 表示已被新连接抢占，禁止再注册。
 	dead atomic.Bool
+	// compression 表示本连接是否已协商 gzip 压缩（WBS 4.4）：
+	// 注册时由 handleRegister 写入（云端开关开启 && 边缘声明 gzip），
+	// 决定下发编码走 EncodeCompressed 还是明文 Encode。
+	compression atomic.Bool
 }
 
 // newConn 创建连接视图，并初始化 lastSeen 为当前时间。

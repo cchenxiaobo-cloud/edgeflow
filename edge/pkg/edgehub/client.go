@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"edgeflow/pkg/log"
@@ -119,6 +120,9 @@ func normalizeTLSScheme(addr string, tlsCfg *tls.Config) string {
 }
 
 // RegisterPayload 是 Register 消息的负载（字段名与 CloudHub 契约一致，不可改）。
+// Compression 是新增可选字段（WBS 4.4 压缩协商，旧云端忽略未知字段）：
+// 声明 "gzip" 表示本端支持通道压缩；云端在 RegisterAck 回带同值后
+// 本端才启用上行压缩（协商式兼容，见 pkg/protocol/compress.go）。
 type RegisterPayload struct {
 	NodeID          string `json:"nodeID"`
 	Arch            string `json:"arch"`
@@ -130,13 +134,19 @@ type RegisterPayload struct {
 	// EDGEFLOW_EDGECORE_TOKEN，edgecore 启动时读取并携带；云端
 	// EDGEFLOW_CLOUDCORE_NODE_TOKEN 非空时校验（不匹配拒绝注册）。
 	Token string `json:"token"`
+	// Compression 是压缩能力声明（可选）："gzip"。
+	Compression string `json:"compression,omitempty"`
 }
 
 // RegisterAckPayload 是 RegisterAck 消息的负载（与 CloudHub 契约一致）。
+// Compression 与 RegisterPayload.Compression 对应：云端回带 "gzip"
+// 表示已启用通道压缩，本端随后对上行消息启用压缩。
 type RegisterAckPayload struct {
 	Accepted bool   `json:"accepted"`
 	NodeName string `json:"nodeName"`
 	Message  string `json:"message"`
+	// Compression 是云端压缩能力确认（可选）："gzip" 表示启用上行压缩。
+	Compression string `json:"compression,omitempty"`
 }
 
 // HeartbeatPayload 是 Heartbeat 消息的负载（与 CloudHub 契约一致）。
@@ -197,6 +207,12 @@ type Client struct {
 
 	statusHandler func(connected bool)              // 连接状态回调（状态切换时触发）
 	msgHandler    func(msg *protocol.Message) error // 非应答类消息回调（可返回错误，供自动 Ack 用）
+
+	// compressOK 表示通道压缩已协商（WBS 4.4）：RegisterAck 回带
+	// compression="gzip" 后置 true（每次连接重新协商，见 connectAndRegister
+	// 与 register）。true 时 Send/write 对非 Register 消息走 EncodeCompressed
+	// （内含小消息跳过）。旧云端不回带该字段 → 恒 false → 恒明文（兼容）。
+	compressOK atomic.Bool
 
 	// 幂等去重缓存（自动 Ack 用）：记录已成功处理的消息 ID，
 	// 云端重发同 ID 时直接回 Ack 不重复执行（WBS 4.6 QoS 1）。
@@ -410,6 +426,9 @@ func (c *Client) connectAndRegister() (*websocket.Conn, <-chan struct{}, error) 
 	// 与云端对称的入站消息大小限制（1 MiB）：
 	// 超过限制的消息会触发读错误并断开连接，而不是被完整读入内存。
 	conn.SetReadLimit(maxReadBytes)
+	// 压缩协商复位：每条连接独立协商（RegisterAck 回带 gzip 才启用，
+	// 旧云端不回带 → 本连接保持明文，与新云端重连后再协商）
+	c.compressOK.Store(false)
 
 	// 每个连接独立的信号通道：注册应答（缓冲 1，防阻塞）、连接错误、关闭通知
 	closed := make(chan struct{})
@@ -462,6 +481,9 @@ func (c *Client) register(conn *websocket.Conn, closed <-chan struct{}, regAckCh
 		if ackPayload.NodeName == "" {
 			ackPayload.NodeName = c.opts.NodeID // 云端未分配时回落为 nodeID
 		}
+		// WBS 4.4 压缩协商：云端回带 compression="gzip" 才启用上行压缩
+		// （旧云端不回带 → 保持明文，兼容 v1.0）
+		c.compressOK.Store(ackPayload.Compression == "gzip")
 		c.mu.Lock()
 		c.nodeName = ackPayload.NodeName
 		c.mu.Unlock()
@@ -499,7 +521,7 @@ func (c *Client) readLoop(conn *websocket.Conn, closed chan struct{}, regAckCh c
 			}
 			return
 		}
-		msg, err := protocol.Decode(data)
+		msg, err := protocol.DecodeCompressed(data)
 		if err != nil {
 			log.Warnf("EdgeHub 收到无法解析的消息: %v", err)
 			continue
@@ -556,8 +578,10 @@ func (c *Client) sendHeartbeat(conn *websocket.Conn) error {
 }
 
 // write 串行化地写一条消息（gorilla/websocket 不允许并发写）。
+// 编码按压缩协商结果：compressOK 且非 Register（协商信道）→
+// EncodeCompressed（小消息自动跳过）；否则明文 Encode。
 func (c *Client) write(conn *websocket.Conn, msg *protocol.Message) error {
-	data, err := protocol.Encode(msg)
+	data, err := c.encode(msg)
 	if err != nil {
 		return fmt.Errorf("编码消息失败: %w", err)
 	}
@@ -568,6 +592,16 @@ func (c *Client) write(conn *websocket.Conn, msg *protocol.Message) error {
 		return fmt.Errorf("写消息失败: %w", err)
 	}
 	return nil
+}
+
+// encode 按压缩协商结果编码消息：Register 恒明文（协商信道，且压缩
+// 协商在注册完成后才成立）；其余类型在 compressOK 时走 EncodeCompressed
+// （内含 <MinCompressBytes 小消息跳过，心跳等小消息仍为明文）。
+func (c *Client) encode(msg *protocol.Message) ([]byte, error) {
+	if c.compressOK.Load() && msg.Type != protocol.TypeRegister {
+		return protocol.EncodeCompressed(msg)
+	}
+	return protocol.Encode(msg)
 }
 
 // nextBackoff 计算下一次退避间隔：当前值翻倍，封顶 max。

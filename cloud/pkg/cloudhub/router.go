@@ -49,7 +49,8 @@ func (s *Server) SendToNode(nodeID string, msg *protocol.Message) error {
 	}
 
 	m := normalizeOutbound(msg, nodeID)
-	data, err := protocol.Encode(m)
+	// 按连接协商结果编码（旧边缘未协商 → 明文，见 server.go encodeFor）
+	data, err := s.encodeFor(c, m)
 	if err != nil {
 		return fmt.Errorf("cloudhub: 编码发往节点 %q 的消息失败: %w", nodeID, err)
 	}
@@ -81,13 +82,15 @@ func (s *Server) Broadcast(msg *protocol.Message) int {
 	s.mu.RUnlock()
 
 	m := normalizeOutbound(msg, TargetBroadcast)
-	data, err := protocol.Encode(m)
-	if err != nil {
-		log.Errorf("编码广播消息失败: %v", err)
-		return 0
-	}
 	sent := 0
 	for _, c := range targets {
+		// 逐连接按协商结果编码：不同节点可能处于不同压缩协商状态
+		// （旧边缘明文 / 新边缘压缩），编码失败仅影响该节点计数
+		data, err := s.encodeFor(c, m)
+		if err != nil {
+			log.Errorf("编码发往节点的广播消息失败: %v", err)
+			continue
+		}
 		if c.trySend(data) {
 			sent++
 		}

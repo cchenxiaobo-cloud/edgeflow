@@ -7,7 +7,11 @@
 //   - 台账模型：output-dir/ops-ledger.jsonl，逐行 JSON 追加写（不覆盖历史），
 //     字段 {ts, action, from, to, result, operator, note}；
 //   - 版本标记：edgecore.env 中以注释行 "# keadm 产物版本: vX.Y.Z" 标记产物版本
-//     （join 写入，upgrade 更新，rollback 恢复；兼容旧 join 无标记的产物）。
+//     （join 写入，upgrade 更新，rollback 恢复；兼容旧 join 无标记的产物）；
+//   - 灰度发布（分批）：单节点 upgrade 接受 --batch-size/--pause-between 并校验
+//     （无分批效果），批量模式（keadm batch --op=upgrade）按 batch-size 分组逐批
+//     升级、批间暂停、任一节点失败即中止（fail-fast，不自动回滚），
+//     实现见 batch.go 的 runUpgradeBatches。
 package main
 
 import (
@@ -212,6 +216,12 @@ type upgradeOptions struct {
 	OutputDir string
 	// SimulateFailure 是演练模式：备份完成后模拟升级失败（用于演练回滚）。
 	SimulateFailure bool
+	// BatchSize / PauseBetween 是灰度发布分批参数（WBS 10.2）：
+	// 单节点升级时无分批效果（分批/批间暂停/fail-fast 在
+	// keadm batch --op=upgrade 中生效），在此接受并校验，
+	// 保证脚本可对单节点与批量模式统一传参。
+	BatchSize    int
+	PauseBetween time.Duration
 }
 
 // runUpgrade 实现 keadm upgrade：
@@ -225,11 +235,23 @@ func runUpgrade(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&opts.Version, "version", "", "目标版本（格式 vX.Y.Z，如 v0.2.0）")
 	fs.StringVar(&opts.OutputDir, "output-dir", opts.OutputDir, "产物输出目录")
 	fs.BoolVar(&opts.SimulateFailure, "simulate-failure", false, "演练模式：备份完成后模拟升级失败（用于演练回滚）")
+	fs.IntVar(&opts.BatchSize, "batch-size", 1, "分批大小（灰度发布；仅 keadm batch --op=upgrade 生效，单节点升级无分批效果）")
+	fs.DurationVar(&opts.PauseBetween, "pause-between", 0, "批间暂停时长（灰度发布，如 30s；仅 keadm batch --op=upgrade 生效，默认 0 不暂停）")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	if fs.NArg() > 0 {
 		_, _ = fmt.Fprintf(stderr, "错误: upgrade 不接受位置参数 %q\n", fs.Arg(0))
+		return exitUsage
+	}
+
+	// 灰度分批参数校验（单节点升级接受但无分批效果，见 upgradeOptions 注释）。
+	if opts.BatchSize < 1 {
+		_, _ = fmt.Fprintf(stderr, "错误: --batch-size 必须 >= 1（默认 1），收到 %d\n", opts.BatchSize)
+		return exitUsage
+	}
+	if opts.PauseBetween < 0 {
+		_, _ = fmt.Fprintf(stderr, "错误: --pause-between 不能为负（如 30s），收到 %s\n", opts.PauseBetween)
 		return exitUsage
 	}
 

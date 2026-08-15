@@ -1,8 +1,9 @@
 # keadm 使用文档（WBS 8.6 基础版 + 升级回滚）
 
-`keadm` 是 EdgeFlow 的安装管理 CLI（对标 KubeEdge 的 keadm）。当前为**基础版 + 升级回滚**：
+`keadm` 是 EdgeFlow 的安装管理 CLI（对标 KubeEdge 的 keadm）。当前为**基础版 + 升级回滚 + 证书轮换**：
 只做**离线产物生成**（不直接操作集群/节点），生成物由用户拿到真实集群/边缘节点上执行；
-`keadm upgrade` / `rollback` 在产物层面提供升级与回滚（备份模型 + 操作台账，见 docs/UPGRADE.md）。
+`keadm upgrade` / `rollback` 在产物层面提供升级与回滚（备份模型 + 操作台账，见 docs/UPGRADE.md），
+`keadm cert rotate` 在证书目录层面提供节点证书轮换（备份先行 + 事务化重签，见 §5.2）。
 
 - 云端：生成可直接 `kubectl apply -f` 的 `cloudcore.yaml`（Deployment + Service），
   与 `build/charts/edgeflow` 的容器约定完全一致（`/healthz` 探针、`/data` 卷、TLS env 透传）；
@@ -34,6 +35,7 @@ go build -ldflags "-X edgeflow/pkg/version.Version=v0.1.0 \
 | --- | --- | --- |
 | `keadm init` | 生成云端部署产物 | `cloudcore.yaml`、`NOTES.txt` |
 | `keadm join` | 生成边缘接入产物 | `edgecore.env`、`edgecore.service`、`install.sh`、`README.md` |
+| `keadm cert rotate` | 重新签发节点证书（先备份 + 事务化重签） | `backups/<id>/`（旧证书备份） |
 | `keadm upgrade` | 产物升级（先备份 + 写操作台账） | `backups/<id>/`、`ops-ledger.jsonl` |
 | `keadm rollback` | 产物回滚（从备份恢复，事务化） | 恢复产物文件 |
 | `keadm ops-ledger` | 查询操作台账（时间/版本/结果/操作人） | — |
@@ -187,6 +189,7 @@ keadm version --json   # 结构化 JSON，供脚本解析
 | `kubectl apply` 报 schema 校验失败 | 集群 API 版本与本地 kubectl 不匹配 | 检查 kubectl 版本与集群兼容性 |
 | edgecore 起不来 | 网络不通/配置错误 | `journalctl -u edgecore -e` 查看；确认可达 `--cloudcore-ip` 的 hub 端口；确认 env 文件键值未被手改 |
 | 云边连接被拒（TLS） | 证书 SAN 未覆盖访问地址 | 云端以 `--tls-san=IP:<访问IP>` 重新 init 并 apply |
+| 证书即将到期/需轮换 | 证书有效期 1 年 | `keadm cert rotate --node=<CN> --cert-dir=<目录>`（自动备份旧证书，见 §5.2） |
 | 升级/回滚异常 | 备份缺失/校验失败/中途失败 | 见 docs/UPGRADE.md §3 异常路径表（含人工 cp 兜底命令） |
 
 ## 5.1 升级与回滚（产物层面）
@@ -208,6 +211,71 @@ keadm ops-ledger --limit=10
 机制要点（详见 docs/UPGRADE.md）：备份模型 `backups/<ts>/manifest.json+sha256`；
 回滚仅恢复白名单文件（env/service/install.sh），事务化 restore（staging + 原子替换）；
 `--simulate-failure` 演练路径与真实失败行为一致。
+
+### 灰度发布（分批升级）
+
+`keadm upgrade` 与 `keadm batch --op=upgrade` 均接受两个灰度发布参数：
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `--batch-size=N` | `1` | 分批大小：每 N 个节点一批逐批升级 |
+| `--pause-between=<duration>` | `0` | 批间暂停时长（如 `30s`、`1m`；`0` 不暂停） |
+
+> 单节点 `keadm upgrade` 接受并校验这两个参数（`batch-size>=1`、`pause-between` 非负且可解析），
+> 但单节点升级无分批效果——分批/暂停/fail-fast 在批量模式下生效，
+> 支持该参数是为了脚本可对单节点与批量模式统一传参。
+
+```bash
+# 灰度发布：每 10 个节点一批，批间暂停 30 秒，任一节点失败即中止
+keadm batch --op=upgrade --file=dirs.txt --version=v0.2.0 \
+  --batch-size=10 --pause-between=30s
+```
+
+灰度语义（与既有 rollback 衔接）：
+
+- **逐批推进**：每批内节点顺序升级（各自备份 + 写台账）；批间按 `--pause-between` 暂停，
+  便于观察上一批节点状态后再推进下一批（典型灰度节奏）；
+- **fail-fast**：任一节点失败立即中止后续批次，报告成功/失败/未执行三份节点清单；
+- **不自动回滚**：失败不影响已成功节点的产物；对失败节点执行
+  `keadm rollback --latest --output-dir=<失败节点目录>` 即可恢复（升级失败路径多数在
+  备份前就中止、产物未动；已产生备份的场景由 rollback 依据 manifest 校验后事务化恢复），
+  各节点备份 id 见升级输出与 `keadm ops-ledger` 台账。
+
+## 5.2 证书轮换（keadm cert rotate）
+
+```bash
+# 轮换边缘节点证书（CN 为 edgecore.crt 的 CommonName，约定 edgeflow-<nodeID>）
+keadm cert rotate --node=edgeflow-edgecore --cert-dir=./data/certs
+
+# 轮换云端服务端证书（自动继承旧证书 SAN，轮换后仍覆盖边缘访问地址）
+keadm cert rotate --node=cloudcore --cert-dir=./data/certs
+```
+
+参数：
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `--node` | 必填 | 节点证书 CN（`edgecore.crt` 的 CN；云端为 `cloudcore`） |
+| `--cert-dir` | `data/certs` | 证书目录（含 `ca.crt`/`ca.key` 与节点证书） |
+
+行为说明：
+
+- **备份先行**：重签前把旧证书/私钥备份到 `<cert-dir>/backups/<时间戳>/`
+  （含 manifest.json：CN/时间/文件清单/sha256；同一秒多次轮换自动追加序号防覆盖），
+  轮换失败不会破坏旧证书；
+- **事务化重签**：复用 `pkg/certs` 的等效 Go 实现（与 `hack/gen-certs.sh` 同一证书布局/
+  CN 约定/算法），强制生成新密钥 + 新序列号；先写临时文件并回读校验，全部就绪后
+  原子替换旧文件，任一步失败旧证书保持原状；
+- **校验报错**：证书目录不存在、节点 CN 不匹配（节点不存在）、CA 缺失（轮换不自动创建
+  CA，防止误轮换 CA 导致全量证书失效）均报错退出；
+- **重复执行**：每次轮换都是真实轮换（新密钥/新序列号），各生成一个备份目录，
+  无临时文件残留；
+- **回退**：用备份文件覆盖回原路径即可（`keadm cert rotate` 失败提示中会输出
+  `cp` 命令示例）；成功后需将新证书分发到节点并重启 edgecore/cloudcore 生效。
+
+> 与 `hack/gen-certs.sh` 的关系：脚本是 shell 版证书**初始化**工具（幂等跳过，无强制重签
+> 能力）；轮换复用其等效 Go 实现 `pkg/certs`（`RotateClientCert`/
+> `RotateServerCertWithSANs`），选 Go 方案是为可单测（备份/重签/错误路径全覆盖）。
 
 ## 6. 本机验证边界（无集群环境）
 

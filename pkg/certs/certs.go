@@ -259,6 +259,147 @@ func ensureLeafCert(certDir, cn string, eku x509.ExtKeyUsage, certFile, keyFile 
 	}, nil
 }
 
+// RotateClientCert 强制重新签发 edgecore 客户端证书（轮换，WBS 7.1/ROADMAP 7.1）。
+//
+// 与 EnsureClientCert 的幂等语义不同：轮换必须生成新密钥 + 新序列号并覆盖
+// 旧文件（旧证书即将到期/私钥泄露场景）。约束：
+//   - 旧证书必须已存在且 CN 与请求一致（轮换不改变节点身份，防止 CN 漂移）；
+//   - CA 必须已存在且可加载（严格加载，绝不自动创建——轮换场景静默新建 CA
+//     会让所有已签发叶子证书失效）；
+//   - 事务化落盘：新证书/私钥先写入同目录临时文件并回读校验，全部就绪后
+//     再原子替换旧文件；任一步失败只清理临时文件，旧证书保持原状。
+//     （两个 Rename 之间存在极短的新旧混搭窗口，属已知可接受窗口；
+//     调用方应先备份旧证书再轮换，见 keadm cert rotate。）
+//
+// 返回新签发的叶子证书（与 Ensure* 返回值形态一致）。
+func RotateClientCert(certDir, cn string) (*tls.Certificate, error) {
+	return rotateLeafCert(certDir, cn, x509.ExtKeyUsageClientAuth, FileClientCert, FileClientKey, nil, nil)
+}
+
+// RotateServerCertWithSANs 强制重新签发 cloudcore 服务端证书（轮换）。
+// 与 RotateClientCert 同语义；ips/dnsNames 是重新签发的 SAN（为空回退默认
+// 127.0.0.1/localhost/cloudcore）。调用方应读取旧证书的 SAN 原样传入，
+// 避免轮换后服务端证书不再覆盖边缘节点访问地址。
+func RotateServerCertWithSANs(certDir, cn string, ips []net.IP, dnsNames []string) (*tls.Certificate, error) {
+	return rotateLeafCert(certDir, cn, x509.ExtKeyUsageServerAuth, FileServerCert, FileServerKey, ips, dnsNames)
+}
+
+// rotateLeafCert 是服务端/客户端证书轮换的公共实现（见 RotateClientCert 的
+// 约束说明；证书模板与 ensureLeafCert 保持一致，保证轮换前后证书约定不变）。
+func rotateLeafCert(certDir, cn string, eku x509.ExtKeyUsage, certFile, keyFile string,
+	ips []net.IP, dnsNames []string) (*tls.Certificate, error) {
+	if err := ensureDir(certDir); err != nil {
+		return nil, err
+	}
+	certPath := filepath.Join(certDir, certFile)
+	keyPath := filepath.Join(certDir, keyFile)
+
+	// 轮换必须基于已有证书：缺旧证书/私钥则拒绝（轮换不是初始化，
+	// 防止误把轮换当首次签发而绕过 CA 就绪检查）。
+	if !fileExists(certPath) || !fileExists(keyPath) {
+		return nil, fmt.Errorf("没有可轮换的旧证书（%s/%s 不存在）；轮换仅支持已存在的证书", certFile, keyFile)
+	}
+
+	// 旧证书加载 + CN 一致性校验：轮换不得改变节点身份。
+	oldLeaf, err := loadLeafCert(certPath, keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("加载旧证书失败: %w", err)
+	}
+	oldCert, err := x509.ParseCertificate(oldLeaf.Certificate[0])
+	if err != nil {
+		return nil, fmt.Errorf("解析旧证书失败: %w", err)
+	}
+	if oldCert.Subject.CommonName != cn {
+		return nil, fmt.Errorf("旧证书 CN=%q 与请求 CN=%q 不一致，拒绝轮换（轮换不改变节点身份）",
+			oldCert.Subject.CommonName, cn)
+	}
+
+	// CA 严格加载（loadCA 而非 EnsureCA）：轮换绝不自动创建 CA。
+	ca, err := loadCA(certDir)
+	if err != nil {
+		return nil, fmt.Errorf("加载 CA 失败（轮换需要现有 CA，不会自动创建）: %w", err)
+	}
+
+	// 新密钥 + 新序列号 + 证书模板（与 ensureLeafCert 完全一致的约定）。
+	key, err := rsa.GenerateKey(rand.Reader, rsaBits)
+	if err != nil {
+		return nil, fmt.Errorf("生成 %s 私钥失败: %w", cn, err)
+	}
+	serial, err := randomSerial()
+	if err != nil {
+		return nil, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: cn},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(leafValidity),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{eku},
+	}
+	if eku == x509.ExtKeyUsageServerAuth {
+		tmpl.DNSNames = dnsNames
+		tmpl.IPAddresses = ips
+		if len(dnsNames) == 0 && len(ips) == 0 {
+			tmpl.DNSNames = []string{"localhost", "cloudcore"}
+			tmpl.IPAddresses = []net.IP{net.ParseIP("127.0.0.1")}
+		}
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.Cert, &key.PublicKey, ca.Key)
+	if err != nil {
+		return nil, fmt.Errorf("签发 %s 证书失败: %w", cn, err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+
+	// 事务化落盘：临时文件（同目录同设备，CreateTemp 初始 0600）→ 回读校验
+	// → 全部就绪后逐个 Rename 原子替换。任一步失败只清理临时文件，
+	// 旧证书/私钥保持原状（配合调用方的事先备份，实现「轮换失败不破坏旧证书」）。
+	tmpCert, err := os.CreateTemp(certDir, "."+certFile+".tmp-*")
+	if err != nil {
+		return nil, fmt.Errorf("创建临时证书文件失败: %w", err)
+	}
+	tmpCertPath := tmpCert.Name()
+	defer func() { _ = os.Remove(tmpCertPath) }()
+	_ = tmpCert.Close()
+
+	tmpKey, err := os.CreateTemp(certDir, "."+keyFile+".tmp-*")
+	if err != nil {
+		return nil, fmt.Errorf("创建临时私钥文件失败: %w", err)
+	}
+	tmpKeyPath := tmpKey.Name()
+	defer func() { _ = os.Remove(tmpKeyPath) }()
+	_ = tmpKey.Close()
+
+	if err := os.WriteFile(tmpCertPath, certPEM, 0o644); err != nil {
+		return nil, fmt.Errorf("写入临时证书失败: %w", err)
+	}
+	if err := os.Chmod(tmpCertPath, 0o644); err != nil {
+		return nil, fmt.Errorf("设置临时证书权限失败: %w", err)
+	}
+	if err := os.WriteFile(tmpKeyPath, keyPEM, 0o600); err != nil {
+		return nil, fmt.Errorf("写入临时私钥失败: %w", err)
+	}
+
+	// 回读校验：临时文件必须能组成合法密钥对（防止落盘损坏后替换旧证书）。
+	if _, err := tls.LoadX509KeyPair(tmpCertPath, tmpKeyPath); err != nil {
+		return nil, fmt.Errorf("回读校验新证书失败: %w", err)
+	}
+
+	// 原子替换：先证书后私钥（窗口内新旧混搭属已知可接受窗口，见函数注释）。
+	if err := os.Rename(tmpCertPath, certPath); err != nil {
+		return nil, fmt.Errorf("替换证书 %s 失败: %w", certPath, err)
+	}
+	if err := os.Rename(tmpKeyPath, keyPath); err != nil {
+		return nil, fmt.Errorf("替换私钥 %s 失败（证书已更新，请从备份恢复私钥）: %w", keyPath, err)
+	}
+
+	return &tls.Certificate{
+		Certificate: [][]byte{der},
+		PrivateKey:  key,
+	}, nil
+}
+
 // LoadTLSConfig 加载 CA + 叶子证书并组装 tls.Config：
 //   - isServer=true（CloudHub 侧）：携带 cloudcore.crt/key，ClientCAs=CA 池，
 //     ClientAuth=RequireAndVerifyClientCert（强制要求并验证客户端证书，mTLS 核心）；

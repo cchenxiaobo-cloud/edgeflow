@@ -476,3 +476,201 @@ func TestLoadCAMismatchedKey(t *testing.T) {
 	}
 	_ = ca
 }
+
+// TestRotateClientCert_Regenerates 验证轮换成功路径：新密钥 + 新序列号、
+// CN 不变、新证书由同一 CA 签发（签名链有效）、文件权限与无临时文件残留。
+func TestRotateClientCert_Regenerates(t *testing.T) {
+	certDir := newTempCertDir(t)
+	mustGenAll(t, certDir)
+
+	// 记录轮换前的旧证书/私钥。
+	oldKey, err := os.ReadFile(filepath.Join(certDir, FileClientKey))
+	if err != nil {
+		t.Fatalf("读取旧私钥失败: %v", err)
+	}
+	oldCert, err := loadLeafCert(filepath.Join(certDir, FileClientCert), filepath.Join(certDir, FileClientKey))
+	if err != nil {
+		t.Fatalf("加载旧证书失败: %v", err)
+	}
+	oldParsed, err := x509.ParseCertificate(oldCert.Certificate[0])
+	if err != nil {
+		t.Fatalf("解析旧证书失败: %v", err)
+	}
+
+	leaf, err := RotateClientCert(certDir, "edgeflow-test-node")
+	if err != nil {
+		t.Fatalf("RotateClientCert 失败: %v", err)
+	}
+	parsed, err := x509.ParseCertificate(leaf.Certificate[0])
+	if err != nil {
+		t.Fatalf("解析新证书失败: %v", err)
+	}
+
+	// CN 不变；序列号与私钥必须变化（否则不是轮换）。
+	if parsed.Subject.CommonName != "edgeflow-test-node" {
+		t.Errorf("新证书 CN = %q，期望 edgeflow-test-node", parsed.Subject.CommonName)
+	}
+	if parsed.SerialNumber.Cmp(oldParsed.SerialNumber) == 0 {
+		t.Error("轮换后序列号未变化（应生成新序列号）")
+	}
+	newKey, err := os.ReadFile(filepath.Join(certDir, FileClientKey))
+	if err != nil {
+		t.Fatalf("读取新私钥失败: %v", err)
+	}
+	if string(newKey) == string(oldKey) {
+		t.Error("轮换后私钥未变化（应生成新私钥）")
+	}
+	if !hasExtKeyUsage(parsed, x509.ExtKeyUsageClientAuth) {
+		t.Error("新证书缺少 EKU ClientAuth")
+	}
+
+	// 新证书由现有 CA 签发（签名链校验）。
+	ca, err := loadCA(certDir)
+	if err != nil {
+		t.Fatalf("loadCA 失败: %v", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(ca.Cert)
+	if _, err := parsed.Verify(x509.VerifyOptions{
+		Roots:     pool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		t.Errorf("新证书无法通过 CA 签名链校验: %v", err)
+	}
+
+	// 文件权限：证书 0644 / 私钥 0600。
+	for file, want := range map[string]os.FileMode{FileClientCert: 0o644, FileClientKey: 0o600} {
+		info, err := os.Stat(filepath.Join(certDir, file))
+		if err != nil {
+			t.Fatalf("stat %s 失败: %v", file, err)
+		}
+		if perm := info.Mode().Perm(); perm != want {
+			t.Errorf("%s 权限 = %o，期望 %o", file, perm, want)
+		}
+	}
+
+	// 无临时文件残留（事务化落盘清理）。
+	assertNoCertTempFiles(t, certDir)
+}
+
+// TestRotateClientCert_CNMismatchRejected 验证 CN 不一致拒绝轮换（身份保护）。
+func TestRotateClientCert_CNMismatchRejected(t *testing.T) {
+	certDir := newTempCertDir(t)
+	mustGenAll(t, certDir)
+	before, err := os.ReadFile(filepath.Join(certDir, FileClientKey))
+	if err != nil {
+		t.Fatalf("读取旧私钥失败: %v", err)
+	}
+
+	if _, err := RotateClientCert(certDir, "edgeflow-other-node"); err == nil {
+		t.Fatal("CN 不一致应拒绝轮换，实际成功")
+	} else if !strings.Contains(err.Error(), "不一致") {
+		t.Errorf("错误应提示 CN 不一致: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(certDir, FileClientKey))
+	if err != nil {
+		t.Fatalf("读取私钥失败: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Error("拒绝轮换后私钥不应变化")
+	}
+}
+
+// TestRotateClientCert_MissingLeaf 验证无旧证书时拒绝（轮换不是初始化）。
+func TestRotateClientCert_MissingLeaf(t *testing.T) {
+	certDir := newTempCertDir(t)
+	if _, err := EnsureCA(certDir); err != nil {
+		t.Fatalf("EnsureCA 失败: %v", err)
+	}
+	if _, err := RotateClientCert(certDir, "edgeflow-test-node"); err == nil {
+		t.Fatal("无旧证书应拒绝轮换，实际成功")
+	} else if !strings.Contains(err.Error(), "没有可轮换") {
+		t.Errorf("错误应提示没有可轮换的旧证书: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(certDir, FileClientCert)); !os.IsNotExist(err) {
+		t.Error("拒绝轮换后不应生成 edgecore.crt")
+	}
+	assertNoCertTempFiles(t, certDir)
+}
+
+// TestRotateClientCert_MissingCA 验证 CA 缺失时轮换失败且旧证书不受影响
+// （轮换绝不自动创建 CA，防止静默换 CA 导致全量叶子证书失效）。
+func TestRotateClientCert_MissingCA(t *testing.T) {
+	certDir := newTempCertDir(t)
+	mustGenAll(t, certDir)
+	// 移除 CA 私钥（CA 不完整）。
+	if err := os.Remove(filepath.Join(certDir, FileCAKey)); err != nil {
+		t.Fatalf("移除 CA 私钥失败: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Join(certDir, FileClientCert))
+	if err != nil {
+		t.Fatalf("读取旧证书失败: %v", err)
+	}
+
+	if _, err := RotateClientCert(certDir, "edgeflow-test-node"); err == nil {
+		t.Fatal("CA 缺失应轮换失败，实际成功")
+	} else if !strings.Contains(err.Error(), "CA") {
+		t.Errorf("错误应提示 CA 问题: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(certDir, FileClientCert))
+	if err != nil {
+		t.Fatalf("读取证书失败: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Error("轮换失败后旧证书不应变化")
+	}
+	assertNoCertTempFiles(t, certDir)
+}
+
+// TestRotateServerCert_PreservesSAN 验证服务端证书轮换保留 SAN
+// （轮换后服务端证书必须继续覆盖边缘节点访问地址）。
+func TestRotateServerCert_PreservesSAN(t *testing.T) {
+	certDir := newTempCertDir(t)
+	if _, err := EnsureCA(certDir); err != nil {
+		t.Fatalf("EnsureCA 失败: %v", err)
+	}
+	ips := []net.IP{net.ParseIP("192.168.1.10")}
+	dns := []string{"edge.example.com"}
+	if _, err := EnsureServerCertWithSANs(certDir, "cloudcore", ips, dns); err != nil {
+		t.Fatalf("EnsureServerCertWithSANs 失败: %v", err)
+	}
+
+	if _, err := RotateServerCertWithSANs(certDir, "cloudcore", ips, dns); err != nil {
+		t.Fatalf("RotateServerCertWithSANs 失败: %v", err)
+	}
+	leaf, err := EnsureServerCert(certDir, "cloudcore")
+	if err != nil {
+		t.Fatalf("加载轮换后证书失败: %v", err)
+	}
+	parsed, err := x509.ParseCertificate(leaf.Certificate[0])
+	if err != nil {
+		t.Fatalf("解析轮换后证书失败: %v", err)
+	}
+	if parsed.Subject.CommonName != "cloudcore" {
+		t.Errorf("轮换后 CN = %q，期望 cloudcore", parsed.Subject.CommonName)
+	}
+	if len(parsed.IPAddresses) != 1 || parsed.IPAddresses[0].String() != "192.168.1.10" {
+		t.Errorf("轮换后 SAN IP 丢失: %v", parsed.IPAddresses)
+	}
+	if len(parsed.DNSNames) != 1 || parsed.DNSNames[0] != "edge.example.com" {
+		t.Errorf("轮换后 SAN DNS 丢失: %v", parsed.DNSNames)
+	}
+	if !hasExtKeyUsage(parsed, x509.ExtKeyUsageServerAuth) {
+		t.Error("轮换后证书缺少 EKU ServerAuth")
+	}
+	assertNoCertTempFiles(t, certDir)
+}
+
+// assertNoCertTempFiles 断言证书目录无 .*.tmp-* 残留（事务化落盘清理）。
+func assertNoCertTempFiles(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("读取证书目录失败: %v", err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp-") {
+			t.Errorf("临时文件未清理: %s", e.Name())
+		}
+	}
+}

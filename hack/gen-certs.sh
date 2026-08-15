@@ -24,6 +24,7 @@ CERT_DIR="${CERT_DIR:-data/certs}"
 CA_DAYS=3650          # CA 有效期（天）= 10 年，与 pkg/certs 一致
 LEAF_DAYS=365         # 叶子证书有效期（天）= 1 年，与 pkg/certs 一致
 KEY_BITS=2048
+CLIENT_CN="${CLIENT_CN:-edgeflow-edgecore}"   # edgecore 客户端证书 CN（可覆盖）
 
 log() { printf '\033[1;32m[gen-certs]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[gen-certs]\033[0m %s\n' "$*"; }
@@ -141,27 +142,33 @@ if [ -n "${CERT_DIST_DIR:-}" ]; then
   cp "$CLIENT_CRT" "$CLIENT_KEY" "$CERT_DIST_DIR/edge/$CLIENT_CN/"
   chmod 600 "$CERT_DIST_DIR/cloud/"*.key "$CERT_DIST_DIR/edge/$CLIENT_CN/"*.key
   cat > "$CERT_DIST_DIR/cloud/README.txt" <<EOF
-EdgeFlow 云端证书分发包（由 hack/gen-certs.sh 生成，CN=$CLIENT_CN）
+EdgeFlow 云端证书分发包（由 hack/gen-certs.sh 生成）
 
 部署目标：cloudcore 主机
-部署路径（与 pkg/certs 默认布局一致）：
+部署路径（与 keadm join 部署约定一致）：
   /etc/edgeflow/certs/ca.crt
   /etc/edgeflow/certs/cloudcore.crt
   /etc/edgeflow/certs/cloudcore.key   (chmod 600)
 
-cloudcore 启动参数：--certs-dir=/etc/edgeflow/certs（或 EDGEFLOW_CLOUDCORE_CERTS_DIR）
+cloudcore 启用 mTLS 与证书目录（env）：
+  EDGEFLOW_CLOUDCORE_TLS=on
+  EDGEFLOW_CLOUDCORE_CERT_DIR=/etc/edgeflow/certs
+
 轮换：重新执行 gen-certs.sh 后重新分发；私钥泄露时全量重签（删除 CERT_DIR 后重跑）。
 EOF
   cat > "$CERT_DIST_DIR/edge/$CLIENT_CN/README.txt" <<EOF
 EdgeFlow 边缘节点证书分发包（节点 CN=$CLIENT_CN，由 hack/gen-certs.sh 生成）
 
 部署目标：edgecore 主机（本包只含本节点证书）
-部署路径：
+部署路径（与 keadm join 部署约定一致）：
   /etc/edgeflow/certs/ca.crt
   /etc/edgeflow/certs/edgecore.crt
   /etc/edgeflow/certs/edgecore.key   (chmod 600)
 
-edgecore 启动参数：EDGEFLOW_EDGECORE_TLS=on + --certs-dir=/etc/edgeflow/certs
+edgecore 启用 mTLS 与证书目录（env）：
+  EDGEFLOW_EDGECORE_TLS=on
+  EDGEFLOW_EDGECORE_CERT_DIR=/etc/edgeflow/certs
+
 分发方式：scp -r "$CERT_DIST_DIR/edge/$CLIENT_CN" user@edge-host:/etc/edgeflow/
 轮换：同云端分发包；多节点各自生成（CLIENT_CN 不同）后分发。
 EOF

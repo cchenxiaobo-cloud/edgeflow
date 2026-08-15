@@ -25,6 +25,7 @@
 | 方法 | 路径 | 说明 | 主要状态码 |
 |------|------|------|-----------|
 | GET | `/healthz` | 健康检查（探针用） | 200 |
+| GET | `/metrics` | Prometheus 指标（五指标，WBS 10.1） | 200 |
 | GET | `/api/v1/nodes` | 全部节点（运行视角 NodeInfo 列表） | 200 |
 | GET | `/api/v1/nodes/{nodeID}` | 单节点详情 | 200 / 404 |
 | GET | `/api/v1/edgenodes` | 全部节点（CRD 对象视角，K8s List 风格） | 200 |

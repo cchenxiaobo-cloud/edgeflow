@@ -214,7 +214,7 @@ func (o joinOptions) cloudAddr() string {
 }
 
 // edgeEnvTemplate 生成 edgecore.env：键名与 edgehub/metamanager/eventbus
-// 读取的环境变量一一对应；EDGEFLOW_EDGECORE_TOKEN 为预留字段（当前未消费）。
+// 读取的环境变量一一对应；EDGEFLOW_EDGECORE_TOKEN 为接入令牌（WBS 7.3 设备认证，edgecore 注册时携带）。
 // 首行下的版本标记行（envVersionLine）供 upgrade 更新 / rollback 恢复（WBS 10.2）。
 var edgeEnvTemplate = template.Must(template.New("edgecore.env").Parse(`# 由 keadm join 生成（EdgeFlow WBS 8.6）。安装到 {{ .EnvPath }}。
 # 键名与 edgecore 读取的环境变量一一对应，请勿修改。

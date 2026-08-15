@@ -38,6 +38,7 @@
 | `ConfigSync` | 云→边 | nodeID / kind / name / data / operation | 稳定（M2） |
 | `PodStatus` | 边→云 | nodeID / podName / namespace / phase / restartCount / ... | 稳定（M1/M2） |
 | `DeviceReport` | 边→云 | nodeID / deviceID / properties（含 direction/regAddr/value/result/message） | 稳定（M3） |
+| `DeviceCommand` | 云→边 | nodeID / deviceID / property / value（设备指令，对应 POST /device-command 端点） | 稳定（M3） |
 | `Ack` | 双向 | id / ok / error | 稳定（可靠投递） |
 
 兼容规则：
@@ -58,7 +59,7 @@
 
 | 变更 | 类型 | 说明 |
 |------|------|------|
-| `/metrics` 新增 | 新增端点 | 10.1 可观测性（commit `4c5b9c6`） |
+| `/metrics` 新增 | 新增端点 | 10.1 可观测性（commit `4c5b9c6`）；已同步回写 API-SPEC §1.1 |
 | `Register.token` 新增 | 新增可选字段 | 7.3 设备认证（commit 见台账 B1） |
 | API Token 认证 | 行为开关 | 默认 off 向后兼容，env 开启（commit `4c5b9c6`） |
 | 错误语义 404/502/504 | 稳定 | 已定稿于 API-SPEC §1.2 |

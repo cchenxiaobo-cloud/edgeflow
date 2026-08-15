@@ -16,7 +16,8 @@ type joinOptions struct {
 	CloudCoreIP string
 	// CloudCorePort 是 CloudHub 端口（NodePort 部署时为节点端口，默认 10000）。
 	CloudCorePort string
-	// Token 是接入令牌（必填；当前版本 edgecore 尚未消费，预留做后续鉴权）。
+	// Token 是接入令牌（必填；edgecore 注册时携带，云端 EDGEFLOW_CLOUDCORE_NODE_TOKEN
+	// 启用时校验，见 WBS 7.3 设备认证）。
 	Token string
 	// NodeID 是边缘节点 ID（默认 edge-<主机名>，与 edgehub.DefaultNodeID 约定一致）。
 	NodeID string
@@ -55,7 +56,7 @@ func runJoin(args []string, stdout, stderr io.Writer) int {
 	}
 	fs.StringVar(&opts.CloudCoreIP, "cloudcore-ip", "", "云端 CloudHub 节点 IP（必填，支持 IPv4/IPv6）")
 	fs.StringVar(&opts.CloudCorePort, "cloudcore-port", opts.CloudCorePort, "CloudHub 端口（NodePort 部署时填节点端口）")
-	fs.StringVar(&opts.Token, "token", "", "接入令牌（必填；当前为预留字段，后续版本用于鉴权）")
+	fs.StringVar(&opts.Token, "token", "", "接入令牌（必填；edgecore 注册携带，云端启用时校验，WBS 7.3）")
 	fs.StringVar(&opts.NodeID, "node-id", opts.NodeID, "边缘节点 ID（默认 edge-<主机名>）")
 	fs.BoolVar(&opts.TLS, "tls", false, "启用云边 mTLS（edgecore 注入 TLS env，地址使用 wss://）")
 	fs.StringVar(&opts.OutputDir, "output-dir", opts.OutputDir, "产物输出目录")
@@ -231,7 +232,7 @@ EDGEFLOW_EDGECORE_DB_PATH={{ .DBPath }}
 # 边缘 MQTT broker（设备数据面接入点，与 EventBus 默认值一致）
 EDGEFLOW_EDGECORE_MQTT_ADDR=tcp://127.0.0.1:1883
 
-# 接入令牌（预留字段：当前版本 edgecore 尚未消费，后续版本用于接入鉴权）
+# 接入令牌（WBS 7.3 设备认证：edgecore 注册时携带，云端 EDGEFLOW_CLOUDCORE_NODE_TOKEN 启用时校验）
 EDGEFLOW_EDGECORE_TOKEN={{ .Token }}
 {{- if .TLS }}
 
@@ -386,7 +387,7 @@ func renderJoinReadme(o joinOptions) []byte {
 - 节点 ID: %s
 - 云端地址: %s
 - 元数据库: %s
-- 接入令牌: %s（预留字段，当前 edgecore 未消费）
+- 接入令牌: %s（WBS 7.3 设备认证：edgecore 注册携带，云端启用时校验）
 
 ## 排障
 

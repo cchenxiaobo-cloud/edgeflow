@@ -117,6 +117,8 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) 
 
 // TestRegisterSuccess 验证注册成功：收到 accepted=true 的 RegisterAck，
 // 且注册表/节点信息正确。
+// TestRegisterSuccess 验证节点注册成功：Register → RegisterAck（accepted=true），
+// 注册表状态与 NodeInfo 字段正确。
 func TestRegisterSuccess(t *testing.T) {
 	srv, url := newTestServer(t)
 	ws := dial(t, url)
@@ -176,6 +178,92 @@ func TestRegisterSuccess(t *testing.T) {
 	if info.RegisteredAt.IsZero() {
 		t.Error("NodeInfo.RegisteredAt 为零值")
 	}
+}
+
+// TestRegisterTokenAuth 验证 WBS 7.3 设备认证（token 消费）：
+//   - 云端未启用（nodeToken 为空）→ 任意 token 均可注册（向后兼容）；
+//   - 云端启用 → 缺失/错误 token 拒绝（accepted=false），正确 token 通过。
+func TestRegisterTokenAuth(t *testing.T) {
+	t.Run("未启用时任意token可注册", func(t *testing.T) {
+		_, url := newTestServer(t) // 默认无 nodeToken
+		ws := dial(t, url)
+		m, _ := protocol.NewMessage(protocol.TypeRegister, "edge-t1", "cloud", RegisterPayload{
+			NodeID: "edge-t1", Arch: "arm64", OS: "linux", EdgecoreVersion: "v0.1.0",
+			CPU: 2, Memory: 1 << 30, Token: "whatever",
+		})
+		sendMsg(t, ws, m)
+		ack := readMsg(t, ws)
+		var p RegisterAckPayload
+		if err := ack.DecodePayload(&p); err != nil {
+			t.Fatalf("解析 RegisterAck payload 失败: %v", err)
+		}
+		if !p.Accepted {
+			t.Errorf("未启用校验时注册被拒绝: %s", p.Message)
+		}
+	})
+
+	t.Run("启用后缺失token被拒绝", func(t *testing.T) {
+		srv, url := newTestServer(t, WithNodeToken("s3cret"))
+		ws := dial(t, url)
+		m, _ := protocol.NewMessage(protocol.TypeRegister, "edge-t2", "cloud", RegisterPayload{
+			NodeID: "edge-t2", Arch: "arm64", OS: "linux", EdgecoreVersion: "v0.1.0",
+			CPU: 2, Memory: 1 << 30, // 无 Token
+		})
+		sendMsg(t, ws, m)
+		ack := readMsg(t, ws)
+		var p RegisterAckPayload
+		if err := ack.DecodePayload(&p); err != nil {
+			t.Fatalf("解析 RegisterAck payload 失败: %v", err)
+		}
+		if p.Accepted {
+			t.Errorf("缺失 token 竟然注册成功")
+		}
+		if got := srv.NodeCount(); got != 0 {
+			t.Errorf("拒绝后 NodeCount = %d，期望 0", got)
+		}
+	})
+
+	t.Run("启用后错误token被拒绝", func(t *testing.T) {
+		srv, url := newTestServer(t, WithNodeToken("s3cret"))
+		ws := dial(t, url)
+		m, _ := protocol.NewMessage(protocol.TypeRegister, "edge-t3", "cloud", RegisterPayload{
+			NodeID: "edge-t3", Arch: "arm64", OS: "linux", EdgecoreVersion: "v0.1.0",
+			CPU: 2, Memory: 1 << 30, Token: "wrong-token",
+		})
+		sendMsg(t, ws, m)
+		ack := readMsg(t, ws)
+		var p RegisterAckPayload
+		if err := ack.DecodePayload(&p); err != nil {
+			t.Fatalf("解析 RegisterAck payload 失败: %v", err)
+		}
+		if p.Accepted {
+			t.Errorf("错误 token 竟然注册成功")
+		}
+		if got := srv.NodeCount(); got != 0 {
+			t.Errorf("拒绝后 NodeCount = %d，期望 0", got)
+		}
+	})
+
+	t.Run("启用后正确token注册成功", func(t *testing.T) {
+		srv, url := newTestServer(t, WithNodeToken("s3cret"))
+		ws := dial(t, url)
+		m, _ := protocol.NewMessage(protocol.TypeRegister, "edge-t4", "cloud", RegisterPayload{
+			NodeID: "edge-t4", Arch: "arm64", OS: "linux", EdgecoreVersion: "v0.1.0",
+			CPU: 2, Memory: 1 << 30, Token: "s3cret",
+		})
+		sendMsg(t, ws, m)
+		ack := readMsg(t, ws)
+		var p RegisterAckPayload
+		if err := ack.DecodePayload(&p); err != nil {
+			t.Fatalf("解析 RegisterAck payload 失败: %v", err)
+		}
+		if !p.Accepted {
+			t.Errorf("正确 token 被拒绝: %s", p.Message)
+		}
+		if got := srv.NodeCount(); got != 1 {
+			t.Errorf("NodeCount = %d，期望 1", got)
+		}
+	})
 }
 
 // TestHeartbeat 验证心跳：Heartbeat → HeartbeatAck（nodeStatus=Ready）。

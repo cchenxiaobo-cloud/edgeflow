@@ -62,6 +62,9 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	opts := edgehub.Options{
 		CloudAddr: edgehub.DefaultCloudAddrFromEnv(),
 		NodeID:    edgehub.DefaultNodeID(),
+		// WBS 7.3 设备认证：keadm join 写入的 EDGEFLOW_EDGECORE_TOKEN，
+		// 随 Register 消息携带供云端校验（云端未启用校验时无副作用）。
+		Token: os.Getenv("EDGEFLOW_EDGECORE_TOKEN"),
 	}
 
 	// 云边通道 mTLS（WBS 7.1 证书管理 + 7.4 云边认证）：

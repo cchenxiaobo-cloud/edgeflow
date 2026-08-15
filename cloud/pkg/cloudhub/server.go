@@ -15,6 +15,7 @@ package cloudhub
 
 import (
 	"context"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -76,6 +77,9 @@ type RegisterPayload struct {
 	EdgecoreVersion string `json:"edgecoreVersion"` // edgecore 版本号
 	CPU             int    `json:"cpu"`             // CPU 核数
 	Memory          uint64 `json:"memory"`          // 内存大小（字节），契约与 EdgeHub 一致为 uint64
+	// Token 是接入令牌（WBS 7.3 设备认证）：edgecore 注册时携带，
+	// 服务端 nodeToken 非空时校验，不匹配拒绝注册（accepted=false）。
+	Token string `json:"token"`
 }
 
 // RegisterAckPayload 是 RegisterAck 消息的负载（云→边）。
@@ -165,6 +169,9 @@ type Server struct {
 	heartbeatTimeout time.Duration
 	// monitorInterval 是心跳监控的扫描周期。
 	monitorInterval time.Duration
+	// nodeToken 是节点接入令牌（WBS 7.3 设备认证）；非空时注册必须携带
+	// 相同 Token，否则拒绝注册。空值向后兼容（不校验）。
+	nodeToken string
 
 	// stateMu 保护以下启动/停止相关字段。
 	stateMu sync.Mutex
@@ -207,6 +214,13 @@ func WithHeartbeatTimeout(d time.Duration) Option {
 			s.heartbeatTimeout = d
 		}
 	}
+}
+
+// WithNodeToken 注入节点接入令牌（WBS 7.3 设备认证）。
+// 非空时：edgecore 注册必须携带相同 Token（常数时间比较），否则拒绝注册
+// （RegisterAck accepted=false）。空值（默认）保持向后兼容：不校验。
+func WithNodeToken(token string) Option {
+	return func(s *Server) { s.nodeToken = token }
 }
 
 // WithTLS 为云边通道启用 mTLS（WBS 7.1/7.4）：
@@ -539,6 +553,12 @@ func (s *Server) handleRegister(c *conn, m *protocol.Message) {
 	}
 	if reg.NodeID != m.Source {
 		s.rejectRegister(c, m, fmt.Sprintf("消息 Source=%q 与 payload.nodeID=%q 不一致", m.Source, reg.NodeID))
+		return
+	}
+	// WBS 7.3 设备认证：nodeToken 非空时校验注册令牌（常数时间比较防时序侧信道）。
+	// 不匹配 → 拒绝注册；nodeToken 为空时向后兼容（不校验，M1-M3 行为）。
+	if s.nodeToken != "" && subtle.ConstantTimeCompare([]byte(reg.Token), []byte(s.nodeToken)) != 1 {
+		s.rejectRegister(c, m, "接入令牌校验失败（token 缺失或不匹配）")
 		return
 	}
 

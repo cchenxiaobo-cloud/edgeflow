@@ -126,6 +126,10 @@ type RegisterPayload struct {
 	EdgeCoreVersion string `json:"edgecoreVersion"`
 	CPU             int    `json:"cpu"`
 	Memory          uint64 `json:"memory"` // 单位：字节
+	// Token 是接入令牌（WBS 7.3 设备认证）：由 keadm join 写入
+	// EDGEFLOW_EDGECORE_TOKEN，edgecore 启动时读取并携带；云端
+	// EDGEFLOW_CLOUDCORE_NODE_TOKEN 非空时校验（不匹配拒绝注册）。
+	Token string `json:"token"`
 }
 
 // RegisterAckPayload 是 RegisterAck 消息的负载（与 CloudHub 契约一致）。
@@ -171,6 +175,9 @@ type Options struct {
 	BackoffMax time.Duration
 	// Dialer 是自定义拨号器（测试注入用）；nil 时使用内置默认拨号器。
 	Dialer Dialer
+	// Token 是接入令牌（WBS 7.3 设备认证）：非空时随 Register 消息携带，
+	// 供云端校验。通常由装配层从 EDGEFLOW_EDGECORE_TOKEN 读取（keadm join 写入）。
+	Token string
 }
 
 // Client 是 EdgeHub WebSocket 客户端。
@@ -433,6 +440,7 @@ func (c *Client) register(conn *websocket.Conn, closed <-chan struct{}, regAckCh
 		EdgeCoreVersion: version.Get().String(),
 		CPU:             runtime.NumCPU(),
 		Memory:          totalMemoryBytes(),
+		Token:           c.opts.Token,
 	}
 	msg, err := protocol.NewMessage(protocol.TypeRegister, c.opts.NodeID, targetCloud, payload)
 	if err != nil {

@@ -501,16 +501,19 @@
 | ~~P1~~ ✅ | 6.4 镜像更新滚动策略 + 回滚 | 已关闭：镜像漂移检测+重建（批大小 1 逐轮滚动），单测 5 项全过，commit `a0a4344`；回滚经 re-deploy 语义覆盖 |
 | P1 | M1/M2 验收"kubectl get nodes / kubectl apply"字面未达成 | 无真实 K8s 接入，验收以 REST API 适配；需决策：修订验收口径或排期真实 K8s 接入（audit-m02 §4 P1） |
 | ~~P1~~ 🔒 | 2.8 NodeJob 未实现 | 已关闭（产品决策）：v0.1.0 范围外，协议占位标注"已关闭"，commit `4c5b9c6` |
-| P2（部分完成） | WBS 7 缺失项：7.2 RBAC / 7.3 设备认证 / 7.5 审计日志 | 7.2 Token 认证中间件 ✅（commit `4c5b9c6`）、7.5 审计台账 ✅（commit `4c5b9c6`）；7.3 设备认证未做；10.1 可观测性 ✅（commit `4c5b9c6`）、8.4 压测 ✅（commit `a0a4344`）；10.3 API 兼容矩阵未做 |
+| ~~P2~~ ✅ | WBS 7/10 缺口：7.2 RBAC / 7.3 设备认证 / 7.5 审计日志 / 10.1 可观测性 / 8.4 压测 / 10.3 API 兼容矩阵 | 已全部闭环：7.2（`4c5b9c6`）、7.5（`4c5b9c6`）、10.1（`4c5b9c6`）、8.4（`a0a4344`）；**7.3 设备认证**：Register.token 云边双向 + EDGEFLOW_CLOUDCORE_NODE_TOKEN 校验（本轮，单测 6 项）；**10.3 兼容矩阵**：docs/API-COMPATIBILITY.md（本轮） |
 | P2 | 9.1 架构文档评审 + 内容回写 | ARCHITECTURE.md 未评审且滞后：NATS→MQTT、Token→mTLS、实现进度至 M5（audit-m02 S11-S13） |
 | P2 | 生产多节点集群验证 | kind 单节点真实集群路径已跑通（2026-08-14，CRD apply/部署/注册，≈2min，见 docs/REAL-CLUSTER-GUIDE.md）；多节点网络/存储/证书差异待生产演练（DRILL-SCHEDULE） |
+| ~~P2~~ ✅ | keadm 批量操作（batch join/upgrade/rollback） | 已闭环：keadm batch 子命令（清单文件逐节点，复用 join/upgrade/rollback 逻辑），单测 5 项+真实运行验证 2 节点（本轮） |
+| ~~P2~~ ✅ | 跨主机 CA 分发自动化 | 已闭环：gen-certs.sh CERT_DIST_DIR 分发包（cloud/ + edge/<CN>/，含 README 部署说明），openssl verify 验证（本轮） |
+| ~~P2~~ ✅ | 镜像安全扫描（trivy/grype） | 已闭环：release/v0.1.0 镜像扫描结果见 docs/SECURITY-SCAN.md（本轮） |
 | P2 | 6.5 资源管理（调度/资源超卖） | 仅 Replicas 伸缩；超卖/调度未做（audit-m02 §4） |
 | P2 | Flannel/边缘容器网络（缺口 6） | M2 交付物从未实现（Docker bridge 方案），需明确关闭或排期 CNI（audit-m02 §4） |
 | P2 | 4.4 压缩显式延后登记 | 压缩未实现（计划内延后 gzip M2+/Protobuf M4+），补显式延后跟踪（audit-m02 §4） |
 | P2 | M3A 审查 P2 项×6 | byDevice 路由含 namespace、多实例 Mapper、空 deviceName 校验、LastReportedAt 单调性、502 Desired 分叉、无 TTL/GC（见 CODE-REVIEW-M3A.md） |
 | P2 | M1C 审查 P2 项×5 | pending 交叉清理/ErrAckFailed→502/context 取消/非原子/云端 operation 校验（见 CODE-REVIEW-M1C.md；其中 pending 交叉清理与 502 映射已在 8321b0e 修复） |
 | P2 | M1B 审查 P2 项×9 | LIKE 转义/WAL checkpoint/Offline TTL/WriteTimeout 等（见 CODE-REVIEW-M1B.md） |
-| P2 | 多架构发布镜像补 linux-arm64 二进制 | release/v0.1.0 仅 darwin-arm64 + linux-amd64 二进制；边缘 arm64 平台需自行交叉编译（audit-m35 G13） |
+| ~~P2~~ ✅ | 多架构发布镜像补 linux-arm64 二进制 | 已闭环：release/v0.1.0/ 新增 cloudcore/edgecore/keadm linux-arm64 交叉编译二进制 + checksums 更新（本轮） |
 | P3 | 日志级别过滤（SetLevel） | pkg/log 的 Level 目前仅前缀标记，后续模块需要时实现 |
 | P3 | M1 通道 P3 项×4 | newID 忽略 rand 错误 / Shutdown 撞 Start 初始化窗口 / 被踢连接标志延迟清除 / 退避重置缺单测（见 CODE-REVIEW-M1.md） |
 | P2 | M4C 审查 P2-⑥ :latest immutable / cosign / SBOM | SBOM 已补（M5）；cosign 签名延后：需镜像仓库 + cosign 签名基础设施；风险已登记 MULTIARCH.md §5（处置台账见 4K 节） |

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EdgeFlow 未完成开发项收尾交付报告（2026-08-15）</title>
+<style>
+  :root { --ink:#111; --gray:#555; --line:#ddd; --bg:#fff; --accent:#1a1a1a; --ok:#0a7d3c; --warn:#b3541e; --todo:#8a6d00; --panel:#f6f6f4; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,"PingFang SC","Helvetica Neue",sans-serif; color:var(--ink); background:var(--bg); line-height:1.65; padding:48px 24px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  header { border-bottom:3px solid var(--ink); padding-bottom:20px; margin-bottom:32px; }
+  h1 { font-size:26px; font-weight:700; letter-spacing:-0.01em; }
+  .meta { color:var(--gray); font-size:13px; margin-top:8px; }
+  h2 { font-size:18px; font-weight:700; margin:36px 0 14px; padding-left:10px; border-left:4px solid var(--ink); }
+  h3 { font-size:15px; font-weight:600; margin:20px 0 8px; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; margin:10px 0 18px; }
+  th { text-align:left; background:var(--panel); border-top:2px solid var(--ink); border-bottom:1px solid var(--ink); padding:8px 10px; font-weight:600; }
+  td { border-bottom:1px solid var(--line); padding:8px 10px; vertical-align:top; }
+  tr:last-child td { border-bottom:2px solid var(--ink); }
+  code { font-family:"SF Mono",Menlo,monospace; font-size:12.5px; background:var(--panel); padding:1px 5px; border-radius:3px; }
+  pre { background:#fafaf8; border:1px solid var(--line); border-left:3px solid var(--ink); padding:12px 14px; font-size:12.5px; overflow-x:auto; margin:10px 0 18px; line-height:1.5; }
+  pre code { background:none; padding:0; }
+  .badge { display:inline-block; font-size:12px; font-weight:600; padding:2px 9px; border-radius:999px; border:1px solid; }
+  .b-ok { color:var(--ok); border-color:var(--ok); background:#f0faf3; }
+  .b-wait { color:var(--warn); border-color:var(--warn); background:#fdf4ec; }
+  .b-todo { color:var(--todo); border-color:var(--todo); background:#fdf9e8; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; margin:14px 0 20px; }
+  .card { border:1px solid var(--line); border-top:3px solid var(--ink); padding:14px 16px; background:var(--panel); }
+  .card .num { font-size:24px; font-weight:700; }
+  .card .lbl { font-size:12.5px; color:var(--gray); margin-top:2px; }
+  .note { font-size:13px; color:var(--gray); }
+  ul { padding-left:20px; font-size:13.5px; margin:6px 0 14px; }
+  li { margin:4px 0; }
+  .footer { margin-top:44px; padding-top:14px; border-top:1px solid var(--line); font-size:12px; color:var(--gray); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>EdgeFlow 未完成开发项收尾交付报告</h1>
+    <div class="meta">2026-08-15 · 依据：收尾审计报告（docs/收尾审计报告.html）+ CLOSE-OUT-ACTIONS.md 剩余项 · 完成度：P2 未完成项 6/6 闭环，P3 3/3（其中 C7 待用户操作）</div>
+  </header>
+
+  <div class="cards">
+    <div class="card"><div class="num">9</div><div class="lbl">开发/文档项完成（含附加 arm64 二进制）</div></div>
+    <div class="card"><div class="num">0</div><div class="lbl">回归缺陷（lint / 全量测试 / DEMO PASS）</div></div>
+    <div class="card"><div class="num">0</div><div class="lbl">镜像漏洞（Trivy 复扫，修复前 10 个）</div></div>
+    <div class="card"><div class="num">1</div><div class="lbl">待用户操作（C7 GitHub 关联）</div></div>
+  </div>
+
+  <h2>1. 完成项总览</h2>
+  <table>
+    <tr><th>#</th><th>任务</th><th>状态</th><th>验证证据</th></tr>
+    <tr><td>B1</td><td>7.3 设备认证（Token 消费）</td><td><span class="badge b-ok">完成</span></td><td>单测 6 项 PASS；hack/token-auth-check.sh 真实进程验证 3 场景（正确 token 注册 / 错误、缺失被拒 / 无注册表污染）</td></tr>
+    <tr><td>B3</td><td>keadm 批量操作</td><td><span class="badge b-ok">完成</span></td><td>单测 5 项 PASS；真实运行 2 节点批量 join（清单行 IP 覆盖验证）</td></tr>
+    <tr><td>B4</td><td>CRD manifest yaml</td><td><span class="badge b-ok">确认完成</span></td><td>config/crd/ 3 个 CRD 与 Go 类型字段一致；A7 kind 集群已 apply（b809e30）</td></tr>
+    <tr><td>B6</td><td>10.4 镜像安全扫描</td><td><span class="badge b-ok">完成</span></td><td>Trivy 0.74.0：x/net v0.44.0 10 漏洞（5H+5M）→ 升级 v0.56.0 → 重建 → 两镜像 0 漏洞；docs/SECURITY-SCAN.md</td></tr>
+    <tr><td>B7</td><td>10.3 API 兼容矩阵</td><td><span class="badge b-ok">完成</span></td><td>docs/API-COMPATIBILITY.md（13 REST + 9 消息 + 3 CRD + 变更登记）</td></tr>
+    <tr><td>B8</td><td>跨主机 CA 分发自动化</td><td><span class="badge b-ok">完成</span></td><td>gen-certs.sh CERT_DIST_DIR 分发包：结构完整、私钥 0600、openssl verify 链验证 OK</td></tr>
+    <tr><td>C3</td><td>待办清单清理</td><td><span class="badge b-ok">完成</span></td><td>PROGRESS.md §5 六项闭环回写</td></tr>
+    <tr><td>C6</td><td>里程碑归属偏移回写</td><td><span class="badge b-ok">确认完成</span></td><td>ROADMAP §3 注已标注 2.4/4.5/5.2/8.6 → M4（b809e30）</td></tr>
+    <tr><td>附加</td><td>linux-arm64 发布二进制</td><td><span class="badge b-ok">完成</span></td><td>release/v0.1.0/ 新增 3 个 arm64 二进制（ELF aarch64 静态链接，版本注入验证），checksums 更新</td></tr>
+    <tr><td>C7</td><td>GitHub 远程关联 + CI 首跑</td><td><span class="badge b-todo">需用户操作</span></td><td>SSH 公钥已存在；无 git remote；步骤见交接文档 §5.1</td></tr>
+  </table>
+
+  <h2>2. 回归检查（无新增破坏）</h2>
+  <table>
+    <tr><th>检查</th><th>结果</th></tr>
+    <tr><td>make lint</td><td>✅ 0 issues（修复 1 处新代码 errcheck）</td></tr>
+    <tr><td>make test 全量</td><td>✅ 全部包 PASS（含 tests/e2e 204.6s；keadm 76.9% 覆盖）</td></tr>
+    <tr><td>examples/demo.sh 端到端</td><td>✅ DEMO PASS（注册→Pod→设备→指令→MQTT 数据面→清理）</td></tr>
+    <tr><td>hack/token-auth-check.sh</td><td>✅ 3 场景全过（B1 新增验证脚本）</td></tr>
+  </table>
+
+  <h2>3. 关键部署方式</h2>
+  <h3>3.1 设备认证启用（B1）</h3>
+  <pre><code># 云端
+export EDGEFLOW_CLOUDCORE_NODE_TOKEN=&lt;共享令牌&gt;
+bin/cloudcore --port 8080
+# 边缘（keadm join 自动写入；或手动）
+export EDGEFLOW_EDGECORE_TOKEN=&lt;同一令牌&gt;
+bin/edgecore</code></pre>
+  <p class="note">未设置云端令牌时保持 M1-M3 行为（不校验，向后兼容）。</p>
+
+  <h3>3.2 keadm 批量操作（B3）</h3>
+  <pre><code>printf 'node-a\nnode-b,192.168.1.20\n' &gt; nodes.txt
+keadm batch --op=join --file=nodes.txt --cloudcore-ip=192.168.1.10 --token=&lt;t&gt;
+keadm batch --op=upgrade --file=dirs.txt --version=v0.2.0
+keadm batch --op=rollback --file=dirs.txt --latest</code></pre>
+
+  <h3>3.3 镜像扫描（B6）/ CA 分发（B8）/ CRD（B4）</h3>
+  <pre><code>trivy image --scanners vuln --severity CRITICAL,HIGH,MEDIUM edgeflow/edgecore:v0.1.0
+
+CERT_DIR=/etc/edgeflow/certs CERT_DIST_DIR=./certs-dist CLIENT_CN=edge-node-x bash hack/gen-certs.sh
+scp -r certs-dist/edge/edge-node-x user@edge-host:/etc/edgeflow/
+
+kubectl apply -f config/crd/edgenodes.edgeflow.io.yaml  # + devicemodels + devices</code></pre>
+
+  <h2>4. 回滚方案（摘要）</h2>
+  <table>
+    <tr><th>改动</th><th>回滚</th></tr>
+    <tr><td>B1 设备认证</td><td>unset EDGEFLOW_CLOUDCORE_NODE_TOKEN 重启即恢复不校验；代码 git revert 本轮 commit（token 为可选字段）</td></tr>
+    <tr><td>B3 keadm batch</td><td>新子命令无状态残留，删除清单/产物即可</td></tr>
+    <tr><td>B6 依赖+镜像</td><td>docker tag 回退旧 digest；go get golang.org/x/net@v0.44.0</td></tr>
+    <tr><td>B7/B8/C3/C6/arm64</td><td>文档/脚本/发布目录文件，删除或 git revert 即回退</td></tr>
+  </table>
+
+  <h2>5. 剩余事项</h2>
+  <ul>
+    <li><strong>C7（唯一阻塞项，需用户）</strong>：GitHub 添加 ~/.ssh/id_ed25519.pub → 提供仓库地址 → git remote add origin → push → 确认 CI 绿勾。</li>
+    <li>打 v0.1.0 git tag（当前 HEAD 即发布内容）。</li>
+    <li>镜像推送远程 registry 后对远程 tag 重扫一次（本地已 0 漏洞）。</li>
+    <li>生产部署前置项已齐（RBAC/可观测性/扫描/多架构/真实集群路径），按 CLOSE-OUT-HANDOFF.md 阶段 3 执行。</li>
+  </ul>
+
+  <div class="footer">EdgeFlow · 收尾交付 2026-08-15 · 台账 docs/CLOSE-OUT-ACTIONS.md · 交接 docs/CLOSE-OUT-DELIVERY-20260815.md</div>
+</div>
+</body>
+</html>

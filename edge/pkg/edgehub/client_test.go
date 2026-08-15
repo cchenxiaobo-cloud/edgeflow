@@ -227,7 +227,6 @@ func waitStatus(t *testing.T, ch <-chan bool, want bool) {
 func TestRegisterOnConnect(t *testing.T) {
 	mock := startMockCloud(t, mockConfig{})
 	client := New(Options{CloudAddr: mock.url, NodeID: "test-node-001"})
-
 	statusCh := make(chan bool, 8)
 	client.SetStatusHandler(func(v bool) { statusCh <- v })
 	client.Start()
@@ -266,6 +265,10 @@ func TestRegisterOnConnect(t *testing.T) {
 	if runtime.GOOS == "linux" && p.Memory == 0 {
 		t.Errorf("payload.memory 在 Linux 上不应为 0")
 	}
+	// WBS 7.3：未配置 Token 时 Register payload 的 token 字段为空（向后兼容）
+	if p.Token != "" {
+		t.Errorf("未配置 token 时 payload.token = %q，期望空", p.Token)
+	}
 
 	// 注册成功后：状态回调 true + IsConnected 为 true + nodeName 已记录
 	waitStatus(t, statusCh, true)
@@ -274,6 +277,24 @@ func TestRegisterOnConnect(t *testing.T) {
 	}
 	if got := client.NodeName(); got != "cloud-test-node-001" {
 		t.Errorf("NodeName() = %q，期望云端分配的 cloud-test-node-001", got)
+	}
+}
+
+// TestRegisterCarriesToken 验证 WBS 7.3：Options.Token 非空时，
+// Register 消息负载携带相同 token 供云端校验。
+func TestRegisterCarriesToken(t *testing.T) {
+	mock := startMockCloud(t, mockConfig{})
+	client := New(Options{CloudAddr: mock.url, NodeID: "test-node-tok", Token: "edge-secret-1"})
+	client.Start()
+	defer client.Stop()
+
+	msg := mock.waitRegister(t)
+	var p RegisterPayload
+	if err := msg.DecodePayload(&p); err != nil {
+		t.Fatalf("解析 Register 负载失败: %v", err)
+	}
+	if p.Token != "edge-secret-1" {
+		t.Errorf("payload.token = %q，期望 edge-secret-1", p.Token)
 	}
 }
 

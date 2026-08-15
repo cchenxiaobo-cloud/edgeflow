@@ -123,7 +123,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		log.Infof("CloudHub TLS 已启用（certDir=%s, mTLS: 强制要求并验证客户端证书）", certDir)
 	}
-	hub := cloudhub.New(fmt.Sprintf(":%d", hubPort), cloudhub.WithTLS(hubTLS))
+	hub := cloudhub.New(fmt.Sprintf(":%d", hubPort), cloudhub.WithTLS(hubTLS),
+		// WBS 7.3 设备认证：EDGEFLOW_CLOUDCORE_NODE_TOKEN 非空时启用节点接入
+		// 令牌校验（edgecore 注册必须携带相同 token）；未设置保持向后兼容。
+		cloudhub.WithNodeToken(os.Getenv("EDGEFLOW_CLOUDCORE_NODE_TOKEN")))
 
 	// 节点注册表（内存态）与 CloudHub 事件桥接：
 	// 节点注册/心跳/断开时实时维护节点元数据，供查询 API 使用。

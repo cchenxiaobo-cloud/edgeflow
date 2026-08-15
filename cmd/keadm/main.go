@@ -37,6 +37,7 @@ const usageText = `keadm 是 EdgeFlow 的安装管理 CLI（WBS 8.6 基础版）
   upgrade  升级边缘产物版本（备份产物 + 更新版本标记 + 台账，WBS 10.2）
   rollback 从备份回滚边缘产物（--backup=<id> 或 --latest，WBS 10.2）
   ops-ledger 查询操作台账（ops-ledger.jsonl，最近 N 条默认 20，WBS 10.2）
+  batch    批量操作（读清单文件逐节点 join/upgrade/rollback，WBS 8.6）
   reset    清理 output-dir 下的 keadm 生成产物（确认后删除，幂等）
   version  打印版本信息
 
@@ -51,6 +52,9 @@ const usageText = `keadm 是 EdgeFlow 的安装管理 CLI（WBS 8.6 基础版）
   keadm upgrade --version=v0.2.0 --simulate-failure --output-dir=./keadm-out
   keadm rollback --latest --output-dir=./keadm-out
   keadm ops-ledger --output-dir=./keadm-out
+  keadm batch --op=join --file=nodes.txt --cloudcore-ip=192.168.1.10 --token=abc123
+  keadm batch --op=upgrade --file=dirs.txt --version=v0.2.0
+  keadm batch --op=rollback --file=dirs.txt --latest
   keadm reset --output-dir=./keadm-out --force
 `
 
@@ -88,6 +92,8 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 		return runRollback(rest, stdout, stderr)
 	case "ops-ledger":
 		return runOpsLedger(rest, stdout, stderr)
+	case "batch":
+		return runBatch(rest, stdout, stderr)
 	case "reset":
 		return runReset(rest, stdout, stderr, stdin)
 	case "version":

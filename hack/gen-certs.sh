@@ -77,7 +77,7 @@ else
   if [[ -e "$SERVER_CRT" || -e "$SERVER_KEY" ]]; then
     die "cloudcore 证书/私钥不完整（只存在其一），请人工检查 $CERT_DIR"
   fi
-  if [ -n "$TLS_SAN" ]; then
+  if [ -n "${TLS_SAN:-}" ]; then
     SAN_LIST="$TLS_SAN"
     log "签发 cloudcore 服务端证书（CN=cloudcore，${LEAF_DAYS} 天，SAN 自定义: $TLS_SAN）..."
   else
@@ -125,3 +125,45 @@ fi
 
 log "证书就绪：$CERT_DIR"
 ls -l "$CERT_DIR"
+
+# ---------- 4. 跨主机分发包（WBS 7.3/B8 跨主机 CA 分发自动化）----------
+# 设置 CERT_DIST_DIR 后生成可分发目录（不打包，便于 inspect；scp -r 或 tar 即可搬运）：
+#   <CERT_DIST_DIR>/cloud/    → cloudcore 主机：ca.crt + cloudcore.crt + cloudcore.key + README
+#   <CERT_DIST_DIR>/edge/<CN>/ → edgecore 主机：ca.crt + edgecore.crt + edgecore.key + README
+# 每生成一个边缘分发包，指定 CLIENT_CN（默认 edgeflow-edgecore）与独立 CERT_DIR/CERT_DIST_DIR。
+# 安全提示：分发包含私钥，传输必须走加密通道（scp/rsync 或先 tar 再加密）；
+# 部署后私钥权限须为 0600（edgecore 启动要求）。
+if [ -n "${CERT_DIST_DIR:-}" ]; then
+  mkdir -p "$CERT_DIST_DIR/cloud" "$CERT_DIST_DIR/edge/$CLIENT_CN"
+  cp "$CA_CRT" "$CERT_DIST_DIR/cloud/"
+  cp "$SERVER_CRT" "$SERVER_KEY" "$CERT_DIST_DIR/cloud/"
+  cp "$CA_CRT" "$CERT_DIST_DIR/edge/$CLIENT_CN/"
+  cp "$CLIENT_CRT" "$CLIENT_KEY" "$CERT_DIST_DIR/edge/$CLIENT_CN/"
+  chmod 600 "$CERT_DIST_DIR/cloud/"*.key "$CERT_DIST_DIR/edge/$CLIENT_CN/"*.key
+  cat > "$CERT_DIST_DIR/cloud/README.txt" <<EOF
+EdgeFlow 云端证书分发包（由 hack/gen-certs.sh 生成，CN=$CLIENT_CN）
+
+部署目标：cloudcore 主机
+部署路径（与 pkg/certs 默认布局一致）：
+  /etc/edgeflow/certs/ca.crt
+  /etc/edgeflow/certs/cloudcore.crt
+  /etc/edgeflow/certs/cloudcore.key   (chmod 600)
+
+cloudcore 启动参数：--certs-dir=/etc/edgeflow/certs（或 EDGEFLOW_CLOUDCORE_CERTS_DIR）
+轮换：重新执行 gen-certs.sh 后重新分发；私钥泄露时全量重签（删除 CERT_DIR 后重跑）。
+EOF
+  cat > "$CERT_DIST_DIR/edge/$CLIENT_CN/README.txt" <<EOF
+EdgeFlow 边缘节点证书分发包（节点 CN=$CLIENT_CN，由 hack/gen-certs.sh 生成）
+
+部署目标：edgecore 主机（本包只含本节点证书）
+部署路径：
+  /etc/edgeflow/certs/ca.crt
+  /etc/edgeflow/certs/edgecore.crt
+  /etc/edgeflow/certs/edgecore.key   (chmod 600)
+
+edgecore 启动参数：EDGEFLOW_EDGECORE_TLS=on + --certs-dir=/etc/edgeflow/certs
+分发方式：scp -r "$CERT_DIST_DIR/edge/$CLIENT_CN" user@edge-host:/etc/edgeflow/
+轮换：同云端分发包；多节点各自生成（CLIENT_CN 不同）后分发。
+EOF
+  log "分发包已生成：$CERT_DIST_DIR（cloud/ 与 edge/$CLIENT_CN/，含 README 部署说明）"
+fi

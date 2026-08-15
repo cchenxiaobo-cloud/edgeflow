@@ -55,6 +55,16 @@ func deviceKeyOf(namespace, deviceName string) deviceKey {
 // 数据保留策略：节点断开时不清空其设备状态（与 podstatus 一致），
 // 便于查询 API 展示节点离线前的最后状态；待后续接入 apiserver 后由
 // TTL/GC 策略取代。
+//
+// 注意（CODE-REVIEW-M1B P2-3 联动结论）：本存储与 registry 的节点
+// 保留策略不对称——registry 的 Offline 节点超过保留时长（默认 24h）会被
+// 惰性 GC 清理，而本存储的设备记录没有对等的自动清理，节点长期离线后
+// 会留下孤儿设备数据。这里刻意不加"最后上报时间（LastReportedAt）超时"
+// 的 TTL：设备缺席上报不等于节点离线（采集失败只跳过、仅指令未上报的
+// 记录 LastReportedAt=0），按设备时间戳清理会误删在线节点的状态与期望值。
+// 正确的清理信号是节点生命周期（registry 的 MarkOffline），但该信号有两
+// 个来源（断开事件与 nodecontroller 心跳停滞扫描），且均不在本包内；
+// 待 apiserver 迁移后由节点对象的 TTL/驱逐统一收敛（见文末迁移点）。
 type DeviceStatusStore struct {
 	mu      sync.RWMutex
 	devices map[string]map[deviceKey]DeviceStatus // nodeID → (deviceKey → DeviceStatus)

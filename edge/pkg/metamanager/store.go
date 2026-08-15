@@ -215,10 +215,28 @@ func (s *Store) Delete(key string) error {
 
 // List 列出指定前缀下的全部键值对，按 key 升序返回。
 // 前缀为空时返回全表内容。供节点状态、未来 Pod/Config 元数据复用。
+//
+// 实现说明：用 key 范围扫描（key >= prefix AND key < prefix 的严格上界）
+// 替代 SQL LIKE——LIKE 会把 prefix 中的 %/_ 当作通配符（nodeID 含这些字符
+// 时误匹配），且对 ASCII 大小写不敏感（把不同大小写的 key 混为一谈）；
+// 范围比较走 SQLite 默认 BINARY 排序规则，大小写敏感、无通配符语义，
+// 与 Get 的 key = ? 判定一致。上界由 prefixUpperBound 计算（最后一个非
+// 0xff 字节加一、截断后缀），保证 [prefix, upper) 恰好覆盖"以 prefix 开头"
+// 的全部 key；前缀为空或全为 0xff 时无有限上界，退化为 key >= prefix
+// （此时该条件恰好等价于"以 prefix 开头"）。
 func (s *Store) List(prefix string) ([]KVEntry, error) {
-	rows, err := s.db.Query(
-		fmt.Sprintf("SELECT key, value, updated_at FROM %s WHERE key LIKE ? ORDER BY key", metaTableName),
-		prefix+"%")
+	upper, hasUpper := prefixUpperBound(prefix)
+	var rows *sql.Rows
+	var err error
+	if hasUpper {
+		rows, err = s.db.Query(
+			fmt.Sprintf("SELECT key, value, updated_at FROM %s WHERE key >= ? AND key < ? ORDER BY key", metaTableName),
+			prefix, upper)
+	} else {
+		rows, err = s.db.Query(
+			fmt.Sprintf("SELECT key, value, updated_at FROM %s WHERE key >= ? ORDER BY key", metaTableName),
+			prefix)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("查询前缀 %s 失败: %w", prefix, err)
 	}
@@ -236,6 +254,22 @@ func (s *Store) List(prefix string) ([]KVEntry, error) {
 		return nil, fmt.Errorf("遍历查询结果失败: %w", err)
 	}
 	return entries, nil
+}
+
+// prefixUpperBound 计算前缀扫描的严格上界：从末尾向前找到最后一个非 0xff
+// 字节并加一、截断其后缀（如 "ab\xff" → "ac"）。这样 [prefix, upper)
+// 恰好等于全部以 prefix 开头的 key（含 prefix 自身与 prefix+0xff… 形态）。
+// 前缀为空或全为 0xff 时没有有限上界，返回 hasUpper=false（此时
+// key >= prefix 本身就等价于"以 prefix 开头"，调用方无需上界条件）。
+func prefixUpperBound(prefix string) (upper string, hasUpper bool) {
+	b := []byte(prefix)
+	for i := len(b) - 1; i >= 0; i-- {
+		if b[i] != 0xff {
+			b[i]++
+			return string(b[:i+1]), true
+		}
+	}
+	return "", false
 }
 
 // SaveNodeInfo 把节点注册信息（JSON 字符串）落盘，key 为 node:info:<nodeID>。

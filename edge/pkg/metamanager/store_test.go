@@ -244,3 +244,107 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 		t.Errorf("重启后 journal_mode = %q, %v，期望 wal", mode, err)
 	}
 }
+
+// TestListPrefixRangeSemantics 验证 List 的范围扫描语义（替代 LIKE 后的
+// 回归锚点，对应 CODE-REVIEW-M1B P2-1）：
+//  1. prefix 含 %/_ 时按字面匹配，不作为通配符；
+//  2. 大小写敏感（LIKE 对 ASCII 大小写不敏感，范围比较不会混同）；
+//  3. 空前缀返回全表；
+//  4. 前缀尾部 0xff 的极端形态仍精确覆盖"以 prefix 开头"。
+func TestListPrefixRangeSemantics(t *testing.T) {
+	s := newTestStore(t)
+
+	keys := []string{
+		"node:info:a_b",   // 含下划线
+		"node:info:aXb",   // 下划线的"近亲"：LIKE 'a_b%' 会误匹配
+		"node:info:a%bc",  // 含百分号
+		"node:info:abc",   // 正常节点
+		"node:info:ABC",   // 大小写变体：LIKE 'abc%' 会误匹配
+		"other:node:info", // 前缀外
+	}
+	for i, k := range keys {
+		if err := s.Put(k, "v"+string(rune('0'+i))); err != nil {
+			t.Fatalf("Put(%q) 失败: %v", k, err)
+		}
+	}
+
+	// 含通配符的前缀必须按字面精确匹配
+	for _, prefix := range []string{"node:info:a_b", "node:info:a%bc"} {
+		entries, err := s.List(prefix)
+		if err != nil {
+			t.Fatalf("List(%q) 失败: %v", prefix, err)
+		}
+		if len(entries) != 1 || entries[0].Key != prefix {
+			t.Errorf("List(%q) = %v，期望只命中自身", prefix, entryKeys(entries))
+		}
+	}
+
+	// 大小写敏感：List("node:info:abc") 只命中小写，不命中 ABC
+	entries, err := s.List("node:info:abc")
+	if err != nil {
+		t.Fatalf("List(abc) 失败: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Key != "node:info:abc" {
+		t.Errorf("List(abc) = %v，期望只命中小写（大小写敏感）", entryKeys(entries))
+	}
+
+	// 空前缀 = 全表（与文档语义一致）
+	entries, err = s.List("")
+	if err != nil {
+		t.Fatalf("List(\"\") 失败: %v", err)
+	}
+	if len(entries) != len(keys) {
+		t.Errorf("List(\"\") 长度 = %d，期望 %d（全表）", len(entries), len(keys))
+	}
+
+	// 前缀尾部 0xff：范围上界进位逻辑（"k\xff" 的上界是 "l"）
+	for _, k := range []string{"k\xff", "k\xff\x00", "k\xff\xff"} {
+		if err := s.Put(k, "vxff"); err != nil {
+			t.Fatalf("Put(%q) 失败: %v", k, err)
+		}
+	}
+	if err := s.Put("k\xfe", "vfe"); err != nil { // 低于下界，不应命中
+		t.Fatalf("Put(k\\xfe) 失败: %v", err)
+	}
+	entries, err = s.List("k\xff")
+	if err != nil {
+		t.Fatalf("List(k\\xff) 失败: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Errorf("List(k\\xff) 长度 = %d，期望 3（k\\xff、k\\xff\\x00、k\\xff\\xff），实际 %v",
+			len(entries), entryKeys(entries))
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Key, "k\xff") {
+			t.Errorf("List(k\\xff) 命中了非前缀 key: %q", e.Key)
+		}
+	}
+
+	// 全 0xff 前缀：无有限上界分支（key >= "\xff" 恰为"以 \\xff 开头"）
+	for _, k := range []string{"\xff", "\xff\x01", "\xff\xfe\xff"} {
+		if err := s.Put(k, "vxff"); err != nil {
+			t.Fatalf("Put(%q) 失败: %v", k, err)
+		}
+	}
+	entries, err = s.List("\xff")
+	if err != nil {
+		t.Fatalf("List(\\xff) 失败: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Errorf("List(\\xff) 长度 = %d，期望 3（\\xff、\\xff\\x01、\\xff\\xfe\\xff），实际 %v", len(entries), entryKeys(entries))
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Key, "\xff") {
+			t.Errorf("List(\\xff) 命中了非前缀 key: %q", e.Key)
+		}
+	}
+}
+
+// entryKeys 提取 KVEntry 的 key 列表（断言辅助）。
+func entryKeys(entries []KVEntry) []string {
+	keys := make([]string, 0, len(entries))
+	for _, e := range entries {
+		keys = append(keys, e.Key)
+	}
+	return keys
+}

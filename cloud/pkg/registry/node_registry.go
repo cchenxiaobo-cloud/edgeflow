@@ -49,14 +49,44 @@ type NodeInfo struct {
 // 并发安全：所有方法内部加锁，可在任意 goroutine（CloudHub 连接处理、
 // HTTP 请求处理）中并发调用。Get/List 返回值的拷贝，调用方修改不会
 // 污染注册表内部状态。
+//
+// Offline 节点保留策略：节点断开（MarkOffline）后元数据默认保留
+// OfflineTTLDefault（24h），供查询 API 展示最近离线的节点；超过保留时长
+// 的 Offline 节点在后续任意写操作（Register/UpdateHeartbeat/MarkOffline）
+// 触发惰性 GC 时被移除，避免 nodes map 对"历史上连过的一切 nodeID"
+// 只增不减（CODE-REVIEW-M1B P2-3）。GC 只删除 Offline 节点，Ready/
+// Unknown 节点不受影响；保留时长可用 WithOfflineTTL 调整，传 0 禁用。
 type Registry struct {
-	mu    sync.RWMutex
-	nodes map[string]*NodeInfo // nodeID → 节点信息
+	mu           sync.RWMutex
+	nodes        map[string]*NodeInfo // nodeID → 节点信息
+	offlineSince map[string]int64     // nodeID → 标记离线的时间戳（毫秒）
+	offlineTTL   time.Duration        // Offline 节点保留时长；<=0 表示禁用 GC
 }
 
-// New 创建空注册表。
-func New() *Registry {
-	return &Registry{nodes: make(map[string]*NodeInfo)}
+// OfflineTTLDefault 是 Offline 节点的默认保留时长（24h）：超过该时长未
+// 重新上线的 Offline 节点会被惰性 GC 清理。
+const OfflineTTLDefault = 24 * time.Hour
+
+// Option 是 Registry 构造选项。
+type Option func(*Registry)
+
+// WithOfflineTTL 设置 Offline 节点的保留时长；ttl <= 0 表示禁用 TTL/GC
+// （Offline 节点永久保留，等同旧行为）。
+func WithOfflineTTL(ttl time.Duration) Option {
+	return func(r *Registry) { r.offlineTTL = ttl }
+}
+
+// New 创建空注册表，默认启用 Offline TTL（OfflineTTLDefault）。
+func New(opts ...Option) *Registry {
+	r := &Registry{
+		nodes:        make(map[string]*NodeInfo),
+		offlineSince: make(map[string]int64),
+		offlineTTL:   OfflineTTLDefault,
+	}
+	for _, o := range opts {
+		o(r)
+	}
+	return r
 }
 
 // Register 登记节点（节点注册成功时由事件源调用）。
@@ -79,6 +109,10 @@ func (r *Registry) Register(info NodeInfo) {
 	}
 	info.Status = StatusReady
 	r.nodes[info.NodeID] = &info
+	// 重新上线：清除离线标记，避免残留的 offlineSince 在后续 GC 中被误判
+	delete(r.offlineSince, info.NodeID)
+	// 惰性 GC：写入路径顺带清理过期 Offline 节点（新节点状态为 Ready，不受影响）
+	r.gcLocked(now)
 }
 
 // UpdateHeartbeat 刷新节点心跳时间并把状态置回 Ready；节点不存在时忽略。
@@ -87,21 +121,52 @@ func (r *Registry) UpdateHeartbeat(nodeID string, ts int64) {
 	if ts == 0 {
 		ts = time.Now().UnixMilli()
 	}
+	now := time.Now().UnixMilli()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if n, ok := r.nodes[nodeID]; ok {
 		n.LastHeartbeatAt = ts
 		n.Status = StatusReady
+		// 恢复在线：清除离线标记
+		delete(r.offlineSince, nodeID)
 	}
+	r.gcLocked(now)
 }
 
 // MarkOffline 标记节点离线（连接断开时由事件源调用），保留元数据供查询；
-// 节点不存在时忽略。
+// 节点不存在时忽略。离线时刻被记录用于 TTL/GC。
 func (r *Registry) MarkOffline(nodeID string) {
+	now := time.Now().UnixMilli()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if n, ok := r.nodes[nodeID]; ok {
 		n.Status = StatusOffline
+		r.offlineSince[nodeID] = now
+	}
+	r.gcLocked(now)
+}
+
+// gcLocked 惰性清理：删除离线时长 >= offlineTTL 的节点（调用方须已持写锁）。
+// 只处理 StatusOffline 节点，Ready/Unknown 节点即使 offlineSince 有残留
+// 也不会被误删（防御：offlineSince 缺失的 Offline 节点同样跳过，避免误删）。
+// ttl <= 0 表示禁用，直接返回。
+func (r *Registry) gcLocked(now int64) {
+	if r.offlineTTL <= 0 {
+		return
+	}
+	ttlMs := r.offlineTTL.Milliseconds()
+	for id, n := range r.nodes {
+		if n.Status != StatusOffline {
+			continue
+		}
+		since, ok := r.offlineSince[id]
+		if !ok {
+			continue // 无离线记录：跳过，不猜删
+		}
+		if now-since >= ttlMs {
+			delete(r.nodes, id)
+			delete(r.offlineSince, id)
+		}
 	}
 }
 

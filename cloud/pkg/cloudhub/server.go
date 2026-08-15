@@ -535,6 +535,13 @@ func (s *Server) monitor(c *conn) {
 // dispatch 解码并分发消息：Register/Heartbeat/Ack 之外的类型 M1 暂不支持。
 // 解码走 DecodeCompressed：带压缩 magic 的帧自动解压，明文帧回落原路径
 // （旧版本互操作，见 pkg/protocol/compress.go）。
+//
+// 安全说明（复核 M2）：接收侧容忍压缩帧是协商式兼容的基石（四象限
+// 互操作依赖发送侧门控、接收侧宽容）。未协商/未注册连接也能触发有界
+// 解压：WS 层 SetReadLimit(1MiB) 与解压层 MaxDecompressedBytes(1MiB)
+// 双重约束单帧解压工作量，无放大炸弹；分发仍走 handleRegister 等既有
+// 校验，无权限提升。无 mTLS 环境建议开启 EDGEFLOW_CLOUDCORE_NODE_TOKEN
+// 缓解匿名连接面。
 func (s *Server) dispatch(c *conn, data []byte) {
 	m, err := protocol.DecodeCompressed(data)
 	if err != nil {

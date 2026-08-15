@@ -135,13 +135,19 @@ func (r *Registry) UpdateHeartbeat(nodeID string, ts int64) {
 
 // MarkOffline 标记节点离线（连接断开时由事件源调用），保留元数据供查询；
 // 节点不存在时忽略。离线时刻被记录用于 TTL/GC。
+//
+// 决策：仅当节点首次从非离线状态转为离线时才记录 offlineSince——
+// 已处于 Offline 的节点重复收到 MarkOffline（如心跳超时扫描与连接断开
+// 双路径先后触发）不刷新离线时钟，TTL 自首次离线起算（复核 M1）。
 func (r *Registry) MarkOffline(nodeID string) {
 	now := time.Now().UnixMilli()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if n, ok := r.nodes[nodeID]; ok {
 		n.Status = StatusOffline
-		r.offlineSince[nodeID] = now
+		if _, existed := r.offlineSince[nodeID]; !existed {
+			r.offlineSince[nodeID] = now
+		}
 	}
 	r.gcLocked(now)
 }

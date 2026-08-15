@@ -116,6 +116,44 @@ func TestMarkOffline(t *testing.T) {
 	}
 }
 
+// TestMarkOfflineTwiceKeepsClock 验证重复 MarkOffline 不刷新离线时钟
+// （复核 M1）：已处于 Offline 的节点再次收到 MarkOffline（心跳超时扫描
+// 与连接断开双路径先后触发）时，offlineSince 保持首次离线时刻，
+// TTL/GC 自首次离线起算。
+func TestMarkOfflineTwiceKeepsClock(t *testing.T) {
+	r := New()
+	r.Register(sampleInfo("node-1"))
+	r.MarkOffline("node-1")
+	first, ok := r.offlineSince["node-1"]
+	if !ok {
+		t.Fatal("首次 MarkOffline 应记录 offlineSince")
+	}
+
+	// 再次标记离线：时钟不应被刷新
+	r.MarkOffline("node-1")
+	second, ok := r.offlineSince["node-1"]
+	if !ok {
+		t.Fatal("重复 MarkOffline 后 offlineSince 应仍存在")
+	}
+	if second != first {
+		t.Errorf("重复 MarkOffline 不应刷新离线时钟：first=%d second=%d", first, second)
+	}
+
+	// 恢复在线后再次离线：应重新记录（新离线周期）
+	r.UpdateHeartbeat("node-1", time.Now().UnixMilli())
+	if _, ok := r.offlineSince["node-1"]; ok {
+		t.Error("恢复在线应清除 offlineSince")
+	}
+	r.MarkOffline("node-1")
+	third, ok := r.offlineSince["node-1"]
+	if !ok {
+		t.Fatal("重新离线应重新记录 offlineSince")
+	}
+	if third < second {
+		t.Errorf("新离线周期时间戳不应小于旧值：second=%d third=%d", second, third)
+	}
+}
+
 // TestGetMissing 验证查询不存在的节点返回 false。
 func TestGetMissing(t *testing.T) {
 	r := New()

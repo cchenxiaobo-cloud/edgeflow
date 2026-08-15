@@ -223,3 +223,165 @@ func TestLoadFileUnreadable(t *testing.T) {
 		t.Errorf("错误信息应指向读取失败: %v", err)
 	}
 }
+
+// ---- WBS 2.7：CloudHub 端口（hubPort）解析与热重载入口 ----
+
+// TestLoadHubPortDefault 验证未配置 hubPort 时使用默认值 10000（来源=默认值）。
+func TestLoadHubPortDefault(t *testing.T) {
+	t.Setenv(PortEnvVar, "")
+	t.Setenv(HubPortEnvVar, "")
+
+	cfg, err := Load(writeFile(t, `{"port": 8080}`), 0, false)
+	if err != nil {
+		t.Fatalf("Load 不应报错: %v", err)
+	}
+	if cfg.HubPort != DefaultHubPort {
+		t.Errorf("HubPort = %d，期望默认值 %d", cfg.HubPort, DefaultHubPort)
+	}
+	if cfg.HubPortSource != SourceDefault {
+		t.Errorf("HubPort 来源 = %q，期望 %q", cfg.HubPortSource, SourceDefault)
+	}
+}
+
+// TestLoadHubPortFromFile 验证配置文件中的 hubPort 被正确读取。
+func TestLoadHubPortFromFile(t *testing.T) {
+	t.Setenv(PortEnvVar, "")
+	t.Setenv(HubPortEnvVar, "")
+
+	cfg, err := Load(writeFile(t, `{"port": 8080, "hubPort": 10001}`), 0, false)
+	if err != nil {
+		t.Fatalf("Load 不应报错: %v", err)
+	}
+	if cfg.HubPort != 10001 {
+		t.Errorf("HubPort = %d，期望 10001", cfg.HubPort)
+	}
+	if cfg.HubPortSource != SourceFile {
+		t.Errorf("HubPort 来源 = %q，期望 %q", cfg.HubPortSource, SourceFile)
+	}
+}
+
+// TestLoadHubPortFileZero 验证 hubPort 显式 0 = 随机端口（与 env 语义一致，测试用）。
+func TestLoadHubPortFileZero(t *testing.T) {
+	t.Setenv(PortEnvVar, "")
+	t.Setenv(HubPortEnvVar, "")
+
+	cfg, err := Load(writeFile(t, `{"port": 8080, "hubPort": 0}`), 0, false)
+	if err != nil {
+		t.Fatalf("Load 不应报错: %v", err)
+	}
+	if cfg.HubPort != 0 {
+		t.Errorf("HubPort = %d，期望 0（随机端口）", cfg.HubPort)
+	}
+}
+
+// TestLoadHubPortEnvOverride 验证环境变量 EDGEFLOW_CLOUDCORE_HUB_PORT
+// 覆盖配置文件与默认值。
+func TestLoadHubPortEnvOverride(t *testing.T) {
+	t.Setenv(PortEnvVar, "")
+	t.Setenv(HubPortEnvVar, "10002")
+
+	cfg, err := Load(writeFile(t, `{"port": 8080, "hubPort": 10001}`), 0, false)
+	if err != nil {
+		t.Fatalf("Load 不应报错: %v", err)
+	}
+	if cfg.HubPort != 10002 {
+		t.Errorf("HubPort = %d，期望 env 值 10002", cfg.HubPort)
+	}
+	if cfg.HubPortSource != SourceEnv {
+		t.Errorf("HubPort 来源 = %q，期望 %q", cfg.HubPortSource, SourceEnv)
+	}
+}
+
+// TestLoadHubPortFlagRetainsEnv 验证 --port 显式指定时 hubPort 仍由 env 解析
+// （与旧行为一致：--port 只锁定 HTTP 端口，CloudHub 端口独立配置）。
+func TestLoadHubPortFlagRetainsEnv(t *testing.T) {
+	t.Setenv(PortEnvVar, "")
+	t.Setenv(HubPortEnvVar, "10003")
+
+	cfg, err := Load(missingFile(t), 7070, true)
+	if err != nil {
+		t.Fatalf("Load 不应报错: %v", err)
+	}
+	if cfg.HubPort != 10003 {
+		t.Errorf("HubPort = %d，期望 env 值 10003", cfg.HubPort)
+	}
+}
+
+// TestLoadHubPortEnvInvalid 验证 hubPort 环境变量非法时返回错误（fail-fast）。
+func TestLoadHubPortEnvInvalid(t *testing.T) {
+	t.Setenv(PortEnvVar, "")
+	for _, tc := range []struct {
+		name string
+		env  string
+	}{
+		{"非数字", "notaport"},
+		{"越界上限", "70000"},
+		{"负数", "-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(HubPortEnvVar, tc.env)
+			_, err := Load(missingFile(t), 0, false)
+			if err == nil {
+				t.Fatalf("环境变量 %q 应报错", tc.env)
+			}
+			if !strings.Contains(err.Error(), HubPortEnvVar) {
+				t.Errorf("错误信息应包含环境变量名 %s: %v", HubPortEnvVar, err)
+			}
+		})
+	}
+}
+
+// TestLoadHubPortFileInvalid 验证配置文件 hubPort 越界时返回错误。
+func TestLoadHubPortFileInvalid(t *testing.T) {
+	t.Setenv(PortEnvVar, "")
+	t.Setenv(HubPortEnvVar, "")
+	for _, tc := range []struct {
+		name    string
+		content string
+	}{
+		{"越界上限", `{"port": 8080, "hubPort": 70000}`},
+		{"负数", `{"port": 8080, "hubPort": -1}`},
+		{"类型错误", `{"port": 8080, "hubPort": "10000"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeFile(t, tc.content), 0, false)
+			if err == nil {
+				t.Fatalf("文件 %s 应报错", tc.content)
+			}
+		})
+	}
+}
+
+// TestLoadReloadMissingFile 验证重载语义：配置文件不存在时返回错误
+// （保持旧配置），与启动语义（静默回落默认值）区分。
+func TestLoadReloadMissingFile(t *testing.T) {
+	t.Setenv(PortEnvVar, "")
+	t.Setenv(HubPortEnvVar, "")
+
+	_, err := LoadReload(missingFile(t), 0, false)
+	if err == nil {
+		t.Fatal("LoadReload(文件不存在) 应报错")
+	}
+	if !strings.Contains(err.Error(), "不存在") {
+		t.Errorf("错误信息应说明文件缺失: %v", err)
+	}
+
+	// 启动语义不受影响：Load 文件不存在仍静默回落默认值
+	if _, err := Load(missingFile(t), 0, false); err != nil {
+		t.Fatalf("Load(文件不存在) 不应报错: %v", err)
+	}
+}
+
+// TestLoadReloadEnvPriority 验证重载入口同样完整执行优先级链（env 覆盖保留）。
+func TestLoadReloadEnvPriority(t *testing.T) {
+	t.Setenv(PortEnvVar, "10010")
+	t.Setenv(HubPortEnvVar, "")
+
+	cfg, err := LoadReload(writeFile(t, `{"port": 9090}`), 0, false)
+	if err != nil {
+		t.Fatalf("LoadReload 不应报错: %v", err)
+	}
+	if cfg.Port != 10010 || cfg.PortSource != SourceEnv {
+		t.Errorf("重载时 env 覆盖应保留: port=%d source=%q", cfg.Port, cfg.PortSource)
+	}
+}

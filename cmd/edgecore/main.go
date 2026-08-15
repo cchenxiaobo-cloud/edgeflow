@@ -26,6 +26,7 @@ import (
 	"edgeflow/edge/pkg/eventbus"
 	"edgeflow/edge/pkg/metamanager"
 	"edgeflow/pkg/certs"
+	"edgeflow/pkg/config"
 	"edgeflow/pkg/log"
 	"edgeflow/pkg/protocol"
 	"edgeflow/pkg/version"
@@ -46,8 +47,9 @@ func main() {
 func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	fs := flag.NewFlagSet("edgecore", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	// 命令行参数：--version 打印版本信息后退出
+	// 命令行参数：--version 打印版本信息后退出；--config 覆盖配置文件路径
 	showVersion := fs.Bool("version", false, "打印版本信息后退出")
+	cfgPath := fs.String("config", config.EdgeCoreDefaultPath, "配置文件路径（JSON 格式，默认 config/edgecore.json）")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -58,12 +60,34 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 		return 0
 	}
 
-	// 加载配置（环境变量 EDGEFLOW_EDGECORE_NODE_ID / EDGEFLOW_EDGECORE_CLOUD_ADDR 可覆盖默认值）
+	// 加载配置（WBS 2.7）：环境变量 EDGEFLOW_EDGECORE_* > 配置文件
+	// config/edgecore.json（可用 --config 覆盖）> 默认值。
+	ecfg, err := config.LoadEdgeCore(*cfgPath)
+	if err != nil {
+		log.Errorf("配置加载失败: %v", err)
+		return 1
+	}
+	log.Infof("生效配置: cloudAddr=%s nodeID=%s podReportInterval=%v deviceReportInterval=%v reconcileInterval=%v",
+		ecfg.CloudAddr, ecfg.NodeID, ecfg.PodReportInterval, ecfg.DeviceReportInterval, ecfg.ReconcileInterval)
+
+	// 配置热重载（WBS 2.7）：SIGHUP 强制重载 + 每 60s 检查文件 mtime 自动重载。
+	// 热生效范围与策略见 applyEdgeCoreReload：上报周期（Pod/设备）热生效；
+	// cloudAddr/nodeID/reconcileInterval 变更需重启（记录警告并保持旧值）。
+	// 重载失败（JSON 错误/文件被删）保持旧配置继续运行（fail-safe）。
+	rel := config.NewReloader(*cfgPath, ecfg,
+		func() (*config.EdgeCoreConfig, error) { return config.LoadEdgeCoreReload(*cfgPath) },
+		applyEdgeCoreReload)
+	rel.Start(config.DefaultWatchInterval)
+	defer rel.Stop()
+	stopHUP := config.WatchSIGHUP(func() error { return rel.Reload() })
+	defer stopHUP()
+
 	opts := edgehub.Options{
-		CloudAddr: edgehub.DefaultCloudAddrFromEnv(),
-		NodeID:    edgehub.DefaultNodeID(),
+		CloudAddr: ecfg.CloudAddr,
+		NodeID:    ecfg.NodeID,
 		// WBS 7.3 设备认证：keadm join 写入的 EDGEFLOW_EDGECORE_TOKEN，
 		// 随 Register 消息携带供云端校验（云端未启用校验时无副作用）。
+		// 敏感配置不入文件（docs/ARCHITECTURE.md §5.2），仅环境变量注入。
 		Token: os.Getenv("EDGEFLOW_EDGECORE_TOKEN"),
 	}
 
@@ -220,11 +244,11 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 
 	// 启动 Edged（WBS 3.2 方案 A POC）：声明式调谐循环 + Docker 容器运行时。
 	// 期望状态来自 MetaManager 的 Pod 元数据；每 5s 轮询 + 增量订阅触发。
-	// 调谐周期可用环境变量 EDGEFLOW_EDGECORE_RECONCILE_INTERVAL 覆盖（默认 5s）
-	reconcileInterval := durationFromEnv("EDGEFLOW_EDGECORE_RECONCILE_INTERVAL", 5*time.Second)
-	edgedSvc := edged.New(store, edged.NewDockerRuntime(), reconcileInterval)
+	// 调谐周期来自配置（环境变量 EDGEFLOW_EDGECORE_RECONCILE_INTERVAL >
+	// 配置文件 reconcileInterval > 默认 5s），装配期固定，变更需重启生效。
+	edgedSvc := edged.New(store, edged.NewDockerRuntime(), ecfg.ReconcileInterval)
 	edgedSvc.Start()
-	log.Infof("Edged started（方案 A POC：DockerRuntime + %s 调谐周期）", reconcileInterval)
+	log.Infof("Edged started（方案 A POC：DockerRuntime + %s 调谐周期）", ecfg.ReconcileInterval)
 
 	// MetaManager 增量订阅：Pod 变更（upsert/delete）→ 触发 Edged 立即调谐。
 	// 背压策略：订阅缓冲满时丢弃事件（reconcile 是声明式的，下一轮轮询会收敛）。
@@ -243,31 +267,30 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	}
 
 	// Pod 状态上报循环（WBS 6.3）：周期读取 Edged 状态表并上报云端。
-	// 与调谐解耦：固定周期（默认 30s，环境变量 EDGEFLOW_EDGECORE_REPORT_INTERVAL
-	// 可覆盖），启动即上报一轮。退出机制与主流程一致：独立 stopCh，收到退出
-	// 信号后先停上报再停 Edged/EdgeHub（上报循环是 EdgeHub 通道的消费者）。
-	reportInterval := durationFromEnv("EDGEFLOW_EDGECORE_REPORT_INTERVAL", defaultReportInterval)
+	// 与调谐解耦：固定周期（默认 30s，配置链：环境变量
+	// EDGEFLOW_EDGECORE_REPORT_INTERVAL > 配置文件 podReportInterval > 默认值），
+	// 启动即上报一轮。周期支持热重载（WBS 2.7）：循环每轮读取最新快照，
+	// 配置变更后下一轮起按新周期运行。
 	reportStopCh := make(chan struct{})
 	reportDone := make(chan struct{})
 	go func() {
 		defer close(reportDone)
-		runStatusReportLoop(client, edgedSvc, opts.NodeID, reportInterval, reportStopCh)
+		runStatusReportLoop(client, edgedSvc, opts.NodeID, func() time.Duration { return rel.Get().PodReportInterval }, reportStopCh)
 	}()
-	log.Infof("Pod 状态上报循环已启动（周期 %s，nodeID=%s）", reportInterval, opts.NodeID)
+	log.Infof("Pod 状态上报循环已启动（周期 %v，nodeID=%s，支持热重载）", rel.Get().PodReportInterval, opts.NodeID)
 
 	// 设备数据上报循环（WBS 5.3 边缘侧）：周期从 Twin 快照生成
 	// DeviceReport 消息上报云端。与 Pod 上报循环同构（独立 stopCh、
-	// 启动即上报一轮）；周期默认 30s，环境变量
-	// EDGEFLOW_EDGECORE_DEVICE_REPORT_INTERVAL 可覆盖（复用 durationFromEnv
-	// 的上下限校验）。
-	deviceReportInterval := durationFromEnv(deviceReportIntervalEnv, defaultReportInterval)
+	// 启动即上报一轮）；周期配置链：环境变量
+	// EDGEFLOW_EDGECORE_DEVICE_REPORT_INTERVAL > 配置文件
+	// deviceReportInterval > 默认 30s，支持热重载。
 	deviceReportStopCh := make(chan struct{})
 	deviceReportDone := make(chan struct{})
 	go func() {
 		defer close(deviceReportDone)
-		runDeviceReportLoop(client, mapperReg, twinStore, opts.NodeID, deviceReportInterval, deviceReportStopCh)
+		runDeviceReportLoop(client, mapperReg, twinStore, opts.NodeID, func() time.Duration { return rel.Get().DeviceReportInterval }, deviceReportStopCh)
 	}()
-	log.Infof("设备上报循环已启动（周期 %s，nodeID=%s）", deviceReportInterval, opts.NodeID)
+	log.Infof("设备上报循环已启动（周期 %v，nodeID=%s，支持热重载）", rel.Get().DeviceReportInterval, opts.NodeID)
 
 	// 常驻：等待退出信号后优雅关闭（先停 EdgeHub，再关 Store，
 	// 保证回调不再触发后才会关闭数据库连接）
@@ -293,6 +316,36 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	}
 	log.Infof("edgecore exited")
 	return 0
+}
+
+// applyEdgeCoreReload 是 edgecore 的热重载策略（Reloader 的提交前钩子）：
+//
+//   - PodReportInterval / DeviceReportInterval：热生效——上报循环每轮通过
+//     rel.Get() 读取最新快照，变更后下一轮起按新周期运行（无需额外动作）；
+//   - CloudAddr / NodeID / ReconcileInterval：需重启生效——连接参数在
+//     EdgeHub 客户端启动时固定、调谐周期在 Edged 装配时固定（运行期修改
+//     需改动 edgehub/edged 内部，超出 WBS 2.7 范围），因此记录警告并把
+//     旧值回写进 next（快照始终反映运行中真实参数，不撒谎）。
+//
+// 返回错误时本次重载被整体拒绝（快照保持旧配置）。
+func applyEdgeCoreReload(old, next *config.EdgeCoreConfig) error {
+	if next.CloudAddr != old.CloudAddr {
+		log.Warnf("cloudAddr 变更（%s → %s）需重启 edgecore 生效，本次重载保持 %s（连接参数启动时固定）",
+			old.CloudAddr, next.CloudAddr, old.CloudAddr)
+		next.CloudAddr = old.CloudAddr
+	}
+	if next.NodeID != old.NodeID {
+		log.Warnf("nodeID 变更（%s → %s）需重启 edgecore 生效，本次重载保持 %s（节点身份启动时固定）",
+			old.NodeID, next.NodeID, old.NodeID)
+		next.NodeID = old.NodeID
+	}
+	if next.ReconcileInterval != old.ReconcileInterval {
+		log.Warnf("reconcileInterval 变更（%v → %v）需重启 edgecore 生效，本次重载保持 %v（Edged 装配期固定）",
+			old.ReconcileInterval, next.ReconcileInterval, old.ReconcileInterval)
+		next.ReconcileInterval = old.ReconcileInterval
+	}
+	// 上报周期热生效：无额外动作
+	return nil
 }
 
 // mqttConnectTimeout 是 EventBus 建连等待上限：默认与 eventbus 一致（5s），

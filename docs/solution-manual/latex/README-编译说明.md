@@ -5,7 +5,7 @@
 ```
 latex/
 ├── main.tex                      # 主文件：文档类、样式、封面、目录、\input 各章
-├── compile.sh                    # 一键编译脚本（两遍 xelatex + 产物改名 + 清理中间文件）
+├── compile.sh                    # 一键编译脚本（循环 xelatex 至目录稳定 + 产物改名 + 清理中间文件）
 ├── chapters/
 │   ├── ch01-overview.tex         # 第 1 章 方案总览
 │   ├── ch02-collect.tex          # 第 2 章 物联网数据采集场景
@@ -14,7 +14,7 @@ latex/
 │   ├── ch05-model-app.tex        # 第 5 章 模型应用场景
 │   ├── ch06-dataflow.tex         # 第 6 章 数据全链路与台账管理
 │   └── appendix.tex              # 附录 A FAQ / B 术语表 / C 映射表 / D 版本管理
-└── EdgeFlow-解决方案手册-v1.0.0.pdf   # 编译产物（37 页）
+└── EdgeFlow-解决方案手册-v1.0.0.pdf   # 编译产物（32 页）
 ```
 
 ## 2. 编译方法
@@ -43,13 +43,13 @@ fancyhdr、titlesec、enumitem、hyperref、geometry、xcolor、caption。
 | 图号 | 文件名（PNG / SVG 源） | 插入章节 | PDF 页 | tex 引用位置 |
 |---|---|---|---|---|
 | 图 1-1 | arch-overview.png / arch-overview.svg | 1.2 整体架构 | 6 | ch01-overview.tex |
-| 图 2-1 | scenario-collect.png / scenario-collect.svg | 2.4 部署方式 | 11 | ch02-collect.tex |
-| 图 3-1 | scenario-weaknet.png / scenario-weaknet.svg | 3.4 部署方式 | 15 | ch03-weaknet.tex |
-| 图 4-1 | scenario-model-mgmt.png / scenario-model-mgmt.svg | 4.4 部署方式 | 21 | ch04-model-mgmt.tex |
-| 图 5-1 | scenario-model-app.png / scenario-model-app.svg | 5.4 部署方式 | 25 | ch05-model-app.tex |
-| 图 6-1 | dataflow.png / dataflow.svg | 6.1 数据流转全景 | 27 | ch06-dataflow.tex |
+| 图 2-1 | scenario-collect.png / scenario-collect.svg | 2.4 部署方式 | 10 | ch02-collect.tex |
+| 图 3-1 | scenario-weaknet.png / scenario-weaknet.svg | 3.4 部署方式 | 13 | ch03-weaknet.tex |
+| 图 4-1 | scenario-model-mgmt.png / scenario-model-mgmt.svg | 4.4 部署方式 | 17 | ch04-model-mgmt.tex |
+| 图 5-1 | scenario-model-app.png / scenario-model-app.svg | 5.4 部署方式 | 20 | ch05-model-app.tex |
+| 图 6-1 | dataflow.png / dataflow.svg | 6.1 数据流转全景 | 22 | ch06-dataflow.tex |
 
-- PNG 为 1600×1600 渲染图（qlmanage 从 SVG 渲染），插入宽度 0.94\textwidth，比例未拉伸；
+- PNG 为等比渲染图（hack/re-export-diagrams.sh 用 rsvg-convert 按 viewBox 比例渲染，最长边 1600px），插入宽度 0.94\textwidth，无拉伸无裁切；
 - SVG 为可编辑源文件（Inkscape/Figma 可直接打开），改图后重新渲染 PNG 再编译即可。
 
 ## 4. 修改指南
@@ -73,6 +73,7 @@ fancyhdr、titlesec、enumitem、hyperref、geometry、xcolor、caption。
 ## 6. 已知说明（编译警告）
 
 - 编译日志无 error；PDF 全部文本均在页面安全边距内（bbox 校验 0 越界）。
+- compile.sh 循环编译至多 4 遍直至目录/交叉引用稳定（无 Label(s) may have changed 警告），避免目录页码偏差。
 - 存在两类无害警告：
   1. xeCJK 重定义 CJKfamily（ctex 默认字体族声明，不影响输出）、fontspec 字体族提示；
   2. 少量 Overfull hbox 警告（行盒略超列宽，最大约 50pt，均发生在表格内长环境变量名/API 路径断行处；

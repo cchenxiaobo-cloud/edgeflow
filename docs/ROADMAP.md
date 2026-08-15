@@ -314,3 +314,28 @@
 ---
 
 *本文档仅基于《EdgeFlow-开发计划.md》v1.0 编制；完成标准均取自计划 §7.2 里程碑验收标准、§8.1 测试策略及 WBS 原文；标注 ⚠️ 的依赖与归属推断项需在开发中确认。*
+
+---
+
+## 8. 未完成项处置登记（2026-08-15 后续开发轮）
+
+> 依据：CLOSE-OUT-ACTIONS.md（2026-08-15 收尾轮）+ 本次后续开发任务执行结果。状态：✅ 本次完成 / 🔒 决策关闭 / ⏸ 环境边界 / ⏳ 延后排期。
+
+| 项 | 对应 WBS | 处置 | 结论/理由 |
+|----|----------|------|----------|
+| 2.7 配置热重载 | WBS 2.7 | ✅ 本次完成 | SIGHUP + 定时 mtime 重载，端口类变更警告需重启（见 commit） |
+| 4.4 gzip 消息压缩 | WBS 4.4 | ✅ 本次完成 | 云边通道压缩开关（见 commit） |
+| 7.1 证书轮换自动化 | WBS 7.1 | ✅ 本次完成 | keadm cert rotate（见 commit） |
+| 10.2 灰度发布 | WBS 10.2 | ✅ 本次完成 | keadm upgrade 分批/灰度参数（见 commit） |
+| M1B/M1C/M1/M3A 审查遗留 P2/P3 | WBS 8.x | ✅ 本次完成 | LIKE 通配/同 ID pending/错误映射/operation 校验/请求体限制/serveWS 竞态/ReadLimit/Memory 类型/newID/Offline TTL-GC（见 commit） |
+| 9.1 架构文档评审回写 | WBS 9.1 | ✅ 本次完成 | ARCHITECTURE.md 评审 + NATS→MQTT/Token→mTLS/进度回写（见 commit） |
+| 3.7 ServiceBus | WBS 3.7 | 🔒 决策关闭 | Phase 3 云边 HTTP 调用为 v0.1.0 范围外；协议占位标注，后续版本排期 |
+| 5.2 OPC-UA 适配器 | WBS 5.2 | ⏳ 延后排期 | Modbus 已覆盖 v0.1.0 工业协议场景；OPC-UA 排后续版本（P2） |
+| 5.3 设备 CRD K8s 控制器 | WBS 5.3 | 🔒 决策关闭 | 项目为 REST 适配架构（无 K8s apiserver），云端状态同步已由 2.2（REST 端点+内存态）覆盖；K8s 原生控制器不适用 |
+| 6.5 资源调度/超卖 | WBS 6.5 | ⏳ 延后排期 | Replicas 伸缩已满足 v0.1.0；调度/超卖排后续版本（P2，audit-m02 §4） |
+| Flannel/CNI（缺口 6） | M2 交付物 | 🔒 决策关闭 | Docker bridge 方案为 v0.1.0 既定网络形态（REAL-CLUSTER-GUIDE.md 已验证）；CNI 排后续版本 |
+| 10.4 cosign 签名 | WBS 10.4 | ⏸ 环境边界 | 需镜像仓库+cosign 签名基础设施；已登记 MULTIARCH.md §5 |
+| 100 节点压测 | WBS 8.4 | ⏸ 环境边界 | 需集群环境；10 节点基线已记录（PERFORMANCE-BASELINE.md，100% 注册/201ms） |
+| 30min 长跑自治 | WBS 8.3 | ⏸ 环境边界 | 需真实环境长跑；60s E2E 已验证（tests/e2e 三用例 PASS） |
+| 8.2 多节点(10+) E2E | WBS 8.2 | ⏸ 环境边界 | 单机资源限制；多节点隔离用例已在 E2E 覆盖（3 节点） |
+| M1/M2 "kubectl get nodes/apply" 字面验收 | 验收口径 | 🔒 决策修订 | 无真实 K8s 接入，验收以 REST API 适配 + kind 真实集群路径（REAL-CLUSTER-GUIDE.md，kubectl apply + keadm init + Ready）双重达成 |

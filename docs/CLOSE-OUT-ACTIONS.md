@@ -15,7 +15,7 @@
 | ✅ A3 | 10.1 可观测性（/metrics 指标端点） | 后端工程师 | 已完成 | /metrics 五指标（nodes/pods/devices_total、http_requests_total、active_connections），Prometheus 文本格式，metrics 覆盖 96.6%，commit `4c5b9c6`；CPU/内存/日志采集为 P2 |
 | ✅ A4 | 7.2 RBAC（Token 认证中间件） | 安全工程师 | 已完成 | API Token 认证中间件（env 开关默认 off 向后兼容），常数时间比较+401 审计留痕，auth 覆盖 94.1%，commit `4c5b9c6`；角色分级为 P2 |
 | ✅ A5 | 7.5 审计日志（操作审计） | 安全工程师 | 已完成 | audit-ledger.jsonl 审计台账（JSONL 追加写、失败不阻断 API、启动期 fail-fast），audit 覆盖 76.3%，commit `4c5b9c6`；查询 API 为 P2 |
-| ✅ A6 | 8.4 性能压测（节点模拟） | 后端工程师 | 已完成 | hack/load-test：10 节点 100% 注册、平均 201ms、P95 202ms，commit `a0a4344` + PERFORMANCE-BASELINE.md；100 节点需集群环境（已知限制） |
+| ✅ A6 | 8.4 性能压测（节点模拟） | 后端工程师 | 已完成 | hack/load-test：10 节点 100% 注册、均值 1.85ms、P95 2.28ms + N=100 本机回环（均值 9.62ms、P95 13.24ms），PERFORMANCE-BASELINE.md；集群级验收需真实环境复测（已知限制） |
 | ✅ A7 | 真实集群验证（kind） | 项目负责人 + 运维 | 已完成 | kind 集群 CRD apply + keadm init + edgecore 注册 Ready 全链路跑通（15min 验收满足），REAL-CLUSTER-GUIDE.md 记录，commit `b809e30`；正式环境演练排期待确认 |
 
 ## 二、P2 级（建议 1 个迭代内处置）
@@ -28,7 +28,7 @@
 | B4 | CRD manifest yaml 生成 | 后端工程师 | 手写或脚本生成 CustomResourceDefinition yaml（apis 类型已有） | ✅ 已完成（b809e30）：config/crd/ 3 个 CRD（edgenodes/devicemodels/devices.edgeflow.io）字段与 Go 类型一致，A7 kind 集群已 apply |
 | ✅ B5 | 多架构发布镜像 | 运维工程师 | 已完成：本地 registry 双架构重建（buildx manifest 确认 + 4×--version 一致），commit `b809e30`；远程推送需 registry 凭据（环境边界） | ✅ 维持 |
 | B6 | 10.4 镜像安全扫描 | 运维工程师 | trivy/grype 扫描 release 镜像；记录结果到台账 | ✅ 已完成：Trivy 0.74.0 扫描两镜像 0 漏洞；首扫发现 golang.org/x/net v0.44.0 10 个漏洞（5H+5M）→ 升级 v0.56.0 → 重建镜像 → 复扫 0 漏洞；记录 docs/SECURITY-SCAN.md |
-| B7 | 10.3 API 兼容矩阵 | 后端工程师 | 文档化支持端点/字段版本矩阵 | ✅ 已完成：docs/API-COMPATIBILITY.md（13 REST 端点 + 9 云边消息类型 + 3 CRD 类型 + 变更登记） |
+| B7 | 10.3 API 兼容矩阵 | 后端工程师 | 文档化支持端点/字段版本矩阵 | ✅ 已完成：docs/API-COMPATIBILITY.md（11 REST 端点 + /healthz + /metrics + 9 云边消息类型 + 3 CRD 类型 + 变更登记） |
 | B8 | 跨主机 CA 分发自动化 | 安全工程师 | gen-certs 输出分发包或文档化分发步骤 | ✅ 已完成：gen-certs.sh 支持 CERT_DIST_DIR 分发包（cloud/ + edge/<CN>/，含 README 部署说明），实测 openssl verify 链验证通过 |
 
 ## 三、P3 级（文档与跟踪，随下次改动同步）

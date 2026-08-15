@@ -15,7 +15,7 @@
 | B3 | keadm 批量操作 | ✅ 完成 | 单测 5 项 PASS + 真实运行验证（2 节点批量 join，产物+IP 覆盖正确） | 本轮 commit |
 | B4 | CRD manifest yaml | ✅ 确认已完成（b809e30） | config/crd/ 3 个 CRD 与 Go 类型字段一致（脚本对照验证），A7 kind 集群已 apply | b809e30 |
 | B6 | 10.4 镜像安全扫描 | ✅ 完成 | Trivy 0.74.0：修复前 edgecore 10 漏洞（5H+5M，golang.org/x/net v0.44.0）→ 升级 v0.56.0 → 重建 → **两镜像 0 漏洞**；记录 docs/SECURITY-SCAN.md | 本轮 commit |
-| B7 | 10.3 API 兼容矩阵 | ✅ 完成 | docs/API-COMPATIBILITY.md（13 REST + 9 消息 + 3 CRD + 变更登记） | 本轮 commit |
+| B7 | 10.3 API 兼容矩阵 | ✅ 完成 | docs/API-COMPATIBILITY.md（11 REST + /healthz + /metrics + 9 消息 + 3 CRD + 变更登记） | 本轮 commit |
 | B8 | 跨主机 CA 分发自动化 | ✅ 完成 | gen-certs.sh CERT_DIST_DIR 分发包实测：结构完整、私钥 0600、openssl verify 链验证 OK | 本轮 commit |
 | C3 | 待办清单清理 | ✅ 完成 | PROGRESS.md §5 六项闭环回写 | 本轮 commit |
 | C6 | 里程碑归属偏移回写 | ✅ 确认已完成（b809e30） | ROADMAP §3 注已标注 2.4/4.5/5.2/8.6 → M4 | b809e30 |

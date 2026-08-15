@@ -43,7 +43,7 @@ go build -ldflags "-X edgeflow/pkg/version.Version=v0.1.0 \
 | `keadm version` | 输出版本信息（`--json` 结构化输出） | — |
 
 > 升级/回滚为 M4-M5 补充能力（commits `7aa035c`/`fe093e1`，WBS 10.2）；完整机制说明与
-> 演练记录见 docs/UPGRADE.md。批量 init/join 与跨版本配置迁移未实现（见 audit-m35 G8）。
+> 演练记录见 docs/UPGRADE.md。批量 init 与跨版本配置迁移未实现（批量 join/upgrade/rollback 已实现，见 §5.1；audit-m35 G8）。
 
 退出码约定：`0` 成功；`1` 运行时错误（IO/生成失败）；`2` 参数/用法错误。
 
@@ -117,7 +117,7 @@ keadm join --cloudcore-ip=192.168.1.10 --cloudcore-port=31000 \
 | --- | --- | --- |
 | `--cloudcore-ip` | 必填 | 云端 CloudHub 节点 IP（IPv4/IPv6 均可，IPv6 自动加方括号） |
 | `--cloudcore-port` | `10000` | CloudHub 端口；NodePort 部署时填集群分配的节点端口 |
-| `--token` | 必填 | 接入令牌（预留字段：当前 edgecore 尚未消费，后续版本用于接入鉴权） |
+| `--token` | 必填 | 接入令牌（edgecore 注册携带，云端 EDGEFLOW_CLOUDCORE_NODE_TOKEN 启用时常数时间校验，WBS 7.3） |
 | `--node-id` | `edge-<主机名>` | 边缘节点 ID（与 edgehub 默认命名约定一致） |
 | `--tls` | 关 | 启用 mTLS：注入 `EDGEFLOW_EDGECORE_TLS=on` + `CERT_DIR`，地址用 `wss://` |
 | `--output-dir` | `./keadm-out` | 产物输出目录 |
@@ -127,7 +127,7 @@ keadm join --cloudcore-ip=192.168.1.10 --cloudcore-port=31000 \
 - **edgecore.env**：`EDGEFLOW_EDGECORE_NODE_ID` / `CLOUD_ADDR`（`ws://<ip>:<port>/v1/edge`）/
   `DB_PATH`（`/var/lib/edgeflow/edgeflow.db`，绝对路径避免 systemd 相对 cwd 歧义）/
   `MQTT_ADDR`（`tcp://127.0.0.1:1883`）/ `TLS`+`CERT_DIR`（`--tls` 时）/
-  `TOKEN`（预留）。键名与 edgecore 读取的环境变量一一对应。
+  `TOKEN`。键名与 edgecore 读取的环境变量一一对应（WBS 7.3 设备认证）。
 - **edgecore.service**：systemd 单元，`EnvironmentFile=/etc/edgeflow/edgecore.env`、
   `ExecStart=/usr/local/bin/edgecore`、`WorkingDirectory=/var/lib/edgeflow`、
   `Restart=on-failure`、`WantedBy=multi-user.target`。

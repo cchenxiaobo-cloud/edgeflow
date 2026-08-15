@@ -1,6 +1,6 @@
 # EdgeFlow 项目进度台账（PROGRESS）
 
-> 最后更新：2026-08-14 20:46 (Asia/Shanghai)
+> 最后更新：2026-08-15 21:40 (Asia/Shanghai)
 > 维护规则：每个模块完成验证后更新本表；验证证据（命令输出）保留在对应模块记录中。
 
 ---
@@ -495,6 +495,12 @@
 
 | 优先级 | 事项 | 说明 |
 |--------|------|------|
+| ~~P2~~ ✅ | 2.7 配置热重载（CloudCore/EdgeCore） | 已闭环（2026-08-15 后续开发轮）：SIGHUP + 60s mtime 轮询；cloudcore 端口热切换（httpReloader.swapPort，绑定失败回滚）；edgecore 上报周期热生效、cloudAddr/nodeID/reconcileInterval 回写需重启；fail-safe 保持旧配置；单测覆盖（commit `2d0a903`） |
+| ~~P2~~ ✅ | M1B/M1C/M1/M3A 审查遗留 P2/P3 | 已闭环（2026-08-15 后续开发轮）：metamanager List LIKE 通配改范围扫描（M1B P2-1，`37fbaf4`）；registry Offline TTL/GC 默认 24h 配置化（M1B P2-3，`37fbaf4`）；devicestatus 无 TTL/GC 结论记录（M3A，`37fbaf4`）；serveWS 与 Shutdown 竞态 + wg.Wait 5s 超时（M1 P2-1，`d9bc9ec`）；写 API 1MiB 请求体限制 413（M1C P2-5，`d9bc9ec`）；newID rand 失败 fallback（M1 P3-1，`d9bc9ec`）；基线核查确认已修复：同 ID pending 交叉清理（P2-1）/ErrAckFailed→502（P2-2）/SetReadLimit（P2-2）/Memory uint64（P2-3） |
+| ~~P2~~ ✅ | 9.1 架构文档评审 + 内容回写 | 已闭环（2026-08-15 后续开发轮）：ARCHITECTURE.md 评审记录入档，NATS→MQTT、Token→mTLS 演进、进度回写至 2026-08-15，残留缺口登记 §12（commit `1ae2d81`） |
+| ~~P2~~ ✅ | 7.1 证书轮换自动化（keadm cert rotate） | 已闭环（2026-08-15 后续开发轮）：pkg/certs 备份先行+事务化重签+幂等，keadm cert rotate --node/--cert-dir，实操冒烟验证（序列号变化+备份 manifest，commit `2c877d4`） |
+| ~~P2~~ ✅ | 10.2 灰度发布（keadm upgrade 分批） | 已闭环（2026-08-15 后续开发轮）：--batch-size（默认 1）/--pause-between（默认 0），fail-fast 中止+成功/失败清单+rollback 衔接，batch 透传，fake 执行器单测（commit `2c877d4`） |
+| ~~P2~~ ✅ | 4.4 gzip 消息压缩 | 已闭环（2026-08-15 后续开发轮）：Register 协商式双向压缩（EFGZ 帧、1MiB wire/明文双限、<256B 回落、四象限互操作；评审 B1 协商断裂修复，commit `37f34f9`+`5ac07f8`） |
 | P1 | GitHub 远程仓库关联 | 用户把 `~/.ssh/id_ed25519.pub` 粘贴到 GitHub → `git remote add origin` → push（步骤见 ENV-SETUP.md §4.2） |
 | P1 | 推送后验证 CI 首次运行 | push 后 Actions 标签页应显示 lint+test 绿勾（M0 验收"CI PR 反馈 ≤10min"至今未实证） |
 | ~~P1~~ ✅ | 8.3 E2E 完整场景 | 已关闭：tests/e2e 三用例全 PASS（自治 60s 短时模拟/设备链路/多节点隔离），commit `a0a4344`；30min 时长需真实环境长跑（PERFORMANCE-BASELINE.md 说明） |
@@ -509,7 +515,7 @@
 | ~~P2~~ ✅ | 镜像安全扫描（trivy/grype） | 已闭环：release/v0.1.0 镜像扫描结果见 docs/SECURITY-SCAN.md（本轮） |
 | P2 | 6.5 资源管理（调度/资源超卖） | 仅 Replicas 伸缩；超卖/调度未做（audit-m02 §4） |
 | P2 | Flannel/边缘容器网络（缺口 6） | M2 交付物从未实现（Docker bridge 方案），需明确关闭或排期 CNI（audit-m02 §4） |
-| P2 | 4.4 压缩显式延后登记 | 压缩未实现（计划内延后 gzip M2+/Protobuf M4+），补显式延后跟踪（audit-m02 §4） |
+| ~~P2~~ ✅ | 4.4 压缩显式延后登记 | 已闭环（2026-08-15）：gzip 协商式双向压缩已实现（commit `37f34f9`）；Protobuf 编码保留显式延后（规模化阶段，audit-m02 §4） |
 | P2 | M3A 审查 P2 项×6 | byDevice 路由含 namespace、多实例 Mapper、空 deviceName 校验、LastReportedAt 单调性、502 Desired 分叉、无 TTL/GC（见 CODE-REVIEW-M3A.md） |
 | P2 | M1C 审查 P2 项×5 | pending 交叉清理/ErrAckFailed→502/context 取消/非原子/云端 operation 校验（见 CODE-REVIEW-M1C.md；其中 pending 交叉清理与 502 映射已在 8321b0e 修复） |
 | P2 | M1B 审查 P2 项×9 | LIKE 转义/WAL checkpoint/Offline TTL/WriteTimeout 等（见 CODE-REVIEW-M1B.md） |
@@ -528,5 +534,5 @@
 | M1 云边核心通信链路 | ✅ **完成** | 协议/连接/路由/可靠投递/CloudHub/EdgeHub/MetaManager/Edged POC 全达成；3 项归属偏移（2.4/4.5/8.6 实际 M4 完成）；"kubectl get nodes"为 REST 适配 |
 | M2 应用部署与边缘自治 | ✅ **验收达成（收尾轮补齐）** | 部署/配置/状态上报/自治 ✅；8.3 E2E 套件 ✅（commit `a0a4344`）+ 6.4 镜像漂移重建 ✅（commit `a0a4344`） |
 | M3 设备管理 | 🟨 **第 1-3 轮完成** | DeviceTwin/EventBus/Mapper/流水线/示例 ✅；5.2 Modbus 实际 M4 完成、OPC-UA 未做；端到端延迟 ≤5s 从未测量（audit-m35 §2.1） |
-| M4 生产化 | ✅ **验收达成（收尾轮补齐）** | mTLS/升级回滚/Helm/keadm 基础 ✅；7.2/7.5/10.1/8.4 ✅（commit `4c5b9c6`+`a0a4344`）；7.3 设备认证/10.3 兼容矩阵为 P2 残留 |
+| M4 生产化 | ✅ **验收达成（收尾轮补齐）** | mTLS/升级回滚/Helm/keadm 基础 ✅；7.2/7.5/10.1/8.4 ✅（commit `4c5b9c6`+`a0a4344`）；7.3 设备认证/10.3 兼容矩阵为 P2 残留（2026-08-15 后续开发轮已闭环，见 §5 回写） |
 | M5 发布 | 🟨 **发布完成** | v0.1.0 产物齐备（6 二进制+Chart+checksum+SBOM+镜像）；真实集群路径（15min 部署、kubectl get nodes Ready）未执行，已披露为 E2 限制；发布镜像已重建为双架构（2026-08-14，B5） |

@@ -40,14 +40,14 @@
 |---------|------|------|-------------------|------|
 | WBS 1 | 基础架构搭建 | 20 | 无（M0 无依赖） | ✅ 完成（2026-08-14 核对，audit-m02 §1.1） |
 | WBS 2 | CloudCore 开发 | 63 | WBS 1、WBS 4（⚠️ CloudHub 需消息协议与连接管理） | 🟨 主体完成；2.8 NodeJob 已决策关闭（v0.1.0 范围外，协议占位标注，audit-m35 G7）；2.9 可观测性完成（合并 10.1，commit `4c5b9c6`） |
-| WBS 3 | EdgeCore 开发 | 65 | WBS 1、WBS 4（⚠️ EdgeHub 需消息协议与连接管理） | 🟨 主体完成；3.7 ServiceBus、3.8 可观测性未做 |
-| WBS 4 | 云边通信层 | 28 | WBS 1（协议定义在 WebSocket 通道之前，计划 §7.4 关键路径） | ✅ 完成（4.4 压缩计划内延后；4.5 实际在 M4 完成） |
+| WBS 3 | EdgeCore 开发 | 65 | WBS 1、WBS 4（⚠️ EdgeHub 需消息协议与连接管理） | 🟨 主体完成；3.7 ServiceBus 决策关闭（Phase 3 范围外）；3.8 可观测性完成（合并 10.1） |
+| WBS 4 | 云边通信层 | 28 | WBS 1（协议定义在 WebSocket 通道之前，计划 §7.4 关键路径） | ✅ 完成（4.4 gzip 压缩 2026-08-15 完成、Protobuf 编码延后；4.5 实际在 M4 完成） |
 | WBS 5 | 设备映射器框架 | 22 | WBS 1（CRD）、WBS 2.2、WBS 3.5/3.6（⚠️ 数据流：DeviceTwin ← EventBus ← MetaManager） | 🟨 主体完成；5.2 OPC-UA 未做（Modbus 实际在 M4 完成）、5.3 控制器未做 |
 | WBS 6 | 应用管理 | 20 | WBS 3（⚠️ Edged/MetaManager 就绪后） | 🟨 主体完成；6.4 镜像漂移检测+重建完成（commit `a0a4344`）；6.5 调度/超卖未做（P2） |
-| WBS 7 | 安全与认证 | 18 | WBS 1；7.4 依赖 WBS 4.5（⚠️） | 🟨 7.1（部分）+7.2 Token 认证+7.4+7.5 审计台账完成（commit `4c5b9c6`）；7.3 设备认证未做（P2） |
+| WBS 7 | 安全与认证 | 18 | WBS 1；7.4 依赖 WBS 4.5（⚠️） | ✅ 7.1 证书管理（mTLS）+7.2 Token 认证+7.3 设备认证（2026-08-15 闭环）+7.4+7.5 审计台账完成；吊销（CRL/OCSP）未做 |
 | WBS 8 | 测试与部署 | 30 | 随各模块并行；8.5 依赖 WBS 2 产物；8.6 依赖 WBS 4 协议（⚠️） | 🟨 8.1/8.2/8.3/8.5 完成（E2E 三用例 commit `a0a4344`）；8.4 压测基线完成（10 节点 100%，PERFORMANCE-BASELINE.md）；8.6 基础+升级回滚（实际在 M4） |
-| WBS 9 | 文档与示例 | 14 | WBS 1（可全程并行） | 🟨 9.2-9.5 完成；9.1 架构文档存在但未评审（audit-m02 S11-S13） |
-| WBS 10 | 审查补充项 | 24 | WBS 2/3（可观测性）、WBS 8.6（升级回滚，⚠️） | 🟨 10.1 可观测性完成（/metrics 五指标 commit `4c5b9c6`）、10.2 完成、10.4 部分（SBOM）；10.3 兼容矩阵未做（P2） |
+| WBS 9 | 文档与示例 | 14 | WBS 1（可全程并行） | ✅ 9.2-9.5 完成；9.1 架构文档 2026-08-15 评审闭环并回写 |
+| WBS 10 | 审查补充项 | 24 | WBS 2/3（可观测性）、WBS 8.6（升级回滚，⚠️） | 🟨 10.1 可观测性完成、10.2 升级回滚+灰度分批（2026-08-15）、10.3 兼容矩阵完成（2026-08-15）、10.4 部分（SBOM+镜像扫描完成 2026-08-15；cosign 延后） |
 
 ### 1.2 二级模块明细
 
@@ -66,9 +66,9 @@
 | 2.2 | DeviceController | 设备 CRD 控制器、状态同步 | 10 | 1.4、5.3（⚠️ 同一 CRD） | 🟨 部分：云端设备状态存储 + 查询/指令 API（内存态，commit `744afaa`）；无 K8s 控制器（audit-m35 G6） |
 | 2.3 | EdgeController | 边缘节点注册、状态管理 | 8 | 2.6（⚠️ 需 apiserver 交互） | ✅ 完成（REST 化适配：registry + EdgeNode 映射，commits `3c7b99d`/`641863e`） |
 | 2.4 | NodeController | 心跳监控、节点上下线 | 6 | 2.3（⚠️ 注册后才有心跳） | ✅ 完成（commit `f71684e`，覆盖率 96.8%；**实际在 M4 完成**，M1 仅 cloudhub 内嵌断线检测） |
-| 2.5 | CloudCore API 层 | RESTful API、认证中间件 | 5 | 2.6（⚠️） | ✅ 完成（13 个 REST 端点 + /healthz，见 API-SPEC.md；**认证中间件未做**，归 WBS 7.2 RBAC 缺口） |
+| 2.5 | CloudCore API 层 | RESTful API、认证中间件 | 5 | 2.6（⚠️） | ✅ 完成（11 个 REST 端点 + /healthz + /metrics，见 API-SPEC.md；认证中间件 2026-08-15 已闭环，归 WBS 7.2） |
 | 2.6 | 云端元数据存储 | K8s apiserver 交互、缓存层 | 6 | 1.x | ✅ 完成（内存 registry + REST API，无 apiserver/etcd，已文档化为适配） |
-| 2.7 | CloudCore 配置管理 | 动态配置、热重载 | 4 | 1.5（⚠️） | 🟨 文件/flag/env 配置完成；热重载未实现 |
+| 2.7 | CloudCore 配置管理 | 动态配置、热重载 | 4 | 1.5（⚠️） | ✅ 文件/flag/env 配置 + 热重载完成（2026-08-15：SIGHUP + 60s mtime，端口/周期热切换，fail-safe，commit `2d0a903`） |
 | 2.8 | 云端任务管理 | NodeJob CRD、任务分发 | 8 | 2.1、2.3（⚠️） | 🔒 已关闭（v0.1.0 范围外产品决策，协议占位标注关闭，audit-m35 G7） |
 | 2.9 | 可观测性基建 | 监控指标、日志收集、告警 | 4 | 2.1（⚠️） | ✅ 完成（与 10.1 合并：/metrics 端点五指标，commit `4c5b9c6`） |
 | 3.1 | EdgeHub 模块 | WebSocket 客户端、消息路由、断线重连 | 12 | 1.x、4.1、4.2（⚠️） | ✅ 完成（commits `7b1c27a`/`19dd66f`/`0a7fcc2`） |
@@ -82,7 +82,7 @@
 | 4.1 | 消息协议设计 | 消息格式(Protobuf)、类型枚举 | 3 | 1.x | ✅ 完成（pkg/protocol JSON 信封 + 类型枚举，commit `e569ea1`） |
 | 4.2 | 连接管理 | 连接池、心跳保活、重连退避 | 6 | 4.1（⚠️） | ✅ 完成（注册/心跳 30s/指数退避 2/4/8s/自动重连） |
 | 4.3 | 消息路由引擎 | 主题路由、消息过滤 | 5 | 4.1、4.2（⚠️） | ✅ 完成（SendToNode/Broadcast/Deliver，commit `081eb0f`） |
-| 4.4 | 数据压缩与序列化 | 消息压缩、增量同步 | 4 | 4.1（⚠️） | 🟨 序列化（JSON）✅、增量同步部分实现；**压缩未实现**（计划内延后：gzip M2+、Protobuf M4/规模化，audit-m02 #16） |
+| 4.4 | 数据压缩与序列化 | 消息压缩、增量同步 | 4 | 4.1（⚠️） | 🟨 序列化（JSON）✅、增量同步部分实现；**gzip 压缩已实现**（2026-08-15：协商式双向，commit `37f34f9`）；Protobuf 编码延后（规模化阶段） |
 | 4.5 | 安全传输层 | TLS/MTLS、证书轮换 | 5 | 7.1（⚠️） | ✅ 完成（完整 mTLS，commit `0a7fcc2`；**实际在 M4 完成**，与 7.1/7.4 合并交付，M1-M3 通道无认证） |
 | 4.6 | 消息可靠投递 | ACK、重试、幂等 | 5 | 4.1、4.2（⚠️） | ✅ 完成（ReliableSend + Ack + 同 ID 重试 + 幂等去重 + P2 收尾，commits `3197ad3`/`19dd66f`/`8321b0e`） |
 | 5.1 | Mapper 框架 | Mapper SDK、设备注册/注销 | 6 | 1.4（⚠️） | ✅ 完成（DeviceMapper + MapperRegistry，commit `7d82c0c`，覆盖率 96.4%） |
@@ -95,26 +95,26 @@
 | 6.3 | 状态上报 | Pod 状态上报、健康检查 | 3 | 3.2（⚠️） | ✅ 完成（30s 周期上报 + Absent 终态保留 90s + 云端收敛，commits `707128f`/`bc58e40`） |
 | 6.4 | 边缘应用升级 | 滚动更新、回滚 | 4 | 6.1（⚠️） | ✅ 完成（健康自愈/重启 commit `47d9e21`；镜像漂移检测+重建 commit `a0a4344`，批大小 1 逐轮滚动；回滚经 re-deploy 语义覆盖） |
 | 6.5 | 资源管理 | 边缘调度、资源超卖 | 5 | 6.1（⚠️） | 🟨 部分：Replicas 补齐/收缩 ✅；**调度/资源超卖未实现**（audit-m02 §4 P2） |
-| 7.1 | 证书管理 | CA 初始化、签发、轮换 | 5 | 1.x | 🟨 部分：CA/签发/校验/幂等 ✅；**轮换人工编排、吊销（CRL/OCSP）未实现**（audit-m35 G9） |
+| 7.1 | 证书管理 | CA 初始化、签发、轮换 | 5 | 1.x | 🟨 部分：CA/签发/校验/幂等 ✅；**轮换自动化完成**（2026-08-15 keadm cert rotate，commit `2c877d4`）；吊销（CRL/OCSP）未实现（audit-m35 G9） |
 | 7.2 | RBAC | 角色/权限定义 | 3 | 1.4（⚠️） | ✅ 完成（Token 认证中间件+审计留痕，默认 off 向后兼容，commit `4c5b9c6`；完整 RBAC 角色模型为 P2） |
-| 7.3 | 设备认证 | 设备身份注册、Token 认证 | 4 | 5.x（⚠️） | ⬜ 未实现（token 为预留字段，edgecore 未消费，audit-m35 G1） |
+| 7.3 | 设备认证 | 设备身份注册、Token 认证 | 4 | 5.x（⚠️） | ✅ 已实现（2026-08-15 闭环：Register 携带 token，云端 EDGEFLOW_CLOUDCORE_NODE_TOKEN 常数时间校验，commit `7f5b3d3`） |
 | 7.4 | 云边认证 | MTLS 握手、节点验证 | 3 | 7.1、4.5（⚠️） | ✅ 完成（双向强制 + peer CN 审计 + 拒绝路径，commit `0a7fcc2`） |
 | 7.5 | 审计日志 | 操作审计、安全事件 | 3 | 7.1（⚠️） | ✅ 完成（audit-ledger.jsonl 审计台账：JSONL 追加写、失败不阻断 API，commit `4c5b9c6`） |
 | 8.1 | 单元测试 | 核心模块测试、覆盖率≥70% | 8 | 随各模块并行 | ✅ 完成（24 包 race 全绿，总覆盖率 77.8% ≥70%） |
 | 8.2 | 集成测试 | 云边联调、设备管理端到端 | 6 | 2.x、3.x（⚠️） | 🟨 云边联调/设备链路单节点 ✅；**多节点（10+）E2E 未做**（audit-m35 G11） |
 | 8.3 | E2E 测试 | 多节点、故障恢复、自治 | 5 | 3.4（⚠️） | ✅ 完成（tests/e2e 三用例：自治 60s 短时模拟/设备链路/多节点隔离，真实进程+真实 Docker，commit `a0a4344`；30min 需真实环境长跑） |
-| 8.4 | 性能测试 | 节点规模模拟、延迟测试 | 4 | 8.2（⚠️） | ✅ 完成（hack/load-test：10 节点 100% 注册、平均 201ms、P95 202ms，commit `a0a4344` + PERFORMANCE-BASELINE.md；100 节点需集群环境） |
+| 8.4 | 性能测试 | 节点规模模拟、延迟测试 | 4 | 8.2（⚠️） | ✅ 完成（hack/load-test：10 节点 100% 注册、均值 1.85ms、P95 2.28ms + N=100 本机回环 100% 注册、均值 9.62ms、P95 13.24ms，PERFORMANCE-BASELINE.md；集群级验收需真实环境复测） |
 | 8.5 | Helm Chart | Chart 编写、多环境 values | 3 | 2.x 产物（⚠️） | ✅ 完成（骨架 `9d78246` + 完整化 `3bb60ce`，helm lint 0 failed） |
-| 8.6 | keadm 安装工具 | 安装工具、注册流程、升级 | 4 | 4.x（⚠️ 注册协议） | 🟨 基础 init/join/reset/version（**实际在 M4 完成**，commit `2386fa3`）+ upgrade/rollback/ops-ledger ✅（`7aa035c`/`fe093e1`）；**批量操作 ⬜、配置迁移=备份保全**（audit-m35 #23/G8） |
-| 9.1 | 架构文档 | 设计文档、模块说明 | 3 | 1.x | 🟨 存在但标注 v0.1 草案、**未评审**、内容滞后（NATS→MQTT、Token→mTLS 未回写，audit-m02 S11-S13） |
+| 8.6 | keadm 安装工具 | 安装工具、注册流程、升级 | 4 | 4.x（⚠️ 注册协议） | 🟨 基础 init/join/reset/version + upgrade/rollback/ops-ledger ✅；**批量操作 ✅**（2026-08-15 batch join/upgrade/rollback，commit `7f5b3d3`）；配置迁移=备份保全（audit-m35 #23/G8） |
+| 9.1 | 架构文档 | 设计文档、模块说明 | 3 | 1.x | ✅ 已评审并回写（2026-08-15：NATS→MQTT、Token→mTLS 演进、实现进度核对，commit `1ae2d81`） |
 | 9.2 | API 文档 | API 参考、CRD 文档 | 2 | 1.4（⚠️） | ✅ 完成（API-SPEC.md 13 端点 + 错误码 + CRD 全字段，commit `f090a30`） |
 | 9.3 | 部署指南 | 快速开始、生产部署 | 3 | 8.5（⚠️） | ✅ 完成（DEPLOYMENT.md，REVIEWS.md R9.3 已处理） |
 | 9.4 | 开发者指南 | 贡献指南、代码规范 | 2 | 1.x | ✅ 完成（HANDOFF.md，REVIEWS.md R9.4 已处理） |
 | 9.5 | 示例与教程 | 设备接入、应用部署示例 | 4 | 5.x、6.x（⚠️） | ✅ 完成（examples/demo.sh DEMO PASS×3，REVIEWS.md §5） |
 | 10.1 | 可观测性基建 | 监控(Prometheus)、日志(Fluent Bit)、告警 | 10 | 2.9、3.8（⚠️ 职责需与 2.9/3.8 对齐） | ✅ 完成（/metrics 端点：nodes/pods/devices_total、http_requests_total、active_connections，Prometheus 文本格式，metrics 覆盖 96.6%，commit `4c5b9c6`；日志/告警为 P2） |
-| 10.2 | 边缘节点升级与回滚 | OTA 升级、灰度发布 | 6 | 8.6（⚠️） | ✅ 完成（备份模型 + ops-ledger + simulate-failure + 事务化 restore + 白名单；**灰度发布未实现**，audit-m35 G8） |
+| 10.2 | 边缘节点升级与回滚 | OTA 升级、灰度发布 | 6 | 8.6（⚠️） | ✅ 完成（备份模型 + ops-ledger + simulate-failure + 事务化 restore + 白名单；**灰度发布已实现** 2026-08-15：upgrade --batch-size/--pause-between，commit `2c877d4`） |
 | 10.3 | API 兼容性测试 | K8s API 版本兼容矩阵 | 4 | 2.x（⚠️） | ⬜ 未实现（无兼容矩阵文档/测试，audit-m35 G4） |
-| 10.4 | 安全扫描与修复 | 镜像扫描、依赖漏洞 | 4 | 8.5（⚠️） | 🟨 部分：SBOM ✅（33 组件）；**镜像漏洞扫描 ⬜、cosign 签名延后**（audit-m35 G10） |
+| 10.4 | 安全扫描与修复 | 镜像扫描、依赖漏洞 | 4 | 8.5（⚠️） | 🟨 部分：SBOM ✅（33 组件）+ 镜像漏洞扫描 ✅（2026-08-15 Trivy 0 漏洞）；cosign 签名延后（audit-m35 G10） |
 
 **合计**：374 人天（原始）→ 340（Vibe Coding 1.1×）→ 425（含 25% 缓冲，计划 §5.2/5.3）。
 
@@ -335,7 +335,7 @@
 | 6.5 资源调度/超卖 | WBS 6.5 | ⏳ 延后排期 | Replicas 伸缩已满足 v0.1.0；调度/超卖排后续版本（P2，audit-m02 §4） |
 | Flannel/CNI（缺口 6） | M2 交付物 | 🔒 决策关闭 | Docker bridge 方案为 v0.1.0 既定网络形态（REAL-CLUSTER-GUIDE.md 已验证）；CNI 排后续版本 |
 | 10.4 cosign 签名 | WBS 10.4 | ⏸ 环境边界 | 需镜像仓库+cosign 签名基础设施；已登记 MULTIARCH.md §5 |
-| 100 节点压测 | WBS 8.4 | ⏸ 环境边界 | 需集群环境；10 节点基线已记录（PERFORMANCE-BASELINE.md，100% 注册/201ms） |
+| 100 节点压测 | WBS 8.4 | ⏸ 环境边界 | 集群级验收需真实环境复测；本机 N=100 回环已跑通（100% 注册、均值 9.62ms、P95 13.24ms，PERFORMANCE-BASELINE.md） |
 | 30min 长跑自治 | WBS 8.3 | ⏸ 环境边界 | 需真实环境长跑；60s E2E 已验证（tests/e2e 三用例 PASS） |
-| 8.2 多节点(10+) E2E | WBS 8.2 | ⏸ 环境边界 | 单机资源限制；多节点隔离用例已在 E2E 覆盖（3 节点） |
+| 8.2 多节点(10+) E2E | WBS 8.2 | ⏸ 环境边界 | 单机资源限制；多节点隔离用例已在 E2E 覆盖（2 边缘节点 + 1 云端进程） |
 | M1/M2 "kubectl get nodes/apply" 字面验收 | 验收口径 | 🔒 决策修订 | 无真实 K8s 接入，验收以 REST API 适配 + kind 真实集群路径（REAL-CLUSTER-GUIDE.md，kubectl apply + keadm init + Ready）双重达成 |

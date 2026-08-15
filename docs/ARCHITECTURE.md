@@ -2,7 +2,7 @@
 
 > **WBS**：9.1 架构文档（设计文档、模块说明）
 > **版本**：v1.0（已评审，2026-08-15 全面回写）
-> **状态说明**：本文档描述 EdgeFlow **v0.1.0 实际实现的架构**（不再使用"目标架构/待开发"框架），并保留少量已显式决策的延后项（见 §12）。实现进度核对至 2026-08-15（仓库 head `f6b4898`），逐节与代码、docs/API-SPEC.md（v0.1.0 定稿）、docs/ROADMAP.md（§1.2 状态列）交叉核验。
+> **状态说明**：本文档描述 EdgeFlow **v0.1.0 实际实现的架构**（不再使用"目标架构/待开发"框架），并保留少量已显式决策的延后项（见 §12）。实现进度核对至 2026-08-15（仓库 head `8f1bc80`），逐节与代码、docs/API-SPEC.md（v0.1.0 定稿）、docs/ROADMAP.md（§1.2 状态列）交叉核验。
 > **阅读对象**：零基础用户（本人）与专业评审。每个章节先给"一句话版本"，再给细节；陌生术语附通俗解释。
 
 ---
@@ -15,7 +15,7 @@
 | 评审人 | 收尾核对员（子代理），交叉核验视角 |
 | 前置问题 | audit-m02 S11-S13：文档标注 v0.1 草案未评审；NATS→MQTT、Token→mTLS 未回写；实现进度滞后（原文档称"当前实现仅到 M0"） |
 | 评审结论 | ✅ **通过**：全文档回写至 2026-08-15 代码现状；§4 协议由"草案"改为"已实现契约"；§6 安全按实际演进（M1-M3 无认证 → M4 完整 mTLS + Token 认证中间件默认 off + 7.3 设备认证）重写；残留缺口集中登记于 §12 |
-| 与 ROADMAP 状态一致性声明 | 本文档各组件状态列与 ROADMAP §1.2（2026-08-14 audit-m02/audit-m35 回写 + 2026-08-15 收尾轮闭环）一致；数字口径（心跳 30s / CloudHub 失活 90s / NodeController 180s / 重连退避 1s→60s / 幂等缓存 1000 条 / 13 REST 端点 / 可靠投递 5s×最多 3 次尝试）与 docs/API-SPEC.md、代码常量逐项核对一致。ROADMAP §1.2 的 9.1 行"存在但未评审、内容滞后"标记随本文档本次评审闭环（该行状态列的更新超出本文档修改范围）。 |
+| 与 ROADMAP 状态一致性声明 | 本文档各组件状态列与 ROADMAP §1.2（2026-08-14 audit-m02/audit-m35 回写 + 2026-08-15 收尾轮闭环）一致；数字口径（心跳 30s / CloudHub 失活 90s / NodeController 180s / 重连退避 1s→60s / 幂等缓存 1000 条 / 11 REST 端点（+/healthz+/metrics 共 13 个 HTTP 端点） / 可靠投递 5s×最多 3 次尝试）与 docs/API-SPEC.md、代码常量逐项核对一致。ROADMAP §1.2 的 9.1 行"存在但未评审、内容滞后"标记随本文档本次评审闭环（该行状态列的更新超出本文档修改范围）。 |
 | 历史版本 | v0.1（2026-08-13 草案）：本文档前身，NATS/Token/进度等断言已按实际情况修订或删除 |
 
 ---
@@ -66,7 +66,7 @@ EdgeFlow 借鉴 KubeEdge 的整体架构（CloudHub/EdgeHub 云边通信、Edged
 ┌───────────────────────────────────────────────────────────────────────────────┐
 │                               云层 Cloud Side                                  │
 │   kubectl/curl ──► CloudCore（单进程）                                          │
-│     ├─ HTTP :8080：/healthz · /metrics · 13 个 /api/v1/* 端点                   │
+│     ├─ HTTP :8080：/healthz · /metrics · 11 个 /api/v1/* 端点                   │
 │     │     （Token 认证中间件，env 开关默认 off；审计中间件审计台账）                │
 │     ├─ registry（内存节点注册表）──► EdgeNode CRD 视图（K8s List 风格）           │
 │     ├─ NodeController（心跳超时扫描：30s 周期 / 180s 阈值）                      │
@@ -115,12 +115,12 @@ EdgeFlow 借鉴 KubeEdge 的整体架构（CloudHub/EdgeHub 云边通信、Edged
 |------|--------|---------------|-----|------|
 | cloudcore 进程（入口） | 云 | 云端程序入口：加载配置、初始化日志、装配 HTTP API + CloudHub + 控制器 | 1.1、1.5 | ✅ M0（commit `98a50a6` 起） |
 | pkg 共享库（log/config/version/httpx） | 双 | 日志、配置加载、版本注入、HTTP 工具，全部组件复用 | 1.5 | ✅ M0 |
-| pkg/certs | 双 | 纯标准库证书管理：CA/服务端/客户端证书幂等生成、LoadTLSConfig 双向强制、TLS1.2+、私钥 0600 | 7.1 | ✅ M4（commit `0a7fcc2`；轮换人工编排、吊销未实现） |
+| pkg/certs | 双 | 纯标准库证书管理：CA/服务端/客户端证书幂等生成、LoadTLSConfig 双向强制、TLS1.2+、私钥 0600 | 7.1 | ✅ M4（commit `0a7fcc2`）+ 2026-08-15 keadm cert rotate 自动化轮换；吊销（CRL/OCSP）未实现 |
 | **CloudHub** | 云 | WebSocket **服务端**（:10000/v1/edge）：会话管理（同 nodeID 踢旧连接）、注册、心跳失活判定（90s）、可靠投递 ReliableSend、mTLS Option、Register.token 校验 | 2.1、4.2、4.6、4.5、7.3 | ✅ M1 基础 + M4 TLS + 2026-08-15 token 校验 |
 | **EdgeController**（registry + EdgeNode 映射） | 云 | 边缘节点**注册**（NodeInfo 注册表 + EdgeNode CRD 对象映射，`GET /api/v1/edgenodes`） | 2.3、2.6 | ✅ M1（REST 化适配，commit `3c7b99d`/`641863e`） |
 | **NodeController** | 云 | 心跳监控、节点上线/下线判定（扫描 30s / 超时 180s，SIGSTOP 冻结→Offline→Ready 状态机闭环） | 2.4 | ✅ M4 ⚠️（commit `f71684e`，原计划 M1） |
 | 云端元数据层 | 云 | **内存 registry + REST API**（无 apiserver/etcd，已文档化为适配决策） | 2.6 | ✅ M1（适配） |
-| CloudCore API 层 | 云 | 面向管理员的 RESTful API（**13 个端点** + /healthz + /metrics，见 docs/API-SPEC.md）；Token 认证中间件 | 2.5、7.2 | ✅ M1 端点 + ✅ M4 认证中间件（默认 off，commit `4c5b9c6`） |
+| CloudCore API 层 | 云 | 面向管理员的 RESTful API（**11 个端点** + /healthz + /metrics，见 docs/API-SPEC.md）；Token 认证中间件 | 2.5、7.2 | ✅ M1 端点 + ✅ M4 认证中间件（默认 off，commit `4c5b9c6`） |
 | DeviceController（云端设备状态） | 云 | 设备影子云端视图 + 查询/指令 API（内存态 devicestatus，字段级合并保 desired） | 2.2 | ✅ M3（commit `744afaa`；无 K8s 控制器，见 5.3） |
 | NodeJob 任务管理 | 云 | 任务 CRD、任务分发与结果回收 | 2.8 | 🔒 **已关闭**（v0.1.0 范围外产品决策，协议占位标注"已关闭"，commit `4c5b9c6`） |
 | 可观测性（云） | 云 | /metrics Prometheus 五指标（nodes/pods/devices_total、http_requests_total、active_connections） | 2.9、10.1 | ✅ M4（commit `4c5b9c6`，与 3.8/10.1 合并） |
@@ -130,14 +130,14 @@ EdgeFlow 借鉴 KubeEdge 的整体架构（CloudHub/EdgeHub 云边通信、Edged
 | **自治引擎** | 边 | 断网时容器持续运行、恢复后重连注册并恢复上报（周期上报驱动云端收敛；无独立待同步队列） | 3.4 | ✅ M2 基础（60s E2E 短时模拟验证；30min 真实长跑未验证） |
 | **DeviceTwin** | 边 | 设备影子（desired/reported 双状态、字段级合并、深拷贝、自动创建） | 3.5 | ✅ M3（覆盖率 100%，commit `744afaa`） |
 | **EventBus** | 边 | 设备消息总线：paho MQTT 客户端（QoS1、AutoReconnect、OnConnect 恢复订阅），连接 mosquitto | 3.6 | ✅ M3（commit `2a0d0a3`；NATS 方案放弃，决策记录 R4） |
-| ServiceBus | 边 | 边缘服务发现与路由（云边 HTTP 调用，Phase 3） | 3.7 | ⬜ 未实现 |
+| ServiceBus | 边 | 边缘服务发现与路由（云边 HTTP 调用，Phase 3） | 3.7 | 🔒 已关闭（Phase 3 范围外，后续版本排期） |
 | Mapper SDK / 框架 | 边 | 设备协议适配标准接口：DeviceMapper 接口 + MapperRegistry（注册/注销/启停幂等） | 5.1 | ✅ M3（commit `7d82c0c`，覆盖率 96.4%） |
 | Modbus Mapper | 边 | Modbus 协议适配：自实现模拟器（modbussim）+ goburrow Mapper + op_ledger 操作台账 | 5.2 | ✅ M4 ⚠️（commit `a290686`，原计划 M3；OPC-UA 未做） |
 | 可观测性（边） | 边 | 与 10.1 合并（云端 /metrics 暴露，边缘不独立暴露） | 3.8 | ✅ M4（合并交付） |
 | 云边通信协议/连接管理 | 双 | 消息格式（JSON 信封）、类型枚举、心跳、重连退避、可靠投递 | 4.1-4.6 | ✅ M1（pkg/protocol + 各侧实现，详见 §4） |
 | 安全（证书/mTLS/认证/审计） | 双 | CA 生成、双向 mTLS、API Token 认证中间件、设备认证（Register.token）、审计日志 | 7.1-7.5、4.5 | ✅ M4（7.1/7.4/4.5 mTLS + 7.2 Token 中间件 + 7.5 审计）；7.3 设备认证 ✅ 2026-08-15 闭环 |
 | Helm Chart | 部署 | 云端组件一键部署（build/charts/edgeflow，helm lint 0 failed） | 8.5 | ✅ M4 |
-| keadm | 部署 | 边缘节点安装/注册工具：init/join/reset/version + upgrade/rollback/ops-ledger + batch（2026-08-15） | 8.6、10.2 | ✅ M4 基础 ⚠️ + M5 升级回滚 + 2026-08-15 batch |
+| keadm | 部署 | 边缘节点安装/注册工具：init/join/reset/version + upgrade/rollback/ops-ledger + batch（2026-08-15）+ cert rotate/upgrade 灰度参数（2026-08-15） | 8.6、10.2 | ✅ M4 基础 ⚠️ + M5 升级回滚 + 2026-08-15 batch/轮换/灰度 |
 | Flannel/CNI | 边 | 边缘节点容器网络 | —（ROADMAP 缺口 6） | 🔒 关闭：**Docker bridge 方案**（决策记录 R2） |
 
 ### 2.3 基础设施选型
@@ -296,7 +296,7 @@ EdgeHub 重连成功（指数退避 1s/2s/4s/…上限 60s，注册成功后重�
 
 v0.1.0 **未采用 NATS**（决策记录 R4），路由按两侧分工实现：
 
-- **云端**（`cloud/pkg/cloudhub/router.go`）：按 target/type 分发——`SendToNode`（定向下发）、`Broadcast`（广播，Target="*"，路由层已支持，API 层未暴露）、`Deliver`（上行消息投递到对应处理器）。
+- **云端**（`cloud/pkg/cloudhub/router.go`）：按 target/type 分发——`SendToNode`（定向下发）、`Broadcast`（广播，Target="*"，路由层已支持，API 层未暴露）、`Deliver`（云→边统一下发路由入口：SendToNode 定向下发 / Broadcast 广播，供控制器下发消息）。
 - **边缘**：EdgeHub 按 type 分发给处理器（handleDownlink → msgHandler）；设备数据面按 MQTT 主题路由（§3.3）。
 - 原草案的 NATS 主题体系（`edgeflow.cloud.edge.{nodeID}.*`）随 NATS 放弃而废弃。
 
@@ -376,7 +376,7 @@ M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，�
 - CA/服务端/客户端证书幂等生成（纯标准库），`LoadTLSConfig` 双向强制、TLS1.2+、私钥权限 0600、半套 fail-fast（`pkg/certs`）。
 - CloudHub `WithTLS` Option + tls.NewListener；mTLS 审计日志记录 peer CN；未认证连接拒绝路径已验证。
 - EdgeHub 注入 TLSConfig，`ws://` 自动归一化 `wss://`；TLS off 完全向后兼容。
-- 证书轮换：**人工编排**（gen-certs.sh 重新生成 + 重启），吊销（CRL/OCSP）未实现（G9，见 §12）。
+- 证书轮换：**keadm cert rotate 自动化**（2026-08-15：备份先行 + 事务化重签 + 幂等，见 docs/KEADM.md）；吊销（CRL/OCSP）未实现（G-6，见 §12）。
 - 跨主机 CA 分发（2026-08-15 闭环）：`hack/gen-certs.sh` 支持 `CERT_DIST_DIR` 生成分发包（`cloud/` + `edge/<CN>/`，含 README 部署说明），openssl verify 链验证通过。
 
 ### 6.3 API Token 认证中间件（WBS 7.2，M4 交付）
@@ -399,7 +399,7 @@ M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，�
 
 | 端口 | 用途 | 暴露边界 |
 |------|------|----------|
-| 8080 | HTTP 管理（healthz/metrics/13 REST 端点） | 仅绑定 127.0.0.1 或内网；生产经 Helm values 控制；建议启用 Token 认证 |
+| 8080 | HTTP 管理（healthz/metrics/11 REST 端点（共 13 个 HTTP 端点）） | 仅绑定 127.0.0.1 或内网；生产经 Helm values 控制；建议启用 Token 认证 |
 | 10000 | 云边 WebSocket | 仅对边缘节点网段开放；M4 起可启用 mTLS（env 开关） |
 | 1883 | MQTT broker（可选） | 边缘本机/内网；仅设备数据面，不出边缘 |
 | 15020 | Modbus 模拟器（MODBUS_SIM_PORT 可覆盖） | 开发/测试用（`pkg/modbussim`，unit ID 1-247、连接数上限 8，均按规范校验） |
@@ -411,12 +411,12 @@ M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，�
 ### 7.1 现状（已实现，pkg/config + env）
 
 - 优先级模型（**命令行 > 环境变量 > 配置文件 > 默认值**）——cloudcore 端口示例（`--port` / `EDGEFLOW_CLOUDCORE_PORT` / `config/cloudcore.json` / 默认 8080；文件存在但解析失败**报错退出**）。
-- edgecore 配置全走环境变量（`EDGEFLOW_EDGECORE_*`）：`NODE_ID`、`CLOUD_ADDR`（默认 ws://127.0.0.1:10000）、`MQTT_ADDR`（默认 tcp://127.0.0.1:1883）、`DB_PATH`、`TLS`/`CERT_DIR`、`DEVICE_REPORT_INTERVAL`、`NODE_TOKEN` 等。
+- edgecore 配置全走环境变量（`EDGEFLOW_EDGECORE_*`）：`NODE_ID`、`CLOUD_ADDR`（默认 ws://127.0.0.1:10000）、`MQTT_ADDR`（默认 tcp://127.0.0.1:1883）、`DB_PATH`、`TLS`/`CERT_DIR`、`DEVICE_REPORT_INTERVAL`、`EDGEFLOW_EDGECORE_TOKEN` 等。
 - 云端敏感配置走 env：`EDGEFLOW_CLOUDCORE_API_TOKEN`（API 认证）、`EDGEFLOW_CLOUDCORE_NODE_TOKEN`（设备/节点认证）、`EDGEFLOW_CLOUDCORE_TLS`/`CERT_DIR`/`TLS_SAN`（mTLS）、`EDGEFLOW_CLOUDCORE_NODE_SCAN_INTERVAL`/`NODE_TIMEOUT`（NodeController）。
 
 ### 7.2 未实现项
 
-- 动态配置/热重载（WBS 2.7，SIGHUP）：**未实现**。
+- 动态配置/热重载（WBS 2.7，SIGHUP）：**已实现**（commit `2d0a903`：SIGHUP 强制重载 + 60s mtime 轮询；cloudcore HTTP/healthz 端口热切换（绑定失败回滚旧监听）；edgecore 上报周期热生效，cloudAddr/nodeID/reconcileInterval 变更回写旧值需重启；fail-safe 保持旧配置）。
 - 下发到边缘的动态配置走 ConfigSync 消息（§4.3），不改配置文件。
 
 ---
@@ -494,7 +494,7 @@ M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，�
 | §4 通信协议 | WBS 4.1-4.6（M1 已实现；4.5 实际 M4） |
 | §5 关键机制 | WBS 3.1/3.4/3.5/4.2/4.6/5.4/10.1 |
 | §6 安全 | WBS 7.1-7.5、4.5（M4 + 2026-08-15 7.3 闭环） |
-| §7 配置 | WBS 1.5（已实现）、2.7（热重载未实现） |
+| §7 配置 | WBS 1.5（已实现）、2.7（热重载已实现，commit `2d0a903`） |
 | §8 可扩展性 | WBS 3.6（MQTT）、3.3（SQLite）、1.4（CRD）、5.1（Mapper） |
 | §9 决策记录 | ROADMAP §3 注、§7 缺口 1/6 处置、audit-m02/audit-m35 结论 |
 | §10 部署形态 | WBS 8.5（Helm）、8.6/10.2（keadm）、1.6（发布制品） |
@@ -512,13 +512,12 @@ M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，�
 | G-2 | 6.5 调度/资源超卖未实现（仅 Replicas 伸缩） | 功能缺失 | ROADMAP 6.5 🟨 |
 | G-3 | 5.2 OPC-UA 未做；MQTT 仅 mock_sensor 数据面模式，无通用 MQTT 设备适配器 | 功能缺失 | ROADMAP 5.2 🟨 |
 | G-4 | 5.3 Device K8s 控制器未做（仅 CRD 类型 + manifest + 云端内存态存储） | 对接真实 K8s 前不阻塞 | ROADMAP 5.3 🟨 |
-| G-5 | 2.7 配置热重载未实现 | 功能缺失 | ROADMAP 2.7 🟨 |
-| G-6 | 7.1 证书轮换人工编排、吊销（CRL/OCSP）未实现 | 安全运维缺口 | audit-m35 G9 |
-| G-7 | 4.4 gzip/Protobuf 压缩与编码升级未实现 | 显式延后，无隐式承诺 | audit-m02 §4 |
-| G-8 | 8.2 多节点（10+）E2E 未做；8.4 100 节点压测未做；M3"端到端延迟 ≤5s"从未测量 | 规模化验收未实证（10 节点压测：100% 注册、平均 201ms、P95 202ms） | audit-m35 G11 |
+| G-6 | 7.1 证书吊销（CRL/OCSP）未实现（轮换已自动化：keadm cert rotate，2026-08-15） | 安全运维缺口 | audit-m35 G9；docs/KEADM.md |
+| G-7 | 4.4 Protobuf 编码升级未实现（gzip 已落地：协商式双向压缩，见 §4.6） | Protobuf 显式延后 | audit-m02 §4 |
+| G-8 | 8.2 多节点（10+）E2E 未做；8.4 100 节点压测未做；M3"端到端延迟 ≤5s"从未测量 | 规模化验收未实证（10 节点基线：100% 注册、均值 1.85ms、P95 2.28ms；N=100 本机回环 100% 注册、均值 9.62ms、P95 13.24ms——PERFORMANCE-BASELINE.md；集群级验收需真实环境复测） | audit-m35 G11 |
 | G-9 | 3.4 自治 30min 真实长跑未验证（E2E 为 60s 短时模拟） | 需真实环境长跑 | audit-m02 #40；PERFORMANCE-BASELINE.md |
 | G-10 | 云端重启丢失在途未确认消息（离线缓冲未实现） | 由上层重新下发兜底（边缘幂等去重） | §4.5 说明 |
-| G-11 | 边缘资源上报（CPU/内存）未采集（`/api/v1/nodes` memory 恒 0） | 数据缺失 | DEPLOYMENT.md §9 |
+| G-11 | 边缘内存上报仅 Linux 采集（/proc/meminfo），非 Linux 环境为 0（CPU 已采集：runtime.NumCPU） | 平台差异 | DEPLOYMENT.md §9 |
 | G-12 | config-sync 的 Secret value 明文传输存储 | 生产需加密 | API-SPEC §8 |
 | G-13 | CI 从未在 GitHub 运行（远程仓库未关联） | M0 验收"CI PR 反馈 ≤10min"未实证 | PROGRESS §5 P1（需用户操作） |
 | G-14 | 生产多节点/多主机部署路径（证书分发、网络差异） | kind 单节点真实集群已跑通；多节点待生产演练 | DRILL-SCHEDULE.md（窗口【需确认】） |

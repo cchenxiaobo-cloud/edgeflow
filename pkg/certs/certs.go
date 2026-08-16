@@ -11,6 +11,7 @@
 //   - 证书布局（目录默认 data/certs/，可用环境变量覆盖）：
 //     ca.crt / ca.key / cloudcore.crt / cloudcore.key / edgecore.crt / edgecore.key
 //     crl.pem（X.509 CRL 吊销列表产物） / crl.json（吊销序列号持久化记录）
+//     crl.lock（吊销写路径进程级锁文件，flock 目标，从不被替换/删除）
 //
 // 算法选择：RSA 2048。
 //   - 兼容性最广：边缘设备生态与 openssl 等工具链对 RSA 支持最完备；
@@ -20,8 +21,9 @@
 // 安全边界（本版本明确不做，见 docs/SECURITY.md）：
 //   - CA 私钥保护依赖文件权限（0600）与部署侧密钥管理，生产建议离线签发；
 //   - 证书轮换需人工编排（重新签发后滚动重启组件）；
-//   - 吊销（CRL）已实现（keadm cert revoke，序列号入列 + 生成 crl.pem）；
-//     OCSP 未实现，CRL 分发依赖人工同步（docs/ARCHITECTURE.md 待主线更新）。
+//   - 吊销（CRL + OCSP）已实现：keadm cert revoke（序列号入 crl.json +
+//     生成 crl.pem），cloudcore /ocsp 标准 OCSP responder + 客户端查询
+//     （pkg/certs/ocsp.go，RFC 6960，状态与 CRL 同源 crl.json）。
 package certs
 
 import (
@@ -38,6 +40,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 )
 
@@ -60,6 +64,11 @@ const (
 	// FileCRLJSON 是吊销序列号持久化记录（crl.json，来源记录；
 	// crl.pem 由它派生，二者一致性见 RevokeCert 的注释）。
 	FileCRLJSON = "crl.json"
+	// FileCRLLock 是吊销写路径的进程级锁文件（syscall.Flock 目标）。
+	// 锁文件独立于 crl.json/crl.pem：这两个文件会被原子替换（rename），
+	// 若直接锁它们，锁会随旧 inode 失效（换名后新 inode 可被他人立即
+	// 锁住），互斥语义被破坏；crl.lock 从不被替换/删除，锁语义稳定。
+	FileCRLLock = "crl.lock"
 )
 
 // 证书有效期与算法参数。
@@ -434,14 +443,23 @@ func rotateLeafCert(certDir, cn string, eku x509.ExtKeyUsage, certFile, keyFile 
 //     满足 x509.CreateRevocationList 的签发前置条件；
 //   - 只更新吊销列表与 CRL，不删除证书文件（已分发证书由对端按 CRL 拒绝）。
 //
-// 一致性策略：crl.json 是来源记录（先写），crl.pem 是由它派生的签名产物
-// （后写）。写入失败时 crl.json 可能领先于 crl.pem，重试（幂等路径）会
-// 比对两者并重新生成 crl.pem，不会丢已吊销序列号；crl.json 缺失时从
-// crl.pem 恢复序列号（见 loadRevokedList），两者均损坏则报错不静默清空。
+// 并发与一致性策略：吊销写路径（crl.json/crl.pem 读-改-写全程）持有
+// crl.lock 进程级文件锁（syscall.Flock，阻塞等待，见 lockCRLFile），
+// 并发 RevokeCert 互斥，不会读-改-写竞争丢序列号。crl.json 是来源记录
+// （先写），crl.pem 是由它派生的签名产物（后写）。写入失败时 crl.json
+// 可能领先于 crl.pem，重试（幂等路径）会比对两者并重新生成 crl.pem，
+// 不会丢已吊销序列号；crl.json 缺失时从 crl.pem 恢复序列号（见
+// loadRevokedList），两者均损坏则报错不静默清空。
 func RevokeCert(certDir, cn string) error {
 	if err := ensureDir(certDir); err != nil {
 		return err
 	}
+	f, err := lockCRLFile(certDir)
+	if err != nil {
+		return fmt.Errorf("获取吊销锁失败: %w", err)
+	}
+	defer unlockCRLFile(f)
+
 	// CA 严格加载：吊销需要现有 CA（不自动创建）。
 	ca, err := loadCA(certDir)
 	if err != nil {
@@ -457,9 +475,51 @@ func RevokeCert(certDir, cn string) error {
 	if err != nil {
 		return err
 	}
-	serialHex := leaf.SerialNumber.Text(16)
 
-	// ② 加载现有吊销列表（crl.json 优先；缺失时从 crl.pem 恢复；都缺失为空）。
+	// ② 序列号入列 + ③ 确保 crl.pem 产物一致（锁内读-改-写全程）。
+	return revokeSerialLocked(ca, certDir, leaf.SerialNumber.Text(16))
+}
+
+// RevokeCertBySerial 按序列号吊销证书（keadm cert revoke --serial）：
+// 不依赖证书文件，序列号直接入列——轮换后旧证书泄露场景下，可吊销
+// 已不在证书目录中的历史序列号（序列号不要求存在于任何已知证书）。
+//
+// serialHex 接受大小写十六进制（可选 0x/0X 前缀），统一归一化为小写
+// 规范形式（去前导零）；非法序列号（非十六进制/非正整数/空）→ 明确错误。
+// 其余语义与 RevokeCert 一致：进程锁互斥、幂等、CRL Number 单调递增。
+func RevokeCertBySerial(certDir, serialHex string) error {
+	serialHex = strings.TrimPrefix(strings.TrimPrefix(serialHex, "0x"), "0X")
+	n, ok := new(big.Int).SetString(serialHex, 16)
+	if !ok || n.Sign() <= 0 {
+		return fmt.Errorf("吊销序列号 %q 不是合法的正整数十六进制", serialHex)
+	}
+	serialHex = n.Text(16) // 归一化：小写 + 去前导零
+
+	if err := ensureDir(certDir); err != nil {
+		return err
+	}
+	f, err := lockCRLFile(certDir)
+	if err != nil {
+		return fmt.Errorf("获取吊销锁失败: %w", err)
+	}
+	defer unlockCRLFile(f)
+
+	ca, err := loadCA(certDir)
+	if err != nil {
+		return fmt.Errorf("加载 CA 失败（吊销需要现有 CA，不会自动创建）: %w", err)
+	}
+	if len(ca.Cert.SubjectKeyId) == 0 {
+		return fmt.Errorf("CA 证书 %s 缺少 SubjectKeyId，无法签发 CRL（请重新初始化 CA）",
+			filepath.Join(certDir, FileCACert))
+	}
+	return revokeSerialLocked(ca, certDir, serialHex)
+}
+
+// revokeSerialLocked 在锁内把序列号追加进吊销列表并确保 crl.pem 产物一致
+// （幂等：已入列则不再追加；CRL Number 的递增统一由 ensureCRLArtifact 在
+// 每次新签发时完成，见其注释）。serialHex 须为小写规范十六进制。
+func revokeSerialLocked(ca *CA, certDir, serialHex string) error {
+	// 加载现有吊销列表（crl.json 优先；缺失时从 crl.pem 恢复；都缺失为空）。
 	list, err := loadRevokedList(certDir)
 	if err != nil {
 		return err
@@ -469,15 +529,36 @@ func RevokeCert(certDir, cn string) error {
 			Serial: serialHex,
 			Time:   time.Now().UTC().Format(time.RFC3339),
 		})
-		list.Number++ // CRL Number 单调递增（RFC 5280 建议）
-		list.Updated = time.Now().UTC().Format(time.RFC3339)
-		// 先写 crl.json（来源记录）；crl.pem 随后由 ensureCRLArtifact 保证。
-		if err := writeRevokedList(certDir, list); err != nil {
-			return err
-		}
 	}
-	// ③ 确保 crl.pem 产物与列表一致（幂等路径自愈：缺失/损坏/不一致 → 重生成）。
+	// 确保 crl.pem 产物与列表一致（幂等路径自愈：缺失/损坏/不一致 → 重生成）。
 	return ensureCRLArtifact(ca, certDir, list)
+}
+
+// lockCRLFile 打开并独占锁住吊销锁文件（crl.lock，syscall.Flock LOCK_EX，
+// 锁竞争时阻塞等待而非失败）。锁文件独立于 crl.json/crl.pem——这两个文件
+// 会被 writeFileAtomic 原子替换（rename），若直接锁它们，换名后新 inode
+// 可被并发方立即锁住，互斥失效；crl.lock 从不被替换/删除，锁语义稳定。
+// 返回的 *os.File 需由 unlockCRLFile 释放。
+func lockCRLFile(certDir string) (*os.File, error) {
+	f, err := os.OpenFile(filepath.Join(certDir, FileCRLLock), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+// unlockCRLFile 释放吊销锁并关闭锁文件（Flock 随 fd 关闭自动释放，
+// 显式解锁保证同一进程内其他等待者尽快获得锁）。
+func unlockCRLFile(f *os.File) {
+	if f == nil {
+		return
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_ = f.Close()
 }
 
 // VerifyCertAgainstCRL 校验证书是否在吊销列表（WBS 7.1）：
@@ -488,11 +569,61 @@ func RevokeCert(certDir, cn string) error {
 //   - CRL 文件（crl.pem）缺失 → 视为无吊销（向后兼容，返回 false, nil）；
 //   - CRL 存在但损坏/无法解析 → 返回错误（错误信息含 CRL 路径），不 panic；
 //   - CRL 必须由本目录 CA 签发（CheckSignatureFrom 校验），防止伪造/错配
-//     的 CRL 绕过吊销。
+//     的 CRL 绕过吊销；
+//   - CRL 过期（NextUpdate 已过）→ 默认仍放行（向后兼容）；需要
+//     fail-closed 语义用 VerifyCertAgainstCRLWithPolicy。
+//
+// 吊销立即生效：校验前先做 crl.json↔crl.pem 对账（进程锁内），crl.json
+// 序列号集合领先 crl.pem（如崩溃窗口：json 已写、pem 未写）时自动重生成
+// crl.pem（原子写），再基于新产物校验；对账失败（如 json 损坏且 pem 不可
+// 用、或 json 领先但无法重生成）→ 返回错误（fail-closed）。crl.json 损坏
+// 但 crl.pem 完好时对账不阻断，仍按 pem 校验（与旧行为一致）。
 func VerifyCertAgainstCRL(certDir string, cert *x509.Certificate) (bool, error) {
+	return VerifyCertAgainstCRLWithPolicy(certDir, cert, CRLVerifyOptions{})
+}
+
+// CRLVerifyOptions 是 VerifyCertAgainstCRLWithPolicy 的策略选项。
+// 零值 = 与 VerifyCertAgainstCRL 完全一致的默认行为（过期仍放行）。
+type CRLVerifyOptions struct {
+	// FailOnExpired 为 true 时，CRL 已过期（now > NextUpdate）且证书未被
+	// 吊销 → 返回错误（fail-closed，拒绝以陈旧 CRL 放行证书）。
+	// 已吊销的证书不受影响（吊销不可逆，仍返回 true, nil）。
+	FailOnExpired bool
+}
+
+// VerifyCertAgainstCRLWithPolicy 是 VerifyCertAgainstCRL 的策略化版本：
+// 行为与 VerifyCertAgainstCRL 一致（含 json↔pem 对账自愈），并额外支持
+// opts.FailOnExpired（过期 CRL fail-closed 拒绝）。
+func VerifyCertAgainstCRLWithPolicy(certDir string, cert *x509.Certificate, opts CRLVerifyOptions) (bool, error) {
 	if cert == nil {
 		return false, errors.New("VerifyCertAgainstCRL: cert 为 nil")
 	}
+
+	// 持锁对账（crl.json 领先时重生成 crl.pem），再基于新产物校验。
+	f, err := lockCRLFile(certDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// 证书目录不存在 → 无 CRL 可言（向后兼容：视为无吊销）。
+			return false, nil
+		}
+		// 无法取得锁（如只读目录无法创建 crl.lock）：降级为无锁校验。
+		// 只读目录不存在并发写者，无锁对账/校验是安全的；对账失败
+		// （如 json 领先但无法重生成）→ fail-closed 返回错误。
+		if err := reconcileCRLForVerify(certDir); err != nil {
+			return false, err
+		}
+		return verifyCRLUnlocked(certDir, cert, opts)
+	}
+	defer unlockCRLFile(f)
+	if err := reconcileCRLForVerify(certDir); err != nil {
+		return false, err
+	}
+	return verifyCRLUnlocked(certDir, cert, opts)
+}
+
+// verifyCRLUnlocked 是锁外/锁内的纯校验逻辑（不涉及锁与对账）：
+// 读取 crl.pem → 解析 → CA 签名校验 → 序列号比对 → 可选过期策略。
+func verifyCRLUnlocked(certDir string, cert *x509.Certificate, opts CRLVerifyOptions) (bool, error) {
 	crlPEMPath, _ := CRLPaths(certDir)
 	b, err := os.ReadFile(crlPEMPath)
 	if os.IsNotExist(err) {
@@ -515,10 +646,135 @@ func VerifyCertAgainstCRL(certDir string, cert *x509.Certificate) (bool, error) 
 	}
 	for _, e := range rl.RevokedCertificateEntries {
 		if e.SerialNumber != nil && e.SerialNumber.Cmp(cert.SerialNumber) == 0 {
-			return true, nil
+			return true, nil // 已吊销：吊销不可逆，不因 CRL 过期而放行
 		}
 	}
+	if opts.FailOnExpired && time.Now().After(rl.NextUpdate) {
+		return false, fmt.Errorf("CRL %s 已过期（NextUpdate=%s），fail-closed 拒绝（证书吊销状态无法确认）",
+			crlPEMPath, rl.NextUpdate.Format(time.RFC3339))
+	}
 	return false, nil
+}
+
+// ReconcileCRLArtifacts 对账 crl.json 与 crl.pem（独立对账入口，可启动时
+// 调用；VerifyCertAgainstCRL 内部也会自动对账）：crl.json 序列号集合领先
+// crl.pem 时自动重生成 crl.pem（原子写，CRL Number +1），使吊销立即生效。
+//
+//   - 证书目录/crl.json 缺失 → 无事可做（nil）；
+//   - crl.json 损坏 → 返回错误（fail-closed，不静默清空吊销状态）；
+//   - 对账只向前补齐：crl.pem 领先（含手工编辑 crl.json 移除条目）时保持
+//     不动，不会回退已吊销序列号。
+func ReconcileCRLArtifacts(certDir string) error {
+	if info, err := os.Stat(certDir); err != nil || !info.IsDir() {
+		return nil // 无证书目录 → 无吊销产物可对账
+	}
+	f, err := lockCRLFile(certDir)
+	if err != nil {
+		return fmt.Errorf("获取吊销锁失败: %w", err)
+	}
+	defer unlockCRLFile(f)
+	return reconcileCRLForVerifyStrict(certDir)
+}
+
+// reconcileCRLForVerifyStrict 是严格版对账（ReconcileCRLArtifacts 用）：
+// crl.json 损坏直接报错。
+func reconcileCRLForVerifyStrict(certDir string) error {
+	_, crlJSONPath := CRLPaths(certDir)
+	jb, err := os.ReadFile(crlJSONPath)
+	if os.IsNotExist(err) {
+		return nil // 无来源记录 → 无事可做
+	}
+	if err != nil {
+		return fmt.Errorf("读取吊销列表记录 %s 失败: %w", crlJSONPath, err)
+	}
+	var list revokedList
+	if err := json.Unmarshal(jb, &list); err != nil {
+		return fmt.Errorf("解析吊销列表记录 %s 失败（文件损坏？）: %w", crlJSONPath, err)
+	}
+	if err := validateRevokedList(&list); err != nil {
+		return fmt.Errorf("吊销列表记录 %s 内容非法: %w", crlJSONPath, err)
+	}
+	if crlCoveredByPEM(certDir, &list) {
+		return nil
+	}
+	return regenerateCRLFromList(certDir, &list)
+}
+
+// reconcileCRLForVerify 是校验侧对账（VerifyCertAgainstCRLWithPolicy 用）：
+// crl.json 损坏但 crl.pem 完好 → 不阻断（维持 verify 只读 pem 的旧语义）；
+// crl.json 损坏且 crl.pem 缺失/损坏 → 错误（fail-closed：吊销记录存在但
+// 不可用，无法确认吊销状态）。
+func reconcileCRLForVerify(certDir string) error {
+	crlPEMPath, crlJSONPath := CRLPaths(certDir)
+	jb, err := os.ReadFile(crlJSONPath)
+	if os.IsNotExist(err) {
+		return nil // 无来源记录 → 只按 crl.pem 校验（旧语义）
+	}
+	if err != nil {
+		return fmt.Errorf("读取吊销列表记录 %s 失败: %w", crlJSONPath, err)
+	}
+	var list revokedList
+	if err := json.Unmarshal(jb, &list); err != nil {
+		return reconcileJSONCorruptFallback(certDir, crlPEMPath, crlJSONPath, err)
+	}
+	if err := validateRevokedList(&list); err != nil {
+		return reconcileJSONCorruptFallback(certDir, crlPEMPath, crlJSONPath, err)
+	}
+	if crlCoveredByPEM(certDir, &list) {
+		return nil
+	}
+	if len(list.Entries) == 0 {
+		return nil // 空记录无需生成空 CRL（保持无 CRL 旧语义）
+	}
+	return regenerateCRLFromList(certDir, &list)
+}
+
+// reconcileJSONCorruptFallback 处理 crl.json 损坏时的降级判定：
+// crl.pem 完好可用 → 不阻断（verify 只读 pem 的旧语义）；否则 fail-closed。
+func reconcileJSONCorruptFallback(certDir, crlPEMPath, crlJSONPath string, cause error) error {
+	if b, perr := os.ReadFile(crlPEMPath); perr == nil {
+		if _, perr2 := parseCRLPEM(b); perr2 == nil {
+			return nil // pem 完好：对账不阻断，按 pem 校验
+		}
+	}
+	return fmt.Errorf("吊销列表记录 %s 损坏且 CRL %s 不可用，无法确认吊销状态（fail-closed）: %w",
+		crlJSONPath, crlPEMPath, cause)
+}
+
+// crlCoveredByPEM 判断 crl.pem 的吊销序列号集合是否已覆盖 crl.json 记录
+// （顺序无关；只向前补齐——pem 额外多出的序列号不影响判定）。
+func crlCoveredByPEM(certDir string, list *revokedList) bool {
+	crlPEMPath, _ := CRLPaths(certDir)
+	b, err := os.ReadFile(crlPEMPath)
+	if err != nil {
+		return false
+	}
+	rl, err := parseCRLPEM(b)
+	if err != nil {
+		return false
+	}
+	have := make(map[string]bool, len(rl.RevokedCertificateEntries))
+	for _, e := range rl.RevokedCertificateEntries {
+		if e.SerialNumber != nil {
+			have[e.SerialNumber.Text(16)] = true
+		}
+	}
+	for _, e := range list.Entries {
+		if !have[e.Serial] {
+			return false
+		}
+	}
+	return true
+}
+
+// regenerateCRLFromList 由 crl.json 记录重生成 crl.pem（对账路径）：
+// 需要 CA（加载失败 → 明确错误，fail-closed）。
+func regenerateCRLFromList(certDir string, list *revokedList) error {
+	ca, err := loadCA(certDir)
+	if err != nil {
+		return fmt.Errorf("吊销列表记录领先 CRL 产物，重生成失败（fail-closed）: %w", err)
+	}
+	return ensureCRLArtifact(ca, certDir, list)
 }
 
 // revokedEntry 是吊销列表中的一条记录（crl.json）。
@@ -613,16 +869,31 @@ func loadRevokedList(certDir string) (*revokedList, error) {
 	return &revokedList{}, nil
 }
 
-// validateRevokedList 校验吊销记录内容：序列号必须是小写十六进制且可解析。
+// validateRevokedList 校验并归一化吊销记录内容（加载 crl.json 时调用）：
+//   - 序列号必须是正整数十六进制（大小写均可），统一归一化为小写规范形式
+//     （去前导零，如 "0ABC"/"abc" → "abc"）；
+//   - 归一化后重复的序列号只保留首条（防手工编辑大写/带前导零的序列号
+//     产生重复条目与 CRL 重复项）。
 func validateRevokedList(l *revokedList) error {
+	seen := make(map[string]bool, len(l.Entries))
+	out := l.Entries[:0]
 	for _, e := range l.Entries {
 		if e.Serial == "" {
 			return errors.New("存在空序列号记录")
 		}
-		if n, ok := new(big.Int).SetString(e.Serial, 16); !ok || n.Sign() <= 0 {
+		n, ok := new(big.Int).SetString(e.Serial, 16)
+		if !ok || n.Sign() <= 0 {
 			return fmt.Errorf("序列号 %q 不是合法的正整数十六进制", e.Serial)
 		}
+		canonical := n.Text(16)
+		if seen[canonical] {
+			continue // 重复条目：保留首条（时间取首次记录）
+		}
+		seen[canonical] = true
+		e.Serial = canonical
+		out = append(out, e)
 	}
+	l.Entries = out
 	return nil
 }
 
@@ -658,14 +929,25 @@ func writeRevokedList(certDir string, list *revokedList) error {
 	return nil
 }
 
-// ensureCRLArtifact 确保 crl.pem 产物与吊销记录一致：
+// ensureCRLArtifact 确保 crl.pem 产物与吊销记录一致（锁内调用）：
 // crl.pem 缺失/损坏/序列号集合不一致 → 重新生成；已一致 → 不动（幂等）。
+//
+// 重生成即一次新的 CRL 签发：CRL Number 统一在此 +1（RFC 5280 §5.2.3
+// 每次签发新 CRL 应单调递增，含幂等自愈/对账重生成路径，不复用旧值），
+// 并先写 crl.json（来源记录，保持 Number 与产物一致），再原子写 crl.pem。
+// 新增序列号的常规吊销路径同样经此递增（列表追加本身不修改 Number）。
 func ensureCRLArtifact(ca *CA, certDir string, list *revokedList) error {
 	crlPEMPath, _ := CRLPaths(certDir)
 	if b, err := os.ReadFile(crlPEMPath); err == nil {
 		if rl, perr := parseCRLPEM(b); perr == nil && revokedSetEqual(rl, list) {
 			return nil // crl.pem 已与记录一致
 		}
+	}
+	list.Number++ // 新签发：CRL Number 单调递增（每次重生成 +1）
+	list.Updated = time.Now().UTC().Format(time.RFC3339)
+	// 先写 crl.json（来源记录，与新的 Number 保持一致）；crl.pem 随后写。
+	if err := writeRevokedList(certDir, list); err != nil {
+		return err
 	}
 	return writeCRLArtifact(ca, certDir, list)
 }
@@ -690,6 +972,12 @@ func revokedSetEqual(rl *x509.RevocationList, list *revokedList) bool {
 // writeCRLArtifact 由吊销记录生成 CRL 并事务化落盘 crl.pem（PEM 编码，
 // 块类型 X509 CRL）。
 func writeCRLArtifact(ca *CA, certDir string, list *revokedList) error {
+	return writeCRLArtifactAt(ca, certDir, list, time.Now())
+}
+
+// writeCRLArtifactAt 是 writeCRLArtifact 的时间注入版本（测试可构造
+// 已过期 CRL）：now 用作 ThisUpdate 基准（NextUpdate = now + crlValidity）。
+func writeCRLArtifactAt(ca *CA, certDir string, list *revokedList, now time.Time) error {
 	entries := make([]x509.RevocationListEntry, 0, len(list.Entries))
 	for _, e := range list.Entries {
 		serial, ok := new(big.Int).SetString(e.Serial, 16)
@@ -706,7 +994,7 @@ func writeCRLArtifact(ca *CA, certDir string, list *revokedList) error {
 			// ReasonCode 零值（Unspecified）：吊销原因未指定
 		})
 	}
-	now := time.Now().UTC()
+	now = now.UTC()
 	tmpl := &x509.RevocationList{
 		Number:                    big.NewInt(list.Number),
 		ThisUpdate:                now,

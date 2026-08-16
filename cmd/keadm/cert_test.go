@@ -464,3 +464,139 @@ func TestCertRevokeIdempotent(t *testing.T) {
 	}
 	assertNoCertTemp(t, dir)
 }
+
+// TestCertRevokeBySerial 验证 keadm cert revoke --serial：
+// 按序列号吊销（不依赖证书文件）成功路径 + 大小写归一化 + 未知序列号入列。
+func TestCertRevokeBySerial(t *testing.T) {
+	dir := setupCertDir(t, "edgeflow-test-node")
+	leaf, err := certs.EnsureClientCert(dir, "edgeflow-test-node")
+	if err != nil {
+		t.Fatalf("加载客户端证书失败: %v", err)
+	}
+	c, err := x509.ParseCertificate(leaf.Certificate[0])
+	if err != nil {
+		t.Fatalf("解析客户端证书失败: %v", err)
+	}
+	wantSerial := c.SerialNumber.Text(16)
+
+	// ① 大写 + 0x 前缀输入：退出码 0、输出归一化小写序列号、吊销真实生效。
+	code, stdout, stderr := runCapture([]string{
+		"cert", "revoke", "--serial=0X" + strings.ToUpper(wantSerial), "--cert-dir=" + dir,
+	}, "")
+	if code != 0 {
+		t.Fatalf("cert revoke --serial 退出码 = %d，期望 0；stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "已加入吊销列表") || !strings.Contains(stdout, wantSerial) {
+		t.Errorf("stdout 应含完成提示与小写序列号 %s: %q", wantSerial, stdout)
+	}
+	revoked, err := certs.VerifyCertAgainstCRL(dir, c)
+	if err != nil {
+		t.Fatalf("VerifyCertAgainstCRL 失败: %v", err)
+	}
+	if !revoked {
+		t.Error("按序列号吊销后证书应被拒，实际未吊销")
+	}
+
+	// ② 未知序列号（不在任何已知证书中）仍可入列：防轮换后旧证书泄露。
+	unknown := "1234567890abcdef1234567890abcdef"
+	code, _, stderr = runCapture([]string{
+		"cert", "revoke", "--serial=" + unknown, "--cert-dir=" + dir,
+	}, "")
+	if code != 0 {
+		t.Fatalf("吊销未知序列号退出码 = %d，期望 0；stderr=%s", code, stderr)
+	}
+
+	// ③ crl.json 恰好 2 条规范小写记录（大写输入未产生重复条目）。
+	b, err := os.ReadFile(filepath.Join(dir, certs.FileCRLJSON))
+	if err != nil {
+		t.Fatalf("读取 crl.json 失败: %v", err)
+	}
+	var list struct {
+		Entries []struct {
+			Serial string `json:"serial"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(b, &list); err != nil {
+		t.Fatalf("解析 crl.json 失败: %v", err)
+	}
+	if len(list.Entries) != 2 {
+		t.Fatalf("应恰好 2 条记录，实际 %d 条: %+v", len(list.Entries), list.Entries)
+	}
+	got := map[string]bool{}
+	for _, e := range list.Entries {
+		if e.Serial != strings.ToLower(e.Serial) {
+			t.Errorf("crl.json 序列号未归一化小写: %q", e.Serial)
+		}
+		got[e.Serial] = true
+	}
+	if !got[wantSerial] || !got[unknown] {
+		t.Errorf("crl.json 应含 %s 与 %s，实际 %+v", wantSerial, unknown, list.Entries)
+	}
+	// ④ 再次吊销同一序列号（小写）幂等：仍 2 条。
+	code, _, stderr = runCapture([]string{
+		"cert", "revoke", "--serial=" + wantSerial, "--cert-dir=" + dir,
+	}, "")
+	if code != 0 {
+		t.Fatalf("重复 --serial 吊销退出码 = %d，期望 0；stderr=%s", code, stderr)
+	}
+	b, err = os.ReadFile(filepath.Join(dir, certs.FileCRLJSON))
+	if err != nil {
+		t.Fatalf("读取 crl.json 失败: %v", err)
+	}
+	if err := json.Unmarshal(b, &list); err != nil {
+		t.Fatalf("解析 crl.json 失败: %v", err)
+	}
+	if len(list.Entries) != 2 {
+		t.Errorf("重复吊销后应仍 2 条，实际 %d 条: %+v", len(list.Entries), list.Entries)
+	}
+	assertNoCertTemp(t, dir)
+}
+
+// TestCertRevokeSerialUsageErrors 验证 --serial 用法错误：与 --node 同时
+// 指定、非法十六进制、空白、非正数 → exit 2 且不产生产物。
+func TestCertRevokeSerialUsageErrors(t *testing.T) {
+	dir := setupCertDir(t, "edgeflow-test-node")
+	cases := [][]string{
+		{"cert", "revoke", "--node=edgeflow-test-node", "--serial=1a2b", "--cert-dir=" + dir}, // 互斥
+		{"cert", "revoke", "--serial=zzzz", "--cert-dir=" + dir},                              // 非法十六进制
+		{"cert", "revoke", "--serial=1a 2b", "--cert-dir=" + dir},                             // 含空白
+		{"cert", "revoke", "--serial=0", "--cert-dir=" + dir},                                 // 非正数
+		{"cert", "revoke", "--serial=-1", "--cert-dir=" + dir},                                // 负数
+	}
+	for i, args := range cases {
+		code, _, stderr := runCapture(args, "")
+		if code != 2 {
+			t.Errorf("用例 %d: 退出码 = %d，期望 2；stderr=%s", i, code, stderr)
+		}
+		if stderr == "" {
+			t.Errorf("用例 %d: stderr 应有错误提示", i)
+		}
+	}
+	// 用法错误不产生吊销产物。
+	for _, name := range []string{certs.FileCRL, certs.FileCRLJSON} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("用法错误不应生成 %s", name)
+		}
+	}
+}
+
+// TestCertRevokeBySerialRuntimeErrors 验证 --serial 运行时错误：证书目录
+// 不存在、CA 缺失 → exit 1。
+func TestCertRevokeBySerialRuntimeErrors(t *testing.T) {
+	// 证书目录不存在。
+	missing := filepath.Join(t.TempDir(), "no-such-certs")
+	code, _, stderr := runCapture([]string{"cert", "revoke", "--serial=1a2b3c", "--cert-dir=" + missing}, "")
+	if code != 1 || !strings.Contains(stderr, "证书目录") {
+		t.Errorf("证书目录不存在应 exit=1 并提示: code=%d stderr=%q", code, stderr)
+	}
+
+	// CA 缺失（移除 ca.key）：RevokeCertBySerial 拒绝（不自动创建 CA）。
+	dir := setupCertDir(t, "edgeflow-test-node")
+	if err := os.Remove(filepath.Join(dir, certs.FileCAKey)); err != nil {
+		t.Fatalf("移除 CA 私钥失败: %v", err)
+	}
+	code, _, stderr = runCapture([]string{"cert", "revoke", "--serial=1a2b3c", "--cert-dir=" + dir}, "")
+	if code != 1 || !strings.Contains(stderr, "CA") {
+		t.Errorf("CA 缺失应 exit=1 并提示 CA: code=%d stderr=%q", code, stderr)
+	}
+}

@@ -29,6 +29,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -47,6 +48,7 @@ const certUsageText = `keadm cert —— 证书管理（WBS 7.1 证书轮换/吊
 子命令:
   rotate  重新签发节点证书（轮换）：备份旧证书 + 事务化重签 + 输出路径
   revoke  吊销节点证书：序列号入列 + 生成 CRL（crl.pem）+ 影响说明
+          （--node 按 CN 吊销；--serial 按十六进制序列号吊销，二者选一）
 
 全局帮助:
   keadm cert -h | --help   打印本帮助
@@ -58,6 +60,9 @@ const certUsageText = `keadm cert —— 证书管理（WBS 7.1 证书轮换/吊
   keadm cert rotate --node=cloudcore --cert-dir=./data/certs
   keadm cert revoke --node=edgeflow-edgecore --cert-dir=./data/certs
   keadm cert revoke --node=cloudcore --cert-dir=./data/certs
+  keadm cert revoke --serial=0a1b2c3d --cert-dir=./data/certs
+  keadm cert revoke --serial=0A1B2C3D --cert-dir=./data/certs
+  （--serial 可直接吊销已轮换/不在证书目录中的历史序列号，防旧证书泄露）
 `
 
 // certRotateOptions 是 keadm cert rotate 的参数集合。
@@ -310,24 +315,31 @@ func isRegularFile(path string) bool {
 // certRevokeOptions 是 keadm cert revoke 的参数集合。
 type certRevokeOptions struct {
 	// Node 是节点证书 CN（edgecore.crt 的 CN，如 edgeflow-edgecore；
-	// 云端服务端证书固定为 cloudcore）。
+	// 云端服务端证书固定为 cloudcore）。与 Serial 二选一。
 	Node string
+	// Serial 是证书序列号（十六进制，大小写均可，可选 0x 前缀）。
+	// 与 Node 二选一；按序列号吊销不依赖证书文件，可直接吊销轮换后
+	// 不再存在的旧证书序列号（防泄露旧证书场景）。
+	Serial string
 	// CertDir 是证书目录（含 ca.crt/ca.key 与节点证书）。
 	CertDir string
 }
 
 // runCertRevoke 实现 keadm cert revoke：
 //
-//	① 参数校验（--node 必填、无空白）→ ② 证书目录校验 →
-//	③ 定位节点证书（CN 匹配，输出吊销序列号）→
-//	④ pkg/certs.RevokeCert（序列号入列 + 生成/更新 CRL，幂等）→ ⑤ 输出。
+//	① 参数校验（--node 与 --serial 二选一必填；--serial 需为合法十六进制）→
+//	② 证书目录校验 → ③ 定位目标（--node 按 CN 定位并输出序列号；
+//	--serial 直接使用序列号，不依赖证书文件）→
+//	④ pkg/certs.RevokeCert / RevokeCertBySerial（序列号入列 + 生成/更新
+//	CRL，幂等，进程锁互斥）→ ⑤ 输出。
 //
 // 吊销只更新吊销列表与 CRL，不删除证书文件；已分发证书由对端按 CRL 拒绝，
 // 需要重新签发（keadm cert rotate）后重新分发。
 func runCertRevoke(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("cert revoke", stderr)
 	opts := certRevokeOptions{CertDir: certs.DefaultCertDir}
-	fs.StringVar(&opts.Node, "node", "", "节点证书 CN（必填；边缘节点如 edgeflow-edgecore，云端为 cloudcore）")
+	fs.StringVar(&opts.Node, "node", "", "节点证书 CN（与 --serial 二选一；边缘节点如 edgeflow-edgecore，云端为 cloudcore）")
+	fs.StringVar(&opts.Serial, "serial", "", "证书序列号（十六进制，与 --node 二选一；可直接吊销已轮换的旧证书序列号）")
 	fs.StringVar(&opts.CertDir, "cert-dir", opts.CertDir, "证书目录（含 ca.crt/ca.key 与节点证书，默认 data/certs）")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
@@ -337,13 +349,21 @@ func runCertRevoke(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	// ① 参数校验。
-	if strings.TrimSpace(opts.Node) == "" {
-		_, _ = fmt.Fprintln(stderr, "错误: 缺少必填参数 --node（证书 CN，示例: keadm cert revoke --node=edgeflow-edgecore）")
+	// ① 参数校验：--node 与 --serial 互斥且必须指定其一。
+	hasNode := strings.TrimSpace(opts.Node) != ""
+	hasSerial := strings.TrimSpace(opts.Serial) != ""
+	switch {
+	case !hasNode && !hasSerial:
+		_, _ = fmt.Fprintln(stderr, "错误: 缺少必填参数 --node 或 --serial（二选一；示例: keadm cert revoke --node=edgeflow-edgecore，或 keadm cert revoke --serial=0a1b2c3d）")
 		return exitUsage
-	}
-	if strings.ContainsAny(opts.Node, " \t\n") {
+	case hasNode && hasSerial:
+		_, _ = fmt.Fprintln(stderr, "错误: --node 与 --serial 互斥，只能指定其一（按 CN 或按序列号吊销）")
+		return exitUsage
+	case hasNode && strings.ContainsAny(opts.Node, " \t\n"):
 		_, _ = fmt.Fprintln(stderr, "错误: --node 含空白字符，证书 CN 不允许空格")
+		return exitUsage
+	case hasSerial && strings.ContainsAny(opts.Serial, " \t\n"):
+		_, _ = fmt.Fprintln(stderr, "错误: --serial 含空白字符，序列号不允许空格")
 		return exitUsage
 	}
 
@@ -353,7 +373,30 @@ func runCertRevoke(args []string, stdout, stderr io.Writer) int {
 		return exitRuntime
 	}
 
-	// ③ 定位节点证书（CN 匹配；不存在/不匹配 → 报错），取序列号用于输出。
+	// ③（--serial 路径）按序列号吊销：不依赖证书文件，序列号直接入列
+	// （可吊销已轮换/不在证书目录中的历史序列号）。
+	if hasSerial {
+		serial := normalizeSerialHex(opts.Serial)
+		if serial == "" {
+			_, _ = fmt.Fprintf(stderr, "错误: --serial %q 不是合法的正整数十六进制序列号\n", opts.Serial)
+			return exitUsage
+		}
+		// ④ 吊销（pkg/certs.RevokeCertBySerial：序列号入列 + 生成/更新 CRL；重复吊销幂等）。
+		if err := certs.RevokeCertBySerial(opts.CertDir, serial); err != nil {
+			_, _ = fmt.Fprintf(stderr, "错误: 吊销失败: %v\n", err)
+			return exitRuntime
+		}
+		crlPath := filepath.Join(opts.CertDir, certs.FileCRL)
+
+		// ⑤ 输出吊销序列号、CRL 路径与影响说明。
+		_, _ = fmt.Fprintf(stdout, "keadm cert revoke 完成: 序列号 %s 已加入吊销列表\n", serial)
+		_, _ = fmt.Fprintf(stdout, "  CRL:        %s\n", crlPath)
+		_, _ = fmt.Fprintln(stdout, "  影响: 该序列号证书已被吊销，云端/边缘 mTLS 握手将按 CRL 拒绝其接入；")
+		_, _ = fmt.Fprintln(stdout, "        如对应节点仍需接入，请重新签发并分发新证书（keadm cert rotate）。")
+		return exitOK
+	}
+
+	// ③（--node 路径）定位节点证书（CN 匹配；不存在/不匹配 → 报错），取序列号用于输出。
 	target, err := resolveCertTarget(opts.CertDir, opts.Node)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "错误: "+err.Error())
@@ -381,4 +424,15 @@ func runCertRevoke(args []string, stdout, stderr io.Writer) int {
 	_, _ = fmt.Fprintln(stdout, "  影响: 该证书序列号已被吊销，云端/边缘 mTLS 握手将按 CRL 拒绝其接入；")
 	_, _ = fmt.Fprintln(stdout, "        已分发到节点的证书需重新签发（keadm cert rotate --node="+opts.Node+"）并重新分发。")
 	return exitOK
+}
+
+// normalizeSerialHex 校验并归一化序列号输入（--serial）：
+// 返回小写规范十六进制（去前导零/可选 0x 前缀）；非法输入返回空串。
+func normalizeSerialHex(s string) string {
+	s = strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(s), "0x"), "0X")
+	n, ok := new(big.Int).SetString(s, 16)
+	if !ok || n.Sign() <= 0 {
+		return ""
+	}
+	return n.Text(16)
 }

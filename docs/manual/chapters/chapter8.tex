@@ -65,6 +65,26 @@ keadm join --cloudcore-ip=192.168.1.10 --cloudcore-port=31000 \
   --token=<token> --node-id=edge-worker-01 --tls --output-dir=./keadm-out
 \end{lstlisting}
 
+\subsection{设备接入令牌认证}
+
+边缘节点注册接入的令牌校验（设备认证）
+\textbf{已实现}，链路如下：
+
+\begin{itemize}
+  \item \texttt{keadm join} 生成 \texttt{edgecore.env} 时写入
+        \texttt{EDGEFLOW\_EDGECORE\_TOKEN}（值为 \texttt{--token} 参数）；
+  \item edgecore 启动后随 \texttt{Register} 消息\textbf{携带}该令牌上报云端；
+  \item 云端设置 \texttt{EDGEFLOW\_CLOUDCORE\_NODE\_TOKEN} 后启用校验：
+        按\textbf{常数时间比较}，不匹配 → \textbf{拒绝注册}；
+  \item 云端未设置该变量 → 不校验，保持向后兼容（默认空 = 不校验）。
+\end{itemize}
+
+\begin{lstlisting}
+# 云端：设置后开启设备接入校验（建议生产启用）
+export EDGEFLOW_CLOUDCORE_NODE_TOKEN=<secret>
+bin/cloudcore
+\end{lstlisting}
+
 \section{证书管理}
 
 \subsection{证书布局}
@@ -82,6 +102,9 @@ keadm join --cloudcore-ip=192.168.1.10 --cloudcore-port=31000 \
 \texttt{ca.crt} / \texttt{ca.key} & 自签 CA & 10 年 & \texttt{CN=edgeflow-ca}，CertSign \\
 \texttt{cloudcore.crt} / \texttt{cloudcore.key} & 云服务端证书 & 1 年 & SAN：回环 + 注入值，EKU serverAuth \\
 \texttt{edgecore.crt} / \texttt{edgecore.key} & 边客户端证书 & 1 年 & \texttt{CN=edgeflow-<nodeID>}，EKU clientAuth \\
+\texttt{crl.pem} & 吊销列表（X.509 CRL 签名产物） & 7 天（有新吊销时重签） & mTLS 握手校验依据 \\
+\texttt{crl.json} & 吊销序列号来源记录 & — & 与 \texttt{crl.pem} 对账自愈，唯一事实源 \\
+\texttt{crl.lock} & 吊销写路径文件锁 & — & 写路径互斥（flock） \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -91,7 +114,9 @@ keadm join --cloudcore-ip=192.168.1.10 --cloudcore-port=31000 \
 \texttt{hack/gen-certs.sh} 预置。证书损坏/不完整 → \textbf{启动失败}
 （fail-fast，不降级）。
 
-\subsection{轮换（人工编排）}
+\subsection{证书轮换与吊销}
+
+\textbf{人工编排路径}：
 
 \begin{enumerate}
   \item 签发新证书（先备份并删除旧文件，或使用新证书目录）；
@@ -102,6 +127,66 @@ keadm join --cloudcore-ip=192.168.1.10 --cloudcore-port=31000 \
 
 轮换 CA 需\textbf{全量重签}所有叶子证书（旧叶子证书随 CA 更换立即失效）。
 CA 私钥仅靠文件权限保护，生产建议离线签发后移出节点或接入 KMS。
+
+\textbf{自动轮换（\texttt{keadm cert rotate}）}：
+\texttt{keadm cert rotate --node=<CN> --cert-dir=<目录>} 按 CN 定位证书并
+\textbf{事务化重签}（SAN 继承），旧证书备份到 \texttt{backups/<时间戳>/}
+（含 \texttt{manifest.json}），输出新证书路径；随后需将新证书
+\textbf{重新分发}到目标节点并重启生效。
+
+\textbf{吊销（\texttt{keadm cert revoke}）}：
+\texttt{keadm cert revoke --node=<CN>|--serial=<hex> --cert-dir=<目录>}
+
+\begin{itemize}
+  \item \texttt{--node} 与 \texttt{--serial} \textbf{二选一互斥}：
+        \texttt{--node} 按 CN 定位取序列号；\texttt{--serial} 接受十六进制
+        （可带 \texttt{0x} 前缀，大小写均可，自动归一化），\textbf{不依赖
+        证书文件}——可直接吊销已轮换的历史序列号（防泄露）；
+  \item 序列号写入 \texttt{crl.json} 并重签 \texttt{crl.pem}；重复吊销
+        \textbf{幂等}（无副作用）；
+  \item 吊销\textbf{不删除证书文件}：已分发的证书由对端在 mTLS 握手时
+        按 CRL \textbf{拒绝}（cloudcore/edgecore 双侧消费端均接线，真实
+        握手测试覆盖）；
+  \item 吊销后需 \texttt{keadm cert rotate} 重签新证书并\textbf{重新分发}。
+\end{itemize}
+
+\textbf{吊销语义要点}：
+
+\begin{itemize}
+  \item CRL 缺失（无 \texttt{crl.pem}）视为\textbf{无吊销}（向后兼容放行）；
+  \item CRL 仅在发生新吊销时重生成（\texttt{NextUpdate} = 生成时 +7 天）；
+        过期后\textbf{已吊销序列号仍被拒绝}（吊销检查先于过期检查），未吊销
+        证书默认\textbf{放行}；\texttt{FailOnExpired} 为库级选项，当前
+        \textbf{未接线}到 mTLS 握手；
+  \item \texttt{crl.json}/\texttt{crl.pem} 损坏或签名无效 → \textbf{拒绝}
+        （fail-closed，不静默放行）；
+  \item 吊销\textbf{只增不减}：误吊销后无撤销命令，只能重新签发新证书
+        （新序列号）；\textbf{请勿手工编辑 crl.json}（下次吊销时会按记录
+        精确重生成 CRL，手工删除的条目将材料化生效）。
+\end{itemize}
+
+\subsection{在线吊销查询（OCSP）}
+
+云端提供标准 OCSP responder（RFC 6960）：\texttt{POST /ocsp}。
+
+\begin{itemize}
+  \item 请求体：DER 编码 \texttt{OCSPRequest}（\texttt{Content-Type:
+        application/ocsp-request}）；响应体：DER 编码 \texttt{OCSPResponse}
+        （\texttt{application/ocsp-response}），由\textbf{CA 私钥签名}；
+  \item 吊销状态直接读取 \texttt{crl.json}，与 CRL \textbf{同源}——吊销后
+        双通道（CRL 握手校验 + OCSP 在线查询）同时生效；
+  \item 状态码：\texttt{200} = 签名响应；\texttt{400} = 请求非法/超限
+        （请求体上限 \textbf{16\,KiB}，空请求/DER 损坏/超限）；\texttt{500} =
+        CA 不可用/吊销记录损坏/响应构建失败（fail-closed，不静默放行）；
+  \item 客户端查询库函数 \texttt{OCSPStatus/OCSPStatusAt} 可用（验签 +
+        responderID + CertID 匹配），当前\textbf{未接入}任何命令或握手
+        路径——mTLS 握手消费的是 CRL 而非 OCSP。
+\end{itemize}
+
+\textbf{安全边界}：\texttt{/ocsp} 是唯一\textbf{免 Token 认证}的协议端点
+（响应由 CA 私钥签名，客户端必须验签防伪造）。该端点\textbf{无限流}且
+监听全部接口，\textbf{禁止直接暴露公网}，应置于受信内网/防火墙之后；
+吊销状态属公开信息（协议设计如此），不涉及凭据泄露。
 
 \section{管理 API Token 认证}
 
@@ -145,10 +230,12 @@ tail -f data/audit-ledger.jsonl
 \section{安全基线小结}
 
 \begin{itemize}
-  \item 已实现：双向认证（云验边、边验云+主机名）、私钥 0600、
-        强制 TLS 1.2+、证书损坏 fail-fast、Token 认证（默认关）、
-        审计台账（默认开）；
-  \item 已知限制：吊销（CRL/OCSP）未实现；CSR 审批流未实现；证书 CN
-        与 nodeID 未绑定校验；单令牌模型（无多角色授权）；设备侧
-        认证 token 为预留字段（keadm join 写入但 edgecore 当前未消费）。
+  \item 已实现：双向认证（云验边、边验云+主机名）、设备接入令牌认证
+        （云端设 \texttt{EDGEFLOW\_CLOUDCORE\_NODE\_TOKEN} 后启用，见
+        「设备接入令牌认证」小节）、私钥 0600、强制 TLS 1.2+、证书
+        损坏 fail-fast、Token 认证（默认关）、审计台账（默认开）、
+        证书吊销（CRL 离线 + OCSP 在线，见「证书轮换与吊销」与
+        「在线吊销查询（OCSP）」小节）；
+  \item 已知限制：CSR 审批流未实现；证书 CN 与 nodeID 未绑定校验；
+        单令牌模型（无多角色授权）。
 \end{itemize}

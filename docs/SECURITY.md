@@ -105,9 +105,11 @@
 - **CA 私钥保护**：本版本 CA 私钥仅靠文件权限保护。生产环境建议：
   1) 使用 `hack/gen-certs.sh` 离线签发后，将 CA 私钥移出节点（仅保留 ca.crt）；
   2) 或接入 KMS/HSM 等密钥管理服务；3) 云、边证书目录分离部署。
-- **吊销未实现**：无 CRL/OCSP。一旦某节点证书泄露，当前只能通过轮换 CA +
-  全量重签（或部署侧防火墙封禁该节点）处置。吊销列表（CRL）与 OCSP
-  响应器接入在后续版本规划中。
+- **吊销已实现**（2026-08-15/16 闭环，WBS 7.1）：`keadm cert revoke --node/--serial`
+  将序列号写入 crl.json 并生成签名产物 crl.pem（flock 进程锁 + 幂等 + 对账自愈）；
+  mTLS 握手按 CRL 拒绝已吊销证书；cloudcore 提供 OCSP responder（POST /ocsp，
+  RFC 6960，与 CRL 同源，OpenSSL 互操作已验证）。节点证书泄露的处置路径：
+  `keadm cert revoke` 吊销 → `keadm cert rotate` 重签 → 重新分发。
 - **CSR 流程未实现**：证书由本地直接生成签发（私钥不出节点），未提供
   中心化 CA + CSR 审批流（对标 KubeEdge certgen 的扩展点）。
 - **CN 与 nodeID 未绑定校验**：云端验证的是「证书由可信 CA 签发」，
@@ -144,4 +146,4 @@ TLS_SAN="IP:10.0.0.5,DNS:cloudcore.edgeflow.svc" ./hack/gen-certs.sh
 
 - 边缘侧连接的地址（`EDGEFLOW_EDGECORE_CLOUD_ADDR=wss://<host>:<port>`）必须在服务端证书 SAN 内，否则握手失败。
 - CA 私钥仅文件权限保护（0600）；生产建议离线签发或接入 KMS。
-- 证书轮换需人工编排（备份→删除旧证书→滚动重启，先云后边）；吊销（CRL/OCSP）未实现。
+- 证书轮换自动化：`keadm cert rotate`（2026-08-15：备份先行 + 事务化重签 + 幂等）；吊销已实现（2026-08-16）：`keadm cert revoke`（CRL + OCSP 在线查询，mTLS 握手按 CRL 拒绝）。

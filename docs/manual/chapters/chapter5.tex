@@ -18,7 +18,8 @@ EdgeFlow 的边缘侧由一个常驻进程 \textbf{edgecore}（边缘核心）�
 edgecore 启动后第一条消息是 \textbf{Register}（注册），云端 CloudHub 校验后
 回 \textbf{RegisterAck}（注册确认）。注册通过后，节点在云端注册表中可见，
 状态为 \texttt{Ready}。节点 ID 由环境变量 \texttt{EDGEFLOW\_EDGECORE\_NODE\_ID}
-指定；未设置时使用默认约定 \texttt{edge-\allowbreak<主机名>}。
+或配置文件（\texttt{config/edgecore.json} 的 \texttt{nodeID} 字段）指定，环境变量
+优先；均未设置时使用默认约定 \texttt{edge-\allowbreak<主机名>}。
 
 \begin{lstlisting}
 # 指定节点 ID 与云端地址启动 edgecore
@@ -39,6 +40,13 @@ bin/edgecore
   \item 云端超时阈值：\texttt{EDGEFLOW\_CLOUDCORE\_NODE\_TIMEOUT}，默认 \texttt{180s}；
   \item 云端扫描周期：\texttt{EDGEFLOW\_CLOUDCORE\_NODE\_SCAN\_INTERVAL}，默认 \texttt{30s}。
 \end{itemize}
+
+\subsection{通道压缩}
+
+云边通道的 gzip 压缩\textbf{默认开启}：edgecore 在 Register 消息中声明压缩
+能力（\texttt{compression: "gzip"}），云端在 RegisterAck 中回带确认，协商
+成功后双向启用。\texttt{config/cloudcore.json} 中设置 \texttt{compress:false}
+可关闭：云端不再回带压缩能力，边缘自动回落明文传输，与旧版本互操作兼容。
 
 \subsection{断线重连}
 
@@ -136,17 +144,39 @@ Edged 在调谐时会比对\textbf{期望镜像}与\textbf{实际运行镜像}�
 第~\ref{ch:9}~章）。边缘侧元数据由 MetaManager 持久化到本机 SQLite，断网
 期间不丢失。
 
-\section{edgecore 环境变量配置}
+\section{edgecore 配置（环境变量 + 配置文件）}
 
-edgecore 全部通过环境变量配置，未设置的项使用默认值（表~\ref{tab:5-env}）。
-时长类变量（如调谐/上报周期）合法范围为 \textbf{1s 至 10m}，超出范围或
-非法值回退默认值并打印告警。
+edgecore 采用\textbf{环境变量 + 配置文件}双轨配置，加载优先级从高到低为：
+\textbf{环境变量 > 配置文件 > 默认值}。配置文件为 JSON 格式，默认路径
+\texttt{config/edgecore.json}（可用 \texttt{--config} 标志覆盖），所有字段
+可选（缺省回落默认值），支持 \texttt{cloudAddr}、\texttt{nodeID}、
+\texttt{podReportInterval}、\texttt{deviceReportInterval} 与
+\texttt{reconcileInterval} 五个字段，例如：
+
+\begin{lstlisting}
+{
+  "cloudAddr": "ws://192.168.1.10:10000/v1/edge",
+  "nodeID": "edge-worker-01",
+  "podReportInterval": "30s",
+  "deviceReportInterval": "30s",
+  "reconcileInterval": "5s"
+}
+\end{lstlisting}
+
+环境变量全集见表~\ref{tab:5-env}；时长类变量（如调谐/上报周期）合法范围为
+\textbf{1s 至 10m}，超出范围或非法值回退默认值并打印告警。\textbf{敏感配置
+（接入令牌 \texttt{EDGEFLOW\_EDGECORE\_TOKEN} 等）仍仅支持环境变量，不入
+配置文件}，防止令牌随文件分发泄露。
+
+cloudcore 采用同构机制：配置文件 \texttt{config/cloudcore.json}（字段
+\texttt{port}、\texttt{hubPort}、\texttt{compress}，全部可选）+ \texttt{--config}
+覆盖；优先级为命令行 > 环境变量 > 配置文件 > 默认值。
 
 \begin{table}[htbp]
 \centering
 \caption{edgecore 环境变量}
 \label{tab:5-env}
-\begin{tabularx}{\textwidth}{l l X}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{4.5cm} >{\raggedright\arraybackslash}p{2.8cm} X}
 \toprule
 \textbf{变量} & \textbf{默认值} & \textbf{说明} \\
 \midrule
@@ -160,10 +190,46 @@ edgecore 全部通过环境变量配置，未设置的项使用默认值（表~\
 \texttt{EDGEFLOW\_EDGECORE\_REPORT\_INTERVAL} & \texttt{30s} & Pod 状态上报周期 \\
 \texttt{EDGEFLOW\_EDGECORE\_DEVICE\_REPORT\_INTERVAL} & \texttt{30s} & 设备状态上报周期 \\
 \texttt{EDGEFLOW\_EDGECORE\_MQTT\_CONNECT\_TIMEOUT} & \texttt{5s} & 单次 MQTT 建连超时 \\
+\texttt{EDGEFLOW\_EDGECORE\_TOKEN} & 空 & 接入令牌（keadm join 写入；仅环境变量，不入配置文件） \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
 生产环境建议使用 \texttt{keadm join} 生成 \texttt{edgecore.env} 与
 \texttt{edgecore.service}（systemd 单元），由安装脚本统一部署，避免手工
-拼写错误（见第~\ref{ch:7}~章升级回滚时的产物管理）。
+拼写错误（见第~\ref{ch:7}~章升级回滚时的产物管理）。\texttt{keadm join}
+产物与配置文件\textbf{双轨并存}：两者同时设置同一项时，以环境变量为准。
+
+\section{配置热重载}
+
+cloudcore 与 edgecore 均支持\textbf{配置热重载}，无需重启进程即可让部分
+配置生效：
+
+\begin{itemize}
+  \item \textbf{触发方式}：向进程发送 \textbf{SIGHUP} 信号立即强制重载一次
+        （不检查变更）；此外进程每 \textbf{60 秒}检查一次配置文件，
+        mtime/size 变化即触发重载；多触发源串行化，并发安全；
+  \item \textbf{重载失败保持旧配置}（fail-safe）：配置文件解析失败、文件
+        缺失或端口绑定失败时，本次重载被整体拒绝，进程按旧配置继续运行。
+\end{itemize}
+
+不同配置项的热生效边界见表~\ref{tab:5-reload}：
+
+\begin{table}[htbp]
+\centering
+\caption{配置热重载生效边界}
+\label{tab:5-reload}
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{组件} & \textbf{配置项} & \textbf{热重载行为} \\
+\midrule
+cloudcore & \texttt{port}（HTTP） & \textbf{热切换}：先绑定新端口，成功后关闭旧监听；新端口绑定失败则拒绝本次重载，保持旧配置 \\
+cloudcore & \texttt{hubPort} / \texttt{compress} & \textbf{需重启}：热重载时打印告警并保持旧值（CloudHub 不支持运行期重建监听；压缩在连接注册时协商） \\
+edgecore & \texttt{podReportInterval} / \texttt{deviceReportInterval} & \textbf{热生效}：重载后按新周期上报，无需额外动作 \\
+edgecore & \texttt{cloudAddr} / \texttt{nodeID} / \texttt{reconcileInterval} & \textbf{需重启}：热重载时打印告警并保持旧值 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+生产建议：修改\textbf{需重启}类配置项后，在维护窗口重启对应进程使其生效；
+热生效类配置可即时下发，适合运行期调整上报频率。

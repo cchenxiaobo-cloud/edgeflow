@@ -37,7 +37,7 @@ make build
 
 \subsection{方式二：使用发布制品}
 
-发布目录 \texttt{release/v0.1.0/} 提供预编译二进制：\texttt{cloudcore}、\texttt{edgecore}、\texttt{keadm} 的 \texttt{linux-amd64} 与 \texttt{darwin-arm64} 版本，以及 Helm Chart 包 \texttt{edgeflow-0.1.0.tgz}。下载后可使用 \texttt{checksums.txt} 校验文件完整性，并将二进制放入 \texttt{PATH} 或仓库 \texttt{bin/} 目录后按需执行。
+发布目录 \texttt{release/v0.1.0/} 提供预编译二进制：\texttt{cloudcore}、\texttt{edgecore}、\texttt{keadm} 每组件均含 \texttt{linux-amd64}、\texttt{linux-arm64} 与 \texttt{darwin-arm64} 三个平台版本（共 9 个二进制），以及 Helm Chart 包 \texttt{edgeflow-0.1.0.tgz}。下载后可使用 \texttt{checksums.txt} 校验文件完整性，并将二进制放入 \texttt{PATH} 或仓库 \texttt{bin/} 目录后按需执行。
 
 \subsection{方式三：容器镜像}
 
@@ -131,7 +131,7 @@ curl http://127.0.0.1:8080/healthz
 ./bin/cloudcore
 \end{lstlisting}
 
-默认监听 REST API 8080 与 CloudHub 10000 端口，端口可通过环境变量或命令行覆盖（详见第 3 章 \autoref{ch:3}）。此方式仅用于单机联调，生产环境请使用方式一或方式二。
+默认监听 REST API 8080 与 CloudHub 10000 端口；端口可通过配置文件（\texttt{config/cloudcore.json}，可用 \texttt{--config} 指定路径）、环境变量或命令行覆盖，优先级为命令行 > 环境变量 > 配置文件 > 默认值（详见第 3 章 \autoref{ch:3}）。此方式仅用于单机联调，生产环境请使用方式一或方式二。
 
 \section{接入边缘节点（edgecore）}
 
@@ -145,7 +145,7 @@ curl http://127.0.0.1:8080/healthz
   \hline
   \texttt{--cloudcore-port} & \texttt{10000} & CloudHub 端口；NodePort 部署时填集群分配的节点端口 \\
   \hline
-  \texttt{--token} & 必填 & 接入令牌（预留字段，当前版本 edgecore 尚未消费） \\
+  \texttt{--token} & 必填 & 接入令牌：写入 \texttt{edgecore.env} 并由 edgecore 注册时携带；云端设 \texttt{EDGEFLOW\_CLOUDCORE\_NODE\_TOKEN} 后启用校验 \\
   \hline
   \texttt{--node-id} & \texttt{edge-<主机名>} & 边缘节点 ID，仅允许字母、数字、连字符与下划线 \\
   \hline
@@ -168,7 +168,7 @@ keadm join --cloudcore-ip=192.168.1.10 --cloudcore-port=31000 \
 产物说明：
 
 \begin{itemize}
-  \item \texttt{edgecore.env}：环境变量文件，键名与 edgecore 读取的环境变量一一对应，包括 \texttt{EDGEFLOW\_EDGECORE\_NODE\_ID}、\texttt{EDGEFLOW\_EDGECORE\_CLOUD\_ADDR}（\texttt{ws://<ip>:<port>/v1/edge}）、\texttt{EDGEFLOW\_EDGECORE\_DB\_PATH}（\texttt{/var/lib/edgeflow/edgeflow.db}）、\texttt{EDGEFLOW\_EDGECORE\_MQTT\_ADDR}（\texttt{tcp://127.0.0.1:1883}）等；\texttt{--tls} 时追加 TLS 与证书目录配置；\texttt{TOKEN} 为预留键；
+  \item \texttt{edgecore.env}：环境变量文件，键名与 edgecore 读取的环境变量一一对应，包括 \texttt{EDGEFLOW\_EDGECORE\_NODE\_ID}、\texttt{EDGEFLOW\_EDGECORE\_CLOUD\_ADDR}（\texttt{ws://<ip>:<port>/v1/edge}）、\texttt{EDGEFLOW\_EDGECORE\_DB\_PATH}（\texttt{/var/lib/edgeflow/edgeflow.db}）、\texttt{EDGEFLOW\_EDGECORE\_MQTT\_ADDR}（\texttt{tcp://127.0.0.1:1883}）等；\texttt{--tls} 时追加 TLS 与证书目录配置；\texttt{EDGEFLOW\_EDGECORE\_TOKEN} 为接入令牌键（edgecore 注册时携带，云端设 \texttt{EDGEFLOW\_CLOUDCORE\_NODE\_TOKEN} 后启用校验）；
   \item \texttt{edgecore.service}：systemd 单元文件，通过 \texttt{EnvironmentFile=/etc/edgeflow/edgecore.env} 加载配置，\texttt{ExecStart=/usr/local/bin/edgecore}，崩溃自动重启；
   \item \texttt{install.sh}：一键安装脚本（需 root），安装二进制、环境文件与 systemd 单元并启用服务；
   \item \texttt{README.md}：接入说明与手动安装片段。
@@ -196,7 +196,8 @@ mTLS 说明：启用 \texttt{--tls} 后，edgecore 首次运行会在 \texttt{/e
   \item 云端 \texttt{/healthz} 返回 HTTP 200 与版本信息；
   \item 边缘节点已注册：云端查询 \texttt{/api/v1/nodes} 能看到节点且状态为 \texttt{Ready}（查询方法见第 4 章 \autoref{ch:4}）；
   \item \texttt{systemctl status edgecore} 显示 active (running)，日志无致命错误；
-  \item 可下发一个测试 Pod 验证端到端链路（见第 3 章 \autoref{ch:3}）。
+  \item 可下发一个测试 Pod 验证端到端链路（见第 3 章 \autoref{ch:3}）；
+  \item 配置热重载：cloudcore 与 edgecore 支持 SIGHUP 触发与每 60 秒轮询两种热重载方式（云端 HTTP 端口可热切换，部分配置项变更需重启，生效边界见第 5 章 \autoref{ch:5}）。
 \end{itemize}
 
 \section{卸载与清理}
@@ -220,8 +221,9 @@ rm -f data/edgeflow.db
 \texttt{keadm} 在产物层面提供升级与回滚能力（执行前自动备份并记录操作台账）：
 
 \begin{lstlisting}
-# 升级产物到新版本
-keadm upgrade --version=v0.2.0 --operator=alice --output-dir=./keadm-out
+# 升级产物到新版本（操作人经环境变量传入，写入操作台账）
+export KEADM_OPERATOR=alice
+keadm upgrade --version=v0.2.0 --output-dir=./keadm-out
 
 # 回滚到最近一次备份
 keadm rollback --latest --output-dir=./keadm-out

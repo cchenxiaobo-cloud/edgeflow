@@ -24,6 +24,7 @@
 \texttt{EDGEFLOW\_CLOUDCORE\_TLS} & 关 & \texttt{on} 启用 mTLS \\
 \texttt{EDGEFLOW\_CLOUDCORE\_CERT\_DIR} & \texttt{data/certs/} & 证书目录 \\
 \texttt{EDGEFLOW\_CLOUDCORE\_TLS\_SAN} & 空（仅回环） & 证书 SAN，逗号分隔，非法 fail-fast \\
+\texttt{EDGEFLOW\_CLOUDCORE\_NODE\_TOKEN} & 空 & 设备接入令牌：设置后 edgecore 注册时按常数时间校验，不匹配拒绝注册；空 = 不校验（向后兼容） \\
 \texttt{EDGEFLOW\_CLOUDCORE\_NODE\_SCAN\_INTERVAL} & \texttt{30s} & 节点健康扫描周期 \\
 \texttt{EDGEFLOW\_CLOUDCORE\_NODE\_TIMEOUT} & \texttt{180s} & 心跳超时阈值（约 6 个心跳） \\
 \texttt{EDGEFLOW\_CLOUDCORE\_AUTH} & 关 & \texttt{on} 启用 Token 认证 \\
@@ -53,13 +54,17 @@
 \texttt{EDGEFLOW\_EDGECORE\_REPORT\_INTERVAL} & \texttt{30s} & Pod 状态上报周期 \\
 \texttt{EDGEFLOW\_EDGECORE\_DEVICE\_REPORT\_INTERVAL} & \texttt{30s} & 设备状态上报周期 \\
 \texttt{EDGEFLOW\_EDGECORE\_MQTT\_CONNECT\_TIMEOUT} & \texttt{5s} & 单次 MQTT 建连超时 \\
-\texttt{EDGEFLOW\_EDGECORE\_TOKEN} & 空 & \textbf{预留}：keadm join 写入，edgecore 当前未消费 \\
+\texttt{EDGEFLOW\_EDGECORE\_TOKEN} & 空 & \textbf{已消费}：keadm join 写入（\texttt{--token}），edgecore 注册时携带；云端设 \texttt{EDGEFLOW\_CLOUDCORE\_NODE\_TOKEN} 后启用校验 \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
 时长类变量（调谐/上报周期等）合法范围 \textbf{1s 至 10m}，超出或非法回退
 默认值并告警。
+
+\texttt{EDGEFLOW\_*} 环境变量共 \textbf{24 个}：cloudcore 组 11 个 +
+edgecore 组 11 个 + \texttt{EDGEFLOW\_MODBUS\_ADDR}（见第 6 章）+
+测试专用 \texttt{EDGEFLOW\_TEST\_DUR}（仅测试代码使用，不影响部署）。
 
 \section{keadm / 开发脚本组}
 
@@ -162,6 +167,10 @@ cloudcore 日志，反馈问题 \\
   \item 质量门：24 个包 \texttt{go test -race} 全绿；总覆盖率
         \textbf{77.8\%}（门槛 ≥70\%）；\texttt{golangci-lint} 0 issues；
         P0/P1 审查发现 0；端到端示例 \texttt{examples/demo.sh} 通过 3 次；
+  \item 基线说明：以上质量门数据为 \textbf{v0.1.0 发布时基线}
+        （2026-08-14）；8-15/8-16 功能批次（吊销闭环、OCSP、契约测试、
+        OpenAPI 语义等）后，全仓库测试函数 \textbf{605 个}（81 个测试
+        文件），其中 \texttt{pkg/certs} 66 个（CRL/OCSP 吊销核心）；
   \item 制品：\texttt{release/v0.1.0/}（6 二进制 + Chart 包 +
         checksums.txt + sbom.json + images.json）；镜像
         \texttt{edgeflow/cloudcore:v0.1.0} / \texttt{edgeflow/edgecore:v0.1.0}
@@ -179,12 +188,16 @@ cloudcore 日志，反馈问题 \\
 \textbf{类别} & \textbf{内容} \\
 \midrule
 已实现 & 云边通信、边缘自治、设备管理、mTLS、Token 认证（默认关）、
-审计台账、keadm（init/join/upgrade/rollback/ops-ledger/reset/version）、
-Helm Chart、多架构镜像、/metrics 可观测性 \\
+设备接入令牌认证、证书吊销（CRL 离线 + OCSP 在线）、云边通道 gzip
+压缩（默认开，协商式）、审计台账、keadm（init/join/cert/upgrade/
+rollback/ops-ledger/batch/reset/version）、批量与灰度（\texttt{keadm
+batch}）、Helm Chart、多架构镜像、/metrics 可观测性、API 兼容矩阵
+（\texttt{docs/API-COMPATIBILITY.md} + \texttt{tests/contract}）、
+镜像安全扫描（Trivy 构建期 0 漏洞，发布流程级，见
+\texttt{docs/SECURITY-SCAN.md}） \\
 即将上线 / 范围外 & NodeJob 任务分发（已关闭）、完整 RBAC 角色模型
-（仅 Token 单令牌）、设备认证 token 消费（预留未做）、Flannel、边缘
-调度/资源超卖、OPC-UA 适配器、API 兼容矩阵、镜像安全扫描、消息压缩/
-Protobuf、灰度发布 \\
+（仅 Token 单令牌）、Flannel、边缘调度/资源超卖、OPC-UA 适配器、
+Protobuf 编码 \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -201,16 +214,19 @@ Protobuf、灰度发布 \\
   \item \textbf{GitHub remote 未配置}：配置 SSH key 后
         \texttt{git remote add origin} 推送即可启用远端 CI。
   \item \textbf{真实多节点集群未验证}：v0.1.0 在 kind 单节点集群 +
-        单边缘节点跑通（2026-08-14 实测）；多节点（10+）E2E 与
-        100 节点压测需真实集群环境，未执行。
+        单边缘节点跑通（2026-08-14 实测）；真实多节点（10+）E2E 与
+        100 节点压测未在真实集群执行；本机\textbf{模拟压测基线}（10/100
+        节点并发注册/心跳，100\% 成功率）已完成
+        （\texttt{hack/load-test}，见 \texttt{docs/PERFORMANCE-BASELINE.md}）。
   \item \textbf{macOS 本机验证限制}：宿主机无法直接路由 kind 节点 IP 的
         NodePort（实测 connection reset），需 \texttt{kubectl port-forward}；
         mTLS 默认证书仅覆盖回环地址，跨主机必须注入 SAN。
   \item \textbf{keadm 产物级升级边界}：备份/恢复只覆盖 env/service/
         install.sh 三个产物文件，不触碰数据目录与用户文件；真实部署
         （镜像 tag、edgecore 二进制）升级需结合发布流程。
-  \item \textbf{证书管理}：吊销（CRL/OCSP）、CSR 审批流、证书↔节点 CN
-        强绑定未实现；CA 私钥仅文件权限保护。
+  \item \textbf{证书管理}：CSR 审批流、证书↔节点 CN 强绑定未实现；CA
+        私钥仅文件权限保护。（吊销已实现：CRL 离线 + OCSP 在线，见
+        第 8 章「证书轮换与吊销」「在线吊销查询（OCSP）」小节。）
   \item \textbf{手册更新方式}：本手册 LaTeX 工程纳入 Git 仓库；修改
         \texttt{docs/manual/} 下章节文件后，用 \texttt{xelatex} 编译主文件
         生成 PDF（ctexbook 文档类）。

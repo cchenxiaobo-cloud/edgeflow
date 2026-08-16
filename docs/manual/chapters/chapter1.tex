@@ -21,7 +21,7 @@ EdgeFlow v0.1.0 由以下组件构成：
   \hline
   \texttt{edgecore} & 边缘运行时 & 部署在边缘节点上，由五个子模块协作完成云边通道、元数据管理、容器调谐、设备孪生与事件总线（详见下文） \\
   \hline
-  \texttt{keadm} & 安装管理 CLI & 生成云端与边缘的部署产物，支持 \texttt{init}/\texttt{join}/\texttt{reset}/\texttt{upgrade}/\texttt{rollback}/\texttt{ops-ledger}/\texttt{version} 命令 \\
+  \texttt{keadm} & 安装管理 CLI & 生成云端与边缘的部署产物，支持 \texttt{init}/\texttt{join}/\texttt{cert}/\texttt{upgrade}/\texttt{rollback}/\texttt{ops-ledger}/\texttt{batch}/\texttt{reset}/\texttt{version} 共 9 个子命令（\texttt{cert} 含 \texttt{rotate} 轮换与 \texttt{revoke} 吊销；\texttt{batch} 含批量操作与灰度分批） \\
   \hline
   \texttt{mock-cloudhub} & 联调工具 & 在本地模拟云端 CloudHub，用于单独调试 \texttt{edgecore} 的注册、心跳与重连行为 \\
   \hline
@@ -53,6 +53,7 @@ EdgeFlow v0.1.0 由以下组件构成：
 
 \begin{itemize}
   \item \textbf{版本}：v0.1.0（2026-08-14 发布）；
+  \item \textbf{手册修订}：v0.1.1（2026-08-16）——依据仓库代码审计修订（吊销闭环、OCSP、设备认证 token 消费、配置文件与热重载、gzip 压缩、keadm 命令修正等），产品版本基线不变（仍为 v0.1.0）；
   \item \textbf{容器镜像}：\texttt{edgeflow/cloudcore:v0.1.0}、\texttt{edgeflow/edgecore:v0.1.0}，支持 \texttt{linux/amd64} 与 \texttt{linux/arm64} 双架构；
   \item \textbf{Helm Chart}：\texttt{build/charts/edgeflow}，用于在 Kubernetes 集群中部署云端；
   \item \textbf{离线制品}：发布目录 \texttt{release/v0.1.0/}，包含云/边/管理工具在各平台的二进制、校验和（\texttt{checksums.txt}）、软件物料清单（SBOM）与 Helm Chart 包（\texttt{edgeflow-0.1.0.tgz}）。
@@ -84,7 +85,7 @@ EdgeFlow v0.1.0 由以下组件构成：
 
 \begin{itemize}
   \item \textbf{云端状态为内存态}：cloudcore 保存的节点、Pod、设备状态不落盘，重启后查询数据清空；边缘节点重连后会自动重新注册并恢复上报，边缘侧元数据由 SQLite 持久化，不受影响；
-  \item \textbf{接入令牌为预留字段}：\texttt{keadm join} 的 \texttt{--token} 参数当前版本尚未被 edgecore 消费，用于后续版本的接入鉴权；
+  \item \textbf{接入令牌已消费}：\texttt{keadm join} 的 \texttt{--token} 写入 \texttt{edgecore.env}，edgecore 注册时随 Register 消息携带；云端设置 \texttt{EDGEFLOW\_CLOUDCORE\_NODE\_TOKEN} 后启用校验，不匹配的注册会被拒绝（未设置时不校验，向后兼容）；
   \item \textbf{设备指令值类型}：\texttt{device-command} 的 \texttt{value} 为数值型（float64），字符串、布尔型属性暂不支持通过该端点下发；
   \item \textbf{Secret 明文存储}：\texttt{config-sync} 下发 Secret 时值为明文，生产环境需自行加密；
   \item \textbf{无批量下发端点}：当前版本未提供面向多节点的批量（广播）下发接口。

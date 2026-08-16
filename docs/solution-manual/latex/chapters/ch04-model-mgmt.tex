@@ -34,8 +34,8 @@
 \textbf{灰度发布规划路径}：
 
 \begin{itemize}
-  \item 产品 ROADMAP 已规划模型灰度发布能力（\warn），届时支持按节点/按比例的正式灰度能力。
-  \item \textbf{过渡期方案}：利用多副本与分批下发能力，按“试点节点（1 台）$\rightarrow$ 小批节点 $\rightarrow$ 全量”的人工分批方式推进，实现等效灰度效果；灰度发布能力上线后可无缝切换。
+  \item \textbf{升级分批灰度（已工具化）}：\seqsplit{\texttt{keadm upgrade --batch-size/--pause-between}} 与 \seqsplit{\texttt{keadm batch --op=upgrade}}（任一节点失败立即中止，fail-fast）实现节点分批升级的等效灰度（命令详见 4.4）；
+  \item \textbf{模型/按比例灰度（\warn）}：产品 ROADMAP 已规划，届时支持按节点/按比例的正式灰度能力；当前以镜像 Tag 切换 + 多副本分批下发推进（试点节点（1 台）$\rightarrow$ 小批节点 $\rightarrow$ 全量），灰度能力上线后可无缝切换。
 \end{itemize}
 
 \section{产品特性引用}
@@ -47,7 +47,7 @@
 \toprule
 环节 & F 编号 & 产品能力 & 说明\\
 \midrule
-声明下发 & F31 & 云端 API 下发通道 & \seqsplit{\texttt{POST /api/v1/nodes/\{nodeID\}/podsync}} 下发 Pod 声明（镜像版本+副本数）、\seqsplit{\texttt{POST /api/v1/nodes/\{nodeID\}/config-sync}} 下发模型参数/阈值；为云端 13 个 HTTP 端点之一\\
+声明下发 & F31 & 云端 API 下发通道 & \seqsplit{\texttt{POST /api/v1/nodes/\{nodeID\}/podsync}} 下发 Pod 声明（镜像版本+副本数）、\seqsplit{\texttt{POST /api/v1/nodes/\{nodeID\}/config-sync}} 下发模型参数/阈值；为云端 14 个 HTTP 端点之一\\
 可靠投递 & F05 & 下发通道可靠投递 & 保证 Pod 声明与配置下发不丢失，支撑升级/回滚指令可靠到达\\
 期望态持久化 & F17 & 边缘 MetaManager SQLite 持久化 & 期望态（含模型参数配置）落盘，节点重启后仍按声明收敛\\
 声明式调谐 & F11 & 声明式调谐（5s 周期） & 模型版本、副本数变更后边缘自动收敛至期望状态\\
@@ -58,7 +58,7 @@
 生产部署 & F36 / F37 & keadm 部署 / Helm 部署 & 边缘节点批量部署与集群化安装，支撑模型服务规模化落地\\
 多架构支持 & F38 & amd64 + arm64 多架构镜像 & 同一模型镜像覆盖异构边缘设备\\
 升级回滚 & F39 & 产品级升级回滚机制 & 备份 \seqsplit{\texttt{manifest.json+sha256}}、\seqsplit{\texttt{--simulate-failure}} 演练、KEADM\_OPERATOR 审计、staging 原子替换、ops-ledger 留痕\\
-模型仓库/版本管理/灰度 & --- & 模型管理平台（注册、版本、灰度） & \warn，v0.1.0 不提供；本章以“镜像 Tag + config-sync + ops-ledger 台账”为过渡替代路径\\
+模型仓库/版本管理/模型灰度 & --- & 模型管理平台（注册、版本、模型灰度） & \warn，v0.1.0 不提供；本章以“镜像 Tag + config-sync + ops-ledger 台账”为过渡替代路径\\
 \bottomrule
 \end{tabular}}
 
@@ -99,12 +99,14 @@ POST /api/v1/nodes/{nodeID}/config-sync
 
 \textbf{（4）部署验证}：查询节点状态与副本就绪情况；声明下发后 Edged 在 5s 调谐周期内收敛（F11）。
 
-\textbf{（5）升级（版本更新）}：构建并推送新版本镜像（如 \texttt{v1.3.0}）$\rightarrow$ 更新 Pod 声明镜像 Tag $\rightarrow$ 多副本分批滚动替换（F12）；产品级升级通过 keadm 执行，升级前可用 \texttt{--simulate-failure} 演练验证（F39）：
+\textbf{（5）升级（版本更新）}：构建并推送新版本镜像（如 \texttt{v1.3.0}）$\rightarrow$ 更新 Pod 声明镜像 Tag $\rightarrow$ 多副本分批滚动替换（F12）；产品级升级通过 keadm 执行，升级前可用 \texttt{--simulate-failure} 演练验证（F39）；多节点升级支持灰度分批（\texttt{--batch-size} 每批节点数 + \texttt{--pause-between} 批间暂停）与按清单批量执行（\seqsplit{\texttt{keadm batch --op=upgrade}}，任一节点失败立即中止，fail-fast）：
 
 \begin{lstlisting}
 # 示意命令，以产品文档为准
 keadm upgrade --version <目标版本> --simulate-failure   # 升级演练
 keadm upgrade --version <目标版本>                      # 正式升级
+keadm upgrade --version <目标版本> --batch-size 5 --pause-between 30s   # 灰度分批
+keadm batch --op=upgrade --file nodes.txt --version <目标版本> --batch-size 5 --pause-between 30s   # 按清单逐批（fail-fast）
 \end{lstlisting}
 
 \textbf{（6）回滚}：

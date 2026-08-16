@@ -60,7 +60,8 @@ EdgeFlow 采用“设备层—边缘层—云层”三层架构，文字版说�
   \item \textbf{CloudHub}：边缘节点连接管理；
   \item \textbf{NodeController}：节点状态维护；
   \item \textbf{DeviceStatus}：设备状态快照维护（内存态）；
-  \item \textbf{REST API}：对外提供 13 个 HTTP 端点（含健康检查与指标；管理端点 11 个：设备、节点、命令、podsync/config-sync 等）；
+  \item \textbf{REST API}：对外提供 14 个 HTTP 端点（11 个管理端点：设备、节点、命令、podsync/config-sync 等；另含 healthz 与 metrics）；
+  \item \textbf{OCSP responder}：在线证书状态查询（POST /ocsp，RFC 6960；DER 编码请求/响应、免 Token——响应自带 CA 签名、16KiB 请求上限，状态码 200/400/500；与 CRL 同源 crl.json）；
   \item \textbf{审计与指标}：JSONL 审计台账 + 5 项运行指标。
 \end{itemize}
 
@@ -73,13 +74,13 @@ EdgeFlow 采用“设备层—边缘层—云层”三层架构，文字版说�
 \toprule
 场景 & 特性组 & v0.1.0 已实现 & 规划中/即将上线\\
 \midrule
-数据采集 & F21--F30 & MQTT/Modbus 设备接入；Mapper 周期采集（Modbus 30s 上报循环 / mock\_sensor 2s）；EventBus MQTT 数据面（QoS1）；设备影子与属性快照；设备命令下行（可靠投递 F05）；DeviceReport 周期上报（30s，可配） & OPC-UA 协议接入；设备认证\\
+数据采集 & F21--F30 & MQTT/Modbus 设备接入；Mapper 周期采集（Modbus 30s 上报循环 / mock\_sensor 2s）；EventBus MQTT 数据面（QoS1）；设备影子与属性快照；设备命令下行（可靠投递 F05）；DeviceReport 周期上报（30s，可配） & OPC-UA 协议接入；设备级身份认证（节点接入 Token 认证已实现）\\
 \addlinespace[3pt]
-弱网自治 & F11--F20 & WebSocket 云边通道与退避重连；声明式调谐（5s）；多副本；健康自愈；CrashLoopBackOff；镜像漂移检测；MetaManager SQLite（WAL）持久化 & Flannel 网络；通道压缩/Protobuf 编码\\
+弱网自治 & F11--F20 & WebSocket 云边通道（gzip 协商式压缩）与退避重连；声明式调谐（5s）；多副本；健康自愈；CrashLoopBackOff；镜像漂移检测；MetaManager SQLite（WAL）持久化 & Flannel 网络；Protobuf 编码（gzip 通道压缩已实现）\\
 \addlinespace[3pt]
-模型管理 & F36--F39 & 镜像/配置下发通道（podsync/config-sync）；生产部署与升级回滚机制 & 模型仓库与版本管理；灰度发布\\
+模型管理 & F36--F39 & 镜像/配置下发通道（podsync/config-sync）；生产部署与升级回滚机制（升级分批灰度已工具化，见 4.2/4.4） & 模型仓库与版本管理；模型灰度发布（按节点/按比例）\\
 \addlinespace[3pt]
-模型应用 & F11--F19 & 容器应用部署与自治：多副本、健康自愈、CrashLoopBackOff、镜像漂移检测 & 灰度发布；调度/超卖\\
+模型应用 & F11--F19 & 容器应用部署与自治：多副本、健康自愈、CrashLoopBackOff、镜像漂移检测 & 模型灰度发布；调度/超卖\\
 \bottomrule
 \end{tabular}}
 
@@ -98,11 +99,11 @@ EdgeFlow 采用“设备层—边缘层—云层”三层架构，文字版说�
 类别 & 制品\\
 \midrule
 容器镜像 & edgeflow/cloudcore:v0.1.0、edgeflow/edgecore:v0.1.0（linux/amd64 + arm64 多架构）\\
-部署工具 & keadm（init/join/ops-ledger）、Helm Chart（云端）、Docker（双端运行）\\
-接口能力 & REST API 13 端点；运行指标 5 项\\
+部署工具 & keadm（init/join/cert(rotate|revoke)/upgrade/rollback/ops-ledger/batch/reset/version，共 9 个子命令）、Helm Chart（云端）、Docker（双端运行）\\
+接口能力 & REST API 14 端点（11 管理 + healthz + metrics + /ocsp）；运行指标 5 项；OpenAPI v3 schema（\seqsplit{\texttt{docs/openapi/edgeflow-openapi.yaml}}，\seqsplit{\texttt{hack/gen-openapi.sh}} 自动生成，勿手编）；API 兼容性契约测试（\seqsplit{\texttt{tests/contract}}，14 端点）\\
 \bottomrule
 \end{tabularx}
 
-\textbf{v0.1.0 功能范围（已实现）}：WebSocket 云边通道；边缘容器自治（声明式调谐 5s、多副本、健康自愈、CrashLoopBackOff、镜像漂移检测）；设备管理（MQTT/Modbus 接入、设备影子、设备命令）；生产加固（mTLS/Token/审计台账/keadm/Helm/多架构镜像）。
+\textbf{v0.1.0 功能范围（已实现）}：WebSocket 云边通道（gzip 协商式压缩：Register 协商、v1.0 兼容、\seqsplit{\texttt{config/cloudcore.json}} 中 \texttt{compress:false} 可关）；边缘容器自治（声明式调谐 5s、多副本、健康自愈、CrashLoopBackOff、镜像漂移检测）；设备管理（MQTT/Modbus 接入、设备影子、设备命令）；节点接入认证（\env{EDGEFLOW\_EDGECORE\_TOKEN}，云端常数时间校验、空值向后兼容）；证书生命周期管理（keadm cert rotate/revoke，CRL 离线 + OCSP 在线应答）；配置管理（\seqsplit{\texttt{config/edgecore.json}}，环境变量 > 配置文件 > 默认值，SIGHUP + 60s 热重载）；升级回滚与灰度（\seqsplit{\texttt{keadm batch --op=upgrade}} + \texttt{--batch-size}/\texttt{--pause-between}）；生产加固（mTLS/Token/审计台账/keadm/Helm/多架构镜像）；发布流程级镜像安全扫描（构建期 Trivy，基线 0 漏洞）；接口工程（OpenAPI v3 schema + 契约测试）。
 
-\textbf{\warn}：模型仓库与版本管理、灰度发布、完整 RBAC（当前为单 Token 鉴权）、设备认证、调度/超卖、Flannel 网络、OPC-UA 接入、通道压缩/Protobuf 编码、镜像安全扫描。
+\textbf{\warn}：模型仓库与版本管理、模型灰度发布（升级分批灰度已工具化）、完整 RBAC（当前为单 Token 鉴权）、设备级身份认证（节点接入认证已实现）、调度/超卖、Flannel 网络、OPC-UA 接入、Protobuf 编码（gzip 通道压缩已实现）、产品内置镜像安全扫描（发布流程构建期 Trivy 扫描已建立，基线 0 漏洞）。

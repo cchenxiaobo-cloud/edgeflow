@@ -1,7 +1,7 @@
 \chapter{云端操作指南}
 \label{ch:4}
 
-本章内容：介绍 cloudcore 对外提供的全部 REST API 端点——用途、请求示例与响应字段说明，以及监控指标（\texttt{/metrics}）与 API 认证的启用方法。操作人员可通过 curl 或任意 HTTP 客户端调用。
+本章内容：介绍 cloudcore 对外提供的全部 REST API 端点——用途、请求示例与响应字段说明，以及监控指标（\texttt{/metrics}）、OCSP 在线吊销查询（\texttt{/ocsp}）与 API 认证的启用方法。操作人员可通过 curl 或任意 HTTP 客户端调用。
 
 \section{通用约定}
 
@@ -11,12 +11,13 @@
   \item \textbf{时间戳}：Unix 毫秒（注册、心跳、上报时间等）；
   \item \textbf{List 风格}：\texttt{edgenodes}、\texttt{pods}、\texttt{devices} 端点采用 Kubernetes List 风格（\texttt{kind}/\texttt{apiVersion}/\texttt{items}），空数据编码为 \texttt{[]} 而非 \texttt{null}；\texttt{/api/v1/nodes} 为裸数组；
   \item \textbf{路径参数}：\texttt{\{nodeID\}} 为边缘节点 ID（edgecore 注册时上报，默认 \texttt{edge-<主机名>}），必须与注册时的 nodeID 完全一致；
-  \item \textbf{状态语义}：cloudcore 状态为内存态，重启即清空；边缘节点重连后自动重新注册并恢复上报，边缘侧元数据由 SQLite 持久化，不受影响。
+  \item \textbf{状态语义}：cloudcore 状态为内存态，重启即清空；边缘节点重连后自动重新注册并恢复上报，边缘侧元数据由 SQLite 持久化，不受影响；
+  \item \textbf{OpenAPI 契约}：OpenAPI v3 契约见 \texttt{docs/openapi/edgeflow-openapi.yaml}（由 \texttt{hack/gen-openapi.sh} 重新生成，请勿手工编辑）；API 兼容性契约测试见 \texttt{tests/contract}（覆盖全部 14 个端点）。
 \end{itemize}
 
-端点总览：
+端点总览（共 14 个）：
 
-\begin{tabularx}{\textwidth}{|l|l|X|l|}
+\begin{tabularx}{\textwidth}{|l|>{\raggedright\arraybackslash}p{4.7cm}|X|>{\raggedright\arraybackslash}p{3.4cm}|}
   \hline
   \textbf{方法} & \textbf{路径} & \textbf{说明} & \textbf{主要状态码} \\
   \hline
@@ -43,6 +44,8 @@
   POST & \texttt{/api/v1/nodes/\{nodeID\}/config-sync} & 下发 ConfigMap/Secret 配置 & 200 / 400 / 404 / 502 / 504 \\
   \hline
   POST & \texttt{/api/v1/nodes/\{nodeID\}/device-command} & 下发设备指令（期望值） & 200 / 400 / 404 / 502 / 504 \\
+  \hline
+  POST & \texttt{/ocsp} & OCSP 在线吊销查询（RFC 6960，DER 编码） & 200 / 400 / 500 \\
   \hline
 \end{tabularx}
 
@@ -392,6 +395,27 @@ curl http://127.0.0.1:8080/metrics
   \hline
 \end{tabularx}
 
+\section{OCSP 在线吊销查询（RFC 6960）}
+
+\subsection{POST /ocsp}
+
+用途：标准 OCSP（Online Certificate Status Protocol，RFC 6960）应答端点，供外部工具在线查询边缘节点证书的吊销状态。证书吊销后，除 mTLS 握手按 CRL（证书吊销列表）拒收外（见第 8 章证书管理），外部查询也可通过本端点进行。
+
+\begin{lstlisting}
+curl -X POST http://127.0.0.1:8080/ocsp \
+  -H 'Content-Type: application/ocsp-request' \
+  --data-binary @request.der
+\end{lstlisting}
+
+协议要点：
+
+\begin{itemize}
+  \item 请求体为 DER 编码的 OCSPRequest（\texttt{Content-Type: application/ocsp-request}），响应为 DER 编码的 OCSPResponse（\texttt{application/ocsp-response}），由云端 CA 私钥签名，响应自带可信性；
+  \item 请求体上限 16 KiB（标准 CertID 请求远小于该值），超限返回 400；
+  \item 吊销状态与 CRL 同源（均读 \texttt{crl.json}），证书被吊销后 CRL 与 OCSP 双通道同时生效；
+  \item 状态码：200 返回签名后的吊销状态响应（\texttt{good}/\texttt{revoked}/\texttt{unknown}）；400 请求超限、为空或 DER 损坏；500 CA 不可用、吊销记录损坏或响应构建失败（fail-closed，不静默放行）。
+\end{itemize}
+
 \section{API 认证}
 
 云端 API 认证默认关闭；生产环境建议开启。
@@ -417,7 +441,7 @@ curl -H 'Authorization: Bearer <你的令牌>' http://127.0.0.1:8080/api/v1/node
 curl http://127.0.0.1:8080/api/v1/nodes
 \end{lstlisting}
 
-说明：\texttt{/healthz} 与 \texttt{/metrics} 不参与认证，始终可访问，以保证探活与监控采集通道可用。
+说明：\texttt{/healthz}、\texttt{/metrics} 与 \texttt{/ocsp} 不参与认证，始终可访问，以保证探活、监控采集与在线吊销查询通道可用（\texttt{/ocsp} 响应由 CA 签名，自带可信性）。
 
 \section{排障指南}
 

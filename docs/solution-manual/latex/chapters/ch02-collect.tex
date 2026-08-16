@@ -78,7 +78,7 @@ Modbus 设备接入 & F26 & Modbus TCP Mapper：读写保持寄存器/线圈，�
     \item 接入真实 Modbus 设备时，设置环境变量 \env{EDGEFLOW\_MODBUS\_ADDR} 显式启用 Modbus TCP Mapper（F26，不设置则不注册）。
   \end{itemize}
   \item \textbf{配置 MQTT 数据面}：配置 MQTT broker（遥测/指令主题，QoS1，F28）。broker 不可用时 edgecore 自动降级纯本地模式继续运行（F29）；恢复后需重启 edgecore。
-  \item \textbf{配置上报周期}（可选）：设置 \env{EDGEFLOW\_EDGECORE\_DEVICE\_REPORT\_INTERVAL}（1s--10min，默认 30s；启动即报一轮，F22）。
+  \item \textbf{配置上报周期}（可选）：设置 \env{EDGEFLOW\_EDGECORE\_DEVICE\_REPORT\_INTERVAL}（1s--10min，默认 30s；启动即报一轮，F22），或写入 edgecore 配置文件 \seqsplit{\texttt{config/edgecore.json}}（cloudAddr/podReportInterval/deviceReportInterval/reconcileInterval 4 字段，\texttt{--config} 可指定路径；优先级：环境变量 > 配置文件 > 默认值，敏感配置如 Token 仅走环境变量）。上报周期变更支持热重载（SIGHUP 立即重载或 $\leq$60s 自动检测生效，无需重启；重载失败保持旧配置继续运行，fail-safe），详见 3.4。
   \item \textbf{验证}：
   \begin{itemize}
     \item \texttt{GET /api/v1/devices} 查看设备与属性（影子数据，F30）；

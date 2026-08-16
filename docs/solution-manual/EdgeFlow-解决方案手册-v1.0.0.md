@@ -5,16 +5,17 @@
 | 项 | 内容 |
 |---|---|
 | 产品版本基线 | EdgeFlow v0.1.0（2026-08-14 发布） |
-| 手册版本 | v1.0.0 |
+| 手册版本 | v1.0.1 |
 | 密级 | 公开（售前/客户技术交流） |
 | 适用范围 | 售前方案设计、客户技术决策、PoC 部署参考 |
 
-> **声明**：本手册所有能力、参数与数字均以 EdgeFlow v0.1.0（2026-08-14 发布）已核验实现为准；规划中/尚未实现的能力一律明确标注"规划中/即将上线"，不构成交付承诺。文中命令与字段均为示意用法，具体语法以产品文档为准。
+> **声明**：本手册所有能力、参数与数字均以 EdgeFlow v0.1.0（2026-08-14 发布；v1.0.1 勘误补充 2026-08-16 收尾补强能力入册，详见修订记录）已核验实现为准；规划中/尚未实现的能力一律明确标注"规划中/即将上线"，不构成交付承诺。文中命令与字段均为示意用法，具体语法以产品文档为准。
 
 ## 修订记录
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v1.0.1 | 2026-08-16 | 技术团队 | 补强入册：证书吊销闭环（CRL+OCSP）、配置热重载与 edgecore 配置文件、gzip 通道压缩、keadm cert/batch、端点 13→14、OpenAPI/契约测试；口径修正（F42/F44/F47/F48 拆分） |
 | v1.0.0 | 2026-08-14 | 方案与产品团队 | 首版定稿：四场景 × 五部分结构、数据链路与台账口径、特性-场景映射表 |
 
 ---
@@ -35,7 +36,7 @@ EdgeFlow 是使用 Go 语言实现的云边端协同物联网平台，覆盖设�
 1. **设备接入与数据汇聚的标准化**：支持 MQTT、Modbus TCP 两类主流协议接入，遥测数据以统一 JSON 格式进入边缘 MQTT 数据面，屏蔽设备异构性（OPC-UA 接入规划中/即将上线）；
 2. **边缘应用自治与弱网韧性**：以声明式调谐（默认 5s 调谐周期）持续将容器应用收敛到期望状态，支持多副本、健康自愈、CrashLoopBackOff 退避与镜像漂移检测，云边断连期间边缘采集与控制业务不中断；
 3. **管理与运维的可追溯性**：审计台账、keadm 升级回滚台账、设备操作台账三类台账覆盖 API 操作、系统变更与设备指令全链路，支撑审计与合规追溯；
-4. **生产级安全与轻量交付**：mTLS 云边通道、接入 Token、审计台账（文件 0600/目录 0700），keadm/Helm 一键部署，多架构镜像（linux/amd64 + arm64）。
+4. **生产级安全与轻量交付**：mTLS 云边通道（握手按 CRL 拒绝吊销证书）、接入 Token、证书生命周期管理（keadm cert rotate 轮换 / cert revoke 吊销，CRL 离线 + OCSP 在线双通道）、审计台账（文件 0600/目录 0700），keadm/Helm 一键部署，多架构镜像（linux/amd64 + arm64）。
 
 **价值主张**（结果性描述，不承诺 SLA 与收益数字）
 
@@ -66,7 +67,8 @@ EdgeFlow 采用"设备层—边缘层—云层"三层架构，文字版说明如
 - **CloudHub**：边缘节点连接管理；
 - **NodeController**：节点状态维护；
 - **DeviceStatus**：设备状态快照维护（内存态）；
-- **REST API**：对外提供 13 个 HTTP 端点（含健康检查与指标；管理端点 11 个：设备、节点、命令、podsync/config-sync 等）；
+- **REST API**：对外提供 14 个 HTTP 端点（11 个管理端点 + healthz + metrics + /ocsp 协议端点；管理端点：设备、节点、命令、podsync/config-sync 等）；
+- **OCSP responder**：在线证书状态查询（POST /ocsp，RFC 6960；DER 编码请求/响应、免 Token——响应自带 CA 签名、16KiB 请求上限，状态码 200/400/500；与 CRL 同源 crl.json）；
 - **审计与指标**：JSONL 审计台账 + 5 项运行指标。
 
 ## 1.3 核心能力地图
@@ -75,10 +77,10 @@ EdgeFlow 采用"设备层—边缘层—云层"三层架构，文字版说明如
 
 | 场景 | 特性组 | v0.1.0 已实现 | 规划中/即将上线 |
 |---|---|---|---|
-| 数据采集 | F21–F30 | MQTT/Modbus 设备接入；Mapper 周期采集（Modbus 30s 上报循环 / mock_sensor 2s）；EventBus MQTT 数据面（QoS1）；设备影子与属性快照；设备命令下行（可靠投递 F05）；DeviceReport 周期上报（30s，可配） | OPC-UA 协议接入；设备认证 |
-| 弱网自治 | F11–F20 | WebSocket 云边通道与退避重连；声明式调谐（5s）；多副本；健康自愈；CrashLoopBackOff；镜像漂移检测；MetaManager SQLite（WAL）持久化 | Flannel 网络；通道压缩/Protobuf 编码 |
-| 模型管理 | F36–F39 | 镜像/配置下发通道（podsync/config-sync）；生产部署与升级回滚机制 | 模型仓库与版本管理；灰度发布 |
-| 模型应用 | F11–F19 | 容器应用部署与自治：多副本、健康自愈、CrashLoopBackOff、镜像漂移检测 | 灰度发布；调度/超卖 |
+| 数据采集 | F21–F30 | MQTT/Modbus 设备接入；Mapper 周期采集（Modbus 30s 上报循环 / mock_sensor 2s）；EventBus MQTT 数据面（QoS1）；设备影子与属性快照；设备命令下行（可靠投递 F05）；DeviceReport 周期上报（30s，可配） | OPC-UA 协议接入；设备级身份认证（节点接入 Token 认证已实现） |
+| 弱网自治 | F11–F20 | WebSocket 云边通道（gzip 协商式压缩）与退避重连；声明式调谐（5s）；多副本；健康自愈；CrashLoopBackOff；镜像漂移检测；MetaManager SQLite（WAL）持久化 | Flannel 网络；Protobuf 编码（gzip 通道压缩已实现） |
+| 模型管理 | F36–F39 | 镜像/配置下发通道（podsync/config-sync）；生产部署与升级回滚机制（升级分批灰度已工具化，见 4.2/4.4） | 模型仓库与版本管理；模型灰度发布（按节点/按比例） |
+| 模型应用 | F11–F19 | 容器应用部署与自治：多副本、健康自愈、CrashLoopBackOff、镜像漂移检测 | 模型灰度发布；调度/超卖 |
 
 > 注：特性编号沿用产品特性基线；同一编号区间在不同场景视图下以该场景语义为准。
 
@@ -91,12 +93,12 @@ EdgeFlow 采用"设备层—边缘层—云层"三层架构，文字版说明如
 | 类别 | 制品 |
 |---|---|
 | 容器镜像 | edgeflow/cloudcore:v0.1.0、edgeflow/edgecore:v0.1.0（linux/amd64 + arm64 多架构） |
-| 部署工具 | keadm（init/join/ops-ledger）、Helm Chart（云端）、Docker（双端运行） |
-| 接口能力 | REST API 13 端点；运行指标 5 项 |
+| 部署工具 | keadm（init/join/cert(rotate|revoke)/upgrade/rollback/ops-ledger/batch/reset/version，共 9 个子命令）、Helm Chart（云端）、Docker（双端运行） |
+| 接口能力 | REST API 14 端点（11 管理 + healthz + metrics + /ocsp）；运行指标 5 项；OpenAPI v3 schema（docs/openapi/edgeflow-openapi.yaml，hack/gen-openapi.sh 自动生成，勿手编）；API 兼容性契约测试（tests/contract，14 端点） |
 
-**v0.1.0 功能范围（已实现）**：WebSocket 云边通道；边缘容器自治（声明式调谐 5s、多副本、健康自愈、CrashLoopBackOff、镜像漂移检测）；设备管理（MQTT/Modbus 接入、设备影子、设备命令）；生产加固（mTLS/Token/审计台账/keadm/Helm/多架构镜像）。
+**v0.1.0 功能范围（已实现）**：WebSocket 云边通道（Register 协商式 gzip 通道压缩，v1.0 兼容，config/cloudcore.json compress:false 可关）；边缘容器自治（声明式调谐 5s、多副本、健康自愈、CrashLoopBackOff、镜像漂移检测）；设备管理（MQTT/Modbus 接入、设备影子、设备命令）；节点接入认证（Register Token：keadm join 写入 EDGEFLOW_EDGECORE_TOKEN，云端常数时间校验、空值向后兼容）；生产加固（mTLS 云边通道按 CRL 拒绝吊销证书、证书生命周期管理（keadm cert rotate 轮换 / cert revoke 吊销，CRL 离线吊销 + OCSP 在线应答）、审计台账/keadm/Helm/多架构镜像）；配置管理（edgecore 配置文件 config/edgecore.json，优先级 env > 文件 > 默认；SIGHUP + 60s 轮询热重载）；升级回滚与灰度（keadm upgrade/rollback、升级分批灰度 keadm batch --op=upgrade + --batch-size/--pause-between）；接口工程（OpenAPI v3 schema、API 兼容性契约测试）。
 
-**规划中/即将上线**：模型仓库与版本管理、灰度发布、完整 RBAC（当前为单 Token 鉴权）、设备认证、调度/超卖、Flannel 网络、OPC-UA 接入、通道压缩/Protobuf 编码、镜像安全扫描。
+**规划中/即将上线**：模型仓库与版本管理、模型灰度发布（升级分批灰度已工具化）、完整 RBAC（当前为单 Token 鉴权）、设备级身份认证（节点接入认证已实现）、调度/超卖、Flannel 网络、OPC-UA 接入、Protobuf 编码（gzip 通道压缩已实现）、产品内置镜像安全扫描（发布流程构建期 Trivy 扫描已建立，基线 0 漏洞）。
 
 ---
 
@@ -156,7 +158,7 @@ EdgeFlow 采用"**边缘就近采集、数据面与管理面分离、影子汇�
    - 联调环境可直接使用 mock_sensor（F25），开箱即得温湿度数据与 targetTemp/reset 指令；
    - 接入真实 Modbus 设备时，设置环境变量 `EDGEFLOW_MODBUS_ADDR` 显式启用 Modbus TCP Mapper（F26，不设置则不注册）。
 3. **配置 MQTT 数据面**：配置 MQTT broker（遥测/指令主题，QoS1，F28）。broker 不可用时 edgecore 自动降级纯本地模式继续运行（F29）；恢复后需重启 edgecore。
-4. **配置上报周期**（可选）：设置 `EDGEFLOW_EDGECORE_DEVICE_REPORT_INTERVAL`（1s–10min，默认 30s；启动即报一轮，F22）。
+4. **配置上报周期**（可选）：设置 `EDGEFLOW_EDGECORE_DEVICE_REPORT_INTERVAL`（1s–10min，默认 30s；启动即报一轮，F22），或写入 edgecore 配置文件 `config/edgecore.json`（cloudAddr/podReportInterval/deviceReportInterval/reconcileInterval 4 字段，`--config` 可指定路径；优先级：环境变量 > 配置文件 > 默认值，敏感配置如 Token 仅走环境变量）。上报周期变更支持**热重载**（SIGHUP 立即重载或 ≤60s 自动检测生效，无需重启；重载失败保持旧配置继续运行，fail-safe），详见 3.4。
 5. **验证**：
    - `GET /api/v1/devices` 查看设备与属性（影子数据，F30）；
    - `GET /api/v1/nodes/{nodeID}/devices` 按节点查看设备（F30）；
@@ -225,9 +227,20 @@ EdgeFlow 采用"**边缘就近采集、数据面与管理面分离、影子汇�
 |---|---|---|
 | 云边心跳周期 | 30s | 通道活性探测间隔（F03） |
 | 退避重连上限 | 60s | 断线重连指数退避封顶（F04） |
-| EDGEFLOW_EDGECORE_DEVICE_REPORT_INTERVAL | 30s（1s–10min） | 设备状态上报周期，弱网可调大降低流量（F22） |
-| EDGEFLOW_EDGECORE_REPORT_INTERVAL | 30s（1s–10min） | Pod 状态上报周期（F18） |
+| EDGEFLOW_EDGECORE_DEVICE_REPORT_INTERVAL | 30s（1s–10min） | 设备状态上报周期，弱网可调大降低流量（F22）；**支持热重载** |
+| EDGEFLOW_EDGECORE_REPORT_INTERVAL | 30s（1s–10min） | Pod 状态上报周期（F18）；**支持热重载** |
 | EDGEFLOW_CLOUDCORE_NODE_SCAN_INTERVAL / NODE_TIMEOUT | 30s / 180s | 节点心跳扫描周期与超时（F07） |
+
+**配置方式与热重载**：除环境变量外，边缘参数可写入 edgecore 配置文件 `config/edgecore.json`（cloudAddr/podReportInterval/deviceReportInterval/reconcileInterval 4 字段，`--config` 指定路径；优先级：环境变量 > 配置文件 > 默认值，敏感配置仅走环境变量）。配置变更支持热重载：`SIGHUP` 立即重载 + 每 60s 自动检测文件变更；重载失败保持旧配置继续运行（fail-safe）。
+
+**热生效边界**：
+
+| 组件 | 配置项 | 生效方式 |
+|---|---|---|
+| cloudcore | port（HTTP 监听端口） | 热切换（新端口先监听成功再切换；绑定失败拒绝重载、旧监听保持） |
+| cloudcore | hubPort（CloudHub WS 端口）、compress（gzip 压缩开关） | 需重启生效 |
+| edgecore | podReportInterval / deviceReportInterval（上报周期） | 热生效（下一轮上报周期生效，无需重启） |
+| edgecore | cloudAddr / nodeID / reconcileInterval | 需重启生效 |
 
 **验证演练（参考 E2E 实测）**：
 
@@ -285,14 +298,14 @@ EdgeFlow 采用"**边缘就近采集、数据面与管理面分离、影子汇�
 
 **灰度发布规划路径**：
 
-- 产品 ROADMAP 已规划模型灰度发布能力（**规划中/即将上线**），届时支持按节点/按比例的正式灰度能力。
-- **过渡期方案**：利用多副本与分批下发能力，按"试点节点（1 台）→ 小批节点 → 全量"的人工分批方式推进，实现等效灰度效果；灰度发布能力上线后可无缝切换。
+- **升级分批灰度（已工具化）**：节点软件升级支持分批灰度——`keadm upgrade --batch-size/--pause-between` 控制每批节点数与批间暂停，或 `keadm batch --op=upgrade` 按节点清单逐批执行（任一节点失败立即中止，fail-fast），实现"试点节点（1 台）→ 小批节点 → 全量"的等效灰度（命令详见 4.4）。
+- **模型/按比例灰度（规划中/即将上线）**：产品 ROADMAP 已规划模型灰度发布能力，届时支持按节点/按比例的正式灰度能力；当前模型升级以镜像 Tag 切换 + 多副本分批下发方式推进，平台能力上线后可无缝切换。
 
 ## 4.3 产品特性引用
 
 | 环节 | F 编号 | 产品能力 | 说明 |
 |---|---|---|---|
-| 声明下发 | F31 | 云端 API 下发通道 | `POST /api/v1/nodes/{nodeID}/podsync` 下发 Pod 声明（镜像版本+副本数）、`POST /api/v1/nodes/{nodeID}/config-sync` 下发模型参数/阈值；为云端 13 个 HTTP 端点之一 |
+| 声明下发 | F31 | 云端 API 下发通道 | `POST /api/v1/nodes/{nodeID}/podsync` 下发 Pod 声明（镜像版本+副本数）、`POST /api/v1/nodes/{nodeID}/config-sync` 下发模型参数/阈值；为云端 14 个 HTTP 端点之一 |
 | 可靠投递 | F05 | 下发通道可靠投递 | 保证 Pod 声明与配置下发不丢失，支撑升级/回滚指令可靠到达 |
 | 期望态持久化 | F17 | 边缘 MetaManager SQLite 持久化 | 期望态（含模型参数配置）落盘，节点重启后仍按声明收敛 |
 | 声明式调谐 | F11 | 声明式调谐（5s 周期） | 模型版本、副本数变更后边缘自动收敛至期望状态 |
@@ -303,7 +316,7 @@ EdgeFlow 采用"**边缘就近采集、数据面与管理面分离、影子汇�
 | 生产部署 | F36 / F37 | keadm 部署 / Helm 部署 | 边缘节点批量部署与集群化安装，支撑模型服务规模化落地 |
 | 多架构支持 | F38 | amd64 + arm64 多架构镜像 | 同一模型镜像覆盖异构边缘设备 |
 | 升级回滚 | F39 | 产品级升级回滚机制 | 备份 manifest.json+sha256、`--simulate-failure` 演练、KEADM_OPERATOR 审计、staging 原子替换、ops-ledger 留痕 |
-| 模型仓库/版本管理/灰度 | — | 模型管理平台（注册、版本、灰度） | **规划中/即将上线**，v0.1.0 不提供；本章以"镜像 Tag + config-sync + ops-ledger 台账"为过渡替代路径 |
+| 模型仓库/版本管理/模型灰度 | — | 模型管理平台（注册、版本、模型灰度） | **规划中/即将上线**，v0.1.0 不提供；本章以"镜像 Tag + config-sync + ops-ledger 台账"为过渡替代路径 |
 
 > ⚠️ **明确标注**：模型仓库（模型注册/存储）、模型版本管理、模型灰度发布、训练平台——**规划中/即将上线**，当前版本不提供。4.2 方案为基于现有能力的过渡路径，相关平台能力上线后可直接演进，不构成对未发布功能的承诺。
 
@@ -335,12 +348,14 @@ POST /api/v1/nodes/{nodeID}/config-sync
 
 **（4）部署验证**：查询节点状态与副本就绪情况；声明下发后 Edged 在 5s 调谐周期内收敛（F11）。
 
-**（5）升级（版本更新）**：构建并推送新版本镜像（如 `v1.3.0`）→ 更新 Pod 声明镜像 Tag → 多副本分批滚动替换（F12）；产品级升级通过 keadm 执行，升级前可用 `--simulate-failure` 演练验证（F39）：
+**（5）升级（版本更新）**：构建并推送新版本镜像（如 `v1.3.0`）→ 更新 Pod 声明镜像 Tag → 多副本分批滚动替换（F12）；产品级升级通过 keadm 执行，升级前可用 `--simulate-failure` 演练验证（F39）；多节点升级支持灰度分批（`--batch-size` 每批节点数 + `--pause-between` 批间暂停）与按清单批量执行（`keadm batch --op=upgrade`，任一节点失败立即中止，fail-fast）：
 
 ```bash
 # 示意命令，以产品文档为准
-keadm upgrade --version <目标版本> --simulate-failure   # 升级演练
-keadm upgrade --version <目标版本>                      # 正式升级
+keadm upgrade --version <目标版本> --simulate-failure                        # 升级演练
+keadm upgrade --version <目标版本>                                           # 正式升级
+keadm upgrade --version <目标版本> --batch-size 5 --pause-between 30s        # 灰度分批：每批 5 台、批间暂停 30s
+keadm batch --op=upgrade --file nodes.txt --version <目标版本> --batch-size 5 --pause-between 30s  # 按清单逐批升级（fail-fast）
 ```
 
 **（6）回滚**：
@@ -527,11 +542,11 @@ v0.1.0 支持 MQTT（QoS1，遥测/指令主题）与 Modbus TCP（显式设置 
 
 **A6. 平台安全机制有哪些？**
 
-生产加固四项：mTLS 云边通道（启用后自动升级 wss）、接入 Token 鉴权（默认关闭、开启后 401 fail-fast）、审计台账（文件 0600/目录 0700，认证失败也记录）、镜像多架构与 keadm 升级备份校验。完整 RBAC（当前为单 Token 鉴权）与镜像安全扫描规划中/即将上线。
+生产加固四项：mTLS 云边通道（启用后自动升级 wss，握手期按 CRL 拒绝已吊销证书）、接入 Token 鉴权（REST API Token 与节点接入 Token 双轨：REST API Token 默认关闭、开启后 401 fail-fast；节点接入 Token 已实现，keadm join 生成、edgecore 注册携带、云端常数时间校验）、审计台账（文件 0600/目录 0700，认证失败也记录）、镜像多架构与 keadm 升级备份校验。证书生命周期管理：`keadm cert rotate` 轮换（备份先行 + 事务化重签）、`keadm cert revoke` 吊销（--node/--serial，序列号入 crl.json 并生成 crl.pem，幂等），CRL 离线吊销与 OCSP 在线吊销（RFC 6960，POST /ocsp，响应 CA 签名）双通道同源，吊销即时生效。镜像安全扫描：发布流程级已实现（构建期 Trivy 扫描，基线 0 漏洞）；完整 RBAC（当前为单 Token 鉴权）、cosign 镜像签名与产品内置/运行时镜像扫描仍规划中/即将上线。
 
 **A7. 模型如何部署到边缘？**
 
-v0.1.0 以"容器镜像 + 配置"为载体：模型与推理运行时打包为版本化镜像 → podsync 下发 Pod 声明（image + replicas）→ 边缘 Edged 拉取运行并持续自治（多副本/健康自愈/防漂移）；推理参数经 config-sync 下发并落盘。模型仓库/版本管理/灰度发布平台规划中/即将上线，当前以镜像 Tag + 配置参数化作为过渡路径。
+v0.1.0 以"容器镜像 + 配置"为载体：模型与推理运行时打包为版本化镜像 → podsync 下发 Pod 声明（image + replicas）→ 边缘 Edged 拉取运行并持续自治（多副本/健康自愈/防漂移）；推理参数经 config-sync 下发并落盘。模型仓库/版本管理与模型灰度发布平台规划中/即将上线（升级场景的灰度分批已工具化，见附录 C F42），当前以镜像 Tag + 配置参数化作为过渡路径。
 
 **A8. 升级和回滚有保障吗？**
 
@@ -576,7 +591,7 @@ v0.1.0 提供**节点级**离线判定（CloudHub 90s 无消息断开 + NodeCont
 | JSONL | JSON Lines，每行一条 JSON 记录的追加式日志格式 |
 | mTLS | 双向 TLS，云边通道启用后自动升级 wss |
 | QoS1 | MQTT 服务质量级别"至少一次"，不保证去重，消费方需幂等 |
-| keadm | EdgeFlow 部署工具（init/join/upgrade/rollback/ops-ledger 等） |
+| keadm | EdgeFlow 部署运维工具，9 个子命令：init/join/cert（rotate/revoke）/upgrade/rollback/ops-ledger/batch/reset/version |
 | ops-ledger | keadm 升级/回滚操作台账（JSONL，含备份 id 与失败原因） |
 | op-ledger | 设备操作台账（SQLite 追加流水，30 天保留；代码/SQL 表名为 op_ledger） |
 | 审计台账 | 云端 API 操作台账（audit-ledger.jsonl，含 401 记录） |
@@ -586,7 +601,7 @@ v0.1.0 提供**节点级**离线判定（CloudHub 90s 无消息断开 + NodeCont
 
 # 附录 C 产品特性-场景映射表
 
-**表 C-1：F01–F40 已实现特性 × 四场景归属（双向追溯）**
+**表 C-1：F01–F40、F49 已实现特性 × 四场景归属（双向追溯）**
 
 | F 编号 | 特性名称 | 数据采集 | 弱网自治 | 模型管理 | 模型应用 | 手册引用章节 |
 |---|---|---|---|---|---|---|
@@ -620,31 +635,32 @@ v0.1.0 提供**节点级**离线判定（CloudHub 90s 无消息断开 + NodeCont
 | F28 | EventBus MQTT 数据面（QoS1，自动重连） | ● | ○ | ○ | ● | 2.3 / 5.3 |
 | F29 | EventBus 降级本地模式 | ● | ● | ○ | ○ | 2.3 / 2.4 |
 | F30 | 设备 API 云端视图 | ● | ○ | ○ | ● | 2.3 / 5.3 / 6.1 |
-| F31 | REST API 13 端点（podsync/config-sync 等） | ○ | ○ | ● | ● | 4.3 / 5.4 |
+| F31 | REST API 14 端点（podsync/config-sync/ocsp 等） | ○ | ○ | ● | ● | 4.3 / 5.4 |
 | F32 | 运行指标 5 项（edgeflow_cloudcore_*） | ○ | ○ | ○ | ○ | 1.2 / 1.4 |
 | F33 | Token 认证（默认 off，401 fail-fast） | ○ | ○ | ○ | ○ | 附录 A6 |
-| F34 | mTLS 云边通道（wss） | ○ | ○ | ○ | ○ | 附录 A6 / 3.3 |
+| F34 | mTLS 云边通道（wss，握手按 CRL 拒绝吊销证书） | ○ | ○ | ○ | ○ | 附录 A6 / 3.3 |
 | F35 | 审计台账（JSONL，0600/0700） | ○ | ○ | ○ | ○ | 6.3 |
-| F36 | keadm 部署（init/join/ops-ledger） | ○ | ○ | ● | ○ | 4.3 |
+| F36 | keadm 部署运维（9 子命令，含 cert/batch/reset/version） | ○ | ○ | ● | ○ | 4.3 |
 | F37 | Helm Chart 部署 | ○ | ○ | ● | ○ | 4.3 |
 | F38 | 多架构镜像（amd64+arm64） | ○ | ○ | ● | ○ | 4.3 |
 | F39 | 升级回滚机制（备份/演练/审计/留痕） | ○ | ○ | ● | ○ | 4.3 / 4.4 |
 | F40 | 性能基线（10 节点 201.3ms） | ○ | ○ | ○ | ○ | 附录 A5 |
+| F49 | 证书吊销闭环（keadm cert revoke + CRL 消费端拒绝 + OCSP responder） | ○ | ○ | ○ | ○ | 附录 A6 / 3.3 |
 
 > 图例：● 主要支撑场景；○ 次要/间接支撑场景。手册引用章节为 v1.0.0 定稿节号。
 
-**表 C-2：规划中/范围外特性清单（F41–F48）**
+**表 C-2：规划中/部分实现特性清单（F41–F48）**
 
 | 编号 | 规划项 | 状态 | 说明 |
 |---|---|---|---|
 | F41 | 模型仓库与版本管理平台 | 规划中/即将上线 | 当前以镜像 Tag + 配置参数化过渡（第 4 章） |
-| F42 | 灰度发布 | 规划中/即将上线 | ROADMAP 已规划；过渡期人工分批（4.2） |
+| F42 | 灰度发布 | 部分实现 | 升级分批已工具化（keadm upgrade --batch-size/--pause-between + keadm batch --op=upgrade，fail-fast）；模型/按比例灰度仍规划中（4.2） |
 | F43 | 完整 RBAC（多角色权限） | 规划中 | 当前为单 Token 鉴权 |
-| F44 | 设备认证（设备级身份） | 规划中 | 设备级离线检测同属规划范围 |
+| F44 | 设备认证 | 部分实现 | 节点接入认证（Register Token）已实现；设备级身份认证（传感器/PLC 等）与设备级离线检测仍规划中 |
 | F45 | 调度/超卖、Flannel 网络 | 规划中 | 集群化能力增强 |
 | F46 | OPC-UA 协议接入 | 规划中 | 当前支持 MQTT/Modbus TCP |
-| F47 | 通道压缩/Protobuf 编码 | 规划中 | 当前 JSON 信封 |
-| F48 | 镜像安全扫描 | 规划中 | 当前提供 sha256 完整性校验（升级备份） |
+| F47 | 通道压缩/Protobuf 编码 | 部分实现 | gzip 压缩已实现（Register 协商式，默认开启，v1.0 兼容）；Protobuf 编码规划中 |
+| F48 | 镜像安全扫描 | 部分实现 | 发布流程级已实现（构建期 Trivy 扫描，基线 0 漏洞）；产品内置/运行时扫描仍规划中 |
 
 ---
 
@@ -654,3 +670,4 @@ v0.1.0 提供**节点级**离线判定（CloudHub 90s 无消息断开 + NodeCont
 2. **更新说明**：产品新版本发布后，本手册须对照特性清单（附录 C）逐条核验"已实现/规划中"状态后再升版。
 3. **回滚口径**：若某版本手册被发现事实性错误，回退到上一 Git 提交并发布勘误版本（vX.Y.Z+1），不直接修改已发布历史版本文件；勘误记录写入修订记录表。
 4. **评审留痕**：v1.0.0 由方案团队（主笔）+ 产品团队（事实基线提供）+ 独立技术复核（特性↔手册双向追溯、结构完整性、异常路径、术语一致性）完成，复核记录见《评审记录与交接说明.md》。
+5. **v1.0.1 勘误基线（2026-08-16）**：对照仓库 HEAD `10e2995`（基线 `899248d` 之后净新增 OCSP 在线吊销与 edgecore 配置文件）完成附录勘误——REST API 端点 13→14（含 POST /ocsp，与契约测试/API-SPEC/API-COMPATIBILITY 三源一致）；表 C-1 新增证书吊销闭环登记（F49）；表 C-2 摘除已实现能力"规划中"标注（gzip 压缩、升级分批、节点接入认证、发布流程镜像扫描，见 F42/F44/F47/F48 拆分口径）；术语表 keadm 补全 9 子命令。勘误以仓库现状为事实基线，非新版本发布；正式修订记录见正文修订记录表。HTML/PDF/latex 衍生制品与 CSV 按流程同步重生成。

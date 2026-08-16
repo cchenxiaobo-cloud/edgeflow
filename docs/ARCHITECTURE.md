@@ -115,7 +115,7 @@ EdgeFlow 借鉴 KubeEdge 的整体架构（CloudHub/EdgeHub 云边通信、Edged
 |------|--------|---------------|-----|------|
 | cloudcore 进程（入口） | 云 | 云端程序入口：加载配置、初始化日志、装配 HTTP API + CloudHub + 控制器 | 1.1、1.5 | ✅ M0（commit `98a50a6` 起） |
 | pkg 共享库（log/config/version/httpx） | 双 | 日志、配置加载、版本注入、HTTP 工具，全部组件复用 | 1.5 | ✅ M0 |
-| pkg/certs | 双 | 纯标准库证书管理：CA/服务端/客户端证书幂等生成、LoadTLSConfig 双向强制、TLS1.2+、私钥 0600 | 7.1 | ✅ M4（commit `0a7fcc2`）+ 2026-08-15 keadm cert rotate 自动化轮换；吊销（CRL/OCSP）未实现 |
+| pkg/certs | 双 | 纯标准库证书管理：CA/服务端/客户端证书幂等生成、LoadTLSConfig 双向强制、TLS1.2+、私钥 0600 | 7.1 | ✅ M4（commit `0a7fcc2`）+ 2026-08-15 keadm cert rotate 自动化轮换 + 2026-08-16 吊销闭环（CRL + OCSP responder） |
 | **CloudHub** | 云 | WebSocket **服务端**（:10000/v1/edge）：会话管理（同 nodeID 踢旧连接）、注册、心跳失活判定（90s）、可靠投递 ReliableSend、mTLS Option、Register.token 校验 | 2.1、4.2、4.6、4.5、7.3 | ✅ M1 基础 + M4 TLS + 2026-08-15 token 校验 |
 | **EdgeController**（registry + EdgeNode 映射） | 云 | 边缘节点**注册**（NodeInfo 注册表 + EdgeNode CRD 对象映射，`GET /api/v1/edgenodes`） | 2.3、2.6 | ✅ M1（REST 化适配，commit `3c7b99d`/`641863e`） |
 | **NodeController** | 云 | 心跳监控、节点上线/下线判定（扫描 30s / 超时 180s，SIGSTOP 冻结→Offline→Ready 状态机闭环） | 2.4 | ✅ M4 ⚠️（commit `f71684e`，原计划 M1） |
@@ -376,7 +376,7 @@ M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，�
 - CA/服务端/客户端证书幂等生成（纯标准库），`LoadTLSConfig` 双向强制、TLS1.2+、私钥权限 0600、半套 fail-fast（`pkg/certs`）。
 - CloudHub `WithTLS` Option + tls.NewListener；mTLS 审计日志记录 peer CN；未认证连接拒绝路径已验证。
 - EdgeHub 注入 TLSConfig，`ws://` 自动归一化 `wss://`；TLS off 完全向后兼容。
-- 证书轮换：**keadm cert rotate 自动化**（2026-08-15：备份先行 + 事务化重签 + 幂等，见 docs/KEADM.md）；吊销（CRL/OCSP）未实现（G-6，见 §12）。
+- 证书轮换：**keadm cert rotate 自动化**（2026-08-15：备份先行 + 事务化重签 + 幂等，见 docs/KEADM.md）；吊销闭环已实现（2026-08-16）：**keadm cert revoke**（crl.json 来源记录 + crl.pem 签名产物 + flock 进程锁 + 对账自愈）、mTLS 握手按 CRL 拒绝、OCSP responder（POST /ocsp，RFC 6960，与 CRL 同源）。
 - 跨主机 CA 分发（2026-08-15 闭环）：`hack/gen-certs.sh` 支持 `CERT_DIST_DIR` 生成分发包（`cloud/` + `edge/<CN>/`，含 README 部署说明），openssl verify 链验证通过。
 
 ### 6.3 API Token 认证中间件（WBS 7.2，M4 交付）
@@ -535,7 +535,7 @@ M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，�
 | G-2 | 6.5 调度/资源超卖未实现（仅 Replicas 伸缩） | 功能缺失 | ROADMAP 6.5 🟨 |
 | G-3 | 5.2 OPC-UA 未做；MQTT 仅 mock_sensor 数据面模式，无通用 MQTT 设备适配器 | 功能缺失 | ROADMAP 5.2 🟨 |
 | G-4 | 5.3 Device K8s 控制器未做（仅 CRD 类型 + manifest + 云端内存态存储） | 对接真实 K8s 前不阻塞 | ROADMAP 5.3 🟨 |
-| G-6 | 7.1 证书吊销（CRL/OCSP）未实现（轮换已自动化：keadm cert rotate，2026-08-15） | 安全运维缺口 | audit-m35 G9；docs/KEADM.md |
+| G-6 | 7.1 吊销闭环已实现（2026-08-16：keadm cert revoke + CRL 消费端拒绝 + OCSP responder）；残留：OCSP 客户端库 API 未接入生产路径、FailOnExpired 未接 mTLS、无 CRL 刷新命令 | 安全运维（低） | audit 2026-08-16；docs/KEADM.md |
 | G-7 | 4.4 Protobuf 编码升级未实现（gzip 已落地：协商式双向压缩，见 §4.6） | Protobuf 显式延后 | audit-m02 §4 |
 | G-8 | 8.2 多节点（10+）E2E 未做；8.4 100 节点压测未做；M3"端到端延迟 ≤5s"从未测量 | 规模化验收未实证（10 节点基线：100% 注册、均值 1.85ms、P95 2.28ms；N=100 本机回环 100% 注册、均值 9.62ms、P95 13.24ms——PERFORMANCE-BASELINE.md；集群级验收需真实环境复测） | audit-m35 G11 |
 | G-9 | 3.4 自治 30min 真实长跑未验证（E2E 为 60s 短时模拟） | 需真实环境长跑 | audit-m02 #40；PERFORMANCE-BASELINE.md |

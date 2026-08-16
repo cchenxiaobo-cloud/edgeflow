@@ -71,9 +71,25 @@ PodStatus 上报 & F18 & 30s 周期（可配 1s--10min），Absent 终态保留 
 \midrule
 云边心跳周期 & 30s & 通道活性探测间隔（F03）\\
 退避重连上限 & 60s & 断线重连指数退避封顶（F04）\\
-\env{EDGEFLOW\_EDGECORE\_DEVICE\_REPORT\_INTERVAL} & 30s（1s--10min） & 设备状态上报周期，弱网可调大降低流量（F22）\\
-\env{EDGEFLOW\_EDGECORE\_REPORT\_INTERVAL} & 30s（1s--10min） & Pod 状态上报周期（F18）\\
+\env{EDGEFLOW\_EDGECORE\_DEVICE\_REPORT\_INTERVAL} & 30s（1s--10min） & 设备状态上报周期，弱网可调大降低流量（F22）；\textbf{支持热重载}\\
+\env{EDGEFLOW\_EDGECORE\_REPORT\_INTERVAL} & 30s（1s--10min） & Pod 状态上报周期（F18）；\textbf{支持热重载}\\
 \env{EDGEFLOW\_CLOUDCORE\_NODE\_SCAN\_INTERVAL}/\env{NODE\_TIMEOUT} & 30s / 180s & 节点心跳扫描周期与超时（F07）\\
+\bottomrule
+\end{tabular}}
+
+\textbf{配置方式与热重载}：除环境变量外，edgecore 支持配置文件 \seqsplit{\texttt{config/edgecore.json}}（cloudAddr/podReportInterval/deviceReportInterval/reconcileInterval 4 个字段，\texttt{--config} 可指定路径；优先级：环境变量 > 配置文件 > 默认值，敏感配置如 Token 仅走环境变量）；cloudcore 同理支持 \seqsplit{\texttt{config/cloudcore.json}}。配置变更支持热重载：SIGHUP 立即重载或 $\leq$60s 轮询自动检测生效，无需重启；重载失败保持旧配置继续运行（fail-safe）。
+
+\textbf{热生效边界（表 3-3）}：
+
+{\small\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}p{6.0cm}p{9.6cm}@{}}
+\toprule
+配置项 & 热生效边界\\
+\midrule
+cloudcore port & 热切换（新端口先监听再关旧监听；绑定失败拒绝重载，旧监听保持）\\
+cloudcore hubPort / compress & 需重启\\
+edgecore 上报周期（pod/deviceReportInterval） & 热生效（无需重启）\\
+edgecore cloudAddr / nodeID / reconcileInterval & 需重启\\
 \bottomrule
 \end{tabular}}
 
@@ -97,7 +113,7 @@ PodStatus 上报 & F18 & 30s 周期（可配 1s--10min），Absent 终态保留 
 
 \section{异常路径与边界（如实矩阵）}
 
-\textbf{表 3-3：弱网异常路径矩阵}
+\textbf{表 3-4：弱网异常路径矩阵}
 
 {\small\setlength{\tabcolsep}{3pt}
 \begin{tabular}{@{}p{1.1cm}p{5.8cm}p{4.0cm}p{4.2cm}@{}}

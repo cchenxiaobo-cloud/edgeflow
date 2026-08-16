@@ -29,11 +29,15 @@ v0.1.0 支持 MQTT（QoS1，遥测/指令主题）与 Modbus TCP（显式设置 
 
 \section*{A6. 平台安全机制有哪些？}
 
-生产加固四项：mTLS 云边通道（启用后自动升级 wss）、接入 Token 鉴权（默认关闭、开启后 401 fail-fast）、审计台账（文件 0600/目录 0700，认证失败也记录）、镜像多架构与 keadm 升级备份校验。完整 RBAC（当前为单 Token 鉴权）与镜像安全扫描\warn。
+生产加固四项：mTLS 云边通道（启用后自动升级 wss，握手期按 CRL 拒绝已吊销证书）、接入 Token 双轨（REST API Token 鉴权默认关闭、开启后 401 fail-fast；节点接入 Token 已实现：keadm join 生成、edgecore 注册携带、云端常数时间校验）、审计台账（文件 0600/目录 0700，认证失败也记录）、镜像多架构与 keadm 升级备份校验。
+
+证书生命周期管理：\seqsplit{\texttt{keadm cert rotate}} 轮换（备份先行 + 事务化重签，SAN 继承）、\seqsplit{\texttt{keadm cert revoke}} 吊销（\texttt{--node}/\texttt{--serial} 二选一互斥、重复吊销幂等，序列号入 crl.json 并生成/更新 crl.pem）。CRL 离线吊销：crl.json 为序列号来源记录、crl.pem 为派生签名产物（写路径 flock 进程锁 + crl.json$\leftrightarrow$crl.pem 对账自愈），mTLS 握手按 CRL 拒绝已吊销证书（CRL 损坏/签名无效 fail-closed）；OCSP 在线吊销：POST /ocsp（RFC 6960，DER 编码请求/响应、16KiB 请求上限、状态码 200/400/500），与 CRL 同源（均读 crl.json），吊销即时双通道生效。OCSP 服务端已实现，客户端查询库 API 可用但尚未接入生产路径——边缘 mTLS 握手走 CRL 校验，而非 OCSP。
+
+镜像扫描口径：发布流程级已实现（构建期 Trivy 扫描，基线 0 漏洞）；完整 RBAC（当前为单 Token 鉴权）、cosign 签名、产品内置/运行时扫描仍\warn。
 
 \section*{A7. 模型如何部署到边缘？}
 
-v0.1.0 以“容器镜像 + 配置”为载体：模型与推理运行时打包为版本化镜像 $\rightarrow$ podsync 下发 Pod 声明（image + replicas）$\rightarrow$ 边缘 Edged 拉取运行并持续自治（多副本/健康自愈/防漂移）；推理参数经 config-sync 下发并落盘。模型仓库/版本管理/灰度发布平台\warn，当前以镜像 Tag + 配置参数化作为过渡路径。
+v0.1.0 以“容器镜像 + 配置”为载体：模型与推理运行时打包为版本化镜像 $\rightarrow$ podsync 下发 Pod 声明（image + replicas）$\rightarrow$ 边缘 Edged 拉取运行并持续自治（多副本/健康自愈/防漂移）；推理参数经 config-sync 下发并落盘。模型仓库/版本管理与模型灰度发布平台\warn（升级场景的灰度分批已工具化，见附录 C F42），当前以镜像 Tag + 配置参数化作为过渡路径。
 
 \section*{A8. 升级和回滚有保障吗？}
 
@@ -82,7 +86,7 @@ config-sync & 云端向边缘下发配置并持久化的 API\\
 JSONL & JSON Lines，每行一条 JSON 记录的追加式日志格式\\
 mTLS & 双向 TLS，云边通道启用后自动升级 wss\\
 QoS1 & MQTT 服务质量级别“至少一次”，不保证去重，消费方需幂等\\
-keadm & EdgeFlow 部署工具（init/join/upgrade/rollback/ops-ledger 等）\\
+keadm & EdgeFlow 部署运维工具，9 个子命令：init/join/cert（rotate/revoke）/upgrade/rollback/ops-ledger/batch/reset/version\\
 ops-ledger & keadm 升级/回滚操作台账（JSONL，含备份 id 与失败原因）\\
 op-ledger & 设备操作台账（SQLite 追加流水，30 天保留；代码/SQL 表名为 op\_ledger）\\
 审计台账 & 云端 API 操作台账（audit-ledger.jsonl，含 401 记录）\\
@@ -91,7 +95,7 @@ op-ledger & 设备操作台账（SQLite 追加流水，30 天保留；代码/SQL
 
 \chapter{产品特性-场景映射表}
 
-\textbf{表 C-1：F01--F40 已实现特性 × 四场景归属（双向追溯）}
+\textbf{表 C-1：F01--F40、F49 已实现特性 × 四场景归属（双向追溯）}
 
 {\setlength{\tabcolsep}{3pt}
 \begin{longtable}{p{1.0cm}p{4.6cm}ccccp{3.2cm}}
@@ -131,23 +135,24 @@ F27 & op-ledger 操作台账（SQLite 表名 op\_ledger，30 天保留） & $\bu
 F28 & EventBus MQTT 数据面（QoS1，自动重连） & $\bullet$ & $\circ$ & $\circ$ & $\bullet$ & 2.3 / 5.3\\
 F29 & EventBus 降级本地模式 & $\bullet$ & $\bullet$ & $\circ$ & $\circ$ & 2.3 / 2.4\\
 F30 & 设备 API 云端视图 & $\bullet$ & $\circ$ & $\circ$ & $\bullet$ & 2.3 / 5.3 / 6.1\\
-F31 & REST API 13 端点（podsync/config-sync 等） & $\circ$ & $\circ$ & $\bullet$ & $\bullet$ & 4.3 / 5.4\\
+F31 & REST API 14 端点（podsync/config-sync/ocsp 等） & $\circ$ & $\circ$ & $\bullet$ & $\bullet$ & 4.3 / 5.4\\
 F32 & 运行指标 5 项（edgeflow\_cloudcore\_*） & $\circ$ & $\circ$ & $\circ$ & $\circ$ & 1.2 / 1.4\\
 F33 & Token 认证（默认 off，401 fail-fast） & $\circ$ & $\circ$ & $\circ$ & $\circ$ & 附录 A6\\
-F34 & mTLS 云边通道（wss） & $\circ$ & $\circ$ & $\circ$ & $\circ$ & 附录 A6 / 3.3\\
+F34 & mTLS 云边通道（wss，握手按 CRL 拒绝吊销证书） & $\circ$ & $\circ$ & $\circ$ & $\circ$ & 附录 A6 / 3.3\\
 F35 & 审计台账（JSONL，0600/0700） & $\circ$ & $\circ$ & $\circ$ & $\circ$ & 6.3\\
-F36 & keadm 部署（init/join/ops-ledger） & $\circ$ & $\circ$ & $\bullet$ & $\circ$ & 4.3\\
+F36 & keadm 部署运维（9 子命令，含 cert/batch/reset/version） & $\circ$ & $\circ$ & $\bullet$ & $\circ$ & 4.3\\
 F37 & Helm Chart 部署 & $\circ$ & $\circ$ & $\bullet$ & $\circ$ & 4.3\\
 F38 & 多架构镜像（amd64+arm64） & $\circ$ & $\circ$ & $\bullet$ & $\circ$ & 4.3\\
 F39 & 升级回滚机制（备份/演练/审计/留痕） & $\circ$ & $\circ$ & $\bullet$ & $\circ$ & 4.3 / 4.4\\
 F40 & 性能基线（10 节点 201.3ms） & $\circ$ & $\circ$ & $\circ$ & $\circ$ & 附录 A5\\
+F49 & 证书吊销闭环（keadm cert revoke + CRL 消费端拒绝 + OCSP responder） & $\circ$ & $\circ$ & $\circ$ & $\circ$ & 附录 A6 / 3.3\\
 \end{longtable}}
 
 \begin{quote}
 图例：$\bullet$ 主要支撑场景；$\circ$ 次要/间接支撑场景。手册引用章节为 v1.0.0 定稿节号。
 \end{quote}
 
-\textbf{表 C-2：规划中/范围外特性清单（F41--F48）}
+\textbf{表 C-2：规划中/部分实现特性清单（F41--F48）}
 
 {\small\setlength{\tabcolsep}{3pt}
 \begin{tabular}{@{}p{1.0cm}p{3.4cm}p{2.6cm}p{7.6cm}@{}}
@@ -155,13 +160,13 @@ F40 & 性能基线（10 节点 201.3ms） & $\circ$ & $\circ$ & $\circ$ & $\circ
 编号 & 规划项 & 状态 & 说明\\
 \midrule
 F41 & 模型仓库与版本管理平台 & \warn & 当前以镜像 Tag + 配置参数化过渡（第 4 章）\\
-F42 & 灰度发布 & \warn & ROADMAP 已规划；过渡期人工分批（4.2）\\
+F42 & 灰度发布 & 部分实现 & 升级分批已工具化（\seqsplit{\texttt{keadm upgrade --batch-size/--pause-between}} + \seqsplit{\texttt{keadm batch --op=upgrade}}，fail-fast）；模型/按比例灰度仍规划中（4.2）\\
 F43 & 完整 RBAC（多角色权限） & 规划中 & 当前为单 Token 鉴权\\
-F44 & 设备认证（设备级身份） & 规划中 & 设备级离线检测同属规划范围\\
+F44 & 设备认证 & 部分实现 & 节点接入认证（Register Token）已实现：keadm join 写 \env{EDGEFLOW\_EDGECORE\_TOKEN}、edgecore 注册携带、云端 \env{EDGEFLOW\_CLOUDCORE\_NODE\_TOKEN} 常数时间校验、空值向后兼容；设备级身份认证（传感器/PLC 等）与设备级离线检测仍规划中\\
 F45 & 调度/超卖、Flannel 网络 & 规划中 & 集群化能力增强\\
 F46 & OPC-UA 协议接入 & 规划中 & 当前支持 MQTT/Modbus TCP\\
-F47 & 通道压缩/Protobuf 编码 & 规划中 & 当前 JSON 信封\\
-F48 & 镜像安全扫描 & 规划中 & 当前提供 sha256 完整性校验（升级备份）\\
+F47 & 通道压缩/Protobuf 编码 & 部分实现 & gzip 压缩已实现（Register 协商式双向默认开，\seqsplit{\texttt{config/cloudcore.json}} 中 \texttt{compress:false} 可关）；Protobuf 编码仍规划中（当前 JSON 信封）\\
+F48 & 镜像安全扫描 & 部分实现 & 发布流程级已实现（构建期 Trivy 扫描，基线 0 漏洞）；产品内置/运行时扫描仍规划中（当前提供 sha256 完整性校验，升级备份）\\
 \bottomrule
 \end{tabular}}
 
@@ -172,4 +177,5 @@ F48 & 镜像安全扫描 & 规划中 & 当前提供 sha256 完整性校验（升
   \item \textbf{更新说明}：产品新版本发布后，本手册须对照特性清单（附录 C）逐条核验“已实现/规划中”状态后再升版。
   \item \textbf{回滚口径}：若某版本手册被发现事实性错误，回退到上一 Git 提交并发布勘误版本（vX.Y.Z+1），不直接修改已发布历史版本文件；勘误记录写入修订记录表。
   \item \textbf{评审留痕}：v1.0.0 由方案团队（主笔）+ 产品团队（事实基线提供）+ 独立技术复核（特性$\leftrightarrow$手册双向追溯、结构完整性、异常路径、术语一致性）完成，复核记录见《评审记录与交接说明.md》。
+  \item \textbf{v1.0.1 勘误基线（2026-08-16）}：对照仓库 HEAD \texttt{10e2995}（基线 \texttt{899248d} 之后净新增 OCSP 在线吊销与 edgecore 配置文件）完成勘误——REST API 端点 13$\rightarrow$14（含 POST /ocsp，与契约测试/API-SPEC/API-COMPATIBILITY 三源一致）；表 C-1 新增证书吊销闭环登记（F49）；表 C-2 摘除已实现能力“规划中”标注（gzip 压缩、升级分批、节点接入认证、发布流程镜像扫描，见 F42/F44/F47/F48 拆分口径）；术语表 keadm 补全 9 子命令。勘误以仓库现状为事实基线，非新版本发布；正式修订记录见正文修订记录表。HTML/PDF/latex 衍生制品与 CSV 按流程同步重生成。
 \end{enumerate}

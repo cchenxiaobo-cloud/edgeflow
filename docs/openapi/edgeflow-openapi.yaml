@@ -1,0 +1,244 @@
+# 本文件由 hack/openapi-gen 自动生成，请勿手工编辑。
+# 重新生成：bash hack/gen-openapi.sh
+# 覆盖：apis/edge/v1alpha1 包导出的 CRD 资源类型（EdgeNode / DeviceModel / Device）及其嵌套类型。
+# REST 端点定义见 docs/API-SPEC.md。
+
+openapi: '3.0.3'
+info:
+  title: EdgeFlow API
+  version: v1alpha1
+  description: EdgeFlow 边缘计算平台 CRD 资源（edgeflow.io/v1alpha1）OpenAPI v3 schema。REST 端点定义见 docs/API-SPEC.md。
+paths:
+  '/api/v1/{resource}':
+    get:
+      summary: 占位路径：EdgeFlow REST 端点定义见 docs/API-SPEC.md
+      description: 本 OpenAPI 文档仅承载 CRD 资源 schema（components.schemas）；REST API 端点清单、路径参数与响应定义见 docs/API-SPEC.md。
+      responses:
+        '200':
+          description: 占位响应：端点定义见 docs/API-SPEC.md
+components:
+  schemas:
+    EdgeNode:
+      type: object
+      required:
+        - metadata
+        - spec
+      properties:
+        kind:
+          type: string
+        apiVersion:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/ObjectMeta'
+        spec:
+          $ref: '#/components/schemas/EdgeNodeSpec'
+        status:
+          $ref: '#/components/schemas/EdgeNodeStatus'
+    DeviceModel:
+      type: object
+      required:
+        - metadata
+        - spec
+      properties:
+        kind:
+          type: string
+        apiVersion:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/ObjectMeta'
+        spec:
+          $ref: '#/components/schemas/DeviceModelSpec'
+    Device:
+      type: object
+      required:
+        - metadata
+        - spec
+      properties:
+        kind:
+          type: string
+        apiVersion:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/ObjectMeta'
+        spec:
+          $ref: '#/components/schemas/DeviceSpec'
+        status:
+          $ref: '#/components/schemas/DeviceStatus'
+    TypeMeta:
+      type: object
+      properties:
+        kind:
+          type: string
+        apiVersion:
+          type: string
+    ObjectMeta:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        namespace:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
+        uid:
+          type: string
+        resourceVersion:
+          type: string
+        creationTimestamp:
+          type: string
+    EdgeNodeSpec:
+      type: object
+      properties:
+        nodeID:
+          type: string
+        role:
+          type: string
+        addresses:
+          type: array
+          items:
+            $ref: '#/components/schemas/NodeAddress'
+    NodeAddress:
+      type: object
+      required:
+        - type
+        - address
+      properties:
+        type:
+          type: string
+        address:
+          type: string
+    EdgeNodeStatus:
+      type: object
+      properties:
+        phase:
+          type: string
+        heartbeatTime:
+          type: string
+        lastSeenTime:
+          type: string
+        conditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/NodeCondition'
+        version:
+          type: string
+    NodeCondition:
+      type: object
+      required:
+        - type
+        - status
+      properties:
+        type:
+          type: string
+        status:
+          type: string
+        reason:
+          type: string
+        message:
+          type: string
+        lastTransitionTime:
+          type: string
+    DeviceModelSpec:
+      type: object
+      properties:
+        protocol:
+          type: string
+        properties:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeviceProperty'
+    DeviceProperty:
+      type: object
+      required:
+        - name
+        - dataType
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        dataType:
+          type: string
+        accessMode:
+          type: string
+        defaultValue:
+          type: string
+        minimum:
+          type: string
+        maximum:
+          type: string
+        unit:
+          type: string
+    DeviceSpec:
+      type: object
+      required:
+        - deviceModelRef
+        - nodeName
+      properties:
+        deviceModelRef:
+          type: string
+        nodeName:
+          type: string
+        protocol:
+          $ref: '#/components/schemas/ProtocolConfig'
+        properties:
+          type: array
+          items:
+            $ref: '#/components/schemas/DevicePropertySpec'
+    ProtocolConfig:
+      type: object
+      properties:
+        protocolName:
+          type: string
+        config:
+          type: object
+          additionalProperties:
+            type: string
+    DevicePropertySpec:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        desired:
+          $ref: '#/components/schemas/PropertyValue'
+    PropertyValue:
+      type: object
+      required:
+        - value
+      properties:
+        value:
+          type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+    DeviceStatus:
+      type: object
+      properties:
+        twins:
+          type: array
+          items:
+            $ref: '#/components/schemas/TwinProperty'
+        lastUpdatedTime:
+          type: string
+    TwinProperty:
+      type: object
+      required:
+        - propertyName
+      properties:
+        propertyName:
+          type: string
+        desired:
+          $ref: '#/components/schemas/PropertyValue'
+        reported:
+          $ref: '#/components/schemas/PropertyValue'

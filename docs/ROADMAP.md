@@ -47,7 +47,7 @@
 | WBS 7 | 安全与认证 | 18 | WBS 1；7.4 依赖 WBS 4.5（⚠️） | ✅ 7.1 证书管理（mTLS）+7.2 Token 认证+7.3 设备认证（2026-08-15 闭环）+7.4+7.5 审计台账完成；吊销（CRL/OCSP）未做 |
 | WBS 8 | 测试与部署 | 30 | 随各模块并行；8.5 依赖 WBS 2 产物；8.6 依赖 WBS 4 协议（⚠️） | 🟨 8.1/8.2/8.3/8.5 完成（E2E 三用例 commit `a0a4344`）；8.4 压测基线完成（10 节点 100%，PERFORMANCE-BASELINE.md）；8.6 基础+升级回滚（实际在 M4） |
 | WBS 9 | 文档与示例 | 14 | WBS 1（可全程并行） | ✅ 9.2-9.5 完成；9.1 架构文档 2026-08-15 评审闭环并回写 |
-| WBS 10 | 审查补充项 | 24 | WBS 2/3（可观测性）、WBS 8.6（升级回滚，⚠️） | 🟨 10.1 可观测性完成、10.2 升级回滚+灰度分批（2026-08-15）、10.3 兼容矩阵完成（2026-08-15）、10.4 部分（SBOM+镜像扫描完成 2026-08-15；cosign 延后） |
+| WBS 10 | 审查补充项 | 24 | WBS 2/3（可观测性）、WBS 8.6（升级回滚，⚠️） | 🟨 10.1 可观测性完成、10.2 升级回滚+灰度分批（2026-08-15）、10.3 兼容矩阵完成（2026-08-15）+ 自动化契约测试（2026-08-16，tests/contract）、10.4 部分（SBOM+镜像扫描完成 2026-08-15；cosign 延后） |
 
 ### 1.2 二级模块明细
 
@@ -63,7 +63,7 @@
 | 1.6 | 构建与发布脚本 | 交叉编译、版本管理 | 3 | 1.1 | ✅ 完成（Makefile cross-build + release.yml + M5 发布制品） |
 | 1.7 | 代码质量基建 | golangci-lint、覆盖率、安全扫描 | 3 | 1.1 | ✅ 完成（.golangci.yml v2 + CI 强制 lint + 覆盖率门槛 70%） |
 | 2.1 | CloudHub 模块 | WebSocket 服务端、消息编解码、会话管理、连接池 | 12 | 1.x、4.1、4.2（⚠️） | ✅ 完成（commit `6241a78` 起多轮） |
-| 2.2 | DeviceController | 设备 CRD 控制器、状态同步 | 10 | 1.4、5.3（⚠️ 同一 CRD） | 🟨 部分：云端设备状态存储 + 查询/指令 API（内存态，commit `744afaa`）；无 K8s 控制器（audit-m35 G6） |
+| 2.2 | DeviceController | 设备 CRD 控制器、状态同步 | 10 | 1.4、5.3（⚠️ 同一 CRD） | 🟨 部分：云端设备状态存储 + 查询/指令 API（内存态，commit `744afaa`）；K8s 原生控制器不适用（REST 适配架构，§8 5.3 决策关闭） |
 | 2.3 | EdgeController | 边缘节点注册、状态管理 | 8 | 2.6（⚠️ 需 apiserver 交互） | ✅ 完成（REST 化适配：registry + EdgeNode 映射，commits `3c7b99d`/`641863e`） |
 | 2.4 | NodeController | 心跳监控、节点上下线 | 6 | 2.3（⚠️ 注册后才有心跳） | ✅ 完成（commit `f71684e`，覆盖率 96.8%；**实际在 M4 完成**，M1 仅 cloudhub 内嵌断线检测） |
 | 2.5 | CloudCore API 层 | RESTful API、认证中间件 | 5 | 2.6（⚠️） | ✅ 完成（11 个 REST 端点 + /healthz + /metrics，见 API-SPEC.md；认证中间件 2026-08-15 已闭环，归 WBS 7.2） |
@@ -77,7 +77,7 @@
 | 3.4 | 边缘自治引擎 | 断网独立运行、重连后同步、冲突解决 | 15 | 3.2、3.3、4.6（⚠️） | ✅ 完成（基础：断网 40s 容器持续运行 + 恢复同步；**30min 时长未验证**，归 WBS 8.3 缺口，audit-m02 #40） |
 | 3.5 | DeviceTwin 模块 | 设备影子、状态同步 | 6 | 3.6、3.3（⚠️） | ✅ 完成（devicetwin 覆盖率 100%，commit `744afaa`） |
 | 3.6 | EventBus 模块 | MQTT 消息总线 | 4 | ⚠️ NATS MQTT 兼容性 POC（开发前 1-2 天，计划 §4.2.4） | ✅ 完成（mosquitto + paho，commit `2a0d0a3`；**NATS POC 未执行**，改用 mosquitto，已文档化偏差） |
-| 3.7 | ServiceBus 模块 | 边缘服务发现、路由 | 4 | 4.x（⚠️ 云边 HTTP 调用，Phase 3） | ⬜ 未实现（ROADMAP §7 缺口 9 未处置） |
+| 3.7 | ServiceBus 模块 | 边缘服务发现、路由 | 4 | 4.x（⚠️ 云边 HTTP 调用，Phase 3） | 🔒 已关闭（v0.1.0 范围外产品决策，Phase 3 云边 HTTP 调用后续版本排期；§8 处置登记 2026-08-15） |
 | 3.8 | 可观测性(边缘) | 指标暴露、日志上报 | 6 | 3.1（⚠️） | ✅ 完成（与 10.1 合并：/metrics 端点五指标，commit `4c5b9c6`） |
 | 4.1 | 消息协议设计 | 消息格式(Protobuf)、类型枚举 | 3 | 1.x | ✅ 完成（pkg/protocol JSON 信封 + 类型枚举，commit `e569ea1`） |
 | 4.2 | 连接管理 | 连接池、心跳保活、重连退避 | 6 | 4.1（⚠️） | ✅ 完成（注册/心跳 30s/指数退避 2/4/8s/自动重连） |
@@ -113,7 +113,7 @@
 | 9.5 | 示例与教程 | 设备接入、应用部署示例 | 4 | 5.x、6.x（⚠️） | ✅ 完成（examples/demo.sh DEMO PASS×3，REVIEWS.md §5） |
 | 10.1 | 可观测性基建 | 监控(Prometheus)、日志(Fluent Bit)、告警 | 10 | 2.9、3.8（⚠️ 职责需与 2.9/3.8 对齐） | ✅ 完成（/metrics 端点：nodes/pods/devices_total、http_requests_total、active_connections，Prometheus 文本格式，metrics 覆盖 96.6%，commit `4c5b9c6`；日志/告警为 P2） |
 | 10.2 | 边缘节点升级与回滚 | OTA 升级、灰度发布 | 6 | 8.6（⚠️） | ✅ 完成（备份模型 + ops-ledger + simulate-failure + 事务化 restore + 白名单；**灰度发布已实现** 2026-08-15：upgrade --batch-size/--pause-between，commit `2c877d4`） |
-| 10.3 | API 兼容性测试 | K8s API 版本兼容矩阵 | 4 | 2.x（⚠️） | ⬜ 未实现（无兼容矩阵文档/测试，audit-m35 G4） |
+| 10.3 | API 兼容性测试 | K8s API 版本兼容矩阵 | 4 | 2.x（⚠️） | ✅ 已完成：兼容矩阵文档（API-COMPATIBILITY.md，2026-08-15）+ 自动化契约测试（tests/contract：13 端点 + 10 消息类型双向断言 + 文档一致性，2026-08-16） |
 | 10.4 | 安全扫描与修复 | 镜像扫描、依赖漏洞 | 4 | 8.5（⚠️） | 🟨 部分：SBOM ✅（33 组件）+ 镜像漏洞扫描 ✅（2026-08-15 Trivy 0 漏洞）；cosign 签名延后（audit-m35 G10） |
 
 **合计**：374 人天（原始）→ 340（Vibe Coding 1.1×）→ 425（含 25% 缓冲，计划 §5.2/5.3）。
@@ -339,3 +339,6 @@
 | 30min 长跑自治 | WBS 8.3 | ⏸ 环境边界 | 需真实环境长跑；60s E2E 已验证（tests/e2e 三用例 PASS） |
 | 8.2 多节点(10+) E2E | WBS 8.2 | ⏸ 环境边界 | 单机资源限制；多节点隔离用例已在 E2E 覆盖（2 边缘节点 + 1 云端进程） |
 | M1/M2 "kubectl get nodes/apply" 字面验收 | 验收口径 | 🔒 决策修订 | 无真实 K8s 接入，验收以 REST API 适配 + kind 真实集群路径（REAL-CLUSTER-GUIDE.md，kubectl apply + keadm init + Ready）双重达成 |
+| 7.1 证书吊销（CRL） | WBS 7.1 | ✅ 本次完成 | keadm cert revoke + RevokeCert/VerifyCertAgainstCRL（crl.json 记录 + crl.pem 签名产物，幂等/自愈，16 新用例；2026-08-16） |
+| 1.4 OpenAPI v3 schema | WBS 1.4 | ✅ 本次完成 | hack/openapi-gen 生成器（确定性）+ docs/openapi/edgeflow-openapi.yaml（17 schema）+ 一致性校验测试（2026-08-16） |
+| 10.3 API 兼容性契约测试 | WBS 10.3 | ✅ 本次完成 | tests/contract：13 REST 端点 + 10 消息类型双向断言 + API-SPEC/API-COMPATIBILITY 文档一致性（5 测试；2026-08-16） |

@@ -37,6 +37,7 @@
 | POST | `/api/v1/nodes/{nodeID}/podsync` | 可靠下发 Pod 配置（add/update/delete） | 200 / 400 / 404 / 502 / 504 |
 | POST | `/api/v1/nodes/{nodeID}/config-sync` | 可靠下发 ConfigMap/Secret 配置 | 200 / 400 / 404 / 502 / 504 |
 | POST | `/api/v1/nodes/{nodeID}/device-command` | 下发设备指令（期望值） | 200 / 400 / 404 / 502 / 504 |
+| POST | `/ocsp` | OCSP 在线吊销查询（RFC 6960；请求/响应均为 DER 编码，Content-Type: application/ocsp-request / application/ocsp-response） | 200 / 400 / 500 |
 
 ### 1.2 错误码表（统一约定）
 

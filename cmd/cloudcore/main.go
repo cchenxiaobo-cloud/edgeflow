@@ -78,18 +78,21 @@ func run(args []string, stdout, stderr io.Writer) int {
 	log.Infof("生效配置: HTTP 端口 %d（来源: %s）, CloudHub 端口 %d（来源: %s）, 通道压缩 %v",
 		cfg.Port, cfg.PortSource, cfg.HubPort, cfg.HubPortSource, cfg.Compress)
 
+	// 证书目录（EDGEFLOW_CLOUDCORE_CERT_DIR，默认 data/certs/）：
+	// 云边通道 mTLS 与 OCSP responder（/ocsp）共用同一目录，
+	// 吊销状态（crl.json）天然同源。
+	certDir := os.Getenv("EDGEFLOW_CLOUDCORE_CERT_DIR")
+	if certDir == "" {
+		certDir = certs.DefaultCertDir
+	}
+
 	// 云边通道 mTLS（WBS 7.1 证书管理 + 7.4 云边认证）：
 	// EDGEFLOW_CLOUDCORE_TLS=on 时启用 TLS 监听，并要求边缘侧携带
 	// 本 CA 签发的客户端证书（双向认证）。
-	//   - 证书目录：EDGEFLOW_CLOUDCORE_CERT_DIR（默认 data/certs/）
 	//   - 首次运行自动生成 CA 与 cloudcore 服务端证书；已存在则加载（幂等）
 	//   - 未开启时行为与之前完全一致（纯 ws://，向后兼容）
 	var hubTLS *tls.Config
 	if os.Getenv("EDGEFLOW_CLOUDCORE_TLS") == "on" {
-		certDir := os.Getenv("EDGEFLOW_CLOUDCORE_CERT_DIR")
-		if certDir == "" {
-			certDir = certs.DefaultCertDir
-		}
 		if _, err := certs.EnsureCA(certDir); err != nil {
 			log.Errorf("CA 初始化失败（certDir=%s）: %v", certDir, err)
 			return 1
@@ -244,6 +247,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	//   /api/v1/edgenodes  → EdgeNode 视图（CRD 对象视角，对标 K8s Node）
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", httpx.Healthz())
+	// OCSP 在线吊销（WBS 7.1）：标准 OCSP responder 端点。
+	// 数据源与 mTLS 同一证书目录，状态直接读 crl.json（与 CRL 同源）；
+	// 不挂 API Token 认证（协议端点，响应自带 CA 签名，见 ocsp.go 说明）。
+	mux.HandleFunc("POST /ocsp", (&ocspHandler{certDir: certDir}).ServeHTTP)
 	api := &nodeAPI{
 		reg:          nodeReg,
 		pods:         podStore,

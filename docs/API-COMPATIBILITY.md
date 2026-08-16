@@ -22,9 +22,11 @@
 | 11 | POST | `/api/v1/nodes/{nodeID}/podsync` | ✅ 稳定 | Bearer Token | 可靠下发 Pod 配置 |
 | 12 | POST | `/api/v1/nodes/{nodeID}/config-sync` | ✅ 稳定 | Bearer Token | 可靠下发配置 |
 | 13 | POST | `/api/v1/nodes/{nodeID}/device-command` | ✅ 稳定 | Bearer Token | 下发设备指令 |
+| 14 | POST | `/ocsp` | ✅ 新增（7.1） | 免认证（协议端点，响应自带 CA 签名） | OCSP 在线吊销查询（RFC 6960，DER 请求/响应） |
 
 > 认证：`EDGEFLOW_CLOUDCORE_API_TOKEN` 设置为 `on` 时全部管理端点（除 healthz/metrics）要求
 > `Authorization: Bearer <token>`（WBS 7.2）；未设置保持匿名（向后兼容，仅限受信网络）。
+> `/ocsp` 为协议端点（非管理端点），始终免 Token 认证：响应由 CA 私钥签名，客户端验签防伪造。
 
 ## 2. 云边通道消息类型矩阵（WebSocket /v1/edge）
 

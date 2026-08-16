@@ -14,9 +14,11 @@
 //     responderID、CertID 匹配），返回 good/revoked/unknown + 吊销时间；
 //   - OCSPStatus / OCSPStatusAt：客户端一键查询（默认本机 cloudcore /ocsp）。
 //
-// ASN.1 要点（RFC 6960 Appendix B 模块为 IMPLICIT TAGS）：
-//   - responderID 用 byName [1] IMPLICIT Name：内容 = issuer DN 的
-//     RDNSequence content（不含 SEQUENCE 头）；解析端兼容 EXPLICIT 形式；
+// ASN.1 要点（RFC 6960 Appendix B 模块声明 IMPLICIT TAGS）：
+//   - responderID 用 byName [1]：**发送端按 EXPLICIT 编码**（内容 = 完整
+//     Name SEQUENCE TLV）。RFC 6960 模块级 IMPLICIT 声明与实际主流实现
+//     （OpenSSL、golang.org/x/crypto/ocsp 均按 EXPLICIT 编解码）存在历史
+//     分歧，互操作以 EXPLICIT 为准；解析端兼容 IMPLICIT/EXPLICIT 两种形式；
 //   - certStatus 是 CHOICE：good [0] IMPLICIT NULL、revoked [1] IMPLICIT
 //     RevokedInfo、unknown [2] IMPLICIT UnknownInfo；
 //   - 时间字段用 GeneralizedTime（asn1:"generalized"），nextUpdate 为
@@ -375,18 +377,19 @@ func BuildOCSPResponse(ca *CA, revoked []RevokedCert, reqDER []byte, opts OCSPRe
 		sr.CertStatus = certStatusUnknown()
 	}
 
-	// responderID：byName [1] IMPLICIT Name，内容 = CA Subject 的
-	// RDNSequence content（RFC 6960 模块为 IMPLICIT TAGS）。
-	var name asn1.RawValue
-	if _, err := asn1.Unmarshal(ca.Cert.RawSubject, &name); err != nil {
-		return nil, fmt.Errorf("解析 CA Subject 失败: %w", err)
-	}
+	// responderID：byName [1]（发送端按 EXPLICIT 编码，内容 = CA Subject
+	// 的完整 Name SEQUENCE TLV）。
+	//
+	// 说明：RFC 6960 模块声明 IMPLICIT TAGS，但其附录模块定义与主流实现
+	// （OpenSSL OCSP_RESPID、x/crypto/ocsp 均用 explicit tag）存在历史分歧；
+	// 实测 OpenSSL 拒绝 IMPLICIT byName，故发送端跟随 de-facto 标准用
+	// EXPLICIT；解析端（verifyResponderID）两种形式均接受。
 	rd := responseData{
 		ResponderID: asn1.RawValue{
 			Class:      asn1.ClassContextSpecific,
 			Tag:        1,
 			IsCompound: true,
-			Bytes:      name.Bytes,
+			Bytes:      ca.Cert.RawSubject,
 		},
 		ProducedAt: thisUpdate,
 		Responses:  []singleResponse{sr},

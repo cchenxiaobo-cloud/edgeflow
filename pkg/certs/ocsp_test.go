@@ -443,15 +443,21 @@ func TestParseOCSP_ResponderIDByKey(t *testing.T) {
 		t.Fatalf("caPublicKeyBits 失败: %v", err)
 	}
 	keyHash := sha1.Sum(keyBits)
+	// byKey 按 EXPLICIT 编码（内容 = OCTET STRING TLV，与 OpenSSL 输出一致）
+	byKeyTLV, err := asn1.Marshal(keyHash[:])
+	if err != nil {
+		t.Fatalf("编码 byKey 失败: %v", err)
+	}
 	reqCID, err := CertIDForCert(ca.Cert, leaf)
 	if err != nil {
 		t.Fatalf("CertIDForCert 失败: %v", err)
 	}
 	rd := responseData{
 		ResponderID: asn1.RawValue{
-			Class: asn1.ClassContextSpecific,
-			Tag:   2,
-			Bytes: keyHash[:],
+			Class:      asn1.ClassContextSpecific,
+			Tag:        2,
+			IsCompound: true,
+			Bytes:      byKeyTLV,
 		},
 		ProducedAt: time.Now().UTC(),
 		Responses: []singleResponse{{

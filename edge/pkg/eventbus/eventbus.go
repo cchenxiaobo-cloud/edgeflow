@@ -244,6 +244,26 @@ func (b *EventBus) Connect(ctx context.Context) error {
 			if err := token.Error(); err != nil {
 				return fmt.Errorf("eventbus: 连接 broker %s 失败: %w", b.addr, err)
 			}
+			// CONNACK 与 OnConnect 回调之间存在竞态窗口：token.Wait 返回时
+			// b.online 可能尚未置位，而 Publish/Subscribe 要求 online=true。
+			// 这里等待 onConnect 完成，保证 Connect 返回即“真正可用”。
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				b.mu.RLock()
+				online := b.online
+				b.mu.RUnlock()
+				if online {
+					break
+				}
+				if time.Now().After(deadline) {
+					return fmt.Errorf("eventbus: 连接 broker %s 后等待 OnConnect 超时", b.addr)
+				}
+				select {
+				case <-ctx.Done():
+					return fmt.Errorf("eventbus: 等待连接 broker %s 被取消: %w", b.addr, ctx.Err())
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
 			b.mu.Lock()
 			b.connected = true
 			b.mu.Unlock()

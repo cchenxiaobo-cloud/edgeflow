@@ -9,6 +9,7 @@
 //     操作台账（WBS 10.2，--simulate-failure 可演练失败与回滚）；
 //   - keadm rollback 从 backups/ 恢复产物文件（--backup=<id> 或 --latest，WBS 10.2）；
 //   - keadm cert rotate 重新签发节点证书（轮换）：备份旧证书 + 事务化重签（WBS 7.1）；
+//   - keadm cert revoke 吊销节点证书：序列号入列 + 生成 CRL（WBS 7.1）；
 //   - keadm ops-ledger 查询操作台账（ops-ledger.jsonl，最近 N 条，WBS 10.2）；
 //   - keadm reset 清理 output-dir 下由 keadm 生成的产物（确认后删除，幂等）；
 //   - keadm version 输出版本信息（复用 pkg/version）。
@@ -35,7 +36,7 @@ const usageText = `keadm 是 EdgeFlow 的安装管理 CLI（WBS 8.6 基础版）
 命令:
   init     生成云端部署产物（cloudcore.yaml + NOTES.txt）
   join     生成边缘接入产物（edgecore.env + edgecore.service + install.sh）
-  cert     证书管理（rotate 重新签发节点证书，WBS 7.1）
+  cert     证书管理（rotate 轮换 / revoke 吊销，WBS 7.1）
   upgrade  升级边缘产物版本（备份产物 + 更新版本标记 + 台账，WBS 10.2）
   rollback 从备份回滚边缘产物（--backup=<id> 或 --latest，WBS 10.2）
   ops-ledger 查询操作台账（ops-ledger.jsonl，最近 N 条默认 20，WBS 10.2）
@@ -55,6 +56,7 @@ const usageText = `keadm 是 EdgeFlow 的安装管理 CLI（WBS 8.6 基础版）
   keadm rollback --latest --output-dir=./keadm-out
   keadm ops-ledger --output-dir=./keadm-out
   keadm cert rotate --node=edgeflow-edgecore --cert-dir=./data/certs
+  keadm cert revoke --node=edgeflow-edgecore --cert-dir=./data/certs
   keadm batch --op=join --file=nodes.txt --cloudcore-ip=192.168.1.10 --token=abc123
   keadm batch --op=upgrade --file=dirs.txt --version=v0.2.0
   keadm batch --op=upgrade --file=dirs.txt --version=v0.2.0 --batch-size=10 --pause-between=30s

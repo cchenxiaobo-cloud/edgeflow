@@ -6,6 +6,9 @@
 //	        时间戳后缀防覆盖）→ 事务化重签（pkg/certs.Rotate*）→
 //	        输出新证书路径与备份路径。失败不破坏旧证书（备份先行 +
 //	        事务化写入，任一步失败旧文件保持原状，备份可人工恢复）。
+//	revoke  吊销节点证书：把证书序列号追加进吊销列表（crl.json 记录 +
+//	        crl.pem 产物，pkg/certs.RevokeCert）→ 输出序列号/CRL 路径/
+//	        影响说明。重复吊销同一证书幂等；已分发证书需重新签发。
 //
 // 与 hack/gen-certs.sh 的关系：该脚本是 shell 版证书初始化工具（幂等跳过），
 // 无强制重签能力且不可单测；rotate 复用其「等效 Go 实现」pkg/certs
@@ -36,21 +39,25 @@ import (
 )
 
 // certUsageText 是 keadm cert 的用法说明。
-const certUsageText = `keadm cert —— 证书管理（WBS 7.1 证书轮换自动化）。
+const certUsageText = `keadm cert —— 证书管理（WBS 7.1 证书轮换/吊销自动化）。
 
 用法:
   keadm cert <subcommand> [flags]
 
 子命令:
   rotate  重新签发节点证书（轮换）：备份旧证书 + 事务化重签 + 输出路径
+  revoke  吊销节点证书：序列号入列 + 生成 CRL（crl.pem）+ 影响说明
 
 全局帮助:
   keadm cert -h | --help   打印本帮助
   keadm cert rotate -h     查看 rotate 参数
+  keadm cert revoke -h     查看 revoke 参数
 
 示例:
   keadm cert rotate --node=edgeflow-edgecore --cert-dir=./data/certs
   keadm cert rotate --node=cloudcore --cert-dir=./data/certs
+  keadm cert revoke --node=edgeflow-edgecore --cert-dir=./data/certs
+  keadm cert revoke --node=cloudcore --cert-dir=./data/certs
 `
 
 // certRotateOptions 是 keadm cert rotate 的参数集合。
@@ -73,6 +80,8 @@ func runCert(args []string, stdout, stderr io.Writer) int {
 	switch cmd {
 	case "rotate":
 		return runCertRotate(rest, stdout, stderr)
+	case "revoke":
+		return runCertRevoke(rest, stdout, stderr)
 	case "-h", "--help", "help":
 		_, _ = fmt.Fprint(stdout, certUsageText)
 		return exitOK
@@ -296,4 +305,80 @@ func runCertRotate(args []string, stdout, stderr io.Writer) int {
 func isRegularFile(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+// certRevokeOptions 是 keadm cert revoke 的参数集合。
+type certRevokeOptions struct {
+	// Node 是节点证书 CN（edgecore.crt 的 CN，如 edgeflow-edgecore；
+	// 云端服务端证书固定为 cloudcore）。
+	Node string
+	// CertDir 是证书目录（含 ca.crt/ca.key 与节点证书）。
+	CertDir string
+}
+
+// runCertRevoke 实现 keadm cert revoke：
+//
+//	① 参数校验（--node 必填、无空白）→ ② 证书目录校验 →
+//	③ 定位节点证书（CN 匹配，输出吊销序列号）→
+//	④ pkg/certs.RevokeCert（序列号入列 + 生成/更新 CRL，幂等）→ ⑤ 输出。
+//
+// 吊销只更新吊销列表与 CRL，不删除证书文件；已分发证书由对端按 CRL 拒绝，
+// 需要重新签发（keadm cert rotate）后重新分发。
+func runCertRevoke(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("cert revoke", stderr)
+	opts := certRevokeOptions{CertDir: certs.DefaultCertDir}
+	fs.StringVar(&opts.Node, "node", "", "节点证书 CN（必填；边缘节点如 edgeflow-edgecore，云端为 cloudcore）")
+	fs.StringVar(&opts.CertDir, "cert-dir", opts.CertDir, "证书目录（含 ca.crt/ca.key 与节点证书，默认 data/certs）")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() > 0 {
+		_, _ = fmt.Fprintf(stderr, "错误: cert revoke 不接受位置参数 %q\n", fs.Arg(0))
+		return exitUsage
+	}
+
+	// ① 参数校验。
+	if strings.TrimSpace(opts.Node) == "" {
+		_, _ = fmt.Fprintln(stderr, "错误: 缺少必填参数 --node（证书 CN，示例: keadm cert revoke --node=edgeflow-edgecore）")
+		return exitUsage
+	}
+	if strings.ContainsAny(opts.Node, " \t\n") {
+		_, _ = fmt.Fprintln(stderr, "错误: --node 含空白字符，证书 CN 不允许空格")
+		return exitUsage
+	}
+
+	// ② 证书目录校验（吊销需要现役证书与 CA，不自动创建）。
+	if info, err := os.Stat(opts.CertDir); err != nil || !info.IsDir() {
+		_, _ = fmt.Fprintf(stderr, "错误: 证书目录 %s 不存在或不可访问（吊销前需先初始化证书，见 hack/gen-certs.sh 或 pkg/certs）\n", opts.CertDir)
+		return exitRuntime
+	}
+
+	// ③ 定位节点证书（CN 匹配；不存在/不匹配 → 报错），取序列号用于输出。
+	target, err := resolveCertTarget(opts.CertDir, opts.Node)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "错误: "+err.Error())
+		return exitRuntime
+	}
+	certPath := filepath.Join(opts.CertDir, target.files[0])
+	leaf := parseCert(certPath)
+	if leaf == nil {
+		_, _ = fmt.Fprintf(stderr, "错误: 无法解析节点证书 %s（文件损坏？），无法获取吊销序列号\n", certPath)
+		return exitRuntime
+	}
+	serial := leaf.SerialNumber.Text(16)
+
+	// ④ 吊销（pkg/certs.RevokeCert：序列号入列 + 生成/更新 CRL；重复吊销幂等）。
+	if err := certs.RevokeCert(opts.CertDir, opts.Node); err != nil {
+		_, _ = fmt.Fprintf(stderr, "错误: 吊销失败: %v\n", err)
+		return exitRuntime
+	}
+	crlPath := filepath.Join(opts.CertDir, certs.FileCRL)
+
+	// ⑤ 输出吊销序列号、CRL 路径与影响说明。
+	_, _ = fmt.Fprintf(stdout, "keadm cert revoke 完成: 节点 %s 证书已加入吊销列表\n", opts.Node)
+	_, _ = fmt.Fprintf(stdout, "  吊销序列号: %s\n", serial)
+	_, _ = fmt.Fprintf(stdout, "  CRL:        %s\n", crlPath)
+	_, _ = fmt.Fprintln(stdout, "  影响: 该证书序列号已被吊销，云端/边缘 mTLS 握手将按 CRL 拒绝其接入；")
+	_, _ = fmt.Fprintln(stdout, "        已分发到节点的证书需重新签发（keadm cert rotate --node="+opts.Node+"）并重新分发。")
+	return exitOK
 }

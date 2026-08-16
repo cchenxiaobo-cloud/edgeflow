@@ -10,6 +10,7 @@
 //   - 私钥文件权限 0600，证书文件 0644；
 //   - 证书布局（目录默认 data/certs/，可用环境变量覆盖）：
 //     ca.crt / ca.key / cloudcore.crt / cloudcore.key / edgecore.crt / edgecore.key
+//     crl.pem（X.509 CRL 吊销列表产物） / crl.json（吊销序列号持久化记录）
 //
 // 算法选择：RSA 2048。
 //   - 兼容性最广：边缘设备生态与 openssl 等工具链对 RSA 支持最完备；
@@ -19,7 +20,8 @@
 // 安全边界（本版本明确不做，见 docs/SECURITY.md）：
 //   - CA 私钥保护依赖文件权限（0600）与部署侧密钥管理，生产建议离线签发；
 //   - 证书轮换需人工编排（重新签发后滚动重启组件）；
-//   - 吊销（CRL/OCSP）未实现：一旦私钥泄露，需轮换 CA 并全量重签。
+//   - 吊销（CRL）已实现（keadm cert revoke，序列号入列 + 生成 crl.pem）；
+//     OCSP 未实现，CRL 分发依赖人工同步（docs/ARCHITECTURE.md 待主线更新）。
 package certs
 
 import (
@@ -28,6 +30,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -52,6 +55,11 @@ const (
 	// FileClientCert / FileClientKey 是 edgecore 客户端证书与私钥。
 	FileClientCert = "edgecore.crt"
 	FileClientKey  = "edgecore.key"
+	// FileCRL 是吊销列表产物文件（PEM 编码的 X.509 CRL，供校验方消费）。
+	FileCRL = "crl.pem"
+	// FileCRLJSON 是吊销序列号持久化记录（crl.json，来源记录；
+	// crl.pem 由它派生，二者一致性见 RevokeCert 的注释）。
+	FileCRLJSON = "crl.json"
 )
 
 // 证书有效期与算法参数。
@@ -64,6 +72,9 @@ const (
 	rsaBits = 2048
 	// caCommonName 是自签 CA 的 CN。
 	caCommonName = "edgeflow-ca"
+	// crlValidity 是 CRL 的 NextUpdate 间隔（每次吊销重新生成，7 天足够
+	// 覆盖人工分发周期）。
+	crlValidity = 7 * 24 * time.Hour
 )
 
 // CA 是自签 CA 的句柄：包含 CA 证书与私钥，用于签发叶子证书。
@@ -75,6 +86,12 @@ type CA struct {
 	Cert *x509.Certificate
 	// Key 是 CA 私钥（RSA）。
 	Key *rsa.PrivateKey
+}
+
+// CRLPaths 返回吊销列表相关文件路径：crlPEM 是 CRL 产物（X.509 CRL，
+// PEM 编码），crlJSON 是吊销序列号持久化记录（来源记录）。
+func CRLPaths(certDir string) (crlPEM, crlJSON string) {
+	return filepath.Join(certDir, FileCRL), filepath.Join(certDir, FileCRLJSON)
 }
 
 // CertPaths 返回证书目录下的全部文件路径（便于日志与脚本对齐）。
@@ -400,6 +417,354 @@ func rotateLeafCert(certDir, cn string, eku x509.ExtKeyUsage, certFile, keyFile 
 	}, nil
 }
 
+// RevokeCert 吊销指定 CN 的节点证书（WBS 7.1 吊销能力，keadm cert revoke）：
+//
+//	① 按 CN 定位节点证书（优先客户端证书 edgecore.crt，其次服务端证书
+//	   cloudcore.crt），读取其序列号；证书不存在/不可解析 → 明确错误；
+//	② 把序列号追加进吊销列表（crl.json 持久化记录，来源记录）并生成/更新
+//	   CRL 产物（crl.pem，x509.CreateRevocationList 签名，PEM 编码）；
+//	③ 重复吊销同一证书幂等：不报错、不重复序列号，仅确保 crl.pem 产物与
+//	   吊销列表一致（缺失/损坏/不一致时自动重新生成）。
+//
+// 约束：
+//   - CA 严格加载（loadCA 而非 EnsureCA）：吊销绝不自动创建 CA
+//     （静默新建 CA 会让吊销列表失去意义）；
+//   - CA 私钥已具备 CRLSign 用途（EnsureCA 设置 KeyUsageCertSign|
+//     KeyUsageCRLSign），且 CA 证书自带 SubjectKeyId（IsCA 自动生成），
+//     满足 x509.CreateRevocationList 的签发前置条件；
+//   - 只更新吊销列表与 CRL，不删除证书文件（已分发证书由对端按 CRL 拒绝）。
+//
+// 一致性策略：crl.json 是来源记录（先写），crl.pem 是由它派生的签名产物
+// （后写）。写入失败时 crl.json 可能领先于 crl.pem，重试（幂等路径）会
+// 比对两者并重新生成 crl.pem，不会丢已吊销序列号；crl.json 缺失时从
+// crl.pem 恢复序列号（见 loadRevokedList），两者均损坏则报错不静默清空。
+func RevokeCert(certDir, cn string) error {
+	if err := ensureDir(certDir); err != nil {
+		return err
+	}
+	// CA 严格加载：吊销需要现有 CA（不自动创建）。
+	ca, err := loadCA(certDir)
+	if err != nil {
+		return fmt.Errorf("加载 CA 失败（吊销需要现有 CA，不会自动创建）: %w", err)
+	}
+	if len(ca.Cert.SubjectKeyId) == 0 {
+		return fmt.Errorf("CA 证书 %s 缺少 SubjectKeyId，无法签发 CRL（请重新初始化 CA）",
+			filepath.Join(certDir, FileCACert))
+	}
+
+	// ① 按 CN 定位节点证书（不存在/不可解析 → 明确错误）。
+	leaf, _, err := findLeafByCN(certDir, cn)
+	if err != nil {
+		return err
+	}
+	serialHex := leaf.SerialNumber.Text(16)
+
+	// ② 加载现有吊销列表（crl.json 优先；缺失时从 crl.pem 恢复；都缺失为空）。
+	list, err := loadRevokedList(certDir)
+	if err != nil {
+		return err
+	}
+	if !list.contains(serialHex) {
+		list.Entries = append(list.Entries, revokedEntry{
+			Serial: serialHex,
+			Time:   time.Now().UTC().Format(time.RFC3339),
+		})
+		list.Number++ // CRL Number 单调递增（RFC 5280 建议）
+		list.Updated = time.Now().UTC().Format(time.RFC3339)
+		// 先写 crl.json（来源记录）；crl.pem 随后由 ensureCRLArtifact 保证。
+		if err := writeRevokedList(certDir, list); err != nil {
+			return err
+		}
+	}
+	// ③ 确保 crl.pem 产物与列表一致（幂等路径自愈：缺失/损坏/不一致 → 重生成）。
+	return ensureCRLArtifact(ca, certDir, list)
+}
+
+// VerifyCertAgainstCRL 校验证书是否在吊销列表（WBS 7.1）：
+//
+//	吊销 → (true, nil)；未吊销 → (false, nil)。
+//
+// 兼容性约定：
+//   - CRL 文件（crl.pem）缺失 → 视为无吊销（向后兼容，返回 false, nil）；
+//   - CRL 存在但损坏/无法解析 → 返回错误（错误信息含 CRL 路径），不 panic；
+//   - CRL 必须由本目录 CA 签发（CheckSignatureFrom 校验），防止伪造/错配
+//     的 CRL 绕过吊销。
+func VerifyCertAgainstCRL(certDir string, cert *x509.Certificate) (bool, error) {
+	if cert == nil {
+		return false, errors.New("VerifyCertAgainstCRL: cert 为 nil")
+	}
+	crlPEMPath, _ := CRLPaths(certDir)
+	b, err := os.ReadFile(crlPEMPath)
+	if os.IsNotExist(err) {
+		return false, nil // CRL 缺失视为无吊销（向后兼容）
+	}
+	if err != nil {
+		return false, fmt.Errorf("读取 CRL %s 失败: %w", crlPEMPath, err)
+	}
+	rl, err := parseCRLPEM(b)
+	if err != nil {
+		return false, fmt.Errorf("解析 CRL %s 失败: %w", crlPEMPath, err)
+	}
+	// 吊销状态依赖 CA 签名链：CRL 必须由本 CA 签发（防伪造 CRL 绕过吊销）。
+	ca, err := loadCA(certDir)
+	if err != nil {
+		return false, fmt.Errorf("加载 CA 失败（校验吊销状态需要 CA 验证 CRL 签名）: %w", err)
+	}
+	if err := rl.CheckSignatureFrom(ca.Cert); err != nil {
+		return false, fmt.Errorf("CRL %s 签名校验失败（非本 CA 签发或文件损坏）: %w", crlPEMPath, err)
+	}
+	for _, e := range rl.RevokedCertificateEntries {
+		if e.SerialNumber != nil && e.SerialNumber.Cmp(cert.SerialNumber) == 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// revokedEntry 是吊销列表中的一条记录（crl.json）。
+// Serial 是证书序列号（小写十六进制，无 0x 前缀），Time 是吊销时间（RFC3339）。
+type revokedEntry struct {
+	Serial string `json:"serial"`
+	Time   string `json:"time"`
+}
+
+// revokedList 是吊销序列号持久化记录（crl.json）的磁盘格式：
+// crl.json 是来源记录（谁被吊销），crl.pem 是由它派生的签名产物（怎么验证）。
+// Number 是最近一次生成 CRL 的 cRLNumber（0=尚未生成，每次吊销 +1，
+// RFC 5280 建议单调递增）；Updated 是记录最后更新时间。
+type revokedList struct {
+	Entries []revokedEntry `json:"entries"`
+	Number  int64          `json:"number"`
+	Updated string         `json:"updated"`
+}
+
+// contains 判断序列号是否已在吊销列表。
+func (l *revokedList) contains(serialHex string) bool {
+	for _, e := range l.Entries {
+		if e.Serial == serialHex {
+			return true
+		}
+	}
+	return false
+}
+
+// findLeafByCN 按 CN 查找节点证书：优先客户端证书（edgecore.crt），其次
+// 服务端证书（cloudcore.crt）；返回解析后的证书与证书文件路径。
+// 找不到匹配 CN（或对应文件不可解析）时返回明确错误。
+func findLeafByCN(certDir, cn string) (*x509.Certificate, string, error) {
+	_, _, serverCert, _, clientCert, _ := CertPaths(certDir)
+	for _, path := range []string{clientCert, serverCert} {
+		c, err := parseCertFile(path)
+		if err == nil && c.Subject.CommonName == cn {
+			return c, path, nil
+		}
+	}
+	return nil, "", fmt.Errorf(
+		"节点 %q 不存在（证书目录 %s 中没有 CN 匹配的证书，或证书文件不可解析；"+
+			"可用 keadm cert rotate --help 查看证书约定）", cn, certDir)
+}
+
+// parseCertFile 读取并解析 PEM 证书文件；文件不存在/不可解析时返回错误。
+func parseCertFile(path string) (*x509.Certificate, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取证书 %s 失败: %w", path, err)
+	}
+	block, _ := pem.Decode(b)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, fmt.Errorf("证书 %s 不是合法的 PEM 证书（文件损坏？）", path)
+	}
+	c, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("解析证书 %s 失败: %w", path, err)
+	}
+	return c, nil
+}
+
+// loadRevokedList 加载吊销序列号记录：
+//   - crl.json 存在 → 解析（损坏 → 报错，错误含路径；不静默清空，
+//     否则已吊销证书会被重新放行）；
+//   - crl.json 缺失但 crl.pem 存在 → 从 CRL 产物恢复序列号（不丢吊销状态）；
+//   - 两者都缺失 → 空列表（首次吊销）。
+func loadRevokedList(certDir string) (*revokedList, error) {
+	crlPEMPath, crlJSONPath := CRLPaths(certDir)
+	if b, err := os.ReadFile(crlJSONPath); err == nil {
+		var list revokedList
+		if err := json.Unmarshal(b, &list); err != nil {
+			return nil, fmt.Errorf("解析吊销列表记录 %s 失败（文件损坏？）: %w", crlJSONPath, err)
+		}
+		if err := validateRevokedList(&list); err != nil {
+			return nil, fmt.Errorf("吊销列表记录 %s 内容非法: %w", crlJSONPath, err)
+		}
+		return &list, nil
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("读取吊销列表记录 %s 失败: %w", crlJSONPath, err)
+	}
+
+	// crl.json 缺失：从 crl.pem 恢复（产物 → 记录），保证不丢已吊销序列号。
+	if b, err := os.ReadFile(crlPEMPath); err == nil {
+		rl, err := parseCRLPEM(b)
+		if err != nil {
+			return nil, fmt.Errorf("解析 CRL %s 失败（吊销记录 crl.json 缺失且 CRL 损坏，无法恢复已吊销序列号）: %w",
+				crlPEMPath, err)
+		}
+		return revokedListFromCRL(rl), nil
+	}
+	return &revokedList{}, nil
+}
+
+// validateRevokedList 校验吊销记录内容：序列号必须是小写十六进制且可解析。
+func validateRevokedList(l *revokedList) error {
+	for _, e := range l.Entries {
+		if e.Serial == "" {
+			return errors.New("存在空序列号记录")
+		}
+		if n, ok := new(big.Int).SetString(e.Serial, 16); !ok || n.Sign() <= 0 {
+			return fmt.Errorf("序列号 %q 不是合法的正整数十六进制", e.Serial)
+		}
+	}
+	return nil
+}
+
+// revokedListFromCRL 从解析后的 CRL 产物恢复吊销记录（crl.json 缺失时的恢复路径）。
+// Number 取 CRL 的 cRLNumber（最后一次生成的编号；下次吊销时 +1）。
+func revokedListFromCRL(rl *x509.RevocationList) *revokedList {
+	list := &revokedList{}
+	if rl.Number != nil {
+		list.Number = rl.Number.Int64()
+	}
+	for _, e := range rl.RevokedCertificateEntries {
+		if e.SerialNumber == nil {
+			continue
+		}
+		list.Entries = append(list.Entries, revokedEntry{
+			Serial: e.SerialNumber.Text(16),
+			Time:   e.RevocationTime.UTC().Format(time.RFC3339),
+		})
+	}
+	return list
+}
+
+// writeRevokedList 事务化落盘 crl.json（临时文件 + Rename，与轮换同一方案）。
+func writeRevokedList(certDir string, list *revokedList) error {
+	b, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化吊销列表记录失败: %w", err)
+	}
+	_, crlJSONPath := CRLPaths(certDir)
+	if err := writeFileAtomic(crlJSONPath, append(b, '\n'), 0o644); err != nil {
+		return fmt.Errorf("写入吊销列表记录 %s 失败: %w", crlJSONPath, err)
+	}
+	return nil
+}
+
+// ensureCRLArtifact 确保 crl.pem 产物与吊销记录一致：
+// crl.pem 缺失/损坏/序列号集合不一致 → 重新生成；已一致 → 不动（幂等）。
+func ensureCRLArtifact(ca *CA, certDir string, list *revokedList) error {
+	crlPEMPath, _ := CRLPaths(certDir)
+	if b, err := os.ReadFile(crlPEMPath); err == nil {
+		if rl, perr := parseCRLPEM(b); perr == nil && revokedSetEqual(rl, list) {
+			return nil // crl.pem 已与记录一致
+		}
+	}
+	return writeCRLArtifact(ca, certDir, list)
+}
+
+// revokedSetEqual 比较 CRL 产物的吊销序列号集合与记录是否一致（顺序无关）。
+func revokedSetEqual(rl *x509.RevocationList, list *revokedList) bool {
+	if len(rl.RevokedCertificateEntries) != len(list.Entries) {
+		return false
+	}
+	want := make(map[string]bool, len(list.Entries))
+	for _, e := range list.Entries {
+		want[e.Serial] = true
+	}
+	for _, e := range rl.RevokedCertificateEntries {
+		if e.SerialNumber == nil || !want[e.SerialNumber.Text(16)] {
+			return false
+		}
+	}
+	return true
+}
+
+// writeCRLArtifact 由吊销记录生成 CRL 并事务化落盘 crl.pem（PEM 编码，
+// 块类型 X509 CRL）。
+func writeCRLArtifact(ca *CA, certDir string, list *revokedList) error {
+	entries := make([]x509.RevocationListEntry, 0, len(list.Entries))
+	for _, e := range list.Entries {
+		serial, ok := new(big.Int).SetString(e.Serial, 16)
+		if !ok {
+			return fmt.Errorf("吊销列表含非法序列号 %q，无法生成 CRL", e.Serial)
+		}
+		t, err := time.Parse(time.RFC3339, e.Time)
+		if err != nil {
+			return fmt.Errorf("吊销列表序列号 %s 的吊销时间 %q 非法: %w", e.Serial, e.Time, err)
+		}
+		entries = append(entries, x509.RevocationListEntry{
+			SerialNumber:   serial,
+			RevocationTime: t,
+			// ReasonCode 零值（Unspecified）：吊销原因未指定
+		})
+	}
+	now := time.Now().UTC()
+	tmpl := &x509.RevocationList{
+		Number:                    big.NewInt(list.Number),
+		ThisUpdate:                now,
+		NextUpdate:                now.Add(crlValidity),
+		RevokedCertificateEntries: entries,
+	}
+	der, err := x509.CreateRevocationList(rand.Reader, tmpl, ca.Cert, ca.Key)
+	if err != nil {
+		return fmt.Errorf("生成 CRL 失败: %w", err)
+	}
+	pemData := pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: der})
+	crlPEMPath, _ := CRLPaths(certDir)
+	if err := writeFileAtomic(crlPEMPath, pemData, 0o644); err != nil {
+		return fmt.Errorf("写入 CRL %s 失败: %w", crlPEMPath, err)
+	}
+	return nil
+}
+
+// parseCRLPEM 解析 PEM 编码的 CRL（块类型 X509 CRL）。
+func parseCRLPEM(b []byte) (*x509.RevocationList, error) {
+	block, _ := pem.Decode(b)
+	if block == nil || block.Type != "X509 CRL" {
+		return nil, errors.New("不是合法的 PEM CRL（PEM 块类型应为 X509 CRL）")
+	}
+	rl, err := x509.ParseRevocationList(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("CRL 解析失败: %w", err)
+	}
+	return rl, nil
+}
+
+// writeFileAtomic 事务化写文件：同目录临时文件（CreateTemp 初始 0600）→
+// 写入 + 设置权限 → Rename 原子替换。任一步失败只清理临时文件，
+// 原文件保持原状（与轮换落盘同一方案）。
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("创建临时文件失败: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("写入临时文件失败: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("关闭临时文件失败: %w", err)
+	}
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		return fmt.Errorf("设置临时文件权限失败: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("替换文件失败: %w", err)
+	}
+	return nil
+}
+
 // LoadTLSConfig 加载 CA + 叶子证书并组装 tls.Config：
 //   - isServer=true（CloudHub 侧）：携带 cloudcore.crt/key，ClientCAs=CA 池，
 //     ClientAuth=RequireAndVerifyClientCert（强制要求并验证客户端证书，mTLS 核心）；
@@ -407,6 +772,9 @@ func rotateLeafCert(certDir, cn string, eku x509.ExtKeyUsage, certFile, keyFile 
 //     以 wss:// 拨号时自动校验收到的服务端证书。
 //
 // 两侧均强制 TLS1.2+（拒绝 TLS1.0/1.1 等已废弃协议）。
+// 两侧均附加对端证书吊销校验（WBS 7.1 CRL 消费端）：CRL 存在时按序列号
+// 校验对端叶子证书，被吊销则拒绝握手；CRL 缺失放行（无吊销环境兼容）；
+// CRL 损坏/签名无效 fail-closed 拒绝（防伪造绕过）。
 // 调用前需先 EnsureCA + EnsureServerCert/EnsureClientCert。
 func LoadTLSConfig(certDir string, isServer bool) (*tls.Config, error) {
 	ca, err := loadCA(certDir)
@@ -421,23 +789,53 @@ func LoadTLSConfig(certDir string, isServer bool) (*tls.Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("加载服务端证书失败: %w", err)
 		}
-		return &tls.Config{
+		cfg := &tls.Config{
 			Certificates: []tls.Certificate{*leaf},
 			ClientCAs:    pool,
 			ClientAuth:   tls.RequireAndVerifyClientCert,
 			MinVersion:   tls.VersionTLS12,
-		}, nil
+		}
+		withCRLPeerCheck(cfg, certDir)
+		return cfg, nil
 	}
 
 	leaf, err := EnsureClientCert(certDir, "edgeflow-edgecore")
 	if err != nil {
 		return nil, fmt.Errorf("加载客户端证书失败: %w", err)
 	}
-	return &tls.Config{
+	cfg := &tls.Config{
 		Certificates: []tls.Certificate{*leaf},
 		RootCAs:      pool,
 		MinVersion:   tls.VersionTLS12,
-	}, nil
+	}
+	withCRLPeerCheck(cfg, certDir)
+	return cfg, nil
+}
+
+// withCRLPeerCheck 附加对端证书吊销校验（WBS 7.1 CRL 消费端接线）：
+//
+//	在标准证书链验证之外，按本 CA 签发的 CRL 检查对端叶子证书序列号：
+//	  - 无 CRL 文件 → 放行（无吊销环境向后兼容）；
+//	  - CRL 存在且对端证书被吊销 → 拒绝握手；
+//	  - CRL 损坏/签名无效/CA 不可加载 → 拒绝（fail-closed，防伪造绕过）。
+func withCRLPeerCheck(cfg *tls.Config, certDir string) {
+	cfg.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		if len(rawCerts) == 0 {
+			return nil // 无对端证书（非 mTLS 请求方不会触发回调）
+		}
+		leaf, err := x509.ParseCertificate(rawCerts[0])
+		if err != nil {
+			return fmt.Errorf("解析对端证书失败: %w", err)
+		}
+		revoked, err := VerifyCertAgainstCRL(certDir, leaf)
+		if err != nil {
+			return fmt.Errorf("对端证书吊销状态校验失败（fail-closed）: %w", err)
+		}
+		if revoked {
+			return fmt.Errorf("对端证书已被吊销（serial=%x），拒绝握手", leaf.SerialNumber)
+		}
+		return nil
+	}
 }
 
 // loadCA 从磁盘加载并解析 CA（内部用，要求两文件都存在）。

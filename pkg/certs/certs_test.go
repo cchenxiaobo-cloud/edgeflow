@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"net"
@@ -672,5 +673,356 @@ func assertNoCertTempFiles(t *testing.T, dir string) {
 		if strings.Contains(e.Name(), ".tmp-") {
 			t.Errorf("临时文件未清理: %s", e.Name())
 		}
+	}
+}
+
+// loadParsedClientCert 加载并解析 edgecore.crt（测试辅助）。
+func loadParsedClientCert(t *testing.T, certDir string) *x509.Certificate {
+	t.Helper()
+	leaf, err := EnsureClientCert(certDir, "edgeflow-test-node")
+	if err != nil {
+		t.Fatalf("加载客户端证书失败: %v", err)
+	}
+	c, err := x509.ParseCertificate(leaf.Certificate[0])
+	if err != nil {
+		t.Fatalf("解析客户端证书失败: %v", err)
+	}
+	return c
+}
+
+// readCRLJSON 读取并解析 crl.json（测试辅助）。
+func readCRLJSON(t *testing.T, certDir string) *revokedList {
+	t.Helper()
+	_, crlJSON := CRLPaths(certDir)
+	b, err := os.ReadFile(crlJSON)
+	if err != nil {
+		t.Fatalf("读取 crl.json 失败: %v", err)
+	}
+	var list revokedList
+	if err := json.Unmarshal(b, &list); err != nil {
+		t.Fatalf("解析 crl.json 失败: %v", err)
+	}
+	return &list
+}
+
+// parseCRLFile 读取并解析 crl.pem（测试辅助）。
+func parseCRLFile(t *testing.T, certDir string) *x509.RevocationList {
+	t.Helper()
+	crlPEMPath, _ := CRLPaths(certDir)
+	b, err := os.ReadFile(crlPEMPath)
+	if err != nil {
+		t.Fatalf("读取 crl.pem 失败: %v", err)
+	}
+	rl, err := parseCRLPEM(b)
+	if err != nil {
+		t.Fatalf("解析 crl.pem 失败: %v", err)
+	}
+	return rl
+}
+
+// TestRevokeCert_Success 验证吊销成功路径：crl.json 记录序列号、crl.pem 产物
+// 生成且由 CA 签名、VerifyCertAgainstCRL 对被吊销证书返回 true、未吊销证书
+// 返回 false、无临时文件残留。
+func TestRevokeCert_Success(t *testing.T) {
+	certDir := newTempCertDir(t)
+	mustGenAll(t, certDir)
+	clientCert := loadParsedClientCert(t, certDir)
+
+	if err := RevokeCert(certDir, "edgeflow-test-node"); err != nil {
+		t.Fatalf("RevokeCert 失败: %v", err)
+	}
+	crlPEMPath, crlJSONPath := CRLPaths(certDir)
+	for _, p := range []string{crlPEMPath, crlJSONPath} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("吊销后缺少产物 %s: %v", p, err)
+		}
+	}
+
+	// crl.json 记录该序列号（且仅一条）。
+	list := readCRLJSON(t, certDir)
+	if len(list.Entries) != 1 || list.Entries[0].Serial != clientCert.SerialNumber.Text(16) {
+		t.Errorf("crl.json 记录异常: %+v（期望序列号 %s）", list.Entries, clientCert.SerialNumber.Text(16))
+	}
+	if list.Number != 1 {
+		t.Errorf("crl.json Number = %d，期望 1", list.Number)
+	}
+
+	// crl.pem 可解析、由本 CA 签发、含该序列号。
+	rl := parseCRLFile(t, certDir)
+	ca, err := loadCA(certDir)
+	if err != nil {
+		t.Fatalf("loadCA 失败: %v", err)
+	}
+	if err := rl.CheckSignatureFrom(ca.Cert); err != nil {
+		t.Errorf("CRL 签名校验失败: %v", err)
+	}
+	if len(rl.RevokedCertificateEntries) != 1 ||
+		rl.RevokedCertificateEntries[0].SerialNumber.Cmp(clientCert.SerialNumber) != 0 {
+		t.Errorf("CRL 条目异常: %+v", rl.RevokedCertificateEntries)
+	}
+	if rl.Number == nil || rl.Number.Int64() != 1 {
+		t.Errorf("CRL Number = %v，期望 1", rl.Number)
+	}
+
+	// 校验：被吊销证书被拒，未吊销证书通过。
+	revoked, err := VerifyCertAgainstCRL(certDir, clientCert)
+	if err != nil {
+		t.Fatalf("VerifyCertAgainstCRL(被吊销) 失败: %v", err)
+	}
+	if !revoked {
+		t.Error("被吊销证书应返回 true（被拒），实际 false")
+	}
+	server, err := EnsureServerCert(certDir, "cloudcore")
+	if err != nil {
+		t.Fatalf("加载服务端证书失败: %v", err)
+	}
+	serverCert, err := x509.ParseCertificate(server.Certificate[0])
+	if err != nil {
+		t.Fatalf("解析服务端证书失败: %v", err)
+	}
+	ok, err := VerifyCertAgainstCRL(certDir, serverCert)
+	if err != nil {
+		t.Fatalf("VerifyCertAgainstCRL(未吊销) 失败: %v", err)
+	}
+	if ok {
+		t.Error("未吊销证书应返回 false，实际 true")
+	}
+	assertNoCertTempFiles(t, certDir)
+}
+
+// TestRevokeCert_ServerCert 验证可吊销服务端证书（cloudcore.crt，CN=cloudcore）。
+func TestRevokeCert_ServerCert(t *testing.T) {
+	certDir := newTempCertDir(t)
+	mustGenAll(t, certDir)
+	server, err := EnsureServerCert(certDir, "cloudcore")
+	if err != nil {
+		t.Fatalf("加载服务端证书失败: %v", err)
+	}
+	serverCert, err := x509.ParseCertificate(server.Certificate[0])
+	if err != nil {
+		t.Fatalf("解析服务端证书失败: %v", err)
+	}
+
+	if err := RevokeCert(certDir, "cloudcore"); err != nil {
+		t.Fatalf("RevokeCert(cloudcore) 失败: %v", err)
+	}
+	revoked, err := VerifyCertAgainstCRL(certDir, serverCert)
+	if err != nil || !revoked {
+		t.Errorf("cloudcore 证书应被吊销: revoked=%v err=%v", revoked, err)
+	}
+}
+
+// TestRevokeCert_Idempotent 验证重复吊销幂等：不报错、序列号不重复、
+// crl.pem 不重复写入（二次吊销后产物字节不变）。
+func TestRevokeCert_Idempotent(t *testing.T) {
+	certDir := newTempCertDir(t)
+	mustGenAll(t, certDir)
+
+	if err := RevokeCert(certDir, "edgeflow-test-node"); err != nil {
+		t.Fatalf("首次吊销失败: %v", err)
+	}
+	crlPEMPath, _ := CRLPaths(certDir)
+	afterFirst, err := os.ReadFile(crlPEMPath)
+	if err != nil {
+		t.Fatalf("读取 crl.pem 失败: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond) // 确保 mtime/内容可区分
+
+	if err := RevokeCert(certDir, "edgeflow-test-node"); err != nil {
+		t.Fatalf("重复吊销应幂等成功，实际报错: %v", err)
+	}
+	list := readCRLJSON(t, certDir)
+	if len(list.Entries) != 1 {
+		t.Errorf("重复吊销后序列号应不重复（1 条），实际 %d 条: %+v", len(list.Entries), list.Entries)
+	}
+	afterSecond, err := os.ReadFile(crlPEMPath)
+	if err != nil {
+		t.Fatalf("读取 crl.pem 失败: %v", err)
+	}
+	if string(afterFirst) != string(afterSecond) {
+		t.Error("幂等吊销不应重写 crl.pem（产物已一致）")
+	}
+}
+
+// TestRevokeCert_UnknownCN 验证吊销不存在的 CN 返回明确错误（含节点提示）。
+func TestRevokeCert_UnknownCN(t *testing.T) {
+	certDir := newTempCertDir(t)
+	mustGenAll(t, certDir)
+	err := RevokeCert(certDir, "edgeflow-ghost-node")
+	if err == nil {
+		t.Fatal("吊销不存在的 CN 应报错，实际成功")
+	}
+	if !strings.Contains(err.Error(), "不存在") {
+		t.Errorf("错误应提示节点不存在: %v", err)
+	}
+	// 吊销失败不应产生任何吊销产物。
+	crlPEMPath, crlJSONPath := CRLPaths(certDir)
+	if _, err := os.Stat(crlPEMPath); !os.IsNotExist(err) {
+		t.Error("吊销失败不应生成 crl.pem")
+	}
+	if _, err := os.Stat(crlJSONPath); !os.IsNotExist(err) {
+		t.Error("吊销失败不应生成 crl.json")
+	}
+}
+
+// TestRevokeCert_MissingCA 验证 CA 缺失时报错且不自动创建 CA。
+func TestRevokeCert_MissingCA(t *testing.T) {
+	certDir := newTempCertDir(t)
+	if err := RevokeCert(certDir, "edgeflow-test-node"); err == nil {
+		t.Fatal("CA 缺失应报错，实际成功")
+	} else if !strings.Contains(err.Error(), "CA") {
+		t.Errorf("错误应提示 CA 问题: %v", err)
+	}
+	// 绝不自动创建 CA。
+	if _, err := os.Stat(filepath.Join(certDir, FileCACert)); !os.IsNotExist(err) {
+		t.Error("吊销不应自动创建 CA")
+	}
+}
+
+// TestVerifyCertAgainstCRL_NoCRL 验证 CRL 缺失视为无吊销（向后兼容）。
+func TestVerifyCertAgainstCRL_NoCRL(t *testing.T) {
+	certDir := newTempCertDir(t)
+	mustGenAll(t, certDir)
+	clientCert := loadParsedClientCert(t, certDir)
+	if _, err := os.Stat(filepath.Join(certDir, FileCRL)); !os.IsNotExist(err) {
+		t.Fatalf("测试前置：crl.pem 不应存在")
+	}
+	revoked, err := VerifyCertAgainstCRL(certDir, clientCert)
+	if err != nil {
+		t.Fatalf("CRL 缺失应返回 (false, nil)，实际报错: %v", err)
+	}
+	if revoked {
+		t.Error("CRL 缺失应视为无吊销（false），实际 true")
+	}
+}
+
+// TestVerifyCertAgainstCRL_CorruptCRL 验证 CRL 损坏时返回错误（含路径）而非 panic。
+func TestVerifyCertAgainstCRL_CorruptCRL(t *testing.T) {
+	certDir := newTempCertDir(t)
+	mustGenAll(t, certDir)
+	clientCert := loadParsedClientCert(t, certDir)
+	crlPEMPath, _ := CRLPaths(certDir)
+	if err := os.WriteFile(crlPEMPath, []byte("this is not a CRL\n"), 0o644); err != nil {
+		t.Fatalf("写入损坏 CRL 失败: %v", err)
+	}
+	if _, err := VerifyCertAgainstCRL(certDir, clientCert); err == nil {
+		t.Fatal("CRL 损坏应返回错误，实际 nil")
+	} else if !strings.Contains(err.Error(), crlPEMPath) {
+		t.Errorf("错误信息应含 CRL 路径: %v", err)
+	}
+}
+
+// TestRevokeCert_CorruptCRLNoJSON 验证 crl.json 与 crl.pem 都不可用时报错
+// （含路径），不静默清空吊销状态。
+func TestRevokeCert_CorruptCRLNoJSON(t *testing.T) {
+	certDir := newTempCertDir(t)
+	mustGenAll(t, certDir)
+	crlPEMPath, _ := CRLPaths(certDir)
+	if err := os.WriteFile(crlPEMPath, []byte("garbage\n"), 0o644); err != nil {
+		t.Fatalf("写入损坏 CRL 失败: %v", err)
+	}
+	err := RevokeCert(certDir, "edgeflow-test-node")
+	if err == nil {
+		t.Fatal("crl.json 缺失 + crl.pem 损坏应报错（无法恢复吊销状态），实际成功")
+	}
+	if !strings.Contains(err.Error(), crlPEMPath) {
+		t.Errorf("错误信息应含 CRL 路径: %v", err)
+	}
+}
+
+// TestRevokeCert_HealsMissingArtifact 验证自愈：吊销后删除 crl.pem，再次吊销
+// 同一证书（幂等路径）应重新生成 crl.pem 且吊销状态不丢。
+func TestRevokeCert_HealsMissingArtifact(t *testing.T) {
+	certDir := newTempCertDir(t)
+	mustGenAll(t, certDir)
+	clientCert := loadParsedClientCert(t, certDir)
+	if err := RevokeCert(certDir, "edgeflow-test-node"); err != nil {
+		t.Fatalf("首次吊销失败: %v", err)
+	}
+	crlPEMPath, _ := CRLPaths(certDir)
+	if err := os.Remove(crlPEMPath); err != nil {
+		t.Fatalf("删除 crl.pem 失败: %v", err)
+	}
+
+	// 幂等路径（序列号已在 crl.json）应自愈 crl.pem。
+	if err := RevokeCert(certDir, "edgeflow-test-node"); err != nil {
+		t.Fatalf("自愈吊销失败: %v", err)
+	}
+	revoked, err := VerifyCertAgainstCRL(certDir, clientCert)
+	if err != nil || !revoked {
+		t.Errorf("自愈后吊销状态应恢复: revoked=%v err=%v", revoked, err)
+	}
+}
+
+// TestRevokeCert_RecoversFromCRLPEM 验证 crl.json 缺失时从 crl.pem 恢复
+// 序列号（不丢已吊销状态）。
+func TestRevokeCert_RecoversFromCRLPEM(t *testing.T) {
+	certDir := newTempCertDir(t)
+	mustGenAll(t, certDir)
+	clientCert := loadParsedClientCert(t, certDir)
+	if err := RevokeCert(certDir, "edgeflow-test-node"); err != nil {
+		t.Fatalf("首次吊销失败: %v", err)
+	}
+	_, crlJSONPath := CRLPaths(certDir)
+	if err := os.Remove(crlJSONPath); err != nil {
+		t.Fatalf("删除 crl.json 失败: %v", err)
+	}
+
+	// 吊销另一个证书：应从 crl.pem 恢复原序列号，两个都在列表。
+	if err := RevokeCert(certDir, "cloudcore"); err != nil {
+		t.Fatalf("吊销 cloudcore 失败: %v", err)
+	}
+	list := readCRLJSON(t, certDir)
+	if len(list.Entries) != 2 {
+		t.Fatalf("恢复后应含 2 条记录，实际 %d: %+v", len(list.Entries), list.Entries)
+	}
+	wantSerial := clientCert.SerialNumber.Text(16)
+	found := false
+	for _, e := range list.Entries {
+		if e.Serial == wantSerial {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("crl.json 恢复后缺少原序列号 %s: %+v", wantSerial, list.Entries)
+	}
+	// 两个证书都被拒。
+	revoked, err := VerifyCertAgainstCRL(certDir, clientCert)
+	if err != nil || !revoked {
+		t.Errorf("恢复后原证书应仍被吊销: revoked=%v err=%v", revoked, err)
+	}
+}
+
+// TestVerifyCertAgainstCRL_WrongCA 验证伪造/错配 CA 签发的 CRL 被拒绝。
+func TestVerifyCertAgainstCRL_WrongCA(t *testing.T) {
+	certDir := newTempCertDir(t)
+	mustGenAll(t, certDir)
+	clientCert := loadParsedClientCert(t, certDir)
+
+	// 用另一把 CA 生成 CRL 覆盖 crl.pem（伪造场景）。
+	rogueDir := filepath.Join(t.TempDir(), "rogue")
+	rogueCA, err := EnsureCA(rogueDir)
+	if err != nil {
+		t.Fatalf("生成伪造 CA 失败: %v", err)
+	}
+	if err := writeCRLArtifact(rogueCA, certDir, &revokedList{
+		Entries: []revokedEntry{{Serial: clientCert.SerialNumber.Text(16), Time: time.Now().UTC().Format(time.RFC3339)}},
+		Number:  1,
+	}); err != nil {
+		t.Fatalf("写入伪造 CRL 失败: %v", err)
+	}
+	if _, err := VerifyCertAgainstCRL(certDir, clientCert); err == nil {
+		t.Fatal("非本 CA 签发的 CRL 应被拒绝，实际通过")
+	} else if !strings.Contains(err.Error(), "签名校验失败") {
+		t.Errorf("错误应提示签名校验失败: %v", err)
+	}
+}
+
+// TestVerifyCertAgainstCRL_NilCert 验证 nil 证书返回错误而非 panic。
+func TestVerifyCertAgainstCRL_NilCert(t *testing.T) {
+	certDir := newTempCertDir(t)
+	mustGenAll(t, certDir)
+	if _, err := VerifyCertAgainstCRL(certDir, nil); err == nil {
+		t.Fatal("nil 证书应返回错误，实际 nil")
 	}
 }

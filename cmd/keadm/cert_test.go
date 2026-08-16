@@ -330,3 +330,137 @@ func TestCertRotateRepeatNoGarbage(t *testing.T) {
 		t.Errorf("备份目录名不应重复: %v", dirs)
 	}
 }
+
+// TestCertRevokeSuccess 验证 keadm cert revoke 成功路径：退出码 0、
+// 输出含吊销序列号/CRL 路径/影响说明、吊销真实生效（VerifyCertAgainstCRL
+// 返回被拒）、无临时文件残留。
+func TestCertRevokeSuccess(t *testing.T) {
+	dir := setupCertDir(t, "edgeflow-test-node")
+	leaf, err := certs.EnsureClientCert(dir, "edgeflow-test-node")
+	if err != nil {
+		t.Fatalf("加载客户端证书失败: %v", err)
+	}
+	c, err := x509.ParseCertificate(leaf.Certificate[0])
+	if err != nil {
+		t.Fatalf("解析客户端证书失败: %v", err)
+	}
+	wantSerial := c.SerialNumber.Text(16)
+
+	code, stdout, stderr := runCapture([]string{
+		"cert", "revoke", "--node=edgeflow-test-node", "--cert-dir=" + dir,
+	}, "")
+	if code != 0 {
+		t.Fatalf("cert revoke 退出码 = %d，期望 0；stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "已加入吊销列表") {
+		t.Errorf("stdout 应含完成提示: %q", stdout)
+	}
+	if !strings.Contains(stdout, wantSerial) {
+		t.Errorf("stdout 应输出吊销序列号 %s: %q", wantSerial, stdout)
+	}
+	if !strings.Contains(stdout, filepath.Join(dir, certs.FileCRL)) {
+		t.Errorf("stdout 应输出 CRL 路径: %q", stdout)
+	}
+	if !strings.Contains(stdout, "重新签发") {
+		t.Errorf("stdout 应含影响说明（需重新签发）: %q", stdout)
+	}
+
+	// 吊销真实生效：证书被拒。
+	revoked, err := certs.VerifyCertAgainstCRL(dir, c)
+	if err != nil {
+		t.Fatalf("VerifyCertAgainstCRL 失败: %v", err)
+	}
+	if !revoked {
+		t.Error("revoke 后证书应被吊销（VerifyCertAgainstCRL=true），实际未吊销")
+	}
+	// 产物落盘。
+	for _, name := range []string{certs.FileCRL, certs.FileCRLJSON} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("revoke 后缺少产物 %s: %v", name, err)
+		}
+	}
+	assertNoCertTemp(t, dir)
+}
+
+// TestCertRevokeUsageErrors 验证用法错误：缺 --node、CN 含空白、未知 flag → exit 2。
+func TestCertRevokeUsageErrors(t *testing.T) {
+	dir := setupCertDir(t, "edgeflow-test-node")
+	cases := [][]string{
+		{"cert", "revoke", "--cert-dir=" + dir},                          // 缺 --node
+		{"cert", "revoke", "--node=edge a", "--cert-dir=" + dir},         // CN 含空格
+		{"cert", "revoke", "--node=x", "--cert-dir=" + dir, "--bogus=1"}, // 未知 flag
+	}
+	for i, args := range cases {
+		code, _, stderr := runCapture(args, "")
+		if code != 2 {
+			t.Errorf("用例 %d: 退出码 = %d，期望 2；stderr=%s", i, code, stderr)
+		}
+		if stderr == "" {
+			t.Errorf("用例 %d: stderr 应有错误提示", i)
+		}
+	}
+}
+
+// TestCertRevokeRuntimeErrors 验证运行时错误：证书目录不存在、节点不存在、
+// CA 缺失 → exit 1 且不产生吊销产物。
+func TestCertRevokeRuntimeErrors(t *testing.T) {
+	// 证书目录不存在。
+	missing := filepath.Join(t.TempDir(), "no-such-certs")
+	code, _, stderr := runCapture([]string{"cert", "revoke", "--node=edgeflow-x", "--cert-dir=" + missing}, "")
+	if code != 1 || !strings.Contains(stderr, "证书目录") {
+		t.Errorf("证书目录不存在应 exit=1 并提示: code=%d stderr=%q", code, stderr)
+	}
+
+	// 节点不存在：CN 不匹配。
+	dir := setupCertDir(t, "edgeflow-test-node")
+	code, _, stderr = runCapture([]string{"cert", "revoke", "--node=edgeflow-other", "--cert-dir=" + dir}, "")
+	if code != 1 || !strings.Contains(stderr, "不存在") {
+		t.Errorf("CN 不匹配应 exit=1 并提示节点不存在: code=%d stderr=%q", code, stderr)
+	}
+	// 失败不产生吊销产物。
+	for _, name := range []string{certs.FileCRL, certs.FileCRLJSON} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("吊销失败不应生成 %s", name)
+		}
+	}
+
+	// CA 缺失（移除 ca.key）：RevokeCert 拒绝（不自动创建 CA）。
+	dir2 := setupCertDir(t, "edgeflow-test-node")
+	if err := os.Remove(filepath.Join(dir2, certs.FileCAKey)); err != nil {
+		t.Fatalf("移除 CA 私钥失败: %v", err)
+	}
+	code, _, stderr = runCapture([]string{"cert", "revoke", "--node=edgeflow-test-node", "--cert-dir=" + dir2}, "")
+	if code != 1 || !strings.Contains(stderr, "CA") {
+		t.Errorf("CA 缺失应 exit=1 并提示 CA: code=%d stderr=%q", code, stderr)
+	}
+}
+
+// TestCertRevokeIdempotent 验证重复吊销幂等：两次都成功、序列号不重复。
+func TestCertRevokeIdempotent(t *testing.T) {
+	dir := setupCertDir(t, "edgeflow-test-node")
+	for i := 0; i < 2; i++ {
+		code, _, stderr := runCapture([]string{
+			"cert", "revoke", "--node=edgeflow-test-node", "--cert-dir=" + dir,
+		}, "")
+		if code != 0 {
+			t.Fatalf("第 %d 次 revoke 退出码 = %d，期望 0；stderr=%s", i+1, code, stderr)
+		}
+	}
+	// crl.json 只含 1 条序列号（幂等不重复）。
+	b, err := os.ReadFile(filepath.Join(dir, certs.FileCRLJSON))
+	if err != nil {
+		t.Fatalf("读取 crl.json 失败: %v", err)
+	}
+	var list struct {
+		Entries []struct {
+			Serial string `json:"serial"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(b, &list); err != nil {
+		t.Fatalf("解析 crl.json 失败: %v", err)
+	}
+	if len(list.Entries) != 1 {
+		t.Errorf("重复吊销后序列号应不重复（1 条），实际 %d 条: %+v", len(list.Entries), list.Entries)
+	}
+	assertNoCertTemp(t, dir)
+}

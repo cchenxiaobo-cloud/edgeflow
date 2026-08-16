@@ -1,18 +1,20 @@
 package contract
 
 // 本文件实现 API 兼容性契约的可执行测试（ROADMAP WBS 10.3「无兼容矩阵文档/
-// 测试（audit-m35 G4）」），共五组用例：
+// 测试（audit-m35 G4）」），共六组用例：
 //
 //  1. TestContractRoutesRegisteredAtRuntime —— 真实 cloudcore 子进程运行时探测：
 //     契约表每条 method+path 必须已注册（无 404/405）；
-//  2. TestContractRoutesNoExtraRoutesRegistered —— 源码反向断言：遍历
+//  2. TestContractProbePathsNotRegisteredAtRuntime —— 运行时反向探测：对一组
+//     保留前缀的未注册路径断言 404，作为「无契约外路由」的运行时补充断言；
+//  3. TestContractRoutesNoExtraRoutesRegistered —— 源码反向断言：遍历
 //     cmd/cloudcore/main.go 实际注册的路由表，不允许契约表之外的方法+路径组合
 //     （仅白名单内部路径：/healthz 无方法注册、/api/v1/ 前缀挂载）；
-//  3. TestDocAPISpecEndpointsMatchContract —— docs/API-SPEC.md §1.1 端点表
+//  4. TestDocAPISpecEndpointsMatchContract —— docs/API-SPEC.md §1.1 端点表
 //     与契约表逐行比对（method+path 一致）；
-//  4. TestDocCompatibilityEndpointsMatchContract —— docs/API-COMPATIBILITY.md §1
+//  5. TestDocCompatibilityEndpointsMatchContract —— docs/API-COMPATIBILITY.md §1
 //     REST 端点矩阵与契约表比对；
-//  5. TestDocCompatibilityMessageTypesMatchProtocol —— docs/API-COMPATIBILITY.md §2
+//  6. TestDocCompatibilityMessageTypesMatchProtocol —— docs/API-COMPATIBILITY.md §2
 //     消息类型矩阵与 protocol.Type 常量（契约表）双向比对。
 //
 // 运行方式：go test -race ./tests/contract/
@@ -21,8 +23,12 @@ package contract
 // run() 中，nodeAPI 处理器不可从本包导入（Go 禁止 import main 包），因此
 // 运行时探测采用与 tests/e2e 相同的「真实进程」约定：go build 编译
 // cmd/cloudcore 二进制并以子进程启动（--port + 环境变量覆盖），探测的是真实
-// 装配路径而非 mock。反向断言因 net/http 不暴露路由表，改为静态解析
-// main.go 的路由注册行（全仓 grep 确认 HandleFunc/Handle 调用点仅 main.go 一处）。
+// 装配路径而非 mock。反向断言因 net/http 不暴露路由表，改为两道互补防线：
+//   - 静态解析（组 3）：读 main.go 路由注册行（全仓 grep 确认
+//     HandleFunc/Handle 调用点仅 main.go 一处），定位精确到行号，但只认
+//     字面量注册，路由改为循环/变量注册时会漏报；
+//   - 运行时反向探测（组 2）：对保留前缀路径断言 404，直接探测真实 ServeMux
+//     装配结果，能捕获动态注册的契约外路由；代价是只能抽样探测，无法穷举。
 
 import (
 	"bufio"
@@ -68,6 +74,20 @@ var (
 	binDir    string // 编译产物目录
 	buildErr  error  // 构建失败原因
 )
+
+// TestMain 在全部测试结束后清理进程级构建目录 binDir（MkdirTemp 产物）。
+//
+// 不用 t.Cleanup 的原因：构建是进程级 sync.Once（首个使用二进制的测试触发），
+// 而 t.Cleanup 在单个测试结束时执行——首个测试结束即删除目录，会让后续测试的
+// exec.Command 找不到二进制（fork/exec: no such file or directory）。
+// TestMain 在 m.Run() 返回后才清理，生命周期与目录的创建范围严格一致。
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if binDir != "" {
+		_ = os.RemoveAll(binDir)
+	}
+	os.Exit(code)
+}
 
 // cloudcoreBinary 编译 cmd/cloudcore 二进制（进程级仅一次）。
 func cloudcoreBinary(t *testing.T) string {
@@ -298,6 +318,12 @@ func TestContractRoutesRegisteredAtRuntime(t *testing.T) {
 
 			// 判别 3：各端点按契约期望的精确状态码
 			switch {
+			case ep.Path == "/ocsp":
+				// OCSP 协议端点：空 body 为非法请求 → 400（协议要求 DER 请求体）
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Fatalf("%s %s 状态码 = %d，期望 400（空 body 为非法 OCSP 请求，body=%q）",
+						ep.Method, path, resp.StatusCode, bodyStr)
+				}
 			case ep.Path == "/healthz", ep.Path == "/metrics", !strings.Contains(ep.Path, "{nodeID}"):
 				// 无路径参数端点：200（列表端点空数据返回 200 空列表）
 				if resp.StatusCode != http.StatusOK {
@@ -439,6 +465,112 @@ func TestContractRoutesNoExtraRoutesRegistered(t *testing.T) {
 	}
 	if len(missing) > 0 {
 		t.Errorf("契约端点未在源码中找到注册 %d 条:\n%s", len(missing), strings.Join(missing, "\n"))
+	}
+}
+
+// ============================================================
+// 测试一补充：运行时反向探测（无契约外路由的运行时断言）
+// ============================================================
+
+// contractProbe 是一条运行时反向探测用例。探测路径必须位于「保留前缀」命名空间
+// （__probe__ 保留段），保证不可能与未来业务端点重名——若未来业务真的占用了
+// 保留段，探测会以 404 期望失败，提示该前缀已不再「保留」。
+//
+// wantJSON 声明 404 响应体的期望形态（与 TestContractRoutesRegisteredAtRuntime
+// 的 405/404 判别逻辑一致）：
+//   - false —— 404 + 非 JSON（net/http 默认 "404 page not found" 纯文本页）
+//     = 无任何模式命中，路径未注册；
+//   - true  —— 404 + JSON error 体 = 仅契约通配参数路由（{nodeID}）命中，
+//     处理器对未知实体返回 404；若该路径被字面/动态路由劫持（返回
+//     200/405/非 JSON），即为契约外路由信号。
+type contractProbe struct {
+	method   string
+	path     string
+	wantJSON bool
+	note     string
+}
+
+// contractProbePaths 是运行时反向探测的探测路径集合。
+//
+// 保留前缀约定：
+//   - 根级：healthz_probe（/healthz 为精确匹配，不命中该路径；与 /metrics 亦无交集）；
+//   - API 命名空间：__probe__ 保留段（双下划线前缀，与业务资源命名
+//     nodes/edgenodes/pods/devices 无交集）。
+var contractProbePaths = []contractProbe{
+	{method: "GET", path: "/healthz_probe", wantJSON: false,
+		note: "根级保留路径：/healthz 精确匹配不命中"},
+	{method: "GET", path: "/api/v1/__probe__", wantJSON: false,
+		note: "API 命名空间一级保留段"},
+	{method: "POST", path: "/api/v1/__probe__", wantJSON: false,
+		note: "方法变体：未注册路径的 POST 必须同为 404（405=路径存在但方法不符）"},
+	{method: "GET", path: "/api/v1/__probe__/nested", wantJSON: false,
+		note: "API 命名空间深层保留段"},
+	{method: "GET", path: "/api/v1/__probe__/pods", wantJSON: false,
+		note: "pods 子命名空间形态的保留首段（nodes 段被替换为保留段）"},
+	{method: "GET", path: "/api/v1/nodes/__probe__", wantJSON: true,
+		note: "仅契约通配 {nodeID} 命中 → 处理器 404+JSON（未知节点）"},
+	{method: "GET", path: "/api/v1/edgenodes/__probe__", wantJSON: true,
+		note: "仅契约通配 {nodeID} 命中 → 处理器 404+JSON"},
+	{method: "GET", path: "/api/v1/nodes/__probe__/pods", wantJSON: true,
+		note: "仅契约通配子路由命中 → 处理器 404+JSON"},
+	{method: "GET", path: "/api/v1/nodes/__probe__/devices", wantJSON: true,
+		note: "仅契约通配子路由命中 → 处理器 404+JSON"},
+}
+
+// TestContractProbePathsNotRegisteredAtRuntime（运行时反向探测）对一组明确的
+// 未注册/保留前缀路径发起真实请求，断言一律返回 404，作为「无契约外路由」的
+// 运行时补充断言。
+//
+// 背景：TestContractRoutesNoExtraRoutesRegistered 只解析 main.go 的字面
+// HandleFunc/Handle 调用，路由改为循环/变量注册时会漏报（动态注册的契约外
+// 路由不可见）。本测试探测真实 ServeMux 装配结果，动态注册的路由（尤其是
+// 挂在保留段上的字面路由）会在此暴露；两者并存，静态解析仍是第一道防线
+// （定位精确、零运行成本）。
+//
+// 404 语义与既有判别一致：
+//   - 404 + 非 JSON = 无任何模式命中（路径未注册，符合期望）；
+//   - 404 + JSON = 契约通配参数路由命中，处理器对未知实体返回 404（符合期望）；
+//   - 405 = 路径存在但方法未注册 → 契约外路由信号，直接失败；
+//   - 其他状态码（200/400/401/…）= 路径被契约外路由处理 → 直接失败。
+func TestContractProbePathsNotRegisteredAtRuntime(t *testing.T) {
+	proc := startCloudcore(t)
+
+	for _, probe := range contractProbePaths {
+		t.Run(probe.method+" "+probe.path, func(t *testing.T) {
+			req, err := http.NewRequest(probe.method, proc.base+probe.path, nil)
+			if err != nil {
+				t.Fatalf("构造请求失败: %v", err)
+			}
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				t.Fatalf("请求 %s %s 失败: %v", probe.method, probe.path, err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			bodyStr := strings.TrimSpace(string(body))
+
+			// 405 = 路径存在但方法未按契约注册（契约外路由信号）
+			if resp.StatusCode == http.StatusMethodNotAllowed {
+				t.Fatalf("探测路径以其他方法注册（契约外路由）: %s %s → 405",
+					probe.method, probe.path)
+			}
+			// 契约外路由（字面/动态注册）会返回非 404 状态码
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("探测路径状态码 = %d，期望 404（%s）; body=%q",
+					resp.StatusCode, probe.note, bodyStr)
+			}
+			// 404 形态判别（与运行时探测的判别一致）：
+			// 非 JSON = 路径未注册；JSON = 通配参数路由命中（处理器正常返回）
+			isJSON := strings.HasPrefix(bodyStr, "{")
+			if isJSON && !probe.wantJSON {
+				t.Fatalf("探测路径期望 404+非 JSON（路径未注册），实际返回 JSON 体: %s %s → body=%q",
+					probe.method, probe.path, bodyStr)
+			}
+			if !isJSON && probe.wantJSON {
+				t.Fatalf("探测路径期望 404+JSON（通配参数路由命中），实际返回非 JSON 体: %s %s → body=%q",
+					probe.method, probe.path, bodyStr)
+			}
+		})
 	}
 }
 

@@ -2,7 +2,7 @@
 // 「无兼容矩阵文档/测试（audit-m35 G4）」的可执行测试侧）。
 //
 // 本文件是契约的唯一事实源（source of truth）：
-//   - ContractEndpoints：cloudcore HTTP 端点契约（13 条），与
+//   - ContractEndpoints：cloudcore HTTP 端点契约（14 条），与
 //     cmd/cloudcore/main.go 的路由注册、docs/API-SPEC.md §1.1 端点总览、
 //     docs/API-COMPATIBILITY.md §1 REST API 端点矩阵逐行对应；
 //   - ContractMessageTypes：云边通道消息类型契约，直接引用
@@ -10,6 +10,7 @@
 //     契约违约在 CI 即刻暴露），与 docs/API-COMPATIBILITY.md §2 消息矩阵对应。
 //
 // 配套测试见 api_contract_test.go：运行时路由探测（真实 cloudcore 子进程）、
+// 运行时反向探测（保留前缀路径断言 404，无契约外路由的运行时补充断言）、
 // 源码反向断言（无契约外路由）、文档一致性比对。
 package contract
 
@@ -22,10 +23,12 @@ type Endpoint struct {
 	Note   string // 契约说明（与文档矩阵口径一致）
 }
 
-// ContractEndpoints 是 cloudcore HTTP 端点契约表（13 条）。
+// ContractEndpoints 是 cloudcore HTTP 端点契约表（14 条）。
 //
 // ⚠️ 路径以 cmd/cloudcore/main.go 实际注册为准（任务提示 podsync/pod-sync
 // 存在歧义：grep 确认代码与两份文档均为 /podsync，无连字符）。
+// ⚠️ /ocsp 是 OCSP 协议端点（RFC 6960，WBS 7.1）：请求/响应为 DER 编码，
+// 不挂 API Token 认证（响应自带 CA 签名），空 body 返回 400。
 var ContractEndpoints = []Endpoint{
 	{Method: "GET", Path: "/healthz", Note: "健康检查（探针）"},
 	{Method: "GET", Path: "/metrics", Note: "Prometheus 指标（WBS 10.1）"},
@@ -40,6 +43,7 @@ var ContractEndpoints = []Endpoint{
 	{Method: "POST", Path: "/api/v1/nodes/{nodeID}/podsync", Note: "可靠下发 Pod 配置（add/update/delete）"},
 	{Method: "POST", Path: "/api/v1/nodes/{nodeID}/config-sync", Note: "可靠下发 ConfigMap/Secret 配置"},
 	{Method: "POST", Path: "/api/v1/nodes/{nodeID}/device-command", Note: "下发设备指令（期望值）"},
+	{Method: "POST", Path: "/ocsp", Note: "OCSP 在线吊销查询（RFC 6960，DER 请求/响应）"},
 }
 
 // MessageType 描述一种云边通道消息类型契约。

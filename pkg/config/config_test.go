@@ -287,8 +287,8 @@ func TestLoadHubPortEnvOverride(t *testing.T) {
 	if cfg.HubPort != 10002 {
 		t.Errorf("HubPort = %d，期望 env 值 10002", cfg.HubPort)
 	}
-	if cfg.HubPortSource != SourceEnv {
-		t.Errorf("HubPort 来源 = %q，期望 %q", cfg.HubPortSource, SourceEnv)
+	if cfg.HubPortSource != SourceHubEnv {
+		t.Errorf("HubPort 来源 = %q，期望 %q", cfg.HubPortSource, SourceHubEnv)
 	}
 }
 

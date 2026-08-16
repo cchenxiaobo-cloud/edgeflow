@@ -54,6 +54,8 @@ const (
 	SourceFile PortSource = "配置文件"
 	// SourceEnv 表示端口来自环境变量 EDGEFLOW_CLOUDCORE_PORT。
 	SourceEnv PortSource = "环境变量 EDGEFLOW_CLOUDCORE_PORT"
+	// SourceHubEnv 表示 CloudHub 端口来自环境变量 EDGEFLOW_CLOUDCORE_HUB_PORT。
+	SourceHubEnv PortSource = "环境变量 EDGEFLOW_CLOUDCORE_HUB_PORT"
 	// SourceFlag 表示端口来自命令行 --port。
 	SourceFlag PortSource = "命令行 --port"
 )
@@ -184,7 +186,7 @@ func resolveHubPortFromEnv(cfg *Config) error {
 		return fmt.Errorf("环境变量 %s 的值 %q 超出端口范围 0-65535", HubPortEnvVar, v)
 	}
 	cfg.HubPort = p
-	cfg.HubPortSource = SourceEnv
+	cfg.HubPortSource = SourceHubEnv
 	return nil
 }
 

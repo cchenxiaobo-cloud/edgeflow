@@ -1,0 +1,6 @@
+{
+  "cloudAddr": "ws://127.0.0.1:10000",
+  "podReportInterval": "30s",
+  "deviceReportInterval": "30s",
+  "reconcileInterval": "5s"
+}

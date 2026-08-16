@@ -410,13 +410,36 @@ M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，�
 
 ### 7.1 现状（已实现，pkg/config + env）
 
-- 优先级模型（**命令行 > 环境变量 > 配置文件 > 默认值**）——cloudcore 端口示例（`--port` / `EDGEFLOW_CLOUDCORE_PORT` / `config/cloudcore.json` / 默认 8080；文件存在但解析失败**报错退出**）。
-- edgecore 配置全走环境变量（`EDGEFLOW_EDGECORE_*`）：`NODE_ID`、`CLOUD_ADDR`（默认 ws://127.0.0.1:10000）、`MQTT_ADDR`（默认 tcp://127.0.0.1:1883）、`DB_PATH`、`TLS`/`CERT_DIR`、`DEVICE_REPORT_INTERVAL`、`EDGEFLOW_EDGECORE_TOKEN` 等。
+- 优先级模型（**命令行 > 环境变量 > 配置文件 > 默认值**）——cloudcore 端口示例（`--port` / `EDGEFLOW_CLOUDCORE_PORT` / `config/cloudcore.json` / 默认 8080；文件存在但解析失败**报错退出**）；CloudHub 端口同构（`EDGEFLOW_CLOUDCORE_HUB_PORT` / 文件 `hubPort` / 默认 10000，0=随机端口，测试用）。
+- edgecore 配置链：环境变量 `EDGEFLOW_EDGECORE_*` > 配置文件 `config/edgecore.json`（`--config` 可覆盖，JSON 持续时间字段，见 §7.2）> 默认值：`NODE_ID`（默认主机名）、`CLOUD_ADDR`（默认 ws://127.0.0.1:10000）、`REPORT_INTERVAL`/`DEVICE_REPORT_INTERVAL`（默认 30s，1s~10min 校验）、`RECONCILE_INTERVAL`（默认 5s）；`MQTT_ADDR`、`DB_PATH`、`TLS`/`CERT_DIR`、`EDGEFLOW_EDGECORE_TOKEN` 仍仅走环境变量（敏感配置不入文件）。
 - 云端敏感配置走 env：`EDGEFLOW_CLOUDCORE_API_TOKEN`（API 认证）、`EDGEFLOW_CLOUDCORE_NODE_TOKEN`（设备/节点认证）、`EDGEFLOW_CLOUDCORE_TLS`/`CERT_DIR`/`TLS_SAN`（mTLS）、`EDGEFLOW_CLOUDCORE_NODE_SCAN_INTERVAL`/`NODE_TIMEOUT`（NodeController）。
 
-### 7.2 未实现项
+### 7.2 热重载（WBS 2.7，已实现，commit `2d0a903`）
 
-- 动态配置/热重载（WBS 2.7，SIGHUP）：**已实现**（commit `2d0a903`：SIGHUP 强制重载 + 60s mtime 轮询；cloudcore HTTP/healthz 端口热切换（绑定失败回滚旧监听）；edgecore 上报周期热生效，cloudAddr/nodeID/reconcileInterval 变更回写旧值需重启；fail-safe 保持旧配置）。
+**触发方式**（两者并存，理由：SIGHUP 给运维确定性、可即时生效；定时 mtime 检查覆盖无人值守场景——ConfigMap 重挂载、同步工具落盘——无需外部进程发信号）：
+
+- **SIGHUP 强制重载**：立即重读文件，不检查 mtime（文件未变则为 no-op）；
+- **60s 定时 mtime/size 检查**：文件变化即重载。
+
+**热生效范围与策略**（快照始终反映运行中真实配置，不撒谎）：
+
+| 组件 | 配置项 | 策略 |
+|---|---|---|
+| cloudcore | `port`（HTTP/healthz/API 监听） | **热切换监听**：先绑定新端口并 Serve，成功后才关闭旧监听；绑定失败（如端口被占）→ 本次重载整体拒绝、旧监听保持，已建立连接不受影响 |
+| cloudcore | `hubPort`（CloudHub WS 监听）、`compress`（压缩开关） | **需重启生效**：CloudHub 无运行期重建监听 API、压缩协商在连接注册时确定——警告并回写旧值 |
+| edgecore | `podReportInterval`、`deviceReportInterval` | **热生效**：上报循环每轮读最新快照，周期变更下一轮起生效（ticker 重置） |
+| edgecore | `cloudAddr`、`nodeID`、`reconcileInterval` | **需重启生效**：连接参数/节点身份/调谐周期在装配期固定——警告并回写旧值 |
+
+**fail-safe**：重载失败（JSON 解析错误、校验失败、端口绑定失败、文件被删/无权限）→ 保持旧配置继续运行，仅记录错误、不崩溃；失败后不重复报错（记住失败前 stat，文件再次变化或 SIGHUP 才重试）。
+
+**并发安全**：`pkg/config.Reloader` 以 `atomic.Pointer` 快照供读侧获取不可变配置，重载串行化（互斥锁）；重载期间并发读不阻塞、不 panic。
+
+**与优先级模型的关系**：重载重新执行完整优先级链（命令行/环境变量 > 配置文件 > 默认值），flag/env 覆盖在重载时保留——被 env/flag 覆盖的字段即使文件变了也不生效，语义与启动一致。
+
+**环境变量非法值特例**：edgecore 环境变量格式非法（如 `EDGEFLOW_EDGECORE_REPORT_INTERVAL=abc`）→ 警告并回落当前值，不崩溃（启动与重载同语义；cloudcore 文件非法在启动时 fail-fast、重载时 fail-safe）。
+
+### 7.3 未实现项
+
 - 下发到边缘的动态配置走 ConfigSync 消息（§4.3），不改配置文件。
 
 ---

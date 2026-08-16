@@ -55,8 +55,8 @@ type Reloader[T any] struct {
 	lastSize int64     // 上次成功 stat 的 size（mu 保护）
 	lastErr  error     // 最近一次重载失败原因（mu 保护）
 
-	stopCh chan struct{}
-	doneCh chan struct{}
+	stopCh  chan struct{}
+	doneCh  chan struct{}
 	started bool // 轮询循环是否已启动（mu 保护）
 }
 

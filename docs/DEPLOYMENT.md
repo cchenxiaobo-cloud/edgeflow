@@ -256,6 +256,11 @@ bash keadm-out/install.sh
 - **配置优先级**：命令行 `--port` > 环境变量 `EDGEFLOW_CLOUDCORE_PORT` > 配置文件 `config/cloudcore.json` > 默认值。
   容器内默认不内置配置文件，通过 Chart 的 `cloudcore.env` 透传环境变量即可完成端口等配置；
   需要更复杂配置时，可将配置文件以 ConfigMap 挂载并用 `--config` 覆盖（`extraEnv` 或 args 传入）。
+- **热重载**（WBS 2.7，cloudcore/edgecore 均支持）：修改配置文件后向进程发送 `SIGHUP` 立即生效，
+  或等待最长 60s 自动生效（mtime 变化检测）。热生效范围：cloudcore `port`（HTTP/healthz 监听热切换，
+  绑定失败自动回滚旧监听）、edgecore 上报周期（`podReportInterval`/`deviceReportInterval`）；
+  `hubPort`/`compress`（cloudcore）、`cloudAddr`/`nodeID`/`reconcileInterval`（edgecore）变更需重启生效
+  （重载时记录警告并保持旧值）。重载失败（JSON 错误/校验失败/端口被占）自动保持旧配置继续运行，不影响在线业务。
 - **mTLS**：CloudHub（10000 端口）启用 mTLS 后：
   - 证书可通过 `cloudcore.env` 启用（`EDGEFLOW_CLOUDCORE_TLS=on` + `EDGEFLOW_CLOUDCORE_CERT_DIR=/data/certs`，
     /data 已挂载可写 emptyDir，首次启动自动生成证书）；生产环境建议把证书预置为

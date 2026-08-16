@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"edgeflow/cloud/pkg/cloudhub"
+	"edgeflow/cloud/pkg/nodecontroller"
+	"edgeflow/cloud/pkg/registry"
 	"edgeflow/pkg/config"
 )
 
@@ -161,7 +163,7 @@ func TestRunPortInUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("占位监听失败: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	port := ln.Addr().(*net.TCPAddr).Port
 
 	var stdout, stderr bytes.Buffer
@@ -177,6 +179,23 @@ func TestServeHubPortInvalid(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run(nil, &stdout, &stderr); code != 1 {
 		t.Fatalf("run(hub 端口非法) 退出码 = %d，期望 1", code)
+	}
+}
+
+// TestServeHubStartError 验证 serve 的致命错误路径：CloudHub 启动失败
+// （监听失败）→ errCh 上报 → 尽力关闭全部服务 → 返回 1。
+func TestServeHubStartError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("监听失败: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	srv := &http.Server{Handler: http.NewServeMux()}
+	// 非法监听地址：cloudhub.Start 必然失败，命中 errCh 致命路径
+	hub := cloudhub.New("bad-address")
+	nc := nodecontroller.New(registry.New())
+	if code := serve(srv, ln, hub, nc); code != 1 {
+		t.Fatalf("serve(hub 启动失败) 退出码 = %d，期望 1", code)
 	}
 }
 
@@ -341,7 +360,7 @@ func TestApplyConfigReload(t *testing.T) {
 	srv := &http.Server{Handler: http.NewServeMux()}
 	go func() { _ = srv.Serve(ln) }()
 	hr := &httpReloader{srv: srv, ln: ln}
-	old := &config.Config{Port: oldPort, PortSource: config.SourceFile, HubPort: 10000, HubPortSource: config.SourceDefault}
+	old := &config.Config{Port: oldPort, PortSource: config.SourceFile, HubPort: 10000, HubPortSource: config.SourceDefault, Compress: true}
 
 	t.Run("hubPort 变更需重启：保持旧值不报错", func(t *testing.T) {
 		next := &config.Config{Port: oldPort, PortSource: config.SourceFile, HubPort: 20000, HubPortSource: config.SourceFile}
@@ -379,7 +398,7 @@ func TestApplyConfigReload(t *testing.T) {
 		if err != nil {
 			t.Fatalf("占位监听失败: %v", err)
 		}
-		defer busyLn.Close()
+		defer func() { _ = busyLn.Close() }()
 		busyPort := busyLn.Addr().(*net.TCPAddr).Port
 		before := hr.ln.Addr().(*net.TCPAddr).Port
 
@@ -389,6 +408,16 @@ func TestApplyConfigReload(t *testing.T) {
 		}
 		if got := hr.ln.Addr().(*net.TCPAddr).Port; got != before {
 			t.Errorf("拒绝重载后监听端口 = %d，应保持 %d", got, before)
+		}
+	})
+
+	t.Run("compress 变更需重启：回写旧值", func(t *testing.T) {
+		next := &config.Config{Port: hr.ln.Addr().(*net.TCPAddr).Port, PortSource: config.SourceFile, HubPort: 10000, HubPortSource: config.SourceDefault, Compress: false}
+		if err := applyConfigReload(old, next, hr); err != nil {
+			t.Fatalf("compress 变更不应报错: %v", err)
+		}
+		if next.Compress != true {
+			t.Error("compress 应回写旧值 true（压缩协商在连接注册时确定，需重启）")
 		}
 	})
 

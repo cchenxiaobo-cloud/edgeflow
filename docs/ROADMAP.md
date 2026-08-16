@@ -44,7 +44,7 @@
 | WBS 4 | 云边通信层 | 28 | WBS 1（协议定义在 WebSocket 通道之前，计划 §7.4 关键路径） | ✅ 完成（4.4 gzip 压缩 2026-08-15 完成、Protobuf 编码延后；4.5 实际在 M4 完成） |
 | WBS 5 | 设备映射器框架 | 22 | WBS 1（CRD）、WBS 2.2、WBS 3.5/3.6（⚠️ 数据流：DeviceTwin ← EventBus ← MetaManager） | 🟨 主体完成；5.2 OPC-UA 未做（Modbus 实际在 M4 完成）、5.3 控制器未做 |
 | WBS 6 | 应用管理 | 20 | WBS 3（⚠️ Edged/MetaManager 就绪后） | 🟨 主体完成；6.4 镜像漂移检测+重建完成（commit `a0a4344`）；6.5 调度/超卖未做（P2） |
-| WBS 7 | 安全与认证 | 18 | WBS 1；7.4 依赖 WBS 4.5（⚠️） | ✅ 7.1 证书管理（mTLS）+7.2 Token 认证+7.3 设备认证（2026-08-15 闭环）+7.4+7.5 审计台账完成；吊销（CRL/OCSP）未做 |
+| WBS 7 | 安全与认证 | 18 | WBS 1；7.4 依赖 WBS 4.5（⚠️） | ✅ 7.1 证书管理（mTLS）+7.2 Token 认证+7.3 设备认证（2026-08-15 闭环）+7.4+7.5 审计台账完成；吊销闭环完成（CRL 离线 + OCSP 在线，2026-08-16） |
 | WBS 8 | 测试与部署 | 30 | 随各模块并行；8.5 依赖 WBS 2 产物；8.6 依赖 WBS 4 协议（⚠️） | 🟨 8.1/8.2/8.3/8.5 完成（E2E 三用例 commit `a0a4344`）；8.4 压测基线完成（10 节点 100%，PERFORMANCE-BASELINE.md）；8.6 基础+升级回滚（实际在 M4） |
 | WBS 9 | 文档与示例 | 14 | WBS 1（可全程并行） | ✅ 9.2-9.5 完成；9.1 架构文档 2026-08-15 评审闭环并回写 |
 | WBS 10 | 审查补充项 | 24 | WBS 2/3（可观测性）、WBS 8.6（升级回滚，⚠️） | 🟨 10.1 可观测性完成、10.2 升级回滚+灰度分批（2026-08-15）、10.3 兼容矩阵完成（2026-08-15）+ 自动化契约测试（2026-08-16，tests/contract）、10.4 部分（SBOM+镜像扫描完成 2026-08-15；cosign 延后） |
@@ -95,7 +95,7 @@
 | 6.3 | 状态上报 | Pod 状态上报、健康检查 | 3 | 3.2（⚠️） | ✅ 完成（30s 周期上报 + Absent 终态保留 90s + 云端收敛，commits `707128f`/`bc58e40`） |
 | 6.4 | 边缘应用升级 | 滚动更新、回滚 | 4 | 6.1（⚠️） | ✅ 完成（健康自愈/重启 commit `47d9e21`；镜像漂移检测+重建 commit `a0a4344`，批大小 1 逐轮滚动；回滚经 re-deploy 语义覆盖） |
 | 6.5 | 资源管理 | 边缘调度、资源超卖 | 5 | 6.1（⚠️） | 🟨 部分：Replicas 补齐/收缩 ✅；**调度/资源超卖未实现**（audit-m02 §4 P2） |
-| 7.1 | 证书管理 | CA 初始化、签发、轮换 | 5 | 1.x | 🟨 部分：CA/签发/校验/幂等 ✅；**轮换自动化完成**（2026-08-15 keadm cert rotate，commit `2c877d4`）；吊销（CRL/OCSP）未实现（audit-m35 G9） |
+| 7.1 | 证书管理 | CA 初始化、签发、轮换 | 5 | 1.x | ✅ CA/签发/校验/幂等 ✅；轮换自动化（2026-08-15 keadm cert rotate）；吊销闭环完成（2026-08-16）：CRL（RevokeCert/VerifyCertAgainstCRL + mTLS 消费端 + keadm cert revoke [--node/--serial]）+ OCSP（/ocsp responder RFC 6960 + 客户端查询），健壮性补强（文件锁/对账自愈/幂等 CRL Number） |
 | 7.2 | RBAC | 角色/权限定义 | 3 | 1.4（⚠️） | ✅ 完成（Token 认证中间件+审计留痕，默认 off 向后兼容，commit `4c5b9c6`；完整 RBAC 角色模型为 P2） |
 | 7.3 | 设备认证 | 设备身份注册、Token 认证 | 4 | 5.x（⚠️） | ✅ 已实现（2026-08-15 闭环：Register 携带 token，云端 EDGEFLOW_CLOUDCORE_NODE_TOKEN 常数时间校验，commit `7f5b3d3`） |
 | 7.4 | 云边认证 | MTLS 握手、节点验证 | 3 | 7.1、4.5（⚠️） | ✅ 完成（双向强制 + peer CN 审计 + 拒绝路径，commit `0a7fcc2`） |
@@ -113,7 +113,7 @@
 | 9.5 | 示例与教程 | 设备接入、应用部署示例 | 4 | 5.x、6.x（⚠️） | ✅ 完成（examples/demo.sh DEMO PASS×3，REVIEWS.md §5） |
 | 10.1 | 可观测性基建 | 监控(Prometheus)、日志(Fluent Bit)、告警 | 10 | 2.9、3.8（⚠️ 职责需与 2.9/3.8 对齐） | ✅ 完成（/metrics 端点：nodes/pods/devices_total、http_requests_total、active_connections，Prometheus 文本格式，metrics 覆盖 96.6%，commit `4c5b9c6`；日志/告警为 P2） |
 | 10.2 | 边缘节点升级与回滚 | OTA 升级、灰度发布 | 6 | 8.6（⚠️） | ✅ 完成（备份模型 + ops-ledger + simulate-failure + 事务化 restore + 白名单；**灰度发布已实现** 2026-08-15：upgrade --batch-size/--pause-between，commit `2c877d4`） |
-| 10.3 | API 兼容性测试 | K8s API 版本兼容矩阵 | 4 | 2.x（⚠️） | ✅ 已完成：兼容矩阵文档（API-COMPATIBILITY.md，2026-08-15）+ 自动化契约测试（tests/contract：13 端点 + 10 消息类型双向断言 + 文档一致性，2026-08-16） |
+| 10.3 | API 兼容性测试 | K8s API 版本兼容矩阵 | 4 | 2.x（⚠️） | ✅ 已完成：兼容矩阵文档（API-COMPATIBILITY.md，2026-08-15）+ 自动化契约测试（tests/contract：13 REST 端点 + 10 消息类型双向断言 + 文档一致性 + 运行时反向探测，2026-08-16） |
 | 10.4 | 安全扫描与修复 | 镜像扫描、依赖漏洞 | 4 | 8.5（⚠️） | 🟨 部分：SBOM ✅（33 组件）+ 镜像漏洞扫描 ✅（2026-08-15 Trivy 0 漏洞）；cosign 签名延后（audit-m35 G10） |
 
 **合计**：374 人天（原始）→ 340（Vibe Coding 1.1×）→ 425（含 25% 缓冲，计划 §5.2/5.3）。
@@ -341,4 +341,8 @@
 | M1/M2 "kubectl get nodes/apply" 字面验收 | 验收口径 | 🔒 决策修订 | 无真实 K8s 接入，验收以 REST API 适配 + kind 真实集群路径（REAL-CLUSTER-GUIDE.md，kubectl apply + keadm init + Ready）双重达成 |
 | 7.1 证书吊销（CRL） | WBS 7.1 | ✅ 本次完成 | keadm cert revoke + RevokeCert/VerifyCertAgainstCRL（crl.json 记录 + crl.pem 签名产物，幂等/自愈，16 新用例；2026-08-16） |
 | 1.4 OpenAPI v3 schema | WBS 1.4 | ✅ 本次完成 | hack/openapi-gen 生成器（确定性）+ docs/openapi/edgeflow-openapi.yaml（17 schema）+ 一致性校验测试（2026-08-16） |
-| 10.3 API 兼容性契约测试 | WBS 10.3 | ✅ 本次完成 | tests/contract：13 REST 端点 + 10 消息类型双向断言 + API-SPEC/API-COMPATIBILITY 文档一致性（5 测试；2026-08-16） |
+| 10.3 API 兼容性契约测试 | WBS 10.3 | ✅ 本次完成 | tests/contract：13 REST 端点 + 10 消息类型双向断言 + API-SPEC/API-COMPATIBILITY 文档一致性 + 未注册路径运行时反向探测（6 测试；2026-08-16） |
+| 7.1 OCSP 在线吊销 | WBS 7.1 | ✅ 本次完成 | cloudcore /ocsp responder（RFC 6960，encoding/asn1 手写 ASN.1，零第三方依赖）+ 客户端 OCSPStatus 查询 + 验签/responderID/CertID 防伪造链（2026-08-16） |
+| 7.1 CRL 健壮性补强 | WBS 7.1 | ✅ 本次完成 | 并发文件锁（flock）、keadm cert revoke --serial 按序列号吊销、幂等重生成 CRL Number 递增、verify 侧 json↔pem 对账自愈、NextUpdate 过期策略、小写归一化、损坏组合测试（2026-08-16） |
+| 1.4 OpenAPI 语义锁定 | WBS 1.4 | ✅ 本次完成 | 独立 reflect 对照测试（type/format/required 逐字段断言）+ 空 json tag 回落字段名 + 产物零漂移验证（2026-08-16） |
+| 10.3 契约测试运行时探测 | WBS 10.3 | ✅ 本次完成 | 未注册路径运行时反向探测（/api/v1/__probe__ 等 404 断言）+ 临时目录清理 + 历史泄漏目录清除（2026-08-16） |

@@ -45,7 +45,8 @@ func main() {
 	out := flag.String("out", defaultOut, "output YAML file path")
 	flag.Parse()
 
-	doc := generate()
+	set := buildSchemas()
+	doc := renderDoc(set)
 	if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, "openapi-gen:", err)
 		os.Exit(1)
@@ -54,14 +55,16 @@ func main() {
 		fmt.Fprintln(os.Stderr, "openapi-gen:", err)
 		os.Exit(1)
 	}
-	set := buildSchemas()
 	fmt.Printf("openapi-gen: wrote %s (%d bytes, %d schemas)\n", *out, len(doc), len(set.order))
 }
 
 // generate 构建完整 OpenAPI 文档文本（含头部注释），是测试与产物共用的唯一入口。
 func generate() string {
-	set := buildSchemas()
+	return renderDoc(buildSchemas())
+}
 
+// renderDoc 将 schema 集合渲染为完整 OpenAPI 文档文本（含头部注释）。
+func renderDoc(set *schemaSet) string {
 	var schemas []yamlPair
 	for _, name := range resourceOrder {
 		schemas = append(schemas, yamlPair{name, set.byName[name]})
@@ -173,8 +176,16 @@ func (s *schemaSet) discover(t reflect.Type) {
 func (s *schemaSet) discoverFields(t reflect.Type) {
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
-		if f.PkgPath != "" { // 跳过未导出字段
-			continue
+		if f.PkgPath != "" {
+			// 未导出字段按 encoding/json 可见性规则：非内嵌一律忽略；
+			// 内嵌且类型未导出时仅 struct 参与（可能含导出字段），其余忽略。
+			pt := f.Type
+			for pt.Kind() == reflect.Ptr {
+				pt = pt.Elem()
+			}
+			if !f.Anonymous || pt.Kind() != reflect.Struct {
+				continue
+			}
 		}
 		tag := f.Tag.Get("json")
 		if tag == "-" {
@@ -205,23 +216,32 @@ func (s *schemaSet) fieldProps(t reflect.Type) (props []yamlPair, required []str
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 		if f.PkgPath != "" {
-			continue
+			// 未导出字段按 encoding/json 可见性规则：非内嵌一律忽略；
+			// 内嵌且类型未导出时仅 struct 参与（可能含导出字段），其余忽略。
+			pt := f.Type
+			for pt.Kind() == reflect.Ptr {
+				pt = pt.Elem()
+			}
+			if !f.Anonymous || pt.Kind() != reflect.Struct {
+				continue
+			}
 		}
 		tag := f.Tag.Get("json")
 		if tag == "-" {
 			continue
 		}
-		name, opts := parseJSONTag(tag)
+		name, opts := parseJSONTag(tag, f.Name)
 		et := f.Type
 		for et.Kind() == reflect.Ptr {
 			et = et.Elem()
 		}
-		if opts.inline || (f.Anonymous && name == "") {
-			if et.Kind() == reflect.Struct {
-				ip, ir := s.fieldProps(et)
-				props = append(props, ip...)
-				required = append(required, ir...)
-			}
+		// 内嵌展开判定基于原始 tag 名（无 tag 或空 tag 名的匿名 struct 字段），
+		// 与 encoding/json 语义一致；parseJSONTag 的字段名回落在判定之后生效。
+		// 命名字段 + json:",inline" 是生成器扩展（encoding/json 不支持该选项）。
+		if et.Kind() == reflect.Struct && (opts.inline || (f.Anonymous && tagName(tag) == "")) {
+			ip, ir := s.fieldProps(et)
+			props = append(props, ip...)
+			required = append(required, ir...)
 			continue
 		}
 		props = append(props, yamlPair{name, s.schemaOfType(f.Type)})
@@ -279,10 +299,13 @@ type tagOptions struct {
 	inline    bool
 }
 
-func parseJSONTag(tag string) (string, tagOptions) {
+func parseJSONTag(tag string, goName string) (string, tagOptions) {
 	var opts tagOptions
 	parts := strings.Split(tag, ",")
 	name := parts[0]
+	if name == "" {
+		name = goName
+	}
 	for _, p := range parts[1:] {
 		switch p {
 		case "omitempty":
@@ -292,6 +315,11 @@ func parseJSONTag(tag string) (string, tagOptions) {
 		}
 	}
 	return name, opts
+}
+
+// tagName 返回 json tag 的原始名称部分（不做字段名回落），供内嵌展开判定使用。
+func tagName(tag string) string {
+	return strings.Split(tag, ",")[0]
 }
 
 // ---------------------------------------------------------------------------

@@ -619,8 +619,9 @@ func TestOCSPStatusAt_ResponderVerifiesClientRequest(t *testing.T) {
 		t.Fatalf("非法请求应报 ErrMalformedOCSPRequest，实际: %v", err)
 	}
 }
-// （绕过 BuildOCSPResponse 的固定 responderID，用于 byKey/错误
-// responderID 等分支测试）。
+
+// buildSignedRespForTest 绕过 BuildOCSPResponse 的固定 responderID，
+// 构造由 ca 签名的 OCSPResponse（用于 byKey/错误 responderID 等分支测试）。
 func buildSignedRespForTest(t *testing.T, ca *CA, rd responseData) []byte {
 	t.Helper()
 	tbsDER, err := asn1.Marshal(rd)
@@ -648,4 +649,217 @@ func buildSignedRespForTest(t *testing.T, ca *CA, rd responseData) []byte {
 		t.Fatalf("编码 OCSPResponse 失败: %v", err)
 	}
 	return der
+}
+
+// ---- 新鲜度校验（M2：防重放绕过吊销）----
+
+// TestParseOCSPResponseWithFreshness_Good 新鲜响应（默认 7 天有效期）
+// 通过 fail-closed 默认策略。
+func TestParseOCSPResponseWithFreshness_Good(t *testing.T) {
+	certDir := newTempCertDir(t)
+	ca, leaf := mustOCSPEnv(t, certDir, "edgeflow-ocsp-a")
+	reqDER, err := OCSPRequestForCert(ca.Cert, leaf)
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
+	respDER, err := BuildOCSPResponse(ca, nil, reqDER, OCSPResponseOptions{})
+	if err != nil {
+		t.Fatalf("BuildOCSPResponse 失败: %v", err)
+	}
+	reqCID, err := ParseOCSPRequest(reqDER)
+	if err != nil {
+		t.Fatalf("ParseOCSPRequest 失败: %v", err)
+	}
+	status, revokedAt, err := ParseOCSPResponseWithFreshness(ca.Cert, respDER, reqCID, DefaultFreshnessPolicy())
+	if err != nil {
+		t.Fatalf("新鲜响应应通过校验，实际: %v", err)
+	}
+	if status != StatusGood || revokedAt != nil {
+		t.Errorf("状态 = %q/%v，期望 good/nil", status, revokedAt)
+	}
+}
+
+// TestParseOCSPResponseWithFreshness_Expired nextUpdate 已过 →
+// ErrOCSPResponseStale（fail-closed 拒绝，防重放绕过吊销）。
+func TestParseOCSPResponseWithFreshness_Expired(t *testing.T) {
+	certDir := newTempCertDir(t)
+	ca, leaf := mustOCSPEnv(t, certDir, "edgeflow-ocsp-a")
+	reqDER, err := OCSPRequestForCert(ca.Cert, leaf)
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
+	// 构造已过期响应：thisUpdate=-48h，nextUpdate=-24h
+	past := time.Now().Add(-48 * time.Hour)
+	respDER, err := BuildOCSPResponse(ca, nil, reqDER, OCSPResponseOptions{
+		ThisUpdate: past,
+		NextUpdate: past.Add(24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("BuildOCSPResponse 失败: %v", err)
+	}
+	reqCID, err := ParseOCSPRequest(reqDER)
+	if err != nil {
+		t.Fatalf("ParseOCSPRequest 失败: %v", err)
+	}
+	status, revokedAt, err := ParseOCSPResponseWithFreshness(ca.Cert, respDER, reqCID, DefaultFreshnessPolicy())
+	if err == nil {
+		t.Fatal("过期响应应被拒绝，实际无错误")
+	}
+	if !errors.Is(err, ErrOCSPResponseStale) {
+		t.Errorf("错误应包装 ErrOCSPResponseStale，实际: %v", err)
+	}
+	if !strings.Contains(err.Error(), "nextUpdate") {
+		t.Errorf("错误信息应含 nextUpdate: %v", err)
+	}
+	// 新鲜度失败仍返回已解析的状态（good），便于调用方决策
+	if status != StatusGood || revokedAt != nil {
+		t.Errorf("状态 = %q/%v，期望 good/nil", status, revokedAt)
+	}
+}
+
+// TestParseOCSPResponseWithFreshness_FutureProducedAt producedAt 在未来
+// （超过时钟偏差容忍）→ ErrOCSPResponseFutureTime（伪造/重放）。
+func TestParseOCSPResponseWithFreshness_FutureProducedAt(t *testing.T) {
+	certDir := newTempCertDir(t)
+	ca, leaf := mustOCSPEnv(t, certDir, "edgeflow-ocsp-a")
+	reqDER, err := OCSPRequestForCert(ca.Cert, leaf)
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
+	// producedAt = thisUpdate = now+1h（超过默认 5 分钟时钟偏差容忍）
+	future := time.Now().Add(time.Hour)
+	respDER, err := BuildOCSPResponse(ca, nil, reqDER, OCSPResponseOptions{ThisUpdate: future})
+	if err != nil {
+		t.Fatalf("BuildOCSPResponse 失败: %v", err)
+	}
+	reqCID, err := ParseOCSPRequest(reqDER)
+	if err != nil {
+		t.Fatalf("ParseOCSPRequest 失败: %v", err)
+	}
+	if _, _, err := ParseOCSPResponseWithFreshness(ca.Cert, respDER, reqCID, DefaultFreshnessPolicy()); err == nil {
+		t.Fatal("未来 producedAt 应被拒绝，实际无错误")
+	} else if !errors.Is(err, ErrOCSPResponseFutureTime) {
+		t.Errorf("错误应包装 ErrOCSPResponseFutureTime，实际: %v", err)
+	}
+}
+
+// TestParseOCSPResponseWithFreshness_ZeroPolicyBackwardCompat 零值策略
+// （CheckFreshness=false）= 旧行为：过期响应不报错（ParseOCSPResponse /
+// ParseOCSPResponseWithFreshness 零值策略均放行），保持旧签名兼容。
+func TestParseOCSPResponseWithFreshness_ZeroPolicyBackwardCompat(t *testing.T) {
+	certDir := newTempCertDir(t)
+	ca, leaf := mustOCSPEnv(t, certDir, "edgeflow-ocsp-a")
+	reqDER, err := OCSPRequestForCert(ca.Cert, leaf)
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
+	past := time.Now().Add(-48 * time.Hour)
+	respDER, err := BuildOCSPResponse(ca, nil, reqDER, OCSPResponseOptions{
+		ThisUpdate: past,
+		NextUpdate: past.Add(24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("BuildOCSPResponse 失败: %v", err)
+	}
+	reqCID, err := ParseOCSPRequest(reqDER)
+	if err != nil {
+		t.Fatalf("ParseOCSPRequest 失败: %v", err)
+	}
+	// 旧入口：不校验新鲜度 → 放行
+	if status, _, err := ParseOCSPResponse(ca.Cert, respDER, reqCID); err != nil || status != StatusGood {
+		t.Errorf("旧入口应放行过期响应（旧行为），实际 status=%q err=%v", status, err)
+	}
+	// 新入口 + 零值策略：同样不校验（兼容）
+	if status, _, err := ParseOCSPResponseWithFreshness(ca.Cert, respDER, reqCID, FreshnessPolicy{}); err != nil || status != StatusGood {
+		t.Errorf("零值策略应放行过期响应，实际 status=%q err=%v", status, err)
+	}
+}
+
+// TestOCSPStatusAtWithPolicy_StaleRejected 客户端全闭环：responder 返回
+// 过期响应 → OCSPStatusAtWithPolicy（默认策略）报 ErrOCSPResponseStale；
+// 旧入口 OCSPStatusAt 不校验新鲜度仍返回 good（旧签名兼容）。
+func TestOCSPStatusAtWithPolicy_StaleRejected(t *testing.T) {
+	certDir := newTempCertDir(t)
+	_, leaf := mustOCSPEnv(t, certDir, "edgeflow-ocsp-a")
+
+	// responder：固定返回已过期响应
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := make([]byte, 4096)
+		n, _ := r.Body.Read(body)
+		if _, err := ParseOCSPRequest(body[:n]); err != nil {
+			http.Error(w, "malformed ocsp request", http.StatusBadRequest)
+			return
+		}
+		caSrv, err := LoadCA(certDir)
+		if err != nil {
+			http.Error(w, "CA unavailable", http.StatusInternalServerError)
+			return
+		}
+		past := time.Now().Add(-48 * time.Hour)
+		respDER, err := BuildOCSPResponse(caSrv, nil, body[:n], OCSPResponseOptions{
+			ThisUpdate: past,
+			NextUpdate: past.Add(24 * time.Hour),
+		})
+		if err != nil {
+			http.Error(w, "build failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/ocsp-response")
+		_, _ = w.Write(respDER)
+	}))
+	defer srv.Close()
+
+	// 新入口 + fail-closed 默认策略 → 过期拒绝
+	if _, _, err := OCSPStatusAtWithPolicy(certDir, leaf, srv.URL, DefaultFreshnessPolicy()); err == nil {
+		t.Fatal("OCSPStatusAtWithPolicy 应拒绝过期响应，实际无错误")
+	} else if !errors.Is(err, ErrOCSPResponseStale) {
+		t.Errorf("错误应包装 ErrOCSPResponseStale，实际: %v", err)
+	}
+	// 旧入口 → 不校验新鲜度，仍返回 good（旧签名兼容）
+	if status, _, err := OCSPStatusAt(certDir, leaf, srv.URL); err != nil || status != StatusGood {
+		t.Errorf("旧入口应放行过期响应，实际 status=%q err=%v", status, err)
+	}
+	// 新入口 + 零值策略 → 同样放行（策略兼容）
+	if status, _, err := OCSPStatusAtWithPolicy(certDir, leaf, srv.URL, FreshnessPolicy{}); err != nil || status != StatusGood {
+		t.Errorf("零值策略应放行过期响应，实际 status=%q err=%v", status, err)
+	}
+}
+
+// TestParseOCSPResponseWithFreshness_StaleRevoked 过期但状态=revoked：
+// 新鲜度失败仍返回 revoked + 吊销时间（吊销不可逆，调用方可自行决策），
+// 但错误仍非 nil（默认 fail-closed）。
+func TestParseOCSPResponseWithFreshness_StaleRevoked(t *testing.T) {
+	certDir := newTempCertDir(t)
+	ca, leaf := mustOCSPEnv(t, certDir, "edgeflow-ocsp-a")
+	cn := "edgeflow-ocsp-a"
+	if err := RevokeCert(certDir, cn); err != nil {
+		t.Fatalf("RevokeCert 失败: %v", err)
+	}
+	revoked, err := LoadRevokedList(certDir)
+	if err != nil {
+		t.Fatalf("LoadRevokedList 失败: %v", err)
+	}
+	reqDER, err := OCSPRequestForCert(ca.Cert, leaf)
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
+	past := time.Now().Add(-48 * time.Hour)
+	respDER, err := BuildOCSPResponse(ca, revoked, reqDER, OCSPResponseOptions{
+		ThisUpdate: past,
+		NextUpdate: past.Add(24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("BuildOCSPResponse 失败: %v", err)
+	}
+	reqCID, err := ParseOCSPRequest(reqDER)
+	if err != nil {
+		t.Fatalf("ParseOCSPRequest 失败: %v", err)
+	}
+	status, revokedAt, err := ParseOCSPResponseWithFreshness(ca.Cert, respDER, reqCID, DefaultFreshnessPolicy())
+	if !errors.Is(err, ErrOCSPResponseStale) {
+		t.Fatalf("过期响应应报 ErrOCSPResponseStale，实际: %v", err)
+	}
+	if status != StatusRevoked || revokedAt == nil {
+		t.Errorf("过期 revoked 响应应返回 revoked + 吊销时间，实际 %q/%v", status, revokedAt)
+	}
 }

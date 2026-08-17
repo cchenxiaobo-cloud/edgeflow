@@ -12,7 +12,10 @@
 //     与 CRL 吊销状态天然一致；
 //   - ParseOCSPResponse：客户端校验（responseStatus、CA 验签、
 //     responderID、CertID 匹配），返回 good/revoked/unknown + 吊销时间；
-//   - OCSPStatus / OCSPStatusAt：客户端一键查询（默认本机 cloudcore /ocsp）。
+//   - OCSPStatus / OCSPStatusAt：客户端一键查询（默认本机 cloudcore /ocsp），
+//     旧签名保持不校验新鲜度（向后兼容）；需要 fail-closed 新鲜度校验
+//     （防过期响应重放绕过吊销，M2）用 OCSPStatusAtWithPolicy /
+//     ParseOCSPResponseWithFreshness。
 //
 // ASN.1 要点（RFC 6960 Appendix B 模块声明 IMPLICIT TAGS）：
 //   - responderID 用 byName [1]：**发送端按 EXPLICIT 编码**（内容 = 完整
@@ -62,11 +65,22 @@ const (
 	maxOCSPResponseBytes = 64 << 10
 	// ocspHTTPTimeout 是客户端 HTTP 查询超时。
 	ocspHTTPTimeout = 5 * time.Second
+	// defaultOCSPClockSkew 是新鲜度校验的默认时钟偏差容忍
+	// （responder 与客户端时钟差，零值策略时生效）。
+	defaultOCSPClockSkew = 5 * time.Minute
 )
 
 // ErrMalformedOCSPRequest 表示请求 DER 无法解析为合法 OCSPRequest
 // （responder 端点据此映射 HTTP 400）。
 var ErrMalformedOCSPRequest = errors.New("malformed OCSP request")
+
+// ErrOCSPResponseStale 表示 OCSP 响应的 nextUpdate 早于当前时间
+// （响应过期，吊销状态可能已变化；fail-closed 拒绝，防重放绕过吊销）。
+var ErrOCSPResponseStale = errors.New("OCSP 响应已过期（nextUpdate 早于当前时间）")
+
+// ErrOCSPResponseFutureTime 表示 OCSP 响应的 producedAt/thisUpdate
+// 晚于当前时间（超过时钟偏差容忍；可能是伪造或时钟回拨重放）。
+var ErrOCSPResponseFutureTime = errors.New("OCSP 响应时间字段晚于当前时间（伪造/重放？）")
 
 // RFC 6960 涉及的 OID。
 var (
@@ -166,11 +180,11 @@ type singleResponse struct {
 //	    responses          SEQUENCE OF SingleResponse,
 //	    responseExtensions [1] EXPLICIT Extensions OPTIONAL }
 type responseData struct {
-	Version            int              `asn1:"explicit,tag:0,default:0,optional"`
+	Version            int `asn1:"explicit,tag:0,default:0,optional"`
 	ResponderID        asn1.RawValue
-	ProducedAt         time.Time        `asn1:"generalized"`
+	ProducedAt         time.Time `asn1:"generalized"`
 	Responses          []singleResponse
-	ResponseExtensions asn1.RawValue    `asn1:"explicit,tag:1,optional"`
+	ResponseExtensions asn1.RawValue `asn1:"explicit,tag:1,optional"`
 }
 
 // basicOCSPResponse 对应 BasicOCSPResponse。TBSResponseData 用 RawValue
@@ -427,6 +441,113 @@ func BuildOCSPResponse(ca *CA, revoked []RevokedCert, reqDER []byte, opts OCSPRe
 	return der, nil
 }
 
+// ocspResponseDetail 是 ParseOCSPResponse 内部解析的完整结果
+// （含时间字段，供新鲜度校验消费）。
+type ocspResponseDetail struct {
+	status     string
+	revokedAt  *time.Time
+	producedAt time.Time
+	thisUpdate time.Time
+	nextUpdate time.Time
+}
+
+// parseOCSPResponseDetail 解析并验证 OCSP 响应，返回完整拆解（含时间字段）；
+// 验证链与 ParseOCSPResponse 完全一致。
+func parseOCSPResponseDetail(ca *x509.Certificate, respDER []byte, reqCertID *CertID) (*ocspResponseDetail, error) {
+	if ca == nil {
+		return nil, errors.New("ParseOCSPResponse: ca 为 nil")
+	}
+	if reqCertID == nil {
+		return nil, errors.New("ParseOCSPResponse: reqCertID 为 nil")
+	}
+	var resp ocspResponse
+	if rest, err := asn1.Unmarshal(respDER, &resp); err != nil {
+		return nil, fmt.Errorf("解析 OCSPResponse 失败: %w", err)
+	} else if len(rest) != 0 {
+		return nil, errors.New("OCSPResponse 存在尾部多余数据")
+	}
+	if resp.ResponseStatus != 0 {
+		return nil, fmt.Errorf("OCSP 响应状态非 successful: %s",
+			ocspStatusName(int(resp.ResponseStatus)))
+	}
+	if !resp.ResponseBytes.ResponseType.Equal(oidOCSPBasic) {
+		return nil, fmt.Errorf("不支持的 OCSP 响应类型 %v（仅支持 id-pkix-ocsp-basic）",
+			resp.ResponseBytes.ResponseType)
+	}
+	var basic basicOCSPResponse
+	if rest, err := asn1.Unmarshal(resp.ResponseBytes.Response, &basic); err != nil {
+		return nil, fmt.Errorf("解析 BasicOCSPResponse 失败: %w", err)
+	} else if len(rest) != 0 {
+		return nil, errors.New("BasicOCSPResponse 存在尾部多余数据")
+	}
+	if !basic.SignatureAlgorithm.Algorithm.Equal(oidSHA256WithRSA) {
+		return nil, fmt.Errorf("OCSP 响应签名算法 %v 不受支持（仅支持 sha256WithRSAEncryption）",
+			basic.SignatureAlgorithm.Algorithm)
+	}
+	// 验签（防伪造/篡改）：签名覆盖 ResponseData 的完整 TLV。
+	digest := sha256.Sum256(basic.TBSResponseData.FullBytes)
+	pub, ok := ca.PublicKey.(*rsa.PublicKey)
+	if !ok {
+		return nil, errors.New("CA 公钥不是 RSA 类型，无法验签 OCSP 响应")
+	}
+	if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, digest[:], basic.Signature.Bytes); err != nil {
+		return nil, fmt.Errorf("OCSP 响应签名验证失败（响应被篡改或非本 CA 签发）: %w", err)
+	}
+
+	// 解析 ResponseData 语义字段 + responderID 一致性校验。
+	var rd responseData
+	if _, err := asn1.Unmarshal(basic.TBSResponseData.FullBytes, &rd); err != nil {
+		return nil, fmt.Errorf("解析 ResponseData 失败: %w", err)
+	}
+	if err := verifyResponderID(rd.ResponderID, ca); err != nil {
+		return nil, err
+	}
+
+	// 找与请求 CertID 匹配的 SingleResponse（RFC 允许单响应含多条）。
+	d := &ocspResponseDetail{producedAt: rd.ProducedAt}
+	for i := range rd.Responses {
+		sr := &rd.Responses[i]
+		if !certIDEqual(&sr.CertID, reqCertID) {
+			continue
+		}
+		d.thisUpdate = sr.ThisUpdate
+		d.nextUpdate = sr.NextUpdate
+		switch sr.CertStatus.Tag {
+		case 0: // good [0] IMPLICIT NULL
+			d.status = StatusGood
+			return d, nil
+		case 1: // revoked [1] IMPLICIT RevokedInfo
+			content, err := unwrapSequenceContent(sr.CertStatus.Bytes)
+			if err != nil {
+				return nil, fmt.Errorf("解析 RevokedInfo 失败: %w", err)
+			}
+			seq, err := asn1.Marshal(asn1.RawValue{
+				Class:      asn1.ClassUniversal,
+				Tag:        asn1.TagSequence,
+				IsCompound: true,
+				Bytes:      content,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("解析 RevokedInfo 失败: %w", err)
+			}
+			var ri revokedInfo
+			if _, err := asn1.Unmarshal(seq, &ri); err != nil {
+				return nil, fmt.Errorf("解析 RevokedInfo 失败: %w", err)
+			}
+			t := ri.RevocationTime
+			d.status = StatusRevoked
+			d.revokedAt = &t
+			return d, nil
+		case 2: // unknown [2] IMPLICIT UnknownInfo
+			d.status = StatusUnknown
+			return d, nil
+		default:
+			return nil, fmt.Errorf("未知 CertStatus 标签 %d", sr.CertStatus.Tag)
+		}
+	}
+	return nil, errors.New("OCSP 响应中不存在与请求 CertID 匹配的 SingleResponse")
+}
+
 // ParseOCSPResponse 是客户端校验入口：解析并验证 OCSP 响应，返回证书
 // 状态（StatusGood / StatusRevoked / StatusUnknown）与吊销时间（仅
 // revoked 时非 nil）。
@@ -439,93 +560,82 @@ func BuildOCSPResponse(ca *CA, revoked []RevokedCert, reqDER []byte, opts OCSPRe
 //  4. responderID（byName/byKey）必须匹配 ca（防 CA 混淆）；
 //  5. 响应中的 SingleResponse.CertID 必须与 reqCertID 一致（防串响应）。
 //
-// producedAt / nextUpdate 的新鲜度由调用方按需校验（本函数不强制）。
+// producedAt / thisUpdate / nextUpdate 的新鲜度本函数不校验（向后兼容
+// 旧行为）；需要 fail-closed 新鲜度校验用 ParseOCSPResponseWithFreshness。
 func ParseOCSPResponse(ca *x509.Certificate, respDER []byte, reqCertID *CertID) (string, *time.Time, error) {
-	if ca == nil {
-		return "", nil, errors.New("ParseOCSPResponse: ca 为 nil")
-	}
-	if reqCertID == nil {
-		return "", nil, errors.New("ParseOCSPResponse: reqCertID 为 nil")
-	}
-	var resp ocspResponse
-	if rest, err := asn1.Unmarshal(respDER, &resp); err != nil {
-		return "", nil, fmt.Errorf("解析 OCSPResponse 失败: %w", err)
-	} else if len(rest) != 0 {
-		return "", nil, errors.New("OCSPResponse 存在尾部多余数据")
-	}
-	if resp.ResponseStatus != 0 {
-		return "", nil, fmt.Errorf("OCSP 响应状态非 successful: %s",
-			ocspStatusName(int(resp.ResponseStatus)))
-	}
-	if !resp.ResponseBytes.ResponseType.Equal(oidOCSPBasic) {
-		return "", nil, fmt.Errorf("不支持的 OCSP 响应类型 %v（仅支持 id-pkix-ocsp-basic）",
-			resp.ResponseBytes.ResponseType)
-	}
-	var basic basicOCSPResponse
-	if rest, err := asn1.Unmarshal(resp.ResponseBytes.Response, &basic); err != nil {
-		return "", nil, fmt.Errorf("解析 BasicOCSPResponse 失败: %w", err)
-	} else if len(rest) != 0 {
-		return "", nil, errors.New("BasicOCSPResponse 存在尾部多余数据")
-	}
-	if !basic.SignatureAlgorithm.Algorithm.Equal(oidSHA256WithRSA) {
-		return "", nil, fmt.Errorf("OCSP 响应签名算法 %v 不受支持（仅支持 sha256WithRSAEncryption）",
-			basic.SignatureAlgorithm.Algorithm)
-	}
-	// 验签（防伪造/篡改）：签名覆盖 ResponseData 的完整 TLV。
-	digest := sha256.Sum256(basic.TBSResponseData.FullBytes)
-	pub, ok := ca.PublicKey.(*rsa.PublicKey)
-	if !ok {
-		return "", nil, errors.New("CA 公钥不是 RSA 类型，无法验签 OCSP 响应")
-	}
-	if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, digest[:], basic.Signature.Bytes); err != nil {
-		return "", nil, fmt.Errorf("OCSP 响应签名验证失败（响应被篡改或非本 CA 签发）: %w", err)
-	}
-
-	// 解析 ResponseData 语义字段 + responderID 一致性校验。
-	var rd responseData
-	if _, err := asn1.Unmarshal(basic.TBSResponseData.FullBytes, &rd); err != nil {
-		return "", nil, fmt.Errorf("解析 ResponseData 失败: %w", err)
-	}
-	if err := verifyResponderID(rd.ResponderID, ca); err != nil {
+	d, err := parseOCSPResponseDetail(ca, respDER, reqCertID)
+	if err != nil {
 		return "", nil, err
 	}
+	return d.status, d.revokedAt, nil
+}
 
-	// 找与请求 CertID 匹配的 SingleResponse（RFC 允许单响应含多条）。
-	for i := range rd.Responses {
-		sr := &rd.Responses[i]
-		if !certIDEqual(&sr.CertID, reqCertID) {
-			continue
-		}
-		switch sr.CertStatus.Tag {
-		case 0: // good [0] IMPLICIT NULL
-			return StatusGood, nil, nil
-		case 1: // revoked [1] IMPLICIT RevokedInfo
-			content, err := unwrapSequenceContent(sr.CertStatus.Bytes)
-			if err != nil {
-				return "", nil, fmt.Errorf("解析 RevokedInfo 失败: %w", err)
-			}
-			seq, err := asn1.Marshal(asn1.RawValue{
-				Class:      asn1.ClassUniversal,
-				Tag:        asn1.TagSequence,
-				IsCompound: true,
-				Bytes:      content,
-			})
-			if err != nil {
-				return "", nil, fmt.Errorf("解析 RevokedInfo 失败: %w", err)
-			}
-			var ri revokedInfo
-			if _, err := asn1.Unmarshal(seq, &ri); err != nil {
-				return "", nil, fmt.Errorf("解析 RevokedInfo 失败: %w", err)
-			}
-			t := ri.RevocationTime
-			return StatusRevoked, &t, nil
-		case 2: // unknown [2] IMPLICIT UnknownInfo
-			return StatusUnknown, nil, nil
-		default:
-			return "", nil, fmt.Errorf("未知 CertStatus 标签 %d", sr.CertStatus.Tag)
+// FreshnessPolicy 控制 OCSP 响应新鲜度校验（M2：防重放绕过吊销）。
+// 零值 = 不校验（与 ParseOCSPResponse / OCSPStatusAt 的旧行为一致）。
+type FreshnessPolicy struct {
+	// CheckFreshness 为 true 时启用时间字段校验（fail-closed：
+	// 过期/未来时间均拒绝），见 ParseOCSPResponseWithFreshness。
+	CheckFreshness bool
+	// ClockSkew 是容忍的时钟偏差（responder 与客户端时钟差）；
+	// 零值 → 默认 5 分钟（defaultOCSPClockSkew）。
+	ClockSkew time.Duration
+}
+
+// clockSkew 返回生效的时钟偏差容忍（零值回退默认）。
+func (p FreshnessPolicy) clockSkew() time.Duration {
+	if p.ClockSkew > 0 {
+		return p.ClockSkew
+	}
+	return defaultOCSPClockSkew
+}
+
+// DefaultFreshnessPolicy 返回 fail-closed 的默认新鲜度策略
+// （校验开启 + 5 分钟时钟偏差容忍）。
+func DefaultFreshnessPolicy() FreshnessPolicy {
+	return FreshnessPolicy{CheckFreshness: true, ClockSkew: defaultOCSPClockSkew}
+}
+
+// ParseOCSPResponseWithFreshness 同 ParseOCSPResponse，并额外按 policy
+// 校验响应新鲜度（M2：防重放绕过吊销）：
+//   - nextUpdate 早于当前时间（超过时钟偏差容忍）→ ErrOCSPResponseStale
+//     （fail-closed 拒绝：无法确认当前吊销状态）；
+//   - producedAt / thisUpdate 晚于当前时间（超过时钟偏差容忍）→
+//     ErrOCSPResponseFutureTime（伪造未来时间/重放）。
+//
+// 新鲜度失败时返回已解析的 status/revokedAt 与错误（吊销不可逆：
+// 调用方可按 status=revoked 自行决策，默认按错误拒绝即 fail-closed）。
+func ParseOCSPResponseWithFreshness(ca *x509.Certificate, respDER []byte, reqCertID *CertID, policy FreshnessPolicy) (string, *time.Time, error) {
+	d, err := parseOCSPResponseDetail(ca, respDER, reqCertID)
+	if err != nil {
+		return "", nil, err
+	}
+	if policy.CheckFreshness {
+		if err := checkOCSPFreshness(d, time.Now().UTC(), policy.clockSkew()); err != nil {
+			return d.status, d.revokedAt, err
 		}
 	}
-	return "", nil, errors.New("OCSP 响应中不存在与请求 CertID 匹配的 SingleResponse")
+	return d.status, d.revokedAt, nil
+}
+
+// checkOCSPFreshness 校验已解析响应的新鲜度（fail-closed）：
+//   - nextUpdate 早于 now-skew → ErrOCSPResponseStale（过期，吊销状态
+//     可能已变化，不能用于放行）；
+//   - producedAt / thisUpdate 晚于 now+skew → ErrOCSPResponseFutureTime
+//     （未来时间 = 伪造/重放信号）。
+//
+// 时间字段零值（未携带）跳过对应校验：nextUpdate 为可选字段，缺失时
+// 不做过期判定（RFC 6960 允许省略）。
+func checkOCSPFreshness(d *ocspResponseDetail, now time.Time, skew time.Duration) error {
+	if !d.producedAt.IsZero() && d.producedAt.After(now.Add(skew)) {
+		return fmt.Errorf("%w: producedAt=%s", ErrOCSPResponseFutureTime, d.producedAt.UTC().Format(time.RFC3339))
+	}
+	if !d.thisUpdate.IsZero() && d.thisUpdate.After(now.Add(skew)) {
+		return fmt.Errorf("%w: thisUpdate=%s", ErrOCSPResponseFutureTime, d.thisUpdate.UTC().Format(time.RFC3339))
+	}
+	if !d.nextUpdate.IsZero() && d.nextUpdate.Before(now.Add(-skew)) {
+		return fmt.Errorf("%w: nextUpdate=%s", ErrOCSPResponseStale, d.nextUpdate.UTC().Format(time.RFC3339))
+	}
+	return nil
 }
 
 // LoadCA 严格加载 CA（证书 + 私钥均须存在且配对；不自动创建）。
@@ -560,7 +670,25 @@ func OCSPStatus(certDir string, leaf *x509.Certificate) (string, *time.Time, err
 // OCSPStatusAt 同 OCSPStatus，但 responder 地址可配置（测试/跨主机部署）。
 // 校验语义与 ParseOCSPResponse 一致：响应必须由 certDir 中的 CA 签名、
 // CertID 必须匹配，否则返回错误（防伪造/串响应）。
+//
+// 兼容性：本入口不校验响应新鲜度（与旧行为一致）。需要 fail-closed
+// 新鲜度校验（防过期响应重放绕过吊销，M2）用 OCSPStatusAtWithPolicy。
 func OCSPStatusAt(certDir string, leaf *x509.Certificate, responderURL string) (string, *time.Time, error) {
+	return ocspStatusAtWithPolicy(certDir, leaf, responderURL, FreshnessPolicy{})
+}
+
+// OCSPStatusAtWithPolicy 同 OCSPStatusAt，但支持新鲜度校验策略
+// （policy.CheckFreshness = true 时按 FreshnessPolicy 校验响应时间字段：
+// nextUpdate 过期 → 拒绝，producedAt/thisUpdate 未来 → 拒绝）。
+// 用 DefaultFreshnessPolicy() 获得 fail-closed 默认策略。
+func OCSPStatusAtWithPolicy(certDir string, leaf *x509.Certificate, responderURL string, policy FreshnessPolicy) (string, *time.Time, error) {
+	return ocspStatusAtWithPolicy(certDir, leaf, responderURL, policy)
+}
+
+// ocspStatusAtWithPolicy 是 OCSPStatusAt / OCSPStatusAtWithPolicy 的公共实现。
+// policy.CheckFreshness = true 时走 ParseOCSPResponseWithFreshness（fail-closed
+// 新鲜度校验）；零值策略走 ParseOCSPResponse（旧行为，不校验）。
+func ocspStatusAtWithPolicy(certDir string, leaf *x509.Certificate, responderURL string, policy FreshnessPolicy) (string, *time.Time, error) {
 	if leaf == nil {
 		return "", nil, errors.New("OCSPStatusAt: leaf 为 nil")
 	}
@@ -594,6 +722,9 @@ func OCSPStatusAt(certDir string, leaf *x509.Certificate, responderURL string) (
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", nil, fmt.Errorf("OCSP responder 返回 HTTP %d", resp.StatusCode)
+	}
+	if policy.CheckFreshness {
+		return ParseOCSPResponseWithFreshness(ca.Cert, body, cid, policy)
 	}
 	return ParseOCSPResponse(ca.Cert, body, cid)
 }

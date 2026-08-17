@@ -41,8 +41,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
+
+	"edgeflow/pkg/log"
 )
 
 // 证书目录与文件名约定（与装配层、hack/gen-certs.sh 保持一致，勿单独修改）。
@@ -561,6 +564,29 @@ func unlockCRLFile(f *os.File) {
 	_ = f.Close()
 }
 
+// crlLockDegradedWarnInterval 是锁失败降级 Warn 日志的最小间隔
+// （避免每条握手刷屏；降级本身不改变校验功能语义）。
+const crlLockDegradedWarnInterval = 5 * time.Minute
+
+// crlLockDegradedWarn 是锁失败降级日志的限频状态（首次 + 每 5 分钟最多一条）。
+var (
+	crlLockDegradedWarnMu   sync.Mutex
+	crlLockDegradedWarnLast time.Time
+)
+
+// warnCRLLockDegraded 记录吊销锁获取失败导致的无锁降级（限频 Warn 日志，
+// 经 pkg/log 输出到 stderr）。日志含原因（err）与影响（吊销即时性降级：
+// crl.json 领先 crl.pem 时无法即时重生成）；校验功能语义不变。
+func warnCRLLockDegraded(err error) {
+	crlLockDegradedWarnMu.Lock()
+	defer crlLockDegradedWarnMu.Unlock()
+	if time.Since(crlLockDegradedWarnLast) < crlLockDegradedWarnInterval {
+		return
+	}
+	crlLockDegradedWarnLast = time.Now()
+	log.Warnf("CRL 吊销校验降级为无锁路径：获取吊销锁失败（原因: %v；影响: crl.json 领先 crl.pem 时吊销无法即时生效，校验功能本身不受影响）", err)
+}
+
 // VerifyCertAgainstCRL 校验证书是否在吊销列表（WBS 7.1）：
 //
 //	吊销 → (true, nil)；未吊销 → (false, nil)。
@@ -609,6 +635,7 @@ func VerifyCertAgainstCRLWithPolicy(certDir string, cert *x509.Certificate, opts
 		// 无法取得锁（如只读目录无法创建 crl.lock）：降级为无锁校验。
 		// 只读目录不存在并发写者，无锁对账/校验是安全的；对账失败
 		// （如 json 领先但无法重生成）→ fail-closed 返回错误。
+		warnCRLLockDegraded(err)
 		if err := reconcileCRLForVerify(certDir); err != nil {
 			return false, err
 		}

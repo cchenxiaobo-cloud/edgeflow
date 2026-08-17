@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -46,6 +48,41 @@ func newOCSPServer(t *testing.T, certDir string) *httptest.Server {
 	return srv
 }
 
+// newOCSPServerWithLimiter 同 newOCSPServer，但可注入自定义限流器
+// （测试限流行为用；nil 时与生产一致按默认参数惰性初始化）。
+func newOCSPServerWithLimiter(t *testing.T, certDir string, limiter *ocspRateLimiter) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /ocsp", (&ocspHandler{certDir: certDir, limiter: limiter}).ServeHTTP)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// newTestClockLimiter 构造带注入时钟的限流器（测试可确定性地推进时间，
+// 无需 sleep）；rate/burst 不经过默认值归一化，允许 rate=0（永不补充）。
+func newTestClockLimiter(rate float64, burst, maxIPs int) (*ocspRateLimiter, func(time.Duration)) {
+	var mu sync.Mutex
+	clock := time.Now()
+	limiter := &ocspRateLimiter{
+		buckets: make(map[string]*ocspBucket),
+		rate:    rate,
+		burst:   burst,
+		maxIPs:  maxIPs,
+		now: func() time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			return clock
+		},
+	}
+	advance := func(d time.Duration) {
+		mu.Lock()
+		clock = clock.Add(d)
+		mu.Unlock()
+	}
+	return limiter, advance
+}
+
 // postOCSP 向 responder 的 /ocsp 端点发送一次 OCSP 查询，返回响应（helper）。
 func postOCSP(t *testing.T, baseURL string, reqDER []byte) *http.Response {
 	t.Helper()
@@ -71,7 +108,7 @@ func TestOCSPEndpoint_GoodAndRevoked(t *testing.T) {
 		t.Fatalf("ParseOCSPRequest 失败: %v", err)
 	}
 
-	// good：200 + application/ocsp-response + 可解析
+	// good：200 + application/ocsp-response + Cache-Control + 可解析
 	resp := postOCSP(t, srv.URL, reqDER)
 	body, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
@@ -83,6 +120,9 @@ func TestOCSPEndpoint_GoodAndRevoked(t *testing.T) {
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "application/ocsp-response" {
 		t.Errorf("Content-Type = %q，期望 application/ocsp-response", ct)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "max-age="+strconv.Itoa(ocspCacheMaxAge) {
+		t.Errorf("Cache-Control = %q，期望 max-age=%d", cc, ocspCacheMaxAge)
 	}
 	status, revokedAt, err := certs.ParseOCSPResponse(ca.Cert, body, reqCID)
 	if err != nil {
@@ -209,4 +249,151 @@ func TestOCSPEndpoint_RouteRegistered(t *testing.T) {
 		t.Errorf("status = %d，期望 400", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
+}
+
+// TestOCSPEndpoint_RateLimitExceeded 限流生效：rate=0（永不补充令牌）、
+// burst=1 → 首次请求 200、第二次起 429。验证 429 在多次请求内持续。
+func TestOCSPEndpoint_RateLimitExceeded(t *testing.T) {
+	certDir, _, ca, leaf := newOCSPTestEnv(t)
+	reqDER, err := certs.OCSPRequestForCert(ca.Cert, leaf)
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
+	// rate=0：令牌永不补充。burst=1：首次消费 1 个令牌，后续均为 0 → 429。
+	limiter := &ocspRateLimiter{
+		buckets: make(map[string]*ocspBucket),
+		rate:    0,
+		burst:   1,
+		maxIPs:  100,
+	}
+	srv := newOCSPServerWithLimiter(t, certDir, limiter)
+
+	// 1st → 200
+	resp := postOCSP(t, srv.URL, reqDER)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("首次 status = %d，期望 200", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	// 2nd, 3rd → 429
+	for i := 2; i <= 3; i++ {
+		r := postOCSP(t, srv.URL, reqDER)
+		if r.StatusCode != http.StatusTooManyRequests {
+			t.Errorf("第 %d 次 status = %d，期望 429", i, r.StatusCode)
+		}
+		_ = r.Body.Close()
+	}
+}
+
+// TestOCSPEndpoint_RateLimitRecover 限流恢复放行：注入时钟，推进时间后
+// 令牌补充恢复放行。全程无 sleep，测试确定性强。
+func TestOCSPEndpoint_RateLimitRecover(t *testing.T) {
+	certDir, _, ca, leaf := newOCSPTestEnv(t)
+	reqDER, err := certs.OCSPRequestForCert(ca.Cert, leaf)
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
+	// rate=0.5/s（1 令牌需 2 秒），burst=1：首次消费后 0；时钟推进 4s
+	// 后补充 2 令牌（cap 1）→ 放行。
+	limiter, advance := newTestClockLimiter(0.5, 1, 100)
+	srv := newOCSPServerWithLimiter(t, certDir, limiter)
+
+	resp := postOCSP(t, srv.URL, reqDER)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("首次 status = %d，期望 200", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	resp = postOCSP(t, srv.URL, reqDER)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("恢复前 status = %d，期望 429", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	advance(4 * time.Second) // 补充 0.5×4=2 令牌，cap=1
+
+	resp = postOCSP(t, srv.URL, reqDER)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("恢复后 status = %d，期望 200", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}
+
+// TestOCSPRateLimiter_PerIPIndependent 不同 IP 独立计数：
+// 1.1.1.1 耗尽后 2.2.2.2 仍可放行。
+func TestOCSPRateLimiter_PerIPIndependent(t *testing.T) {
+	rl := &ocspRateLimiter{buckets: make(map[string]*ocspBucket), rate: 0, burst: 1, maxIPs: 100}
+	if !rl.allow("1.1.1.1") {
+		t.Error("1.1.1.1 首次应放行")
+	}
+	if rl.allow("1.1.1.1") {
+		t.Error("1.1.1.1 二次应拒绝")
+	}
+	if !rl.allow("2.2.2.2") {
+		t.Error("2.2.2.2 首次应放行（独立计数）")
+	}
+}
+
+// TestOCSPRateLimiter_BoundedMapEvictsOldest map 有界淘汰：
+// maxIPs=2，填满 2 IP 后加入第 3 个 → 最旧的被淘汰，总数仍 ≤ 2；
+// 被淘汰的 IP 再次请求时获得新桶（满令牌）。
+func TestOCSPRateLimiter_BoundedMapEvictsOldest(t *testing.T) {
+	rl, advance := newTestClockLimiter(0, 1, 2)
+	if !rl.allow("1.1.1.1") {
+		t.Fatal("1.1.1.1 首次应放行")
+	}
+	advance(time.Second) // 确保 1.1.1.1 的 lastRef 早于后续
+	if !rl.allow("2.2.2.2") {
+		t.Fatal("2.2.2.2 首次应放行")
+	}
+	advance(time.Second)
+	// 1.1.1.1 lastRef 最旧 → 被淘汰
+	if !rl.allow("3.3.3.3") {
+		t.Fatal("3.3.3.3 首次应放行")
+	}
+	rl.mu.Lock()
+	if len(rl.buckets) > 2 {
+		t.Errorf("buckets 数量 = %d，应 ≤ 2", len(rl.buckets))
+	}
+	if _, ok := rl.buckets["1.1.1.1"]; ok {
+		t.Error("1.1.1.1 应已被淘汰")
+	}
+	rl.mu.Unlock()
+	// 被淘汰后 1.1.1.1 重新请求 → 新桶，满令牌放行
+	if !rl.allow("1.1.1.1") {
+		t.Error("1.1.1.1 淘汰后再次请求应获新桶放行")
+	}
+}
+
+// TestOCSPRateLimitConfig 环境变量解析：默认值、合法覆盖、非法回退。
+func TestOCSPRateLimitConfig(t *testing.T) {
+	// 默认
+	t.Setenv("EDGEFLOW_CLOUDCORE_OCSP_RATE_LIMIT", "")
+	rate, burst := ocspRateLimitConfig()
+	if rate != defaultOCSPRatePerSec {
+		t.Errorf("默认 rate = %v，期望 %d", rate, defaultOCSPRatePerSec)
+	}
+	if burst != defaultOCSPBurst {
+		t.Errorf("默认 burst = %d，期望 %d", burst, defaultOCSPBurst)
+	}
+	// 合法覆盖
+	t.Setenv("EDGEFLOW_CLOUDCORE_OCSP_RATE_LIMIT", "5")
+	rate, burst = ocspRateLimitConfig()
+	if rate != 5 {
+		t.Errorf("rate = %v，期望 5", rate)
+	}
+	if burst != 10 { // 2×rate
+		t.Errorf("burst = %d，期望 10", burst)
+	}
+	// 非法 → 回退默认
+	t.Setenv("EDGEFLOW_CLOUDCORE_OCSP_RATE_LIMIT", "abc")
+	rate, _ = ocspRateLimitConfig()
+	if rate != defaultOCSPRatePerSec {
+		t.Errorf("非法值 rate = %v，期望默认 %d", rate, defaultOCSPRatePerSec)
+	}
+	// 零/负值 → 回退默认
+	t.Setenv("EDGEFLOW_CLOUDCORE_OCSP_RATE_LIMIT", "0")
+	rate, _ = ocspRateLimitConfig()
+	if rate != defaultOCSPRatePerSec {
+		t.Errorf("零值 rate = %v，期望默认 %d", rate, defaultOCSPRatePerSec)
+	}
 }

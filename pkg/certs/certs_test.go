@@ -1,12 +1,14 @@
 package certs
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -1531,5 +1534,147 @@ func TestReconcileCRLArtifacts(t *testing.T) {
 	}
 	if err := ReconcileCRLArtifacts(certDir); err == nil {
 		t.Fatal("crl.json 损坏时对账应报错（fail-closed），实际 nil")
+	}
+}
+
+// ---- M3：CRL 锁失败降级日志 ----
+
+// captureStderrFd 把 fd 2（stderr）重定向到内存 buffer 后执行 fn，
+// 返回 fn 期间写入 stderr 的输出。pkg/log 的 logger 在包初始化时
+// 已持有 os.Stderr（fd 2 的包装），重定向 fd 2 本身即可截获其输出。
+// 本包测试无 t.Parallel（测试串行执行），重定向期间无并发写 stderr。
+func captureStderrFd(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("创建管道失败: %v", err)
+	}
+	saved, err := syscall.Dup(2)
+	if err != nil {
+		t.Fatalf("备份 fd 2 失败: %v", err)
+	}
+	if err := syscall.Dup2(int(w.Fd()), 2); err != nil {
+		_ = syscall.Close(saved)
+		t.Fatalf("重定向 fd 2 失败: %v", err)
+	}
+	fn()
+	// 恢复 fd 2（先于读取，避免管道写端未关闭导致读取阻塞）
+	_ = syscall.Dup2(saved, 2)
+	_ = syscall.Close(saved)
+	_ = w.Close()
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	_ = r.Close()
+	return buf.String()
+}
+
+// resetCRLDegradedWarnState 重置降级日志限频状态（测试隔离用，
+// 避免其他测试的 5 分钟窗口干扰断言）。
+func resetCRLDegradedWarnState() {
+	crlLockDegradedWarnMu.Lock()
+	crlLockDegradedWarnLast = time.Time{}
+	crlLockDegradedWarnMu.Unlock()
+}
+
+// TestVerifyCertAgainstCRL_LockFailureDegrades 锁文件不可打开（crl.lock
+// 路径被目录占据，OpenFile 必然失败）→ 降级为无锁校验：
+//   - 功能语义不变：已吊销仍判吊销、未吊销仍放行，不返回锁错误；
+//   - 降级 Warn 日志首条即出（含原因与影响）；
+//   - 5 分钟内限频：连续第二次校验不再重复刷日志。
+func TestVerifyCertAgainstCRL_LockFailureDegrades(t *testing.T) {
+	certDir := newTempCertDir(t)
+	mustGenAll(t, certDir)
+	clientCert := loadParsedClientCert(t, certDir)
+	serverCert, err := EnsureServerCert(certDir, "cloudcore")
+	if err != nil {
+		t.Fatalf("加载服务端证书失败: %v", err)
+	}
+	serverLeaf, err := x509.ParseCertificate(serverCert.Certificate[0])
+	if err != nil {
+		t.Fatalf("解析服务端证书失败: %v", err)
+	}
+	// 吊销客户端证书（顺带生成 crl.pem/crl.json/crl.lock）。
+	if err := RevokeCert(certDir, "edgeflow-test-node"); err != nil {
+		t.Fatalf("RevokeCert 失败: %v", err)
+	}
+	// 把锁文件替换为目录：lockCRLFile 的 OpenFile(O_CREATE|O_RDWR) 必然
+	// 失败（EISDIR），且非 os.IsNotExist → 触发无锁降级路径。
+	lockPath := filepath.Join(certDir, FileCRLLock)
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatalf("删除锁文件失败: %v", err)
+	}
+	if err := os.Mkdir(lockPath, 0o755); err != nil {
+		t.Fatalf("创建目录占位锁路径失败: %v", err)
+	}
+	resetCRLDegradedWarnState()
+
+	// 首次校验：降级 + Warn 日志（截获 fd 2 验证）。
+	out := captureStderrFd(t, func() {
+		revoked, err := VerifyCertAgainstCRLWithPolicy(certDir, clientCert, CRLVerifyOptions{})
+		if err != nil {
+			t.Errorf("锁失败降级不应报错（功能语义不变）: %v", err)
+		}
+		if !revoked {
+			t.Error("降级后已吊销证书仍应判吊销（功能语义不变）")
+		}
+		// 未吊销证书（服务端）在降级路径下仍放行
+		revokedServer, err := VerifyCertAgainstCRLWithPolicy(certDir, serverLeaf, CRLVerifyOptions{})
+		if err != nil || revokedServer {
+			t.Errorf("降级后未吊销证书应放行: revoked=%v err=%v", revokedServer, err)
+		}
+	})
+	if !strings.Contains(out, "WARN") {
+		t.Errorf("降级 Warn 日志未发出: %q", out)
+	}
+	if !strings.Contains(out, "降级") || !strings.Contains(out, "无锁") {
+		t.Errorf("降级日志内容缺少原因/影响说明: %q", out)
+	}
+
+	// 再次校验：功能仍正确，且日志限频（5 分钟窗口内不重复）。
+	out2 := captureStderrFd(t, func() {
+		revoked, err := VerifyCertAgainstCRLWithPolicy(certDir, clientCert, CRLVerifyOptions{})
+		if err != nil || !revoked {
+			t.Errorf("二次降级校验失败: revoked=%v err=%v", revoked, err)
+		}
+	})
+	if strings.Contains(out2, "降级") {
+		t.Errorf("5 分钟内降级日志应限频不重复，实际: %q", out2)
+	}
+}
+
+// TestWarnCRLLockDegraded_RateLimited 限频状态单元验证：窗口内多次调用
+// 只更新一次时间戳；重置（或窗口过期）后恢复记录。
+func TestWarnCRLLockDegraded_RateLimited(t *testing.T) {
+	resetCRLDegradedWarnState()
+	// 首次调用：记录时间
+	first := time.Now()
+	out := captureStderrFd(t, func() {
+		warnCRLLockDegraded(errors.New("injected lock failure"))
+	})
+	if !strings.Contains(out, "WARN") || !strings.Contains(out, "injected lock failure") {
+		t.Errorf("首次降级日志应含原因: %q", out)
+	}
+	crlLockDegradedWarnMu.Lock()
+	last := crlLockDegradedWarnLast
+	crlLockDegradedWarnMu.Unlock()
+	if last.Before(first) {
+		t.Errorf("首次调用后应更新时间戳: last=%v first=%v", last, first)
+	}
+	// 窗口内再次调用：日志被限频（fd 2 无输出）
+	out2 := captureStderrFd(t, func() {
+		warnCRLLockDegraded(errors.New("injected lock failure"))
+	})
+	if out2 != "" {
+		t.Errorf("窗口内应限频无输出，实际: %q", out2)
+	}
+	// 人为把窗口时间戳回拨到 5 分钟前 → 再次触发（模拟窗口过期）
+	crlLockDegradedWarnMu.Lock()
+	crlLockDegradedWarnLast = time.Now().Add(-crlLockDegradedWarnInterval)
+	crlLockDegradedWarnMu.Unlock()
+	out3 := captureStderrFd(t, func() {
+		warnCRLLockDegraded(errors.New("injected lock failure"))
+	})
+	if !strings.Contains(out3, "WARN") {
+		t.Errorf("窗口过期后应再次输出日志，实际: %q", out3)
 	}
 }

@@ -20,6 +20,8 @@
 | R9 | 性能未压测（8.4） | 🟡 中 | 100 节点/内存指标无数据 | A6 压测；EDGED-POC 已警示 | 小规模部署先行 |
 | R10 | 已知 flake：TestMqttDualChannelLastWriteWins 偶发 | 🟢 低 | 观察项（非本轮变更引入） | 复现时收集栈；不影响发布 | — |
 
+> **2026-08-18 更新**：审计发现的中风险三项（/ocsp 无限流签名放大面、OCSP 客户端无新鲜度校验、CRL 锁失败静默降级）已全部修复（commit `bc8994d`），见 SECURITY.md「吊销闭环加固」与 CLOSE-OUT-ACTIONS §5 D1-D3；风险等级已从 🟡 降为 🟢 残留项（per-IP 粒度对分布式放大不设防，生产可叠 LB 全局限流；OCSP WithPolicy 入口需消费侧接线时启用）。P2 遗留 11 项已全部闭环（commit `59dd396`）。
+
 ## 2. 依赖缺失
 
 | 依赖 | 现状 | 影响 | 建议 |

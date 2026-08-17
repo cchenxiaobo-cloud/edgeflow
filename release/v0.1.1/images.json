@@ -1,0 +1,46 @@
+{
+  "version": "v0.1.1",
+  "registry": "localhost:5001",
+  "generatedAt": "2026-08-18T01:00:00+08:00",
+  "notes": "构建基线 commit 92be18c（构建时 HEAD），buildx docker-container driver 双架构（linux/amd64+linux/arm64 OCI manifest 单 tag 双平台，--provenance=false 无 attestation 条目）。制品重建员超时中断后由收尾员从本地 registry（edgeflow-registry-v011，端口 5001）API 补录镜像索引信息。",
+  "images": [
+    {
+      "name": "edgeflow/cloudcore",
+      "tag": "v0.1.1",
+      "reference": "localhost:5001/edgeflow/cloudcore@sha256:9f6c8edfc1f502c09a1f6e3d549cad6408684dfe0cfb4de17bba85d8f9c649e3",
+      "digest": "sha256:9f6c8edfc1f502c09a1f6e3d549cad6408684dfe0cfb4de17bba85d8f9c649e3",
+      "manifest": {
+        "schemaVersion": 2,
+        "platforms": [
+          { "os": "linux", "architecture": "amd64", "digest": "sha256:2dbf2fff3f11fdb64b9f3b1534a6cc29a1dd1e613f7137b6e0b0c98031b506d0", "size": 3129 },
+          { "os": "linux", "architecture": "arm64", "digest": "sha256:334efca638bb91c6b57fea48723fdcef39ae50a30bd006998613ee8c543e81dc", "size": 3129 }
+        ]
+      },
+      "buildArgs": {
+        "VERSION": "v0.1.1",
+        "GIT_COMMIT": "92be18c",
+        "BUILD_TIME": "2026-08-18T00:40:09+0800"
+      },
+      "verifiedBy": "docker buildx imagetools inspect localhost:5001/edgeflow/cloudcore:v0.1.1 --raw 与 registry API（GET /v2/edgeflow/cloudcore/manifests/v0.1.1, Accept: application/vnd.oci.image.index.v1+json）结果一致：OCI index（schemaVersion 2，mediaType application/vnd.oci.image.index.v1+json）含 linux/amd64+linux/arm64 两个 manifest，digest/size 完全一致；index digest sha256:9f6c8edf... 与 Docker-Content-Digest 响应头一致"
+    },
+    {
+      "name": "edgeflow/edgecore",
+      "tag": "v0.1.1",
+      "reference": "localhost:5001/edgeflow/edgecore@sha256:89adb80c57a6289a6dfdc6830a3b635783669708b989d38fbc7fee6d30cd2cc3",
+      "digest": "sha256:89adb80c57a6289a6dfdc6830a3b635783669708b989d38fbc7fee6d30cd2cc3",
+      "manifest": {
+        "schemaVersion": 2,
+        "platforms": [
+          { "os": "linux", "architecture": "amd64", "digest": "sha256:761a1bac326d86030493d5bcf7c28a56a14583dff8c72b7dfbc4b9558b5f9b45", "size": 3316 },
+          { "os": "linux", "architecture": "arm64", "digest": "sha256:728660f8f26b4a15abe90931059e243006c94c807f78eeb50a455f1268c8eca8", "size": 3316 }
+        ]
+      },
+      "buildArgs": {
+        "VERSION": "v0.1.1",
+        "GIT_COMMIT": "92be18c",
+        "BUILD_TIME": "2026-08-18T00:40:09+0800"
+      },
+      "verifiedBy": "docker buildx imagetools inspect localhost:5001/edgeflow/edgecore:v0.1.1 --raw 与 registry API（GET /v2/edgeflow/edgecore/manifests/v0.1.1, Accept: application/vnd.oci.image.index.v1+json）结果一致：OCI index（schemaVersion 2，mediaType application/vnd.oci.image.index.v1+json）含 linux/amd64+linux/arm64 两个 manifest，digest/size 完全一致；index digest sha256:89adb80c... 与 Docker-Content-Digest 响应头一致"
+    }
+  ]
+}

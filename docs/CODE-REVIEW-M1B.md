@@ -138,6 +138,8 @@ M1 二期三个模块（MetaManager SQLite 持久化、云端注册表+查询 AP
 
 **问题清单（按严重度）**：
 
+> **处置记录（2026-08-18）**：P2-5 已修复（newHTTPServer WriteTimeout=15s，commit `59dd396`）；P2-6 已修复（logEncodeError 17 处出口 Warn 日志）；P2-4 已修复（Broadcast 送达计数日志，尽力而为语义注释）；P2-2 已按结论记录（store.go 注释：低写入量下 SQLite 自动 checkpoint 足够）；P2-1/P2-3 早前已闭环（范围扫描 `37fbaf4` / Offline TTL 24h 配置化）。九项全部闭环。
+
 | 级别 | 编号 | 模块 | 问题 | 建议 |
 |---|---|---|---|---|
 | P0 | — | — | 无 | — |

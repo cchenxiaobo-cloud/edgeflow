@@ -156,6 +156,8 @@
 ### P1（无）
 ### P2（6 项，均不阻塞合入）
 
+> **处置记录（2026-08-18）**：P2-1 已修复（Route 加 namespace 参数 + `DeviceNamespaceResolver` 接口，注册与路由共用 `deviceKeyOf`，ns/deviceName 键与 twinKey 同构，commit `59dd396`）；P2-4 已修复（`UpsertReported` max() 单调保护，乱序不回退）；P2-2/P2-3/P2-6 已按结论记录代码注释（mock_sensor 单实例设计 / HandleCommand 依赖 Dispatch 隐式路由 / Desired=云端声明非设备接受值）；P2-5 复核已有记录（devicestatus 注释，与 podstatus 一致的有意设计）。六项全部闭环。
+
 1. **Mapper 路由索引不含 namespace**（edge/pkg/mapper）：`byDevice` 以 deviceName 为键，跨命名空间同名设备冲突，与 devicetwin.twinKey（ns/name）键设计不一致；建议 Route 键改 ns+deviceName 或明确单命名空间约束。
 2. **mock_sensor 注册名常量**：`Name()` 恒为 "mock-sensor"，同注册表无法注册第二台模拟传感器（byName 查重先触发）；多设备需多设备 Mapper 或实例化注册名。
 3. **HandleCommand 空设备名透传**：`cmd.DeviceName != "" &&` 依赖 Dispatch 路由隐式约定，建议收紧或注释。

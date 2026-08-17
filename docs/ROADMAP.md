@@ -346,3 +346,20 @@
 | 7.1 CRL 健壮性补强 | WBS 7.1 | ✅ 本次完成 | 并发文件锁（flock）、keadm cert revoke --serial 按序列号吊销、幂等重生成 CRL Number 递增、verify 侧 json↔pem 对账自愈、NextUpdate 过期策略、小写归一化、损坏组合测试（2026-08-16） |
 | 1.4 OpenAPI 语义锁定 | WBS 1.4 | ✅ 本次完成 | 独立 reflect 对照测试（type/format/required 逐字段断言）+ 空 json tag 回落字段名 + 产物零漂移验证（2026-08-16） |
 | 10.3 契约测试运行时探测 | WBS 10.3 | ✅ 本次完成 | 未注册路径运行时反向探测（/api/v1/__probe__ 等 404 断言）+ 临时目录清理 + 历史泄漏目录清除（2026-08-16） |
+
+---
+
+## 9. v0.1.1 发布准备轮处置登记（2026-08-18）
+
+> 依据：审计风险清单（.cluster/8401705d/subagent_04.md：中风险 M1/M2/M3）+ 历次 CODE-REVIEW P2 遗留 + 异常路径演练 + 发布保障。状态：✅ 本次完成 / ⏸ 环境边界。
+
+| 项 | 对应 WBS | 处置 | 结论/理由 |
+|----|----------|------|----------|
+| M1 /ocsp 防滥用 | WBS 7.1 | ✅ 本次完成 | per-IP 令牌桶限流（默认 10 req/s、burst 20、429 语义、map 有界 1 万 IP）+ Cache-Control: max-age=3600；`EDGEFLOW_CLOUDCORE_OCSP_RATE_LIMIT` 可调（commit `bc8994d`） |
+| M2 OCSP 新鲜度校验 | WBS 7.1 | ✅ 本次完成 | ParseOCSPResponseWithFreshness/OCSPStatusAtWithPolicy fail-closed（过期/未来时间拒绝，5 分钟 skew）；旧签名行为不变；生产路径接线时须用 WithPolicy 入口（commit `bc8994d`） |
+| M3 CRL 锁降级可观测 | WBS 7.1 | ✅ 本次完成 | 锁失败降级无锁校验（功能语义不变）+ 5 分钟限频 Warn 日志（commit `bc8994d`） |
+| P2 遗留闭环（M1B×9/M1C×5/M3A×6） | WBS 8.x | ✅ 本次完成 | WriteTimeout=15s、Encode 日志 17 处、Broadcast 送达计数、Route namespace、LastReportedAt 单调、ReliableSendContext/downlinkMu 核验补测 + 结论记录注释（commit `59dd396`） |
+| 异常路径演练 | WBS 8.x | ✅ 本次完成 | 14 条演练 13✅/1⚠️/0❌（空数据/超时/重复提交/并发冲突/回滚触发）；见 .cluster/a3f7c2e1/subagent_03.md |
+| 生产发布保障文档 | WBS 10.x | ✅ 本次完成 | release-prep-v011 / monitoring-alerting-v011（11 条告警规则）/ rollback-runbook-v011（见 .cluster/a3f7c2e1/，入档见 S6） |
+| 多节点真实集群验证 | WBS 8.2 | ⏸ 环境边界 | 与上轮一致：需真实多节点基础设施（DRILL-SCHEDULE） |
+| cosign 签名 | WBS 10.4 | ⏸ 环境边界 | 与上轮一致：需镜像仓库+签名基础设施（MULTIARCH.md §5） |

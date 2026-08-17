@@ -153,6 +153,8 @@ golangci-lint 2.12.2 run ./... → 0 issues
 3. Pod key 命名 `pods/<name>` 不含 namespace：多命名空间同名 Pod 静默覆盖、delete 误删他命名空间同名记录；改为 `pods/<namespace>/<name>` 派生 key（若 M2 明确单命名空间可降级 P2，但需在契约中声明）
 
 **P2（建议近期处理）**
+
+> **处置记录（2026-08-18）**：P2-3 经核验已修复（ReliableSendContext + 旧方法委托，既有单测覆盖）；P2-4 经核验已修复（downlinkMu 全流程串行化，本轮补 16-goroutine 并发单测）；P2-1 早前已修（同 ID pending 交叉清理）；P2-2 早前已修（ErrAckFailed→502）；P2-5 早前已修（1MiB 请求体限制 413）。五项全部闭环。
 1. 同 ID 并发在途的交叉清理：旧等待者超时返回时 `defer unregisterPending` 会删除新等待者的 pending 项（registerPending 已告警为调用方错误，但清理副作用应避免——如 unregister 前校验 entry 归属，或仅删除"自己注册的"项）
 2. ErrAckFailed 落入 500 "send failed" 语义误导：应映射 502（边缘拒绝）并在云端校验 operation ∈ {add,update,delete}（非法值直接 400，省一次 15s 往返）
 3. ReliableSend 不支持 context 取消：Shutdown/HTTP 请求断开时在途等待最多阻塞 ~5s/15s；可考虑为 ReliableSend 增加 ctx 参数或 Shutdown 时主动 fail 全部 pending

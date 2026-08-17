@@ -516,9 +516,9 @@
 | P2 | 6.5 资源管理（调度/资源超卖） | 仅 Replicas 伸缩；超卖/调度未做（audit-m02 §4） |
 | P2 | Flannel/边缘容器网络（缺口 6） | M2 交付物从未实现（Docker bridge 方案），需明确关闭或排期 CNI（audit-m02 §4） |
 | ~~P2~~ ✅ | 4.4 压缩显式延后登记 | 已闭环（2026-08-15）：gzip 协商式双向压缩已实现（commit `37f34f9`）；Protobuf 编码保留显式延后（规模化阶段，audit-m02 §4） |
-| P2 | M3A 审查 P2 项×6 | byDevice 路由含 namespace、多实例 Mapper、空 deviceName 校验、LastReportedAt 单调性、502 Desired 分叉、无 TTL/GC（见 CODE-REVIEW-M3A.md） |
-| P2 | M1C 审查 P2 项×5 | pending 交叉清理/ErrAckFailed→502/context 取消/非原子/云端 operation 校验（见 CODE-REVIEW-M1C.md；其中 pending 交叉清理与 502 映射已在 8321b0e 修复） |
-| P2 | M1B 审查 P2 项×9 | LIKE 转义/WAL checkpoint/Offline TTL/WriteTimeout 等（见 CODE-REVIEW-M1B.md） |
+| ~~P2~~ ✅ | M3A 审查 P2 项×6 | 已闭环（2026-08-18）：byDevice 路由含 namespace（Route 加 namespace 参数 + DeviceNamespaceResolver 接口，commit `59dd396`）；LastReportedAt 单调性（max() 保护）；多实例 Mapper/空 deviceName/502 Desired 分叉/无 TTL/GC 四项按结论记录代码注释（mock_sensor/twin/devicestatus） |
+| ~~P2~~ ✅ | M1C 审查 P2 项×5 | 已闭环（2026-08-18）：context 取消与 handleDownlink 非原子经核验已在前轮修复（ReliableSendContext/downlinkMu），本轮补并发单测；pending 交叉清理与 ErrAckFailed→502 早前已修；云端 operation 校验结论记录 |
+| ~~P2~~ ✅ | M1B 审查 P2 项×9 | 已闭环（2026-08-18）：WriteTimeout=15s（newHTTPServer）+ API Encode 失败 Warn 日志 17 处（commit `59dd396`）；Broadcast 送达计数日志（P2-4）；WAL checkpoint 结论记录代码注释；其余 LIKE 转义/Offline TTL 等早前已闭环（2026-08-15） |
 | ~~P2~~ ✅ | 多架构发布镜像补 linux-arm64 二进制 | 已闭环：release/v0.1.0/ 新增 cloudcore/edgecore/keadm linux-arm64 交叉编译二进制 + checksums 更新（本轮） |
 | P3 | 日志级别过滤（SetLevel） | pkg/log 的 Level 目前仅前缀标记，后续模块需要时实现 |
 | P3 | M1 通道 P3 项×4 | newID 忽略 rand 错误 / Shutdown 撞 Start 初始化窗口 / 被踢连接标志延迟清除 / 退避重置缺单测（见 CODE-REVIEW-M1.md） |

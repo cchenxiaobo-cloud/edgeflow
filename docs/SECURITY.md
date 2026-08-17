@@ -110,6 +110,19 @@
   mTLS 握手按 CRL 拒绝已吊销证书；cloudcore 提供 OCSP responder（POST /ocsp，
   RFC 6960，与 CRL 同源，OpenSSL 互操作已验证）。节点证书泄露的处置路径：
   `keadm cert revoke` 吊销 → `keadm cert rotate` 重签 → 重新分发。
+- **吊销闭环加固**（2026-08-18，v0.1.1）：
+  - **/ocsp 防滥用**：per-IP 令牌桶限流（默认 10 req/s、burst 20，超限 429），
+    成功响应带 `Cache-Control: max-age=3600`；速率可经
+    `EDGEFLOW_CLOUDCORE_OCSP_RATE_LIMIT` 调整。注意：per-IP 粒度对分布式
+    （多 IP 僵尸网络）放大不设防，生产可叠加 LB 层全局限流。
+  - **OCSP 客户端新鲜度校验**：新增 `certs.ParseOCSPResponseWithFreshness` 与
+    `certs.OCSPStatusAtWithPolicy`（fail-closed：nextUpdate 过期拒绝、
+    producedAt/thisUpdate 未来时间拒绝，默认 5 分钟时钟 skew 容忍）。
+    旧签名（`OCSPStatus`/`OCSPStatusAt`/`ParseOCSPResponse`）行为不变、不校验
+    新鲜度——生产路径接入 OCSP 客户端时须使用 WithPolicy 入口。
+  - **CRL 锁降级可观测**：`VerifyCertAgainstCRLWithPolicy` 锁失败降级为无锁
+    校验（功能语义不变，仅损失 crl.json 领先时的即时重生成自愈），同时输出
+    5 分钟限频 Warn 日志（关键词："降级"），便于运维发现证书目录权限异常。
 - **CSR 流程未实现**：证书由本地直接生成签发（私钥不出节点），未提供
   中心化 CA + CSR 审批流（对标 KubeEdge certgen 的扩展点）。
 - **CN 与 nodeID 未绑定校验**：云端验证的是「证书由可信 CA 签发」，

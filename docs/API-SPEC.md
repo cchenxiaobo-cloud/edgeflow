@@ -37,7 +37,7 @@
 | POST | `/api/v1/nodes/{nodeID}/podsync` | 可靠下发 Pod 配置（add/update/delete） | 200 / 400 / 404 / 502 / 504 |
 | POST | `/api/v1/nodes/{nodeID}/config-sync` | 可靠下发 ConfigMap/Secret 配置 | 200 / 400 / 404 / 502 / 504 |
 | POST | `/api/v1/nodes/{nodeID}/device-command` | 下发设备指令（期望值） | 200 / 400 / 404 / 502 / 504 |
-| POST | `/ocsp` | OCSP 在线吊销查询（RFC 6960；请求/响应均为 DER 编码，Content-Type: application/ocsp-request / application/ocsp-response） | 200 / 400 / 500 |
+| POST | `/ocsp` | OCSP 在线吊销查询（RFC 6960；请求/响应均为 DER 编码，Content-Type: application/ocsp-request / application/ocsp-response）。免认证（唯一例外，详见 §1.3）；per-IP 限流（默认 10 req/s，burst 20，超限 429）；成功响应带 `Cache-Control: max-age=3600` | 200 / 400 / 429 / 500 |
 
 ### 1.2 错误码表（统一约定）
 
@@ -46,6 +46,7 @@
 | `200` | 成功；下发类接口表示**边缘已确认**（Ack ok），响应 `{"status":"ok","acked":true}` | 正常 |
 | `400` | 请求非法：JSON 解析失败 / 缺必填字段 / operation 或 kind 不在白名单 | 参数错误 |
 | `404` | 节点未注册或离线（`ErrNodeOffline`）；单资源查询不存在 | 节点不存在 |
+| `429` | 限流：per-IP 请求速率超限（当前仅 `/ocsp` 端点，默认 10 req/s，burst 20；`EDGEFLOW_CLOUDCORE_OCSP_RATE_LIMIT` 可调） | 客户端请求过频 |
 | `500` | 内部错误（消息构建失败、发送通道异常等兜底） | 服务端异常 |
 | `502` | 边缘明确拒绝（回 error Ack）：消息已送达但处理失败 | 边缘侧校验失败 |
 | `504` | 可靠投递确认超时（默认单次 5s × 最多 3 次尝试） | 边缘宕机/链路抖动 |
@@ -53,6 +54,12 @@
 错误响应统一为 JSON：`{"error":"<机器可读原因>", ...可选字段}`（`http.Error` 输出）。
 
 > 语义区分：**404 = 没送达**（节点不在线，无需重试）；**502 = 送达但被拒绝**（重试无意义）；**504 = 可能送达但未确认**（可重试，边缘侧有幂等去重）。
+
+### 1.3 认证与限流（端点安全约定）
+
+- 除 `/ocsp` 外，全部 `/api/v1/*` 端点均经 Bearer Token 认证中间件；`/ocsp` 为唯一免认证端点（OCSP 客户端通常不支持自定义头，且 RFC 6960 要求响应可被离线验证，认证不增加安全性）。
+- `/ocsp` 以 per-IP 令牌桶限流替代认证防滥用：默认 10 req/s、burst 20，超限返回 `429`（`{"error":"ocsp rate limit exceeded"}`）；速率可通过 `EDGEFLOW_CLOUDCORE_OCSP_RATE_LIMIT`（每秒次数，burst=2×rate）调整，非法值回退默认。
+- `/ocsp` 成功响应带 `Cache-Control: max-age=3600`（nextUpdate≈7 天，1 小时缓存对 good/revoked/unknown 均安全）。
 
 ---
 

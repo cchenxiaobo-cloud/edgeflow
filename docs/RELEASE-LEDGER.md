@@ -124,3 +124,57 @@
 | 发布制品工程师 | 发布制品工程师（自动） | 2026-08-14 | 制品归档与镜像推送完成，清单核对一致（归档 `d17bdd5`；keadm 重建 `733d0ae`；镜像双架构重建 B5） |
 | 复核工程师 | 独立复核员 | 2026-08-14 | 制品/校验值/文档三方一致，同意发布（RELEASE-REVIEW：有条件通过，P1-1 已闭环） |
 | 发布文档工程师 | 发布文档工程师（自动） | 2026-08-14 | 文档编制与字段回填完成（Release Notes/台账/多架构/真实集群指南同步） |
+
+---
+
+# EdgeFlow v0.1.1 发布台账（追加区块，2026-08-18）
+
+> 状态：✅ 已回填（本地区块；远程推送/kind 集群实测为环境边界，与 v0.1.0 差异已注明）。
+> 配套：`docs/RELEASE-NOTES-v011.md`、`docs/RELEASE-PREP-v011.md`、`docs/MONITORING-ALERTING-v011.md`、`docs/ROLLBACK-RUNBOOK-v011.md`。
+
+## §1 发布信息
+
+| 项目 | 内容 |
+|------|------|
+| 版本 | v0.1.1（Chart 0.1.1 / appVersion v0.1.1） |
+| 发布基线 commit | `92be18c`（制品构建时 HEAD；归档 commit `94bde2e`；tag `v0.1.1`） |
+| 制品目录 | `release/v0.1.1/`（12 文件，commit `94bde2e`） |
+| 制品负责人 | 制品重建员 + 制品收尾员（重建超时后收尾补 images.json/trivy/冒烟） |
+| 构建时间 | 2026-08-18T00:40:09+0800 |
+| 发布范围 | 审计 3 中风险修复（`bc8994d`）+ P2 遗留闭环（`59dd396`）+ 文档与发布保障（`20e66b5`~`3bb40f2`） |
+
+## §2 时间线
+
+| # | 动作 | 时间 | 操作人 | 状态 |
+|---|------|------|--------|------|
+| 1 | 9 二进制构建（3 组件 × darwin-arm64/linux-amd64/linux-arm64）+ Chart 打包 + SBOM + checksums（10 条） | 08-18 00:40~00:42 | 制品重建员 | ✅ |
+| 2 | 双架构镜像构建推送 localhost:5001（buildx docker-container，--provenance=false） | 08-18 00:40 档 | 制品重建员 | ✅ |
+| 3 | images.json 补录（registry API + imagetools inspect 双路一致）+ checksums 补全 12 条目 | 08-18 01:00 | 制品收尾员 | ✅ |
+| 4 | trivy 扫描双镜像 + 本机冒烟（19080/12000）+ docker run 双平台验证 | 08-18 01:00~01:05 | 制品收尾员 | ✅ |
+| 5 | 归档 commit `94bde2e` + tag `v0.1.1` | 08-18 | 主线 | ✅ |
+
+## §3 制品清单（12 文件 + 2 镜像）
+
+| 制品 | sha256 前 12 位 |
+|------|----------------|
+| cloudcore-darwin-arm64 / linux-amd64 / linux-arm64 | 38e21ff1a1a7 / aad536661ac7 / 34995f31f742 |
+| edgecore-darwin-arm64 / linux-amd64 / linux-arm64 | 3aa52bf53fd5 / 4ed9c0ffdb99 / ac6520c6a80a |
+| keadm-darwin-arm64 / linux-amd64 / linux-arm64 | 3de0ed893aa3 / af74a2cafc63 / eab4f9936545 |
+| edgeflow-0.1.1.tgz / images.json / sbom.json | 602b91cae1c1 / f10cb45e7f85 / bfd98a8778ca |
+| 镜像 cloudcore:v0.1.1 | index sha256:9f6c8edf…（amd64 2dbf2fff… / arm64 334efca6…） |
+| 镜像 edgecore:v0.1.1 | index sha256:89adb80c…（amd64 761a1bac… / arm64 728660f8…） |
+
+`shasum -a 256 -c checksums.txt` → 12/12 全 OK（复验通过）。
+
+## §4 验证结果
+
+| 项 | 结果 |
+|----|------|
+| 二进制 --version | 9 个均 v0.1.1 gitCommit=92be18c |
+| trivy 镜像扫描（HIGH,CRITICAL） | ✅ 双镜像 0（trivy v0.74.0；DB 2026-08-15，库龄 3 天） |
+| 本机制品冒烟 | ✅ 19080/12000：healthz 200 → edgecore 注册 Ready |
+| docker run 双平台 | ✅ amd64/arm64 × 2 镜像 --version 一致（arm64 模拟可运行） |
+| 远程推送 / kind 集群实测 | ⏸ 环境边界（无远程凭据/集群，与 v0.1.0 同口径） |
+| govulncheck | ⏸ 未安装（trivy gobinary 0 漏洞替代） |
+
+**观察项**：镜像内 go1.26.6 vs 本机二进制 go1.26.2（行为一致，--version 其余字段相同）。

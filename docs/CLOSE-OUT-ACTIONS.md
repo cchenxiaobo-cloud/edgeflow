@@ -52,3 +52,22 @@
 - P3 = 文档与跟踪（不阻塞功能，影响可追踪性与交接效率）
 
 > 注：本清单为建议，最终责任人与排期需项目负责人确认（符合收尾检查"不代替模块负责人签字"边界）。
+
+---
+
+## 五、v0.1.1 生产发布准备轮处置登记（2026-08-18）
+
+> 依据：审计风险清单（12 项：高 0 / 中 3 / 低 9）+ 历次 CODE-REVIEW P2 遗留 + 异常路径演练 + 预发冒烟 + 发布保障。状态：✅ 本次完成 / ⏸ 环境边界。
+
+| # | 任务 | 处置 | 状态（2026-08-18） |
+|---|------|------|--------------------|
+| ✅ D1 | M1 /ocsp 防滥用（审计中风险） | per-IP 令牌桶限流（默认 10 req/s、burst 20、429）+ Cache-Control: max-age=3600 | 已完成：commit `bc8994d`，测试 4→9 |
+| ✅ D2 | M2 OCSP 新鲜度校验（审计中风险） | ParseOCSPResponseWithFreshness / OCSPStatusAtWithPolicy fail-closed（过期/未来时间拒绝，5min skew），旧签名兼容 | 已完成：commit `bc8994d`，测试 18→24 |
+| ✅ D3 | M3 CRL 锁降级可观测（审计中风险） | 降级无锁校验 + 5 分钟限频 Warn 日志（功能语义不变） | 已完成：commit `bc8994d`，测试 42→44 |
+| ✅ D4 | P2 遗留闭环（M1B×9 / M1C×5 / M3A×6） | WriteTimeout=15s、Encode 日志 17 处、Broadcast 送达计数、Route namespace、LastReportedAt 单调、ReliableSendContext/downlinkMu 核验补测、结论记录注释 | 已完成：commit `59dd396`；PROGRESS §5 回写 |
+| ✅ D5 | 异常路径演练 | 空数据/超时/重复提交/并发冲突/回滚触发 14 条 | 已完成：13✅/1⚠️/0❌（⚠️ rotate 连跑两次序列号变化两次=设计语义，已建议文档说明）；演练报告见工作台 |
+| ✅ D6 | 预发冒烟与签核 | 真实进程 + Docker 链路 + 新修复功能验证（429/Cache-Control/Stale/降级日志） | 完成状态见工作台 staging-smoke-report.md |
+| ✅ D7 | 生产发布保障文档 | release-prep-v011（发布清单/制品/门禁）、monitoring-alerting-v011（11 条告警规则 + 通知矩阵）、rollback-runbook-v011（触发条件/四场景回滚/验证/演练脚本） | 已起草于工作台，入档 docs/ 待主线审后合入 |
+| ✅ D8 | 文档同步 | API-SPEC（429+Cache-Control+§1.3 认证）、SECURITY（吊销闭环加固）、CODE-REVIEW M1B/M1C/M3A（P2 处置记录）、PROGRESS（§5 回写）、ROADMAP（§9 登记） | 已完成：commit `20e66b5` |
+| ⏸ D9 | cosign 签名 | 需镜像仓库 + 签名基础设施 | 环境边界（MULTIARCH.md §5，与前轮一致） |
+| ⏸ D10 | 多节点真实集群验证 | 需真实多节点基础设施 | 环境边界（DRILL-SCHEDULE，与前轮一致） |

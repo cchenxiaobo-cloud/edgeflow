@@ -45,7 +45,7 @@
   \hline
   POST & \texttt{/api/v1/nodes/\{nodeID\}/device-command} & 下发设备指令（期望值） & 200 / 400 / 404 / 502 / 504 \\
   \hline
-  POST & \texttt{/ocsp} & OCSP 在线吊销查询（RFC 6960，DER 编码） & 200 / 400 / 500 \\
+  POST & \texttt{/ocsp} & OCSP 在线吊销查询（RFC 6960，DER 编码；per-IP 限流默认 10 req/s + Cache-Control） & 200 / 400 / 429 / 500 \\
   \hline
 \end{tabularx}
 
@@ -412,8 +412,11 @@ curl -X POST http://127.0.0.1:8080/ocsp \
 \begin{itemize}
   \item 请求体为 DER 编码的 OCSPRequest（\texttt{Content-Type: application/ocsp-request}），响应为 DER 编码的 OCSPResponse（\texttt{application/ocsp-response}），由云端 CA 私钥签名，响应自带可信性；
   \item 请求体上限 16 KiB（标准 CertID 请求远小于该值），超限返回 400；
+  \item 免认证端点，以 per-IP 令牌桶限流防滥用：默认 10 req/s、burst 20，超限返回 429；速率可经环境变量 \texttt{EDGEFLOW\_CLOUDCORE\_OCSP\_RATE\_LIMIT} 调整；
+  \item 成功响应带 \texttt{Cache-Control: max-age=3600}（响应 \texttt{nextUpdate} ≈ 7 天）；
   \item 吊销状态与 CRL 同源（均读 \texttt{crl.json}），证书被吊销后 CRL 与 OCSP 双通道同时生效；
-  \item 状态码：200 返回签名后的吊销状态响应（\texttt{good}/\texttt{revoked}/\texttt{unknown}）；400 请求超限、为空或 DER 损坏；500 CA 不可用、吊销记录损坏或响应构建失败（fail-closed，不静默放行）。
+  \item 状态码：200 返回签名后的吊销状态响应（\texttt{good}/\texttt{revoked}/\texttt{unknown}）；400 请求超限、为空或 DER 损坏；429 触发 per-IP 限流；500 CA 不可用、吊销记录损坏或响应构建失败（fail-closed，不静默放行）；
+  \item 客户端查询库新增新鲜度校验入口 \texttt{OCSPStatusAtWithPolicy}/\texttt{ParseOCSPResponseWithFreshness}（fail-closed：过期或未来时间均拒绝，默认 5 分钟时钟 skew 容忍）；旧入口（\texttt{OCSPStatus}/\texttt{OCSPStatusAt}）行为不变；生产路径接入 OCSP 客户端时\textbf{须使用 WithPolicy 入口}（当前边缘 mTLS 握手仍按 CRL 校验）。
 \end{itemize}
 
 \section{API 认证}
@@ -441,7 +444,7 @@ curl -H 'Authorization: Bearer <你的令牌>' http://127.0.0.1:8080/api/v1/node
 curl http://127.0.0.1:8080/api/v1/nodes
 \end{lstlisting}
 
-说明：\texttt{/healthz}、\texttt{/metrics} 与 \texttt{/ocsp} 不参与认证，始终可访问，以保证探活、监控采集与在线吊销查询通道可用（\texttt{/ocsp} 响应由 CA 签名，自带可信性）。
+说明：\texttt{/healthz}、\texttt{/metrics} 与 \texttt{/ocsp} 不参与认证，始终可访问，以保证探活、监控采集与在线吊销查询通道可用（\texttt{/ocsp} 响应由 CA 签名，自带可信性，并以 per-IP 限流防滥用，见上文）。
 
 \section{排障指南}
 

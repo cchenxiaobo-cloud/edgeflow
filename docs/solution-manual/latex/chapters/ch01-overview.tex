@@ -61,7 +61,7 @@ EdgeFlow 采用“设备层—边缘层—云层”三层架构，文字版说�
   \item \textbf{NodeController}：节点状态维护；
   \item \textbf{DeviceStatus}：设备状态快照维护（内存态）；
   \item \textbf{REST API}：对外提供 14 个 HTTP 端点（11 个管理端点：设备、节点、命令、podsync/config-sync 等；另含 healthz 与 metrics）；
-  \item \textbf{OCSP responder}：在线证书状态查询（POST /ocsp，RFC 6960；DER 编码请求/响应、免 Token——响应自带 CA 签名、16KiB 请求上限，状态码 200/400/500；与 CRL 同源 crl.json）；
+  \item \textbf{OCSP responder}：在线证书状态查询（POST /ocsp，RFC 6960；DER 编码请求/响应、免 Token——响应自带 CA 签名、16KiB 请求上限，状态码 200/400/429/500；per-IP 限流（默认 10 req/s、burst 20，超限 429，env 可调）+ 成功响应 Cache-Control: max-age=3600；与 CRL 同源 crl.json）；
   \item \textbf{审计与指标}：JSONL 审计台账 + 5 项运行指标。
 \end{itemize}
 

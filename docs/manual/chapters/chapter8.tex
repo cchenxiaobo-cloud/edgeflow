@@ -160,6 +160,10 @@ CA 私钥仅靠文件权限保护，生产建议离线签发后移出节点或�
         \textbf{未接线}到 mTLS 握手；
   \item \texttt{crl.json}/\texttt{crl.pem} 损坏或签名无效 → \textbf{拒绝}
         （fail-closed，不静默放行）；
+  \item 吊销写路径文件锁 \texttt{crl.lock} 获取失败时自动\textbf{降级为无锁
+        校验}（功能语义不变，仅损失 \texttt{crl.json} 领先时的即时重生成
+        自愈），并输出 \textbf{5 分钟限频}的 Warn 告警日志，便于发现证书
+        目录权限异常；
   \item 吊销\textbf{只增不减}：误吊销后无撤销命令，只能重新签发新证书
         （新序列号）；\textbf{请勿手工编辑 crl.json}（下次吊销时会按记录
         精确重生成 CRL，手工删除的条目将材料化生效）。
@@ -175,18 +179,27 @@ CA 私钥仅靠文件权限保护，生产建议离线签发后移出节点或�
         （\texttt{application/ocsp-response}），由\textbf{CA 私钥签名}；
   \item 吊销状态直接读取 \texttt{crl.json}，与 CRL \textbf{同源}——吊销后
         双通道（CRL 握手校验 + OCSP 在线查询）同时生效；
+  \item 免认证端点，以 per-IP 令牌桶限流防滥用：默认 10 req/s、
+        burst 20，超限返回 \texttt{429}；速率可经环境变量
+        \texttt{EDGEFLOW\_CLOUDCORE\_OCSP\_RATE\_LIMIT} 调整；成功响应带
+        \texttt{Cache-Control: max-age=3600}（\texttt{nextUpdate} ≈ 7 天）；
   \item 状态码：\texttt{200} = 签名响应；\texttt{400} = 请求非法/超限
-        （请求体上限 \textbf{16\,KiB}，空请求/DER 损坏/超限）；\texttt{500} =
+        （请求体上限 \textbf{16\,KiB}，空请求/DER 损坏/超限）；\texttt{429} =
+        触发 per-IP 限流；\texttt{500} =
         CA 不可用/吊销记录损坏/响应构建失败（fail-closed，不静默放行）；
   \item 客户端查询库函数 \texttt{OCSPStatus/OCSPStatusAt} 可用（验签 +
-        responderID + CertID 匹配），当前\textbf{未接入}任何命令或握手
-        路径——mTLS 握手消费的是 CRL 而非 OCSP。
+        responderID + CertID 匹配），新增新鲜度校验入口
+        \texttt{OCSPStatusAtWithPolicy}/\texttt{ParseOCSPResponseWithFreshness}
+        （fail-closed：过期/未来时间拒绝，默认 5 分钟 skew）；当前均
+        \textbf{未接入}任何命令或握手路径——mTLS 握手消费的是 CRL 而非
+        OCSP（生产路径接入时须用 WithPolicy 入口）。
 \end{itemize}
 
 \textbf{安全边界}：\texttt{/ocsp} 是唯一\textbf{免 Token 认证}的协议端点
-（响应由 CA 私钥签名，客户端必须验签防伪造）。该端点\textbf{无限流}且
-监听全部接口，\textbf{禁止直接暴露公网}，应置于受信内网/防火墙之后；
-吊销状态属公开信息（协议设计如此），不涉及凭据泄露。
+（响应由 CA 私钥签名，客户端必须验签防伪造）。该端点已内置 per-IP 限流
+（默认 10 req/s、burst 20，超限 429），但仍监听全部接口，建议置于受信
+内网/防火墙之后（per-IP 粒度对分布式多 IP 放大不设防，生产可叠加 LB 层
+全局限流）；吊销状态属公开信息（协议设计如此），不涉及凭据泄露。
 
 \section{管理 API Token 认证}
 

@@ -169,8 +169,10 @@ cloudcore 日志，反馈问题 \\
         P0/P1 审查发现 0；端到端示例 \texttt{examples/demo.sh} 通过 3 次；
   \item 基线说明：以上质量门数据为 \textbf{v0.1.0 发布时基线}
         （2026-08-14）；8-15/8-16 功能批次（吊销闭环、OCSP、契约测试、
-        OpenAPI 语义等）后，全仓库测试函数 \textbf{605 个}（81 个测试
-        文件），其中 \texttt{pkg/certs} 66 个（CRL/OCSP 吊销核心）；
+        OpenAPI 语义等）与 8-18 v0.1.1 安全加固轮（\texttt{/ocsp} 限流与
+        缓存、OCSP 新鲜度校验、CRL 锁降级）后，全仓库测试函数
+        \textbf{623 个}（81 个测试文件），其中 \texttt{pkg/certs} 74 个
+        （CRL/OCSP 吊销核心）；
   \item 制品：\texttt{release/v0.1.0/}（6 二进制 + Chart 包 +
         checksums.txt + sbom.json + images.json）；镜像
         \texttt{edgeflow/cloudcore:v0.1.0} / \texttt{edgeflow/edgecore:v0.1.0}

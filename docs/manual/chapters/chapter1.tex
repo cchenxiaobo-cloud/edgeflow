@@ -54,6 +54,7 @@ EdgeFlow v0.1.0 由以下组件构成：
 \begin{itemize}
   \item \textbf{版本}：v0.1.0（2026-08-14 发布）；
   \item \textbf{手册修订}：v0.1.1（2026-08-16）——依据仓库代码审计修订（吊销闭环、OCSP、设备认证 token 消费、配置文件与热重载、gzip 压缩、keadm 命令修正等），产品版本基线不变（仍为 v0.1.0）；
+  \item \textbf{手册修订}：v0.1.2（2026-08-18）——v0.1.1 生产发布准备轮安全加固（\texttt{/ocsp} per-IP 限流与缓存、OCSP 客户端新鲜度校验、CRL 锁降级日志、P2 代码审查遗留闭环），产品版本基线 v0.1.1；
   \item \textbf{容器镜像}：\texttt{edgeflow/cloudcore:v0.1.0}、\texttt{edgeflow/edgecore:v0.1.0}，支持 \texttt{linux/amd64} 与 \texttt{linux/arm64} 双架构；
   \item \textbf{Helm Chart}：\texttt{build/charts/edgeflow}，用于在 Kubernetes 集群中部署云端；
   \item \textbf{离线制品}：发布目录 \texttt{release/v0.1.0/}，包含云/边/管理工具在各平台的二进制、校验和（\texttt{checksums.txt}）、软件物料清单（SBOM）与 Helm Chart 包（\texttt{edgeflow-0.1.0.tgz}）。

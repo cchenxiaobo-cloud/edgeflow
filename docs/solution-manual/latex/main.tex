@@ -1,5 +1,5 @@
 % =====================================================================
-% EdgeFlow 物联网解决方案手册 v1.0.1
+% EdgeFlow 物联网解决方案手册 v1.0.2
 % 编译方式（见 compile.sh）：
 %   xelatex -interaction=nonstopmode main.tex   （连续执行两遍生成目录）
 % 依赖：TeX Live 2025+（ctexbook、xeCJK、booktabs、longtable、
@@ -51,7 +51,7 @@
   linkcolor=efblack,
   urlcolor=efgray,
   bookmarksnumbered=true,
-  pdftitle={EdgeFlow 物联网解决方案手册 v1.0.1},
+  pdftitle={EdgeFlow 物联网解决方案手册 v1.0.2},
   pdfauthor={EdgeFlow 方案与产品团队}}
 
 % ---------- 页眉页脚 ----------
@@ -59,7 +59,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\small\sffamily EdgeFlow 物联网解决方案手册}
-\fancyhead[R]{\small\sffamily v1.0.1}
+\fancyhead[R]{\small\sffamily v1.0.2}
 \fancyfoot[C]{\small\thepage}
 \renewcommand{\headrulewidth}{0.4pt}
 \renewcommand{\headrule}{\hbox to\headwidth{\color{efblack}\leaders\hrule height \headrulewidth\hfill}}
@@ -114,12 +114,12 @@
 \vspace{3.2cm}
 \begin{tabular}{ll}
 产品版本基线 & EdgeFlow v0.1.0（2026-08-14 发布）\\
-手册版本 & v1.0.1\\
+手册版本 & v1.0.2\\
 密级 & 公开（售前/客户技术交流）\\
 适用范围 & 售前方案设计、客户技术决策、PoC 部署参考\\
 \end{tabular}
 \vfill
-{\small 声明：本手册所有能力、参数与数字均以 EdgeFlow v0.1.0（2026-08-14 发布；v1.0.1 勘误补充 2026-08-16 收尾补强能力入册，详见修订记录）已核验实现为准；
+{\small 声明：本手册所有能力、参数与数字均以 EdgeFlow v0.1.0（2026-08-14 发布；v1.0.1 勘误补充 2026-08-16 收尾补强能力入册，v1.0.2 补充 2026-08-18 v0.1.1 发布轮安全加固入册，详见修订记录）已核验实现为准；
 规划中/尚未实现的能力一律明确标注“规划中/即将上线”，不构成交付承诺。
 文中命令与字段均为示意用法，具体语法以产品文档为准。}
 \end{titlepage}
@@ -133,6 +133,7 @@
 \midrule
 v1.0.0 & 2026-08-14 & 方案与产品团队 & 首版定稿：四场景 × 五部分结构、数据链路与台账口径、特性-场景映射表\\
 v1.0.1 & 2026-08-16 & 技术团队 & 补强入册：证书吊销闭环（CRL+OCSP）、配置热重载与 edgecore 配置文件、gzip 通道压缩、keadm cert/batch、端点 13$\rightarrow$14、OpenAPI/契约测试；口径修正（F42/F44/F47/F48 拆分）\\
+v1.0.2 & 2026-08-18 & 技术团队 & v0.1.1 发布轮安全加固入册：/ocsp per-IP 限流（默认 10 req/s、超限 429）+ Cache-Control、OCSP 客户端新鲜度校验 API（fail-closed）、CRL 锁降级日志；P2 代码审查遗留闭环\\
 \bottomrule
 \end{tabularx}
 

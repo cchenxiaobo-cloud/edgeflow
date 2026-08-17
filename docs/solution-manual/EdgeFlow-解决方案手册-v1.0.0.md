@@ -5,16 +5,17 @@
 | 项 | 内容 |
 |---|---|
 | 产品版本基线 | EdgeFlow v0.1.0（2026-08-14 发布） |
-| 手册版本 | v1.0.1 |
+| 手册版本 | v1.0.2 |
 | 密级 | 公开（售前/客户技术交流） |
 | 适用范围 | 售前方案设计、客户技术决策、PoC 部署参考 |
 
-> **声明**：本手册所有能力、参数与数字均以 EdgeFlow v0.1.0（2026-08-14 发布；v1.0.1 勘误补充 2026-08-16 收尾补强能力入册，详见修订记录）已核验实现为准；规划中/尚未实现的能力一律明确标注"规划中/即将上线"，不构成交付承诺。文中命令与字段均为示意用法，具体语法以产品文档为准。
+> **声明**：本手册所有能力、参数与数字均以 EdgeFlow v0.1.0（2026-08-14 发布；v1.0.1 勘误补充 2026-08-16 收尾补强能力入册，v1.0.2 补充 2026-08-18 v0.1.1 发布轮安全加固入册，详见修订记录）已核验实现为准；规划中/尚未实现的能力一律明确标注"规划中/即将上线"，不构成交付承诺。文中命令与字段均为示意用法，具体语法以产品文档为准。
 
 ## 修订记录
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v1.0.2 | 2026-08-18 | 技术团队 | v0.1.1 发布轮安全加固入册：/ocsp per-IP 限流（默认 10 req/s、超限 429）+ Cache-Control、OCSP 客户端新鲜度校验 API（fail-closed）、CRL 锁降级日志；P2 代码审查遗留闭环 |
 | v1.0.1 | 2026-08-16 | 技术团队 | 补强入册：证书吊销闭环（CRL+OCSP）、配置热重载与 edgecore 配置文件、gzip 通道压缩、keadm cert/batch、端点 13→14、OpenAPI/契约测试；口径修正（F42/F44/F47/F48 拆分） |
 | v1.0.0 | 2026-08-14 | 方案与产品团队 | 首版定稿：四场景 × 五部分结构、数据链路与台账口径、特性-场景映射表 |
 
@@ -68,7 +69,7 @@ EdgeFlow 采用"设备层—边缘层—云层"三层架构，文字版说明如
 - **NodeController**：节点状态维护；
 - **DeviceStatus**：设备状态快照维护（内存态）；
 - **REST API**：对外提供 14 个 HTTP 端点（11 个管理端点 + healthz + metrics + /ocsp 协议端点；管理端点：设备、节点、命令、podsync/config-sync 等）；
-- **OCSP responder**：在线证书状态查询（POST /ocsp，RFC 6960；DER 编码请求/响应、免 Token——响应自带 CA 签名、16KiB 请求上限，状态码 200/400/500；与 CRL 同源 crl.json）；
+- **OCSP responder**：在线证书状态查询（POST /ocsp，RFC 6960；DER 编码请求/响应、免 Token——响应自带 CA 签名、16KiB 请求上限，状态码 200/400/429/500；per-IP 限流（默认 10 req/s、burst 20，超限 429，env 可调）+ 成功响应 Cache-Control: max-age=3600；与 CRL 同源 crl.json）；
 - **审计与指标**：JSONL 审计台账 + 5 项运行指标。
 
 ## 1.3 核心能力地图
@@ -542,7 +543,7 @@ v0.1.0 支持 MQTT（QoS1，遥测/指令主题）与 Modbus TCP（显式设置 
 
 **A6. 平台安全机制有哪些？**
 
-生产加固四项：mTLS 云边通道（启用后自动升级 wss，握手期按 CRL 拒绝已吊销证书）、接入 Token 鉴权（REST API Token 与节点接入 Token 双轨：REST API Token 默认关闭、开启后 401 fail-fast；节点接入 Token 已实现，keadm join 生成、edgecore 注册携带、云端常数时间校验）、审计台账（文件 0600/目录 0700，认证失败也记录）、镜像多架构与 keadm 升级备份校验。证书生命周期管理：`keadm cert rotate` 轮换（备份先行 + 事务化重签）、`keadm cert revoke` 吊销（--node/--serial，序列号入 crl.json 并生成 crl.pem，幂等），CRL 离线吊销与 OCSP 在线吊销（RFC 6960，POST /ocsp，响应 CA 签名）双通道同源，吊销即时生效。镜像安全扫描：发布流程级已实现（构建期 Trivy 扫描，基线 0 漏洞）；完整 RBAC（当前为单 Token 鉴权）、cosign 镜像签名与产品内置/运行时镜像扫描仍规划中/即将上线。
+生产加固四项：mTLS 云边通道（启用后自动升级 wss，握手期按 CRL 拒绝已吊销证书）、接入 Token 鉴权（REST API Token 与节点接入 Token 双轨：REST API Token 默认关闭、开启后 401 fail-fast；节点接入 Token 已实现，keadm join 生成、edgecore 注册携带、云端常数时间校验）、审计台账（文件 0600/目录 0700，认证失败也记录）、镜像多架构与 keadm 升级备份校验。证书生命周期管理：`keadm cert rotate` 轮换（备份先行 + 事务化重签）、`keadm cert revoke` 吊销（--node/--serial，序列号入 crl.json 并生成 crl.pem，幂等），CRL 离线吊销与 OCSP 在线吊销（RFC 6960，POST /ocsp，响应 CA 签名）双通道同源，吊销即时生效。v0.1.1 安全加固：/ocsp 增加 per-IP 限流（默认 10 req/s、burst 20，超限 429，env 可调）+ 成功响应 Cache-Control: max-age=3600；OCSP 客户端库新增新鲜度校验入口（`ParseOCSPResponseWithFreshness`/`OCSPStatusAtWithPolicy`，fail-closed：过期/未来时间拒绝、默认 5 分钟 skew，旧入口行为不变，接线生产路径时须启用）；CRL 吊销锁获取失败自动降级无锁校验（功能语义不变）并输出 5 分钟限频告警日志。镜像安全扫描：发布流程级已实现（构建期 Trivy 扫描，基线 0 漏洞）；完整 RBAC（当前为单 Token 鉴权）、cosign 镜像签名与产品内置/运行时镜像扫描仍规划中/即将上线。
 
 **A7. 模型如何部署到边缘？**
 
@@ -671,3 +672,4 @@ v0.1.0 提供**节点级**离线判定（CloudHub 90s 无消息断开 + NodeCont
 3. **回滚口径**：若某版本手册被发现事实性错误，回退到上一 Git 提交并发布勘误版本（vX.Y.Z+1），不直接修改已发布历史版本文件；勘误记录写入修订记录表。
 4. **评审留痕**：v1.0.0 由方案团队（主笔）+ 产品团队（事实基线提供）+ 独立技术复核（特性↔手册双向追溯、结构完整性、异常路径、术语一致性）完成，复核记录见《评审记录与交接说明.md》。
 5. **v1.0.1 勘误基线（2026-08-16）**：对照仓库 HEAD `10e2995`（基线 `899248d` 之后净新增 OCSP 在线吊销与 edgecore 配置文件）完成附录勘误——REST API 端点 13→14（含 POST /ocsp，与契约测试/API-SPEC/API-COMPATIBILITY 三源一致）；表 C-1 新增证书吊销闭环登记（F49）；表 C-2 摘除已实现能力"规划中"标注（gzip 压缩、升级分批、节点接入认证、发布流程镜像扫描，见 F42/F44/F47/F48 拆分口径）；术语表 keadm 补全 9 子命令。勘误以仓库现状为事实基线，非新版本发布；正式修订记录见正文修订记录表。HTML/PDF/latex 衍生制品与 CSV 按流程同步重生成。
+6. **v1.0.2 修订基线（2026-08-18）**：对照仓库 HEAD `59dd396`（v0.1.1 生产发布准备轮，`bc8994d` 安全加固 + P2 遗留闭环）补充：/ocsp per-IP 限流（默认 10 req/s、burst 20，超限 429，env 可调）+ 成功响应 Cache-Control: max-age=3600；OCSP 客户端库新鲜度校验入口（`ParseOCSPResponseWithFreshness`/`OCSPStatusAtWithPolicy`，fail-closed、默认 5 分钟 skew，旧入口行为不变，生产路径接入时须用 WithPolicy 入口）；CRL 锁获取失败自动降级无锁校验并输出 5 分钟限频告警日志。特性清单无状态变化（F31/F49 口径不变）；正式修订记录见正文修订记录表。HTML/PDF/latex 衍生制品与 CSV 按流程同步重生成。

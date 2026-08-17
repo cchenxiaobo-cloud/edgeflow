@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -431,4 +432,68 @@ func TestApplyConfigReload(t *testing.T) {
 			t.Error("未变化不应触发监听切换")
 		}
 	})
+}
+
+// TestNewHTTPServerTimeouts 验证 HTTP 服务超时配置（M1B P2-5）：
+// WriteTimeout 必须显式设置，防止慢客户端（读响应缓慢/停滞）无限
+// 占用写路径连接。
+func TestNewHTTPServerTimeouts(t *testing.T) {
+	srv := newHTTPServer(":8080", nil)
+	if srv.WriteTimeout != 15*time.Second {
+		t.Errorf("WriteTimeout = %v，期望 15s（M1B P2-5）", srv.WriteTimeout)
+	}
+	if srv.ReadHeaderTimeout != 5*time.Second {
+		t.Errorf("ReadHeaderTimeout = %v，期望 5s", srv.ReadHeaderTimeout)
+	}
+	if srv.ReadTimeout != 10*time.Second {
+		t.Errorf("ReadTimeout = %v，期望 10s", srv.ReadTimeout)
+	}
+	if srv.Addr != ":8080" {
+		t.Errorf("Addr = %q，期望 :8080", srv.Addr)
+	}
+	if srv.Handler != nil {
+		t.Errorf("Handler = %v，期望 nil（调用方通过参数传入）", srv.Handler)
+	}
+}
+
+// failWriter 是 Write 恒失败的 ResponseWriter（模拟客户端断开场景）。
+type failWriter struct {
+	header http.Header
+}
+
+func (f *failWriter) Header() http.Header {
+	if f.header == nil {
+		f.header = http.Header{}
+	}
+	return f.header
+}
+
+func (f *failWriter) Write([]byte) (int, error) {
+	return 0, errors.New("client disconnected")
+}
+
+func (f *failWriter) WriteHeader(int) {}
+
+// TestAPIEncodeErrorNoPanic 验证 M1B P2-6 修复：响应编码失败
+// （典型场景：客户端已断开）时 handler 只记 Warn 日志、不 panic、
+// 不改变正常请求流程（对比修复前的静默忽略，行为对调用方不变）。
+func TestAPIEncodeErrorNoPanic(t *testing.T) {
+	reg := registry.New()
+	reg.Register(registry.NodeInfo{NodeID: "node-a"})
+	api := &nodeAPI{reg: reg}
+
+	// 覆盖各编码出口：列表 / 单节点 / 404 / EdgeNode 视图
+	for name, call := range map[string]func(http.ResponseWriter, *http.Request){
+		"listNodes":     api.listNodes,
+		"getNode":       api.getNode,
+		"listEdgeNodes": api.listEdgeNodes,
+		"getEdgeNode":   api.getEdgeNode,
+	} {
+		t.Run(name+"_客户端断开不panic", func(t *testing.T) {
+			req := new(http.Request)
+			req.SetPathValue("nodeID", "node-a")
+			w := &failWriter{}
+			call(w, req) // 不应 panic；修复前为 _ = 静默忽略，修复后多一条 Warn 日志
+		})
+	}
 }

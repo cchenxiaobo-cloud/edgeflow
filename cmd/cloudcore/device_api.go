@@ -36,12 +36,13 @@ func (a *nodeAPI) listDevices(w http.ResponseWriter, _ *http.Request) {
 	if a.devices != nil {
 		items = a.devices.ListAll()
 	}
-	// 编码失败（如客户端已断开）时无需额外处理，忽略即可
-	_ = json.NewEncoder(w).Encode(deviceStatusList{
+	if err := json.NewEncoder(w).Encode(deviceStatusList{
 		Kind:       "DeviceStatusList",
 		APIVersion: "v1",
 		Items:      items,
-	})
+	}); err != nil {
+		logEncodeError("listDevices", err)
+	}
 }
 
 // listNodeDevices 处理 GET /api/v1/nodes/{nodeID}/devices：返回单节点的设备状态。
@@ -55,26 +56,29 @@ func (a *nodeAPI) listNodeDevices(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if a.reg == nil {
 		w.WriteHeader(http.StatusNotFound)
-		// 编码失败（如客户端已断开）时无需额外处理，忽略即可
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "node not found", "nodeID": nodeID})
+		if err := json.NewEncoder(w).Encode(map[string]string{"error": "node not found", "nodeID": nodeID}); err != nil {
+			logEncodeError("listNodeDevices", err)
+		}
 		return
 	}
 	if _, ok := a.reg.Get(nodeID); !ok {
 		w.WriteHeader(http.StatusNotFound)
-		// 编码失败（如客户端已断开）时无需额外处理，忽略即可
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "node not found", "nodeID": nodeID})
+		if err := json.NewEncoder(w).Encode(map[string]string{"error": "node not found", "nodeID": nodeID}); err != nil {
+			logEncodeError("listNodeDevices", err)
+		}
 		return
 	}
 	items := make([]devicestatus.DeviceStatus, 0)
 	if a.devices != nil {
 		items = a.devices.ListByNode(nodeID)
 	}
-	// 编码失败（如客户端已断开）时无需额外处理，忽略即可
-	_ = json.NewEncoder(w).Encode(deviceStatusList{
+	if err := json.NewEncoder(w).Encode(deviceStatusList{
 		Kind:       "DeviceStatusList",
 		APIVersion: "v1",
 		Items:      items,
-	})
+	}); err != nil {
+		logEncodeError("listNodeDevices", err)
+	}
 }
 
 // deviceCommandRequest 是设备指令下发 API 的请求体（WBS 5.3 契约）。
@@ -148,5 +152,7 @@ func (a *nodeAPI) sendDeviceCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"status":"ok","acked":true}`))
+	if _, err := w.Write([]byte(`{"status":"ok","acked":true}`)); err != nil {
+		logEncodeError("sendDeviceCommand", err)
+	}
 }

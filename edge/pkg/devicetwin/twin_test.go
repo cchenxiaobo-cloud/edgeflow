@@ -158,6 +158,38 @@ func TestIgnoreInvalidInputs(t *testing.T) {
 	}
 }
 
+// TestUpsertReportedMonotonicTimestamp 验证 LastReportedAt 单调性保护
+// （M3A P2-4）：乱序上报（网络重排/多采集源/时钟回拨）不回退时间戳；
+// 属性仍按名合并（合并语义不受影响）。
+func TestUpsertReportedMonotonicTimestamp(t *testing.T) {
+	s := NewStore()
+	s.UpsertReported("d", "default", map[string]float64{"temperature": 25.5}, 2000)
+	s.UpsertReported("d", "default", map[string]float64{"temperature": 26.0}, 1000) // 乱序：更旧的时间戳
+
+	twin, ok := s.Get("d", "default")
+	if !ok {
+		t.Fatal("影子应存在")
+	}
+	// 时间戳不回退
+	if twin.LastReportedAt != 2000 {
+		t.Errorf("LastReportedAt = %d，期望 2000（单调不回退）", twin.LastReportedAt)
+	}
+	// 属性仍合并（最新写入的值生效，合并语义不变）
+	if twin.Reported["temperature"] != 26.0 {
+		t.Errorf("temperature = %v，期望 26.0（属性合并不受时间戳单调保护影响）", twin.Reported["temperature"])
+	}
+
+	// 后续更新更大的时间戳正常刷新
+	s.UpsertReported("d", "default", map[string]float64{"humidity": 60}, 3000)
+	twin, _ = s.Get("d", "default")
+	if twin.LastReportedAt != 3000 {
+		t.Errorf("LastReportedAt = %d，期望 3000", twin.LastReportedAt)
+	}
+	if twin.Reported["temperature"] != 26.0 {
+		t.Errorf("temperature 应保留为 26.0: %v", twin.Reported["temperature"])
+	}
+}
+
 // TestConcurrentAccess 验证并发安全：多 goroutine 混合读写
 // （配合 go test -race 检测数据竞争）。
 func TestConcurrentAccess(t *testing.T) {

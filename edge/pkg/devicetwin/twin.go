@@ -77,6 +77,13 @@ func NewStore() *TwinStore {
 //   - 仅更新指定属性的期望值，已上报属性（Reported）不受影响；
 //   - namespace 缺省补 "default"；
 //   - deviceName/property 为空时忽略（无法定位写入位置）。
+//
+// Desired 语义澄清（M3A P2-6）：Desired 是「云端的声明」——DeviceCommand
+// 下发的期望值本身，不代表设备已接受或已达成；设备实际状态以 Reported
+// 为准。因此指令执行失败（边缘回 error Ack、云端映射 502）时 Desired
+// 仍保留云端声明（含被设备拒绝的越界值，如 mock sensor 永不收敛的
+// targetTemp），由后续有效指令覆盖——这不是状态分叉，是影子模型
+// 「Desired=声明、Reported=事实」的固有语义。
 func (s *TwinStore) SetDesired(deviceName, namespace, property string, value float64) {
 	if deviceName == "" || property == "" {
 		return
@@ -102,7 +109,8 @@ func (s *TwinStore) SetDesired(deviceName, namespace, property string, value flo
 // 语义：
 //   - 设备影子不存在时自动创建；
 //   - properties 按属性名合并（本次未上报的属性保留原值）；
-//   - reportedAt 是本次数据的采样时间（毫秒），同时刷新 LastReportedAt；
+//   - reportedAt 是本次数据的采样时间（毫秒），刷新 LastReportedAt——
+//     仅当新值更大时生效（单调不回退，M3A P2-4）；
 //   - namespace 缺省补 "default"；
 //   - deviceName 为空或 properties 为空时忽略。
 func (s *TwinStore) UpsertReported(deviceName, namespace string, properties map[string]float64, reportedAt int64) {
@@ -125,7 +133,12 @@ func (s *TwinStore) UpsertReported(deviceName, namespace string, properties map[
 	for k, v := range properties {
 		t.Reported[k] = v
 	}
-	t.LastReportedAt = reportedAt
+	// 单调性保护（M3A P2-4）：乱序上报（网络重排/多采集源/采样时钟回拨）
+	// 不回退 LastReportedAt——只取 max(旧值, 新值)；属性合并语义不受影响
+	// （仍按名合并，后写入的值生效）。
+	if reportedAt > t.LastReportedAt {
+		t.LastReportedAt = reportedAt
+	}
 }
 
 // Get 查询一台设备的影子。

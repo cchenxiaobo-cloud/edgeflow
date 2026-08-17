@@ -327,3 +327,44 @@ func TestAutoAckIgnoresAckAndHeartbeat(t *testing.T) {
 		}
 	}
 }
+
+// TestHandleDownlinkSerializedSameID 验证 P2-4 修复：并发调用 handleDownlink
+// 处理同一条消息时，「检查→执行→标记」在 downlinkMu 内串行化——handler
+// 恰好执行一次、其余命中幂等缓存（配合 -race 运行，证明无数据竞争）。
+// 修复前 isProcessed 与 markProcessed 分别持 procMu，两步之间存在窗口，
+// 并发调用可能重复执行 handler 并污染幂等缓存计数；修复后整体在 downlinkMu
+// 内串行（见 ack.go handleDownlink 注释）。
+func TestHandleDownlinkSerializedSameID(t *testing.T) {
+	client := New(Options{CloudAddr: "ws://127.0.0.1:1", NodeID: "race-node"})
+	defer client.Stop() // 未 Start：直接 Stop 是 no-op，不会卡死
+
+	var mu sync.Mutex
+	calls := 0
+	client.SetMessageHandlerFunc(func(msg *protocol.Message) error {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		return nil
+	})
+
+	msg := newPodSync(t, "race-node", podSyncPayload(t, "add"))
+
+	const workers = 16
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			client.handleDownlink(msg) // 未连接：sendAck 内部 c.Send 返回 error 后只记 Warn
+		}()
+	}
+	wg.Wait()
+
+	if calls != 1 {
+		t.Errorf("handler 调用次数 = %d，期望 1（downlinkMu 串行化 + 幂等去重）", calls)
+	}
+	// 验证幂等缓存已记录该 ID
+	if !client.isProcessed(msg.ID) {
+		t.Errorf("msgID=%s 应已记入幂等缓存", msg.ID)
+	}
+}

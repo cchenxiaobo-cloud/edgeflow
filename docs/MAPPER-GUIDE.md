@@ -73,8 +73,9 @@ type DeviceMapper interface {
 ```
 
 可选接口 `DeviceNameResolver`：一个 Mapper 可管理多台同类设备，实现
-`DeviceNames() []string` 声明自己管理的设备名，注册表据此建立
-`deviceName → Mapper` 路由索引；未实现则退化为"注册名即设备名"。
+`DeviceNames() []string` 声明自己管理的设备名；可选接口 `DeviceNamespaceResolver`：
+实现 `DeviceNamespace() string` 声明设备命名空间（缺省 "default"），注册表据此
+建立 `namespace/deviceName → Mapper` 路由索引；未实现则退化为"注册名即设备名"。
 
 ## 4. MapperRegistry 注册表
 
@@ -82,7 +83,7 @@ type DeviceMapper interface {
 r := mapper.NewRegistry()
 r.Register(m)                    // 注册（重复名/设备名冲突报错，冲突时整体回滚）
 m, ok := r.Get(name)             // 按注册名查询
-m, ok := r.Route(deviceName)     // 按设备名路由（优先设备名索引，回退注册名）
+m, ok := r.Route(namespace, deviceName) // 按 namespace+设备名路由（优先索引，回退注册名）
 r.List()                         // 全部 Mapper（按注册名排序，顺序稳定）
 r.StartAll(ctx) / r.StopAll()    // 批量生命周期管理（单台失败不影响其余，errors.Join 聚合）
 r.Dispatch(cmd)                  // 指令下发入口：路由 + 处理一步到位（DeviceTwin 接入点）

@@ -202,7 +202,7 @@ func TestBuildMapperRegistry(t *testing.T) {
 	if len(reg.List()) != 1 {
 		t.Fatalf("注册 Mapper 数 = %d，期望 1（模拟传感器）", len(reg.List()))
 	}
-	if _, ok := reg.Route("sensor-01"); !ok {
+	if _, ok := reg.Route("default", "sensor-01"); !ok {
 		t.Error("模拟传感器应按设备名 sensor-01 可路由")
 	}
 }
@@ -248,7 +248,7 @@ func TestBuildMapperRegistryModbusGated(t *testing.T) {
 	if _, ok := reg.Get("modbus-mapper"); !ok {
 		t.Error("modbus-mapper 应已注册")
 	}
-	if _, ok := reg.Route("mb-sensor-01"); !ok {
+	if _, ok := reg.Route("default", "mb-sensor-01"); !ok {
 		t.Error("设备 mb-sensor-01 应按设备名可路由")
 	}
 }

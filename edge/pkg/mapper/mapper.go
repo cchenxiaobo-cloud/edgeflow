@@ -2,9 +2,10 @@
 //
 // Mapper 是边缘侧"设备接入"的统一抽象，对标 KubeEdge 的 Mapper 概念：
 // 每种真实设备（Modbus / OPC-UA / MQTT 传感器等）实现 DeviceMapper 接口，
-// 由 MapperRegistry 统一管理生命周期（启动/停止），并按 deviceName 把
-// 云端下发的 DeviceCommand 路由到对应 Mapper、把采集结果聚合成
-// DeviceReport 供 EdgeHub 周期上报。
+// 由 MapperRegistry 统一管理生命周期（启动/停止），并按 namespace+deviceName
+// 把云端下发的 DeviceCommand 路由到对应 Mapper（M3A P2-1：路由键含 namespace，
+// 跨命名空间同名设备互不冲突，与 devicetwin 的影子键设计一致）、把采集结果
+// 聚合成 DeviceReport 供 EdgeHub 周期上报。
 //
 // 与 DeviceTwin 的协作契约（与 DeviceTwin Agent 约定，字段不可改）：
 //   - DeviceCommand（云→边，TypeDeviceCommand 可靠投递）：
@@ -56,10 +57,32 @@ type DeviceMapper interface {
 }
 
 // DeviceNameResolver 是可选接口：Mapper 声明自己管理的设备名列表，
-// 供注册表建立 deviceName → Mapper 的路由索引（按设备名路由的前提）。
+// 供注册表建立 namespace/deviceName → Mapper 的路由索引（按设备名路由的前提）。
 // 未实现该接口的 Mapper 退化为"注册名即设备名"。
 type DeviceNameResolver interface {
 	DeviceNames() []string
+}
+
+// DeviceNamespaceResolver 是可选接口：Mapper 声明自己管理设备的命名空间，
+// 供注册表建立「namespace/deviceName」路由索引（M3A P2-1）。未实现该接口的
+// Mapper 按 defaultNamespace 索引——与 devicetwin.DefaultNamespace、K8s 默认
+// 命名空间一致。实现该接口的 Mapper 可让同名设备在不同命名空间下共存注册、
+// 互不冲突（与 devicetwin.twinKey 的键设计同构）。
+type DeviceNamespaceResolver interface {
+	DeviceNamespace() string
+}
+
+// defaultNamespace 是设备命名空间缺省值（与 devicetwin.DefaultNamespace、
+// K8s 默认命名空间一致）。
+const defaultNamespace = "default"
+
+// deviceKeyOf 构造设备路由键（namespace 缺省补 default，与 devicetwin.twinKey
+// 同构——注册与路由两处使用同一函数，保证键格式一致，见 CODE-REVIEW-M3A P2-1）。
+func deviceKeyOf(namespace, deviceName string) string {
+	if namespace == "" {
+		namespace = defaultNamespace
+	}
+	return namespace + "/" + deviceName
 }
 
 // MapperRegistry 是 Mapper 的线程安全注册表：负责注册/查询/生命周期管理，
@@ -101,25 +124,31 @@ func (r *MapperRegistry) Register(m DeviceMapper) error {
 		return fmt.Errorf("mapper %q 重复注册", name)
 	}
 
-	// 建立设备名路由索引；冲突时回滚已添加的索引
+	// 建立设备名路由索引（键 = namespace/deviceName，见 deviceKeyOf）；
+	// 冲突时回滚已添加的索引
+	ns := defaultNamespace
+	if nsRes, ok := m.(DeviceNamespaceResolver); ok && nsRes.DeviceNamespace() != "" {
+		ns = nsRes.DeviceNamespace()
+	}
 	var added []string
 	if res, ok := m.(DeviceNameResolver); ok {
 		for _, dn := range res.DeviceNames() {
 			if dn == "" {
 				continue
 			}
-			if _, dup := r.byDevice[dn]; dup {
+			key := deviceKeyOf(ns, dn)
+			if _, dup := r.byDevice[key]; dup {
 				for _, a := range added {
 					delete(r.byDevice, a)
 				}
-				return fmt.Errorf("设备名 %q 已被其他 Mapper 注册", dn)
+				return fmt.Errorf("设备 %s 已被其他 Mapper 注册", key)
 			}
-			r.byDevice[dn] = m
-			added = append(added, dn)
+			r.byDevice[key] = m
+			added = append(added, key)
 		}
 	} else {
-		// 退化路径：注册名即设备名
-		r.byDevice[name] = m
+		// 退化路径：注册名即设备名（按 ns 索引）
+		r.byDevice[deviceKeyOf(ns, name)] = m
 	}
 	r.byName[name] = m
 	return nil
@@ -133,12 +162,15 @@ func (r *MapperRegistry) Get(name string) (DeviceMapper, bool) {
 	return m, ok
 }
 
-// Route 按设备名路由到负责该设备的 Mapper：优先设备名索引，
-// 未命中时回退到注册名查找（兼容未实现 DeviceNameResolver 的 Mapper）。
-func (r *MapperRegistry) Route(deviceName string) (DeviceMapper, bool) {
+// Route 按「namespace + 设备名」路由到负责该设备的 Mapper（M3A P2-1：
+// 路由键含 namespace，与 devicetwin 的影子键设计一致——跨命名空间同名
+// 设备互不冲突）：优先 namespace/deviceName 精确索引，未命中时回退到注册名
+// 查找（兼容未实现 DeviceNameResolver 的 Mapper；namespace 缺省归一为
+// default）。
+func (r *MapperRegistry) Route(namespace, deviceName string) (DeviceMapper, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if m, ok := r.byDevice[deviceName]; ok {
+	if m, ok := r.byDevice[deviceKeyOf(namespace, deviceName)]; ok {
 		return m, true
 	}
 	m, ok := r.byName[deviceName]
@@ -185,7 +217,7 @@ func (r *MapperRegistry) StopAll() error {
 // 找不到设备返回错误（调用方应回 Ack code=error，云端可感知）。
 // 这是 DeviceTwin 接入指令下发链路的入口。
 func (r *MapperRegistry) Dispatch(cmd DeviceCommand) (DeviceReport, error) {
-	m, ok := r.Route(cmd.DeviceName)
+	m, ok := r.Route(cmd.Namespace, cmd.DeviceName)
 	if !ok {
 		return DeviceReport{}, fmt.Errorf("设备 %q 未注册任何 Mapper", cmd.DeviceName)
 	}

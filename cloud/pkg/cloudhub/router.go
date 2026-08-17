@@ -106,6 +106,10 @@ func (s *Server) Broadcast(msg *protocol.Message) int {
 //   - Target == "*" → 广播（无节点在线时静默成功，广播本就是尽力而为）
 //   - 其他 Target → 按节点 ID 单播；节点不在线返回 ErrNodeOffline
 //
+// 广播的尽力而为语义（P2-4 闭环）：广播不因个别节点失败而报错——慢客户端
+// 或已断开连接只影响自身计数，无节点在线时送达 0 也算成功。Broadcast 返回
+// 的送达计数仅用于观测（此处记日志），调用方无需处理。
+//
 // 后续云端控制器（EdgeController）只调用本方法，不直接接触连接层。
 func (s *Server) Deliver(msg *protocol.Message) error {
 	if msg == nil {
@@ -115,7 +119,8 @@ func (s *Server) Deliver(msg *protocol.Message) error {
 		return ErrEmptyTarget
 	}
 	if msg.Target == TargetBroadcast {
-		s.Broadcast(msg)
+		sent := s.Broadcast(msg)
+		log.Infof("广播消息投递完成: 送达 %d 个节点（type=%s msgID=%s）", sent, msg.Type, msg.ID)
 		return nil
 	}
 	return s.SendToNode(msg.Target, msg)

@@ -8,18 +8,21 @@ import (
 	"testing"
 )
 
-// fakeMapper 是可编程的测试 Mapper（实现 DeviceMapper + DeviceNameResolver）。
+// fakeMapper 是可编程的测试 Mapper（实现 DeviceMapper + DeviceNameResolver +
+// DeviceNamespaceResolver）。
 type fakeMapper struct {
 	name       string
 	deviceName string
+	ns         string // 设备命名空间（实现 DeviceNamespaceResolver；空 = default）
 	startErr   error
 	stopErr    error
 	mu         sync.Mutex
 	started    bool
 }
 
-func (f *fakeMapper) Name() string          { return f.name }
-func (f *fakeMapper) DeviceNames() []string { return []string{f.deviceName} }
+func (f *fakeMapper) Name() string            { return f.name }
+func (f *fakeMapper) DeviceNames() []string   { return []string{f.deviceName} }
+func (f *fakeMapper) DeviceNamespace() string { return f.ns }
 func (f *fakeMapper) Start(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -139,7 +142,7 @@ func TestRegistryDuplicateRegister(t *testing.T) {
 	if _, ok := r.Get("c"); ok {
 		t.Errorf("设备名冲突后 Mapper c 不应留在注册表（回滚）")
 	}
-	if _, ok := r.Route("dev-a"); !ok {
+	if _, ok := r.Route("default", "dev-a"); !ok {
 		t.Errorf("原有设备名 dev-a 的路由应保留")
 	}
 }
@@ -150,29 +153,74 @@ func TestRegistryRouteByDeviceName(t *testing.T) {
 	if err := r.Register(s); err != nil {
 		t.Fatalf("注册失败: %v", err)
 	}
-	// 按设备名路由（DeviceNameResolver 索引）
-	m, ok := r.Route("sensor-01")
+	// 按设备名路由（DeviceNameResolver 索引；ns 缺省归一为 default）
+	m, ok := r.Route("default", "sensor-01")
 	if !ok || m != s {
-		t.Errorf("Route(sensor-01) 应命中 mock-sensor Mapper")
+		t.Errorf("Route(default, sensor-01) 应命中 mock-sensor Mapper")
+	}
+	// namespace 缺省归一为 default
+	if m, ok := r.Route("", "sensor-01"); !ok || m != s {
+		t.Errorf("Route(\"\", sensor-01) 应归一为 default 命中")
 	}
 	// 按注册名路由（回退路径）
-	if m, ok := r.Route("mock-sensor"); !ok || m != s {
-		t.Errorf("Route(mock-sensor) 回退到注册名查找应命中")
+	if m, ok := r.Route("default", "mock-sensor"); !ok || m != s {
+		t.Errorf("Route(default, mock-sensor) 回退到注册名查找应命中")
 	}
 	// 未注册设备
-	if _, ok := r.Route("sensor-99"); ok {
-		t.Errorf("Route(未注册设备) 不应命中")
+	if _, ok := r.Route("default", "sensor-99"); ok {
+		t.Errorf("Route(default, sensor-99) 不应命中")
 	}
 	// 未实现 DeviceNameResolver 的 Mapper：注册名即设备名
 	p := &plainMapper{name: "plain"}
 	if err := r.Register(p); err != nil {
 		t.Fatalf("注册 plain Mapper 失败: %v", err)
 	}
-	if m, ok := r.Route("plain"); !ok || m != p {
-		t.Errorf("Route(plain) 应按注册名命中 plain Mapper")
+	if m, ok := r.Route("default", "plain"); !ok || m != p {
+		t.Errorf("Route(default, plain) 应按注册名命中 plain Mapper")
 	}
-	if _, ok := r.Route("plain-dev"); ok {
-		t.Errorf("plain Mapper 未声明设备名，Route(plain-dev) 不应命中")
+	if _, ok := r.Route("default", "plain-dev"); ok {
+		t.Errorf("plain Mapper 未声明设备名，Route(default, plain-dev) 不应命中")
+	}
+}
+
+// TestRegistryRouteByNamespace 验证 namespace 感知路由（M3A P2-1）：
+// 同名设备在不同命名空间可共存注册，Route 按 namespace+deviceName 精确命中。
+func TestRegistryRouteByNamespace(t *testing.T) {
+	r := NewRegistry()
+	def := &fakeMapper{name: "m-def", deviceName: "sensor", ns: "default"}
+	fac := &fakeMapper{name: "m-fac", deviceName: "sensor", ns: "factory-a"}
+	if err := r.Register(def); err != nil {
+		t.Fatalf("注册 default/sensor 失败: %v", err)
+	}
+	if err := r.Register(fac); err != nil {
+		t.Fatalf("同名设备不同 namespace 应可共存: %v", err)
+	}
+	// 精确路由
+	if m, ok := r.Route("default", "sensor"); !ok || m != def {
+		t.Errorf("Route(default, sensor) 应命中 def")
+	}
+	if m, ok := r.Route("factory-a", "sensor"); !ok || m != fac {
+		t.Errorf("Route(factory-a, sensor) 应命中 fac")
+	}
+	// namespace 缺省归一为 default
+	if m, ok := r.Route("", "sensor"); !ok || m != def {
+		t.Errorf("Route(\"\", sensor) 应归一为 default 命中 def")
+	}
+	// 不存在的 namespace 不应命中（也不回退到注册名——注册名是 "m-def"/"m-fac"）
+	if _, ok := r.Route("other", "sensor"); ok {
+		t.Errorf("Route(other, sensor) 不应命中")
+	}
+	// Dispatch 带 namespace 路由
+	rep, err := r.Dispatch(DeviceCommand{DeviceName: "sensor", Namespace: "factory-a", Property: "p", Value: 1})
+	if err != nil {
+		t.Fatalf("Dispatch(factory-a/sensor) 应成功: %v", err)
+	}
+	if rep.DeviceName != "sensor" {
+		t.Errorf("Dispatch 返回 DeviceName = %q, want sensor", rep.DeviceName)
+	}
+	// Dispatch 不存在的 namespace 应报错
+	if _, err := r.Dispatch(DeviceCommand{DeviceName: "sensor", Namespace: "other", Property: "p"}); err == nil {
+		t.Errorf("Dispatch(other/sensor) 应报错")
 	}
 }
 
@@ -255,7 +303,7 @@ func TestRegistryConcurrentAccess(t *testing.T) {
 				if _, ok := r.Get(name); !ok {
 					t.Errorf("并发 Get(%q) 应命中", name)
 				}
-				if _, ok := r.Route(dev); !ok {
+				if _, ok := r.Route("default", dev); !ok {
 					t.Errorf("并发 Route(%q) 应命中", dev)
 				}
 				_ = r.List()

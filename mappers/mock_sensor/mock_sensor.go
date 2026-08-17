@@ -115,6 +115,12 @@ type mqttTelemetryPayload struct {
 
 // New 创建模拟传感器 Mapper。deviceName 是设备名（注册表路由键）。
 // 初始温度/湿度在合法范围内随机生成，目标温度取默认值。
+//
+// 单设备设计（M3A P2-2 结论）：一个 MockSensor 实例只管理一台设备
+// （deviceName 在 New 时固定，Name() 返回常量 "mock-sensor"——同一注册表
+// 无法注册第二个实例）。多设备场景需注册多个 Mapper 实例（各配不同
+// deviceName 与注册名），或扩展 DeviceNames() 支持多设备；当前单设备
+// 场景够用，暂不扩展。
 func New(deviceName string, opts ...Option) *MockSensor {
 	m := &MockSensor{
 		deviceName: deviceName,
@@ -168,6 +174,10 @@ func (m *MockSensor) Name() string { return DefaultName }
 func (m *MockSensor) DeviceNames() []string {
 	return []string{m.deviceName}
 }
+
+// DeviceNamespace 返回设备所属命名空间（注册表据此建立 namespace/deviceName
+// 路由索引，M3A P2-1；默认 "default"，可通过 WithNamespace 覆盖）。
+func (m *MockSensor) DeviceNamespace() string { return m.namespace }
 
 // TargetTemp 返回当前目标温度（供 DeviceTwin / 测试观测指令是否生效）。
 func (m *MockSensor) TargetTemp() float64 {
@@ -376,6 +386,11 @@ func (m *MockSensor) Collect() (map[string]float64, error) {
 //
 // 返回处理后的最新状态快照（DeviceReport）。指令设备名与自身不符、
 // property 缺失或未知属性均返回错误。
+//
+// 空 deviceName 语义（M3A P2-3 结论）：cmd.DeviceName 为空时视为匹配本设备
+// ——依赖 Dispatch 按名路由的隐式约定（空名在 Route 阶段即被拒绝，到不了
+// HandleCommand），此处宽松校验仅为防御直接调用。收紧时在 Dispatch 入口
+// 加显式空名校验即可。
 func (m *MockSensor) HandleCommand(cmd mapper.DeviceCommand) (mapper.DeviceReport, error) {
 	if cmd.DeviceName != "" && cmd.DeviceName != m.deviceName {
 		return mapper.DeviceReport{}, fmt.Errorf("指令设备名 %q 与本 Mapper 设备 %q 不符",

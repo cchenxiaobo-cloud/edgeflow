@@ -137,6 +137,10 @@ func Open(dbPath string) (*Store, error) {
 func (s *Store) init() error {
 	// WAL 模式：写事务不阻塞读、崩溃后自动恢复，边缘端长期运行更可靠。
 	// 该设置持久化在数据库文件头，重开后依然生效。
+	// WAL checkpoint 策略（M1B P2-2 结论）：无显式 wal_checkpoint 调用或定时
+	// 策略——本仓库写入量极低（每秒几次量级，单连接），SQLite 默认的自动
+	// checkpoint（WAL 文件达到阈值页数时触发）足够及时，无需显式策略；
+	// 未来写入量上升（如 Pod 状态高频落盘）时再评估显式 checkpoint。
 	var mode string
 	if err := s.db.QueryRow("PRAGMA journal_mode=WAL").Scan(&mode); err != nil {
 		return fmt.Errorf("开启 WAL 日志模式失败: %w", err)

@@ -303,12 +303,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		log.Errorf("HTTP 监听 %s 失败: %v", addr, err)
 		return 1
 	}
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           m.Middleware(mux), // 最外层：统计全部 HTTP 请求（含 /healthz、/metrics）
-		ReadHeaderTimeout: 5 * time.Second,   // 防止慢速连接长时间占用连接
-		ReadTimeout:       10 * time.Second,  // 防止慢速读取长时间占用连接
-	}
+	srv := newHTTPServer(addr, m.Middleware(mux)) // 最外层：统计全部 HTTP 请求（含 /healthz、/metrics）
 
 	// 配置热重载（WBS 2.7）：SIGHUP 强制重载 + 每 60s 检查文件 mtime 自动重载。
 	// 热生效范围与策略见 applyConfigReload：HTTP 端口热切换监听；
@@ -326,6 +321,32 @@ func run(args []string, stdout, stderr io.Writer) int {
 		opts.config, config.DefaultWatchInterval)
 
 	return serve(srv, ln, hub, nc)
+}
+
+// newHTTPServer 构造 cloudcore 的 HTTP 服务（超时配置集中于此，便于
+// 单测与审查，见 TestNewHTTPServerTimeouts）。
+//
+// 超时配置（M1B P2-5）：
+//   - ReadHeaderTimeout 5s：防止慢速建立连接长时间占用连接；
+//   - ReadTimeout 10s：防止慢速读取长时间占用连接；
+//   - WriteTimeout 15s：防止慢客户端（读响应缓慢/停滞）无限占用写路径——
+//     本服务全部响应均为短 JSON（API/healthz/metrics），15s 远超正常编码
+//     耗时；CloudHub 的 WebSocket 长连接是独立 Server，不受此超时影响。
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+	}
+}
+
+// logEncodeError 记录响应编码失败（M1B P2-6）：典型场景是客户端已断开
+// （响应已不可送达，重试无意义），因此只记 Warn 日志便于排查连接异常，
+// 不影响正常请求流程（状态码已在编码前写入，无法也无须改写）。
+func logEncodeError(handler string, err error) {
+	log.Warnf("%s 响应编码失败（客户端可能已断开）: %v", handler, err)
 }
 
 // options 是命令行参数解析结果。
@@ -481,7 +502,9 @@ func (api *nodeAPI) syncPod(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"status":"ok","acked":true}`))
+	if _, err := w.Write([]byte(`{"status":"ok","acked":true}`)); err != nil {
+		logEncodeError("syncPod", err)
+	}
 }
 
 // configSyncRequest 是云端下发 ConfigMap/Secret 配置的请求体（M2：WBS 6.2）。
@@ -573,7 +596,9 @@ func (api *nodeAPI) syncConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"status":"ok","acked":true}`))
+	if _, err := w.Write([]byte(`{"status":"ok","acked":true}`)); err != nil {
+		logEncodeError("syncConfig", err)
+	}
 }
 
 func serve(srv *http.Server, ln net.Listener, hub *cloudhub.Server, nc *nodecontroller.NodeController) int {
@@ -730,8 +755,9 @@ type nodeAPI struct {
 // listNodes 处理 GET /api/v1/nodes：返回全部节点（JSON 数组，按 NodeID 排序）。
 func (a *nodeAPI) listNodes(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	// 编码失败（如客户端已断开）时无需额外处理，忽略即可
-	_ = json.NewEncoder(w).Encode(a.reg.List())
+	if err := json.NewEncoder(w).Encode(a.reg.List()); err != nil {
+		logEncodeError("listNodes", err)
+	}
 }
 
 // getNode 处理 GET /api/v1/nodes/{nodeID}：返回单节点详情；节点不存在时 404。
@@ -741,13 +767,15 @@ func (a *nodeAPI) getNode(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
-		// 编码失败（如客户端已断开）时无需额外处理，忽略即可
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "node not found", "nodeID": nodeID})
+		if err := json.NewEncoder(w).Encode(map[string]string{"error": "node not found", "nodeID": nodeID}); err != nil {
+			logEncodeError("getNode", err)
+		}
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	// 编码失败（如客户端已断开）时无需额外处理，忽略即可
-	_ = json.NewEncoder(w).Encode(info)
+	if err := json.NewEncoder(w).Encode(info); err != nil {
+		logEncodeError("getNode", err)
+	}
 }
 
 // edgeNodeList 是 GET /api/v1/edgenodes 的响应形态。
@@ -767,11 +795,13 @@ type edgeNodeList struct {
 func (a *nodeAPI) listEdgeNodes(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	// 编码失败（如客户端已断开）时无需额外处理，忽略即可
-	_ = json.NewEncoder(w).Encode(edgeNodeList{
+	if err := json.NewEncoder(w).Encode(edgeNodeList{
 		Kind:       "EdgeNodeList",
 		APIVersion: v1alpha1.SchemeGroupVersion.String(),
 		Items:      a.reg.ListEdgeNodes(),
-	})
+	}); err != nil {
+		logEncodeError("listEdgeNodes", err)
+	}
 }
 
 // podStatusList 是 Pod 状态查询 API 的响应形态。
@@ -796,11 +826,13 @@ func (a *nodeAPI) listPods(w http.ResponseWriter, _ *http.Request) {
 		items = a.pods.ListAll()
 	}
 	// 编码失败（如客户端已断开）时无需额外处理，忽略即可
-	_ = json.NewEncoder(w).Encode(podStatusList{
+	if err := json.NewEncoder(w).Encode(podStatusList{
 		Kind:       "PodStatusList",
 		APIVersion: "v1",
 		Items:      items,
-	})
+	}); err != nil {
+		logEncodeError("listPods", err)
+	}
 }
 
 // listNodePods 处理 GET /api/v1/nodes/{nodeID}/pods：返回单节点的 Pod 状态。
@@ -814,26 +846,29 @@ func (a *nodeAPI) listNodePods(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if a.reg == nil {
 		w.WriteHeader(http.StatusNotFound)
-		// 编码失败（如客户端已断开）时无需额外处理，忽略即可
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "node not found", "nodeID": nodeID})
+		if err := json.NewEncoder(w).Encode(map[string]string{"error": "node not found", "nodeID": nodeID}); err != nil {
+			logEncodeError("listNodePods", err)
+		}
 		return
 	}
 	if _, ok := a.reg.Get(nodeID); !ok {
 		w.WriteHeader(http.StatusNotFound)
-		// 编码失败（如客户端已断开）时无需额外处理，忽略即可
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "node not found", "nodeID": nodeID})
+		if err := json.NewEncoder(w).Encode(map[string]string{"error": "node not found", "nodeID": nodeID}); err != nil {
+			logEncodeError("listNodePods", err)
+		}
 		return
 	}
 	items := make([]podstatus.PodStatus, 0)
 	if a.pods != nil {
 		items = a.pods.ListByNode(nodeID)
 	}
-	// 编码失败（如客户端已断开）时无需额外处理，忽略即可
-	_ = json.NewEncoder(w).Encode(podStatusList{
+	if err := json.NewEncoder(w).Encode(podStatusList{
 		Kind:       "PodStatusList",
 		APIVersion: "v1",
 		Items:      items,
-	})
+	}); err != nil {
+		logEncodeError("listNodePods", err)
+	}
 }
 
 // getEdgeNode 处理 GET /api/v1/edgenodes/{nodeID}：返回单个 EdgeNode
@@ -844,11 +879,14 @@ func (a *nodeAPI) getEdgeNode(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
-		// 编码失败（如客户端已断开）时无需额外处理，忽略即可
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "node not found", "nodeID": nodeID})
+		if err := json.NewEncoder(w).Encode(map[string]string{"error": "node not found", "nodeID": nodeID}); err != nil {
+			logEncodeError("getEdgeNode", err)
+		}
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	// Get 返回的是拷贝，取地址安全；编码失败（如客户端已断开）时忽略即可
-	_ = json.NewEncoder(w).Encode(a.reg.ToEdgeNode(&info))
+	// Get 返回的是拷贝，取地址安全
+	if err := json.NewEncoder(w).Encode(a.reg.ToEdgeNode(&info)); err != nil {
+		logEncodeError("getEdgeNode", err)
+	}
 }

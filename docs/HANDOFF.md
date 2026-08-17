@@ -1,14 +1,14 @@
 # EdgeFlow 开发者指南（v0.1.0 定稿）
 
 > - 对应 ROADMAP WBS 9.4「开发者指南」：代码结构、开发流程、测试规范、贡献指南、常见任务。
-> - 状态：✅ **v0.1.0 定稿**（2026-08-14）。评审记录见 `docs/REVIEWS.md`（9.4 评审归档）。
+> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.1.1 发布轮已更新**（2026-08-18）。评审记录见 `docs/REVIEWS.md`（9.4 评审归档）。
 > - 目的：让后续开发者（包括零基础接手人）能按本文档独立接过开发工作。
 
 ---
 
 ## 1. 当前状态一句话
 
-EdgeFlow v0.1.0 已完成 M0-M4 主体能力：云边通信链路（CloudHub/EdgeHub + 可靠投递）、Edged 容器编排（DockerRuntime 多副本 + 健康自愈）、设备链路（DeviceTwin + Mapper 框架 + mock_sensor + Modbus TCP Mapper）、NodeController 心跳超时、keadm 安装 CLI、多架构镜像与 Helm Chart。**M5 前置（WBS 9.2-9.5 文档与端到端示例）已完成定稿**：`bash examples/demo.sh` 一键跑通温度传感器端到端 Demo（DEMO PASS）。
+EdgeFlow v0.1.1 已发布（2026-08-18）：在 v0.1.0 主体能力（M0-M4 云边通信/容器编排/设备链路/keadm/多架构镜像与 Helm Chart）基础上，本轮完成审计 3 项中等安全风险修复（/ocsp 限流+缓存、OCSP 新鲜度校验、CRL 降级日志）与 P2 遗留闭环（WriteTimeout/Encode 日志/namespace 路由/LastReportedAt 单调性等），预发冒烟签核通过、制品归档（release/v0.1.1/ 12 文件 + 双架构镜像）、发布保障三件套与两套手册（用户手册 v0.1.2 / 解决方案手册 v1.0.2）同步入档。**M5 前置（WBS 9.2-9.5 文档与端到端示例）已完成定稿**：`bash examples/demo.sh` 一键跑通温度传感器端到端 Demo（DEMO PASS）。v0.1.1 变更详见 `docs/RELEASE-NOTES-v011.md`。
 
 ## 2. 环境配置（接手第一步）
 

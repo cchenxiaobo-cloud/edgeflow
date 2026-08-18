@@ -488,6 +488,73 @@ func TestDockerRuntimeSmoke(t *testing.T) {
 
 // ---------- 小工具 ----------
 
+// TestResourcesMatchErrorPaths 验证 resourcesMatch 的失败路径：
+// HostConfig 输出字段数不对/数值解析失败 → 报错（不误判为漂移/匹配）；
+// 容器不存在与无 limit 期望 → (true, nil)（交给创建分支/跳过检查）。
+func TestResourcesMatchErrorPaths(t *testing.T) {
+	pod := podNginx()
+	pod.Resources = metamanager.ResourceRequirements{CPULimit: "250m", MemoryLimit: "64Mi"}
+
+	t.Run("HostConfig 输出垃圾（字段数不对）→报错", func(t *testing.T) {
+		d := newTestDocker(fakeRunner([]any{"only-one-field\n", nil}))
+		ok, err := d.resourcesMatch(pod, 0)
+		if err == nil {
+			t.Fatal("字段数不对应报错")
+		}
+		if ok {
+			t.Error("报错时不应返回匹配")
+		}
+		if !strings.Contains(err.Error(), "无法解析") {
+			t.Errorf("错误文案不符: %v", err)
+		}
+	})
+
+	t.Run("HostConfig 数值解析失败→报错", func(t *testing.T) {
+		d := newTestDocker(fakeRunner([]any{"abc def\n", nil}))
+		ok, err := d.resourcesMatch(pod, 0)
+		if err == nil {
+			t.Fatal("数值解析失败应报错")
+		}
+		if ok {
+			t.Error("报错时不应返回匹配")
+		}
+		if !strings.Contains(err.Error(), "数值解析失败") {
+			t.Errorf("错误文案不符: %v", err)
+		}
+	})
+
+	t.Run("容器不存在→(true,nil) 交给创建分支", func(t *testing.T) {
+		d := newTestDocker(fakeRunner([]any{"", errFakeNoObject}))
+		ok, err := d.resourcesMatch(pod, 0)
+		if err != nil || !ok {
+			t.Errorf("容器不存在应返回 (true, nil)，实际 (%v, %v)", ok, err)
+		}
+	})
+
+	t.Run("期望无 limit→(true,nil) 且不做 inspect", func(t *testing.T) {
+		called := false
+		d := newTestDocker(func(_ context.Context, _ ...string) (string, error) {
+			called = true
+			return "", nil
+		})
+		ok, err := d.resourcesMatch(podNginx(), 0)
+		if err != nil || !ok {
+			t.Errorf("无 limit 应返回 (true, nil)，实际 (%v, %v)", ok, err)
+		}
+		if called {
+			t.Error("无 limit 期望时不应发起 HostConfig inspect")
+		}
+	})
+
+	t.Run("daemon 不可用→错误透传", func(t *testing.T) {
+		d := newTestDocker(fakeRunner([]any{"", errFakeDaemonDown}))
+		ok, err := d.resourcesMatch(pod, 0)
+		if err == nil || ok {
+			t.Errorf("daemon 不可用应透传错误，实际 (%v, %v)", ok, err)
+		}
+	})
+}
+
 // podNginx 构造测试用 Pod。
 func podNginx() metamanager.Pod {
 	return metamanager.Pod{Namespace: "default", Name: "nginx", Image: "nginx:1.27"}

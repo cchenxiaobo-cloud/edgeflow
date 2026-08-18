@@ -365,9 +365,10 @@ type PodSyncPayload struct {
 }
 
 // handlePodSync 处理一条 PodSync 下发消息：
-//   - add/update → MetaManager.SavePod（Pod JSON 原样落盘）；
+//   - add/update → 资源校验（WBS 6.5：request≤limit + 超卖率）后
+//     MetaManager.SavePod（Pod JSON 原样落盘）；
 //   - delete → 从 pod 对象提取 namespace/name 后 MetaManager.DeletePod；
-//   - 解析/存储失败返回 error，EdgeHub 自动回 Ack code=error。
+//   - 解析/校验/存储失败返回 error，EdgeHub 自动回 Ack code=error。
 func handlePodSync(store *metamanager.Store, msg *protocol.Message) error {
 	var payload PodSyncPayload
 	if err := msg.DecodePayload(&payload); err != nil {
@@ -376,6 +377,10 @@ func handlePodSync(store *metamanager.Store, msg *protocol.Message) error {
 	podJSON := string(payload.Pod)
 	switch payload.Operation {
 	case "add", "update":
+		// WBS 6.5 资源调度：落盘前的准入检查（超卖拒绝 → 云端收到 error Ack）
+		if err := admitPodResources(store, payload.Operation, podJSON); err != nil {
+			return err
+		}
 		if err := store.SavePod(podJSON); err != nil {
 			return fmt.Errorf("保存 Pod 元数据失败: %w", err)
 		}
@@ -402,4 +407,76 @@ func handlePodSync(store *metamanager.Store, msg *protocol.Message) error {
 	default:
 		return fmt.Errorf("未知的 PodSync operation: %q", payload.Operation)
 	}
+}
+
+// admitPodResources 是 PodSync add/update 的资源准入检查（WBS 6.5 v0.2.0）：
+//   - request ≤ limit 校验（与云端前置校验同规则，边缘兜底）；
+//   - 超卖率校验：节点容量（可配置/探测）→ 已部署 request 求和 →
+//     新请求超出超卖率上限（默认 CPU 150%/内存 150%，环境变量可调）→ 拒绝。
+//
+// 拒绝时返回以 resource.ErrResourceExhausted 为前缀的错误，云端据此
+// 返回 409（超出节点资源）而非 502。
+func admitPodResources(store *metamanager.Store, operation, podJSON string) error {
+	var pod metamanager.Pod
+	if err := json.Unmarshal([]byte(podJSON), &pod); err != nil {
+		return fmt.Errorf("解析 Pod 元数据失败: %w", err)
+	}
+
+	// request ≤ limit（云端已前置校验，这里兜底防御）
+	if err := edged.ValidateRequestLimit(pod.Resources); err != nil {
+		return err
+	}
+
+	// 已部署 workload 的 request 求和（含副本乘数）
+	pods, err := listStoredPods(store)
+	if err != nil {
+		return fmt.Errorf("读取已部署 Pod 列表失败: %w", err)
+	}
+	// update 时排除同名 Pod 的旧值（避免把旧版本 request 重复计入）
+	if operation == "update" {
+		filtered := pods[:0]
+		for _, p := range pods {
+			if p.Name == pod.Name && normalizeNS(p.Namespace) == normalizeNS(pod.Namespace) {
+				continue
+			}
+			filtered = append(filtered, p)
+		}
+		pods = filtered
+	}
+	existingCPU, existingMem := edged.SumPodRequests(pods)
+
+	if err := edged.CheckOvercommit(pod.Resources, existingCPU, existingMem,
+		edged.DetectNodeCapacity(), edged.DefaultOvercommitRates()); err != nil {
+		return err
+	}
+	return nil
+}
+
+// normalizeNS 把空命名空间归一为 "default"（与 metamanager 的 key 派生规则一致）。
+func normalizeNS(ns string) string {
+	if ns == "" {
+		return "default"
+	}
+	return ns
+}
+
+// listStoredPods 读取全部已落盘 Pod 元数据；脏数据跳过（不阻断准入检查）。
+func listStoredPods(store *metamanager.Store) ([]metamanager.Pod, error) {
+	raw, err := store.ListPods()
+	if err != nil {
+		return nil, err
+	}
+	pods := make([]metamanager.Pod, 0, len(raw))
+	for _, j := range raw {
+		var p metamanager.Pod
+		if err := json.Unmarshal([]byte(j), &p); err != nil {
+			log.Warnf("admitPodResources: 跳过无法解析的 Pod 元数据: %v", err)
+			continue
+		}
+		if p.Name == "" {
+			continue
+		}
+		pods = append(pods, p)
+	}
+	return pods, nil
 }

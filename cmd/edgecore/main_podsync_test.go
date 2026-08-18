@@ -145,3 +145,32 @@ func TestHandlePodSyncDeleteMissingName(t *testing.T) {
 		t.Errorf("错误文案不符: %v", err)
 	}
 }
+
+// TestHandlePodSyncUpdateNamespaceNormalization 验证：update 排除同名 Pod 时
+// 空 namespace 与 "default" 视为等价（normalizeNS 归一，与 metamanager 的
+// key 派生规则一致），旧值不会被重复计入超卖校验。
+// 若未归一：5500+5900=11400m > 6000m 上限 → 误拒；归一后 5900m ≤ 6000m → 允许。
+func TestHandlePodSyncUpdateNamespaceNormalization(t *testing.T) {
+	for k, v := range map[string]string{
+		"EDGEFLOW_EDGECORE_NODE_CPU_MILLI":         "4000",
+		"EDGEFLOW_EDGECORE_NODE_MEMORY_BYTES":      "8589934592",
+		"EDGEFLOW_EDGECORE_OVERCOMMIT_CPU_RATE":    "1.5",
+		"EDGEFLOW_EDGECORE_OVERCOMMIT_MEMORY_RATE": "1.5",
+	} {
+		t.Setenv(k, v)
+	}
+	s := newPodSyncStore(t)
+
+	// 旧值：namespace 省略（落盘 key 归一为 default），5500m（2 副本 × 2750m）
+	oldPod := `{"name":"big","image":"nginx:1.25","replicas":2,` +
+		`"resources":{"cpuRequest":"2750m","cpuLimit":"2750m"}}`
+	if err := handlePodSync(s, podSyncMsg(t, "add", oldPod)); err != nil {
+		t.Fatalf("add 失败: %v", err)
+	}
+	// 新值：namespace 显式 "default"，5900m（2 副本 × 2950m）
+	newPod := `{"name":"big","namespace":"default","image":"nginx:1.26","replicas":2,` +
+		`"resources":{"cpuRequest":"2950m","cpuLimit":"2950m"}}`
+	if err := handlePodSync(s, podSyncMsg(t, "update", newPod)); err != nil {
+		t.Fatalf("update 排除空 namespace 旧值后应允许，实际: %v", err)
+	}
+}

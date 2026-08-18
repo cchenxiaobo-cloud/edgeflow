@@ -35,6 +35,22 @@ type Pod struct {
 	Namespace string `json:"namespace"`
 	Image     string `json:"image"`
 	Replicas  int    `json:"replicas"`
+	// Resources 是资源诉求（WBS 6.5 资源调度，新增字段，向后兼容：
+	// 旧云端/旧数据无此字段时为零值 = 不限制）。
+	Resources ResourceRequirements `json:"resources,omitempty"`
+}
+
+// ResourceRequirements 描述 workload 对 CPU 与内存的资源诉求（WBS 6.5，
+// 新增字段，只增不改）。字段名对齐 K8s 习惯（resources.requests.cpu 等），
+// 值格式沿用 K8s 习惯（cpu "250m"、memory "64Mi"）。
+//
+// 默认值语义：全部字段零值（空字符串）= 不限制——不参与超卖校验，
+// 也不传给 docker 资源参数；旧版负载/旧云端下发的 Pod 不受影响。
+type ResourceRequirements struct {
+	CPURequest    string `json:"cpuRequest,omitempty"`
+	CPULimit      string `json:"cpuLimit,omitempty"`
+	MemoryRequest string `json:"memoryRequest,omitempty"`
+	MemoryLimit   string `json:"memoryLimit,omitempty"`
 }
 
 // SavePod 把 Pod 的 JSON 表示落盘（PodSync operation=add/update 时调用）。

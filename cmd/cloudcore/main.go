@@ -37,6 +37,7 @@ import (
 	"edgeflow/pkg/httpx"
 	"edgeflow/pkg/log"
 	"edgeflow/pkg/protocol"
+	"edgeflow/pkg/resource"
 	"edgeflow/pkg/version"
 )
 
@@ -439,6 +440,71 @@ type podSpec struct {
 	Namespace string `json:"namespace"`
 	Image     string `json:"image"`
 	Replicas  int    `json:"replicas"`
+	// Resources 是资源诉求（WBS 6.5 资源调度，新增可选字段，向后兼容：
+	// 旧客户端不传时为零值 = 不限制）。格式沿用 K8s 习惯：
+	// cpu "250m"、memory "64Mi"。
+	Resources podResources `json:"resources,omitempty"`
+}
+
+// podResources 是 pod 资源诉求描述（与边缘 metamanager.ResourceRequirements
+// 字段一一对应，云边契约只增不改；零值 = 不限制）。
+type podResources struct {
+	CPURequest    string `json:"cpuRequest,omitempty"`
+	CPULimit      string `json:"cpuLimit,omitempty"`
+	MemoryRequest string `json:"memoryRequest,omitempty"`
+	MemoryLimit   string `json:"memoryLimit,omitempty"`
+}
+
+// validateResources 云端前置校验资源字段（fail-fast，省一轮可靠投递往返）：
+//   - request ≤ limit（CPU/内存分别校验）；
+//   - 资源量格式合法（解析失败视为非法请求）。
+//
+// 返回错误时调用方应回 400。
+func (r podResources) validateResources() error {
+	// CPU request ≤ limit
+	if r.CPURequest != "" && r.CPULimit != "" {
+		req, err := resource.ParseCPU(r.CPURequest)
+		if err != nil {
+			return fmt.Errorf("resources.cpuRequest 无效: %w", err)
+		}
+		lim, err := resource.ParseCPU(r.CPULimit)
+		if err != nil {
+			return fmt.Errorf("resources.cpuLimit 无效: %w", err)
+		}
+		if req > lim {
+			return fmt.Errorf("CPU request (%s) 不能超过 CPU limit (%s)", r.CPURequest, r.CPULimit)
+		}
+	} else {
+		// 只传单边时也校验格式（非法格式在边缘也会失败，云端早失败体验更好）
+		if _, err := resource.ParseCPU(r.CPURequest); err != nil {
+			return fmt.Errorf("resources.cpuRequest 无效: %w", err)
+		}
+		if _, err := resource.ParseCPU(r.CPULimit); err != nil {
+			return fmt.Errorf("resources.cpuLimit 无效: %w", err)
+		}
+	}
+	// Memory request ≤ limit
+	if r.MemoryRequest != "" && r.MemoryLimit != "" {
+		req, err := resource.ParseMemory(r.MemoryRequest)
+		if err != nil {
+			return fmt.Errorf("resources.memoryRequest 无效: %w", err)
+		}
+		lim, err := resource.ParseMemory(r.MemoryLimit)
+		if err != nil {
+			return fmt.Errorf("resources.memoryLimit 无效: %w", err)
+		}
+		if req > lim {
+			return fmt.Errorf("Memory request (%s) 不能超过 Memory limit (%s)", r.MemoryRequest, r.MemoryLimit)
+		}
+	} else {
+		if _, err := resource.ParseMemory(r.MemoryRequest); err != nil {
+			return fmt.Errorf("resources.memoryRequest 无效: %w", err)
+		}
+		if _, err := resource.ParseMemory(r.MemoryLimit); err != nil {
+			return fmt.Errorf("resources.memoryLimit 无效: %w", err)
+		}
+	}
+	return nil
 }
 
 // syncPod 通过可靠投递向指定边缘节点下发 PodSync 消息（WBS 4.6 端到端入口）。
@@ -475,6 +541,14 @@ func (api *nodeAPI) syncPod(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"pod.image is required for add/update"}`, http.StatusBadRequest)
 		return
 	}
+	// 资源字段前置校验（WBS 6.5）：request≤limit + 格式合法性；
+	// delete 操作不携带资源字段，跳过校验
+	if req.Operation != "delete" {
+		if err := req.Pod.Resources.validateResources(); err != nil {
+			http.Error(w, `{"error":"invalid resources: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+	}
 
 	msg, err := protocol.NewMessage(protocol.TypePodSync, "cloud", nodeID, req)
 	if err != nil {
@@ -492,8 +566,22 @@ func (api *nodeAPI) syncPod(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, cloudhub.ErrAckFailed) {
-			// 边缘明确回 error Ack（P2-2）：消息已送达但被拒绝，
-			// 与「没送达」（404/504）语义不同，映射 502 Bad Gateway。
+			// 边缘明确回 error Ack（P2-2）：消息已送达但被拒绝。
+			// WBS 6.5：错误带资源耗尽标记（resource.ErrResourceExhausted）
+			// 时映射 409（超出节点资源），语义区别于通用边缘拒绝（502）。
+			if strings.Contains(err.Error(), resource.ErrResourceExhausted) {
+				// 错误文案可能包含引号/反斜杠等 JSON 敏感字符：用 json.Marshal
+				// 构造响应体，避免裸拼字符串破坏 JSON 结构（P1-m1）。
+				body, merr := json.Marshal(map[string]string{
+					"error": resource.ErrResourceExhausted + ": exceeds node resources (" + err.Error() + ")",
+				})
+				if merr != nil {
+					http.Error(w, `{"error":"marshal error response failed"}`, http.StatusInternalServerError)
+					return
+				}
+				http.Error(w, string(body), http.StatusConflict)
+				return
+			}
 			http.Error(w, `{"error":"edge rejected ack"}`, http.StatusBadGateway)
 			return
 		}

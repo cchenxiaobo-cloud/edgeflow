@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"edgeflow/edge/pkg/metamanager"
+	"edgeflow/pkg/resource"
 )
 
 // defaultExecTimeout 是每次 docker 命令调用的超时上限。
@@ -161,13 +162,26 @@ func (d *DockerRuntime) EnsureRunning(pod metamanager.Pod, index int) error {
 		if ierr != nil {
 			return ierr
 		}
-		if ok {
-			return nil // 幂等：已运行且镜像一致
+		if !ok {
+			if err := d.EnsureStopped(pod, index); err != nil {
+				return fmt.Errorf("镜像漂移重建 %s 时停止旧容器失败: %w", name, err)
+			}
+			return d.EnsureRunning(pod, index) // 递归：容器已删除，走 Absent 分支重建
 		}
-		if err := d.EnsureStopped(pod, index); err != nil {
-			return fmt.Errorf("镜像漂移重建 %s 时停止旧容器失败: %w", name, err)
+		// 资源漂移检测（WBS 6.5）：镜像一致但资源 limit 不一致 → 同样重建。
+		// 只在期望带 limit 时检查（不带 limit 的 Pod 不触发额外 inspect，
+		// 兼容既有镜像漂移语义与旧测试）。
+		rok, rerr := d.resourcesMatch(pod, index)
+		if rerr != nil {
+			return rerr
 		}
-		return d.EnsureRunning(pod, index) // 递归：容器已删除，走 Absent 分支重建
+		if !rok {
+			if err := d.EnsureStopped(pod, index); err != nil {
+				return fmt.Errorf("资源漂移重建 %s 时停止旧容器失败: %w", name, err)
+			}
+			return d.EnsureRunning(pod, index) // 递归：重建后带新资源参数 run -d
+		}
+		return nil // 幂等：已运行、镜像一致、资源一致
 	case StateStopped:
 		if _, err := d.exec("start", name); err != nil {
 			// daemon 不可用类错误已带明确前缀，直接透传避免二次包装
@@ -178,11 +192,19 @@ func (d *DockerRuntime) EnsureRunning(pod metamanager.Pod, index int) error {
 		}
 		return nil
 	case StateAbsent:
-		if _, err := d.exec("run", "-d",
+		// WBS 6.5 资源限制：resources.limit 非空时转换为 docker 参数
+		// （--cpus / --memory / --memory-swap）。零值 = 不限制，不传参数。
+		resArgs, err := DockerResourceArgs(pod.Resources)
+		if err != nil {
+			return fmt.Errorf("Pod %s 资源参数解析失败: %w", name, err)
+		}
+		runArgs := append([]string{"run", "-d",
 			"--name", name,
-			"--label", labelPod+"="+pod.Name,
-			"--label", labelNamespace+"="+pod.Namespace,
-			pod.Image); err != nil {
+			"--label", labelPod + "=" + pod.Name,
+			"--label", labelNamespace + "=" + pod.Namespace},
+			resArgs...)
+		runArgs = append(runArgs, pod.Image)
+		if _, err := d.exec(runArgs...); err != nil {
 			// 竞态兜底：并发创建导致名字冲突 → 按已存在处理
 			lower := strings.ToLower(err.Error())
 			if strings.Contains(lower, "conflict") && strings.Contains(lower, "already in use") {
@@ -221,6 +243,53 @@ func (d *DockerRuntime) ImageMatches(pod metamanager.Pod, index int) (bool, erro
 	// 归一化——云端下发统一引用格式即可（POC 简化，注释标明演进方向：
 	// 需要时改为解析 digest 后比对）。
 	return strings.TrimSpace(out) == pod.Image, nil
+}
+
+// resourcesMatch 检查已运行容器的资源 limit 是否与期望一致（WBS 6.5 资源漂移）。
+// 期望不带任何 limit 时不检查（返回 true，不触发重建——避免给每个 Pod
+// 增加一次 inspect，兼容既有镜像漂移语义）；带 limit 时取
+// {{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} 与期望值精确比对。
+// 容器不存在 → (true, nil)（由创建分支处理，不误报漂移）。
+func (d *DockerRuntime) resourcesMatch(pod metamanager.Pod, index int) (bool, error) {
+	hasLimit := pod.Resources.CPULimit != "" || pod.Resources.MemoryLimit != ""
+	if !hasLimit {
+		return true, nil
+	}
+	name := ContainerName(pod.Namespace, pod.Name, index)
+	out, err := d.exec("inspect", "--format", "{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}}", name)
+	if err != nil {
+		if isNoSuchContainer(err.Error()) {
+			return true, nil // 容器不存在：交给创建分支
+		}
+		return false, err
+	}
+	fields := strings.Fields(out)
+	if len(fields) != 2 {
+		return false, fmt.Errorf("docker inspect HostConfig 输出无法解析: %q", out)
+	}
+	actualNano, aerr := strconv.ParseInt(fields[0], 10, 64)
+	actualMem, merr := strconv.ParseInt(fields[1], 10, 64)
+	if aerr != nil || merr != nil {
+		return false, fmt.Errorf("docker inspect HostConfig 数值解析失败: %q", out)
+	}
+
+	// 期望值：CPU limit（毫核 × 1e6 = nano）；Memory limit（字节）。
+	wantNano, wantMem := int64(0), int64(0)
+	if pod.Resources.CPULimit != "" {
+		cpu, cerr := resource.ParseCPU(pod.Resources.CPULimit)
+		if cerr != nil {
+			return false, fmt.Errorf("CPU limit 解析失败: %w", cerr)
+		}
+		wantNano = cpu * 1e6
+	}
+	if pod.Resources.MemoryLimit != "" {
+		mem, merr := resource.ParseMemory(pod.Resources.MemoryLimit)
+		if merr != nil {
+			return false, fmt.Errorf("Memory limit 解析失败: %w", merr)
+		}
+		wantMem = mem
+	}
+	return actualNano == wantNano && actualMem == wantMem, nil
 }
 
 // EnsureStopped 强制停止并移除 Pod 第 index 个副本的容器；容器不存在时 no-op（幂等）。

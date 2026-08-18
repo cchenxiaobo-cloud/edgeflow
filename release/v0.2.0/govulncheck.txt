@@ -1,0 +1,33 @@
+EdgeFlow v0.2.0 govulncheck 报告
+生成时间: 2026-08-18T19:12:46+0800
+工具: govulncheck@v1.7.0 (golang.org/x/vuln)
+对象: 9 个发布二进制 (cloudcore/edgecore/keadm × darwin-arm64/linux-amd64/linux-arm64)
+构建工具链: go1.26.6 (GOTOOLCHAIN=go1.26.6)
+================================================================
+----- cloudcore-darwin-arm64 -----
+No vulnerabilities found.
+exit=0
+----- edgecore-darwin-arm64 -----
+No vulnerabilities found.
+exit=0
+----- keadm-darwin-arm64 -----
+No vulnerabilities found.
+exit=0
+----- cloudcore-linux-amd64 -----
+No vulnerabilities found.
+exit=0
+----- edgecore-linux-amd64 -----
+No vulnerabilities found.
+exit=0
+----- keadm-linux-amd64 -----
+No vulnerabilities found.
+exit=0
+----- cloudcore-linux-arm64 -----
+No vulnerabilities found.
+exit=0
+----- edgecore-linux-arm64 -----
+No vulnerabilities found.
+exit=0
+----- keadm-linux-arm64 -----
+No vulnerabilities found.
+exit=0

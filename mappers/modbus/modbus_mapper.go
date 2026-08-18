@@ -61,6 +61,9 @@ const (
 	DefaultAddr = "127.0.0.1:15020"
 	// EnvAddr 是覆盖设备地址的环境变量名。
 	EnvAddr = "EDGEFLOW_MODBUS_ADDR"
+	// EnvNamespace 是覆盖设备命名空间的环境变量名（与 EnvAddr 约定一致；
+	// 优先级：WithNamespace 选项 > 本环境变量 > DefaultNamespace）。
+	EnvNamespace = "EDGEFLOW_MODBUS_NAMESPACE"
 	// DefaultTimeout 是单次操作超时（连接 + 读写）。
 	DefaultTimeout = 5 * time.Second
 	// DefaultSlaveID 是默认 Modbus 从站地址（unit ID）。
@@ -112,6 +115,16 @@ func WithLedger(l OpLedger) Option {
 	return func(m *ModbusMapper) { m.ledger = l }
 }
 
+// 编译期断言：ModbusMapper 实现 Mapper 框架接口。DeviceNameResolver 声明
+// 设备名、DeviceNamespaceResolver 声明设备命名空间——注册表据此建立
+// 「namespace/deviceName」路由索引（M3A P2-1），非 default 命名空间场景
+// 下路由与影子键才能正确联动。
+var (
+	_ mapper.DeviceMapper            = (*ModbusMapper)(nil)
+	_ mapper.DeviceNameResolver      = (*ModbusMapper)(nil)
+	_ mapper.DeviceNamespaceResolver = (*ModbusMapper)(nil)
+)
+
 // ModbusMapper 是 Modbus TCP 设备 Mapper。
 type ModbusMapper struct {
 	mu         sync.Mutex // 串行化连接状态与读写（重连逻辑需要独占连接）
@@ -136,15 +149,26 @@ func New(addr string, opts ...Option) *ModbusMapper {
 	if addr == "" {
 		addr = DefaultAddr
 	}
+	// namespace 解析优先级（与 addr 的 env 约定一致）：
+	//   1. WithNamespace 选项（显式配置最高优先）；
+	//   2. 环境变量 EDGEFLOW_MODBUS_NAMESPACE（非 default 命名空间部署
+	//      无需改装配代码，edgecore 的 buildMapperRegistry 直接生效）；
+	//   3. 默认 default（未配置/显式空串统一回退，保证 DeviceNamespace()
+	//      与 DeviceReport.Namespace 恒非空，与注册表索引键一致）。
 	m := &ModbusMapper{
 		addr:       addr,
 		timeout:    DefaultTimeout,
 		slaveID:    DefaultSlaveID,
 		deviceName: DefaultDeviceName,
-		namespace:  DefaultNamespace,
 	}
 	for _, o := range opts {
 		o(m)
+	}
+	if m.namespace == "" {
+		m.namespace = os.Getenv(EnvNamespace)
+	}
+	if m.namespace == "" {
+		m.namespace = DefaultNamespace
 	}
 	handler := modbus.NewTCPClientHandler(m.addr)
 	handler.Timeout = m.timeout
@@ -164,6 +188,12 @@ func (m *ModbusMapper) Name() string { return DefaultName }
 func (m *ModbusMapper) DeviceNames() []string {
 	return []string{m.deviceName}
 }
+
+// DeviceNamespace 返回设备所属命名空间（注册表据此建立 namespace/deviceName
+// 路由索引，M3A P2-1；与 mock_sensor.DeviceNamespace 同签名）。
+// New 已保证恒非空（option > env EDGEFLOW_MODBUS_NAMESPACE > default），
+// 因此注册表索引键与 DeviceReport.Namespace 总是同源一致。
+func (m *ModbusMapper) DeviceNamespace() string { return m.namespace }
 
 // Start 启动 Mapper（幂等）：做一次尽力而为的预连接。
 // 设备未就绪（模拟器/真实设备晚于 edgecore 启动）只告警不报错——

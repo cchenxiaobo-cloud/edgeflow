@@ -2,7 +2,7 @@
   "version": "v0.1.1",
   "registry": "localhost:5001",
   "generatedAt": "2026-08-18T01:00:00+08:00",
-  "notes": "构建基线 commit 92be18c（构建时 HEAD），buildx docker-container driver 双架构（linux/amd64+linux/arm64 OCI manifest 单 tag 双平台，--provenance=false 无 attestation 条目）。制品重建员超时中断后由收尾员从本地 registry（edgeflow-registry-v011，端口 5001）API 补录镜像索引信息。",
+  "notes": "构建基线 commit 92be18c（构建时 HEAD），buildx docker-container driver 双架构（linux/amd64+linux/arm64 OCI manifest 单 tag 双平台，--provenance=false 无 attestation 条目）。制品重建员超时中断后由收尾员从本地 registry（edgeflow-registry-v011，端口 5001）API 补录镜像索引信息。制品重建员恢复后修正 size 口径为压缩层总大小（与 v0.1.0/images.json 一致，来源 docker manifest inspect --insecure --verbose 的 layers[].size 求和），原收尾版误录 manifest 字节数。",
   "images": [
     {
       "name": "edgeflow/cloudcore",
@@ -12,8 +12,8 @@
       "manifest": {
         "schemaVersion": 2,
         "platforms": [
-          { "os": "linux", "architecture": "amd64", "digest": "sha256:2dbf2fff3f11fdb64b9f3b1534a6cc29a1dd1e613f7137b6e0b0c98031b506d0", "size": 3129 },
-          { "os": "linux", "architecture": "arm64", "digest": "sha256:334efca638bb91c6b57fea48723fdcef39ae50a30bd006998613ee8c543e81dc", "size": 3129 }
+          { "os": "linux", "architecture": "amd64", "digest": "sha256:2dbf2fff3f11fdb64b9f3b1534a6cc29a1dd1e613f7137b6e0b0c98031b506d0", "size": 4029649 },
+          { "os": "linux", "architecture": "arm64", "digest": "sha256:334efca638bb91c6b57fea48723fdcef39ae50a30bd006998613ee8c543e81dc", "size": 3742694 }
         ]
       },
       "buildArgs": {
@@ -31,8 +31,8 @@
       "manifest": {
         "schemaVersion": 2,
         "platforms": [
-          { "os": "linux", "architecture": "amd64", "digest": "sha256:761a1bac326d86030493d5bcf7c28a56a14583dff8c72b7dfbc4b9558b5f9b45", "size": 3316 },
-          { "os": "linux", "architecture": "arm64", "digest": "sha256:728660f8f26b4a15abe90931059e243006c94c807f78eeb50a455f1268c8eca8", "size": 3316 }
+          { "os": "linux", "architecture": "amd64", "digest": "sha256:761a1bac326d86030493d5bcf7c28a56a14583dff8c72b7dfbc4b9558b5f9b45", "size": 5733760 },
+          { "os": "linux", "architecture": "arm64", "digest": "sha256:728660f8f26b4a15abe90931059e243006c94c807f78eeb50a455f1268c8eca8", "size": 5440035 }
         ]
       },
       "buildArgs": {

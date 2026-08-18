@@ -15,6 +15,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"edgeflow/edge/pkg/devicetwin"
 	"edgeflow/edge/pkg/eventbus"
@@ -25,6 +26,39 @@ import (
 	mocksensor "edgeflow/mappers/mock_sensor"
 	modbusmapper "edgeflow/mappers/modbus"
 )
+
+// EnvEnableMapper 是 Mapper 装配开关的环境变量名（WBS 5.1 装配门控）。
+//
+// 默认开启（true）——兼容存量行为：tests/e2e/device_e2e_test.go 的
+// DeviceCommand → Mapper 执行 → Properties 周期上报链路依赖 Mapper 装配，
+// 默认关闭会破坏该链路；v0.1.1 已发布制品同样是默认装配，改变默认值
+// 属于行为变更而非兼容增强。显式设置 EDGEFLOW_EDGECORE_ENABLE_MAPPER
+// =false（或 0/off/no，大小写不敏感）时关闭装配：不注册任何 Mapper、
+// 不启动采集循环、指令执行器保持 nil（handleDeviceCommand 走骨架路径，
+// 仅更新 Twin.Desired），行为与 Mapper 框架接入前完全一致（纯影子模式）。
+// "无设备时更安全"的诉求由 Modbus 的显式 opt-in 门控承担：mock_sensor
+// 是纯本地模拟、无外部依赖、失败只告警，默认开启不引入新风险。
+const EnvEnableMapper = "EDGEFLOW_EDGECORE_ENABLE_MAPPER"
+
+// mapperEnabledFromEnv 解析装配开关（大小写不敏感、容忍首尾空白）：
+//   - 未设置 → true（默认开启，兼容存量行为与既有 e2e）；
+//   - false/0/off/no → false（显式关闭）；
+//   - 其余值 → true（未知值不改变默认行为，记警告后按默认开启）。
+func mapperEnabledFromEnv() bool {
+	v := os.Getenv(EnvEnableMapper)
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "":
+		return true
+	case "false", "0", "off", "no":
+		return false
+	case "true", "1", "on", "yes":
+		return true
+	default:
+		log.Warnf("%s=%q 不是合法开关值（支持 true/false/1/0/on/off/yes/no），按默认开启处理",
+			EnvEnableMapper, v)
+		return true
+	}
+}
 
 // mapperCommandExecutor 把 Mapper 注册表适配成 devicetwin.DeviceCommandExecutor
 // （装配层薄封装：只做"注册表查找 + 调用 + 结果落影子"，不改动任一方接口）。
@@ -77,7 +111,17 @@ func (e *mapperCommandExecutor) ExecuteCommand(deviceName, namespace, property s
 //
 // 真实设备接入时以对应 Mapper 实现替换本函数内的注册即可
 // （协议适配只新增 DeviceMapper 实现，框架与装配无需改动）。
+//
+// 装配开关（EDGEFLOW_EDGECORE_ENABLE_MAPPER，见 mapperEnabledFromEnv）：
+// 关闭时不做任何注册、直接返回 nil——调用方（main.go）据此跳过生命周期
+// 管理（StartAll/StopAll）并保持指令执行器为 nil（骨架路径），行为与
+// Mapper 框架接入前完全一致（纯影子模式）。
 func buildMapperRegistry(bus *eventbus.EventBus, ledger *metamanager.Ledger) *mapper.MapperRegistry {
+	if !mapperEnabledFromEnv() {
+		log.Infof("Mapper 装配已关闭（%s=false）：不注册 Mapper、不启动采集循环，设备指令仅更新 Twin.Desired",
+			EnvEnableMapper)
+		return nil
+	}
 	reg := mapper.NewRegistry()
 	if err := reg.Register(mocksensor.New("sensor-01", mocksensor.WithEventBus(bus))); err != nil {
 		// 注册失败只告警：设备链路退化为"指令找不到 Mapper → 502"，

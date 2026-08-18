@@ -60,9 +60,10 @@ func handleDeviceCommand(twins *devicetwin.TwinStore, exec devicetwin.DeviceComm
 			execErr = fmt.Errorf("执行设备指令失败: %w", err)
 		}
 	} else {
-		// 骨架路径（Mapper 未接入）：只更新 Twin.Desired。
-		// Mapper 框架就绪后由装配层注入执行器，此分支不再触发。
-		log.Warnf("设备指令执行器未接入（Mapper 框架开发中），仅更新 Twin.Desired: %s/%s.%s=%v",
+		// 骨架路径（Mapper 未装配/已关闭）：只更新 Twin.Desired。
+		// Mapper 装配开关关闭或注册表为空时进入此分支，指令仅修改
+		// 期望态，实际收敛由设备侧后续上报闭环完成。
+		log.Warnf("设备指令执行器未接入（Mapper 装配关闭或未装配），仅更新 Twin.Desired: %s/%s.%s=%v",
 			cmd.Namespace, cmd.DeviceName, cmd.Property, cmd.Value)
 	}
 

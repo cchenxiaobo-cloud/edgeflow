@@ -181,14 +181,22 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	// 设备指令执行器由 Mapper 框架（edge/pkg/mapper，WBS 5.1）提供：
 	// 装配层把 Mapper 注册表适配成 devicetwin.DeviceCommandExecutor
 	// 注入（见 device_mapper.go），指令按 deviceName 路由到具体 Mapper 执行。
+	//
+	// 装配开关（EDGEFLOW_EDGECORE_ENABLE_MAPPER，默认开启）：关闭时
+	// buildMapperRegistry 返回 nil——不注册、不启动采集循环，执行器保持
+	// nil（handleDeviceCommand 走骨架路径：仅更新 Twin.Desired），行为与
+	// Mapper 框架接入前完全一致（纯影子模式）。
 	twinStore := devicetwin.NewStore()
 	mapperReg := buildMapperRegistry(bus, ledger)
-	deviceExec := &mapperCommandExecutor{reg: mapperReg, twins: twinStore}
+	var deviceExec devicetwin.DeviceCommandExecutor // nil = 骨架路径（Mapper 关闭/未装配）
 	// Mapper 生命周期随 edgecore 启停：启动采集循环（内置模拟传感器每 2s
 	// 波动一次，由上报循环周期汇入影子）；启动失败只告警，不阻断主流程。
 	mapperCtx, mapperCancel := context.WithCancel(context.Background())
-	if err := mapperReg.StartAll(mapperCtx); err != nil {
-		log.Warnf("Mapper 启动部分失败: %v", err)
+	if mapperReg != nil {
+		deviceExec = &mapperCommandExecutor{reg: mapperReg, twins: twinStore}
+		if err := mapperReg.StartAll(mapperCtx); err != nil {
+			log.Warnf("Mapper 启动部分失败: %v", err)
+		}
 	}
 
 	// 消息处理回调（WBS 4.6）：云端下发类消息（PodSync/DeviceCommand 等）→
@@ -301,8 +309,10 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	close(deviceReportStopCh)
 	<-deviceReportDone // 设备上报循环退出后不再有新消息写入通道
 	mapperCancel()
-	if err := mapperReg.StopAll(); err != nil {
-		log.Warnf("Mapper 停止部分失败: %v", err)
+	if mapperReg != nil {
+		if err := mapperReg.StopAll(); err != nil {
+			log.Warnf("Mapper 停止部分失败: %v", err)
+		}
 	}
 	// 优雅退出顺序：先停 Mapper 再断 EventBus——保证断线窗口内没有
 	// 采集循环再向总线发布/订阅（避免发布失败告警刷屏与幽灵订阅）。

@@ -178,3 +178,15 @@
 | govulncheck | ⏸ 未安装（trivy gobinary 0 漏洞替代） |
 
 **观察项**：镜像内 go1.26.6 vs 本机二进制 go1.26.2（行为一致，--version 其余字段相同）。
+
+---
+
+## v0.2.0（2026-08-18）
+
+- **范围**：v0.1.1 后延后登记的剩余计划项——WBS 6.5 资源调度基础（P2 全量）、WBS 5.1 Mapper 框架 EventBus 装配开关、ModbusMapper DeviceNamespace 接口、M1 P3 小项收尾。
+- **提交链**：`9cf7772`（v0.1.1 制品记录 size 口径修正）→ `5cb7336`（资源调度）→ `238b0cc`（Mapper 装配开关）→ `566aff9`（Modbus namespace）→ `3e0d1ff`（P3 收尾）→ `d3f09fe`（资源漂移接入调谐路径，冒烟 1d 修复）→ `10407a4`（文档同步）→ `71823bc`（发布制品）。
+- **tag**：v0.2.0 → `71823bc`（发布记录 HEAD；代码基线 `d3f09fe`）。
+- **制品**：release/v0.2.0/ 14 文件——9 二进制（GOTOOLCHAIN=go1.26.6，--version=v0.2.0+d3f09fe）、edgeflow-0.2.0.tgz（helm）、sbom.json（CycloneDX 1.5）、双架构镜像（cloudcore `sha256:a83c4ec0…` / edgecore `sha256:813bb6a7…`，amd64+arm64 manifest list，离线 COPY-only 构建）、images.json、checksums.txt（13/13）、govulncheck.txt（9/9 clean）。
+- **验证**：全仓 go test 全绿 + e2e 双遍（204.7s/203.0s）；预发冒烟 8/8 PASS（含 1d 漂移重建复验：注入 500m → ≤15s 自动重建回 250m）；trivy 双镜像 0 HIGH/0 CRITICAL；4/4 平台镜像 docker run --version 实测。
+- **已知限制**：见 docs/KNOWN-ISSUES.md §1（4 条）+ RELEASE-NOTES-v020 §四（镜像 mediaType 为 docker manifest list v2）。
+- **遗留登记**：OPC-UA（WBS 5.2）独立立项（≥30 人天）；cloudcore 400 分支裸拼 JSON 下批修；远程镜像推送/kind 集群/生产灰度/cosign/100 节点压测仍为环境边界项。

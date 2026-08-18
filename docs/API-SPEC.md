@@ -1,7 +1,7 @@
 # EdgeFlow API 规范（v0.1.0 定稿）
 
 > - 对应 ROADMAP WBS 9.2「API 文档」，覆盖两部分：**REST API 参考**（cloudcore 对外 HTTP 接口）与 **CRD 类型定义**（`apis/edge/v1alpha1/`）。
-> - 状态：✅ **v0.1.0 定稿**（2026-08-14）。评审记录见 `docs/REVIEWS.md`（9.2 评审归档）。
+> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.2.0 开发轮已更新**（2026-08-18：podsync 资源字段与 409 语义、device-command namespace 路由、资源调度环境变量）。评审记录见 `docs/REVIEWS.md`（9.2 评审归档）。
 > - 代码位置：cloudcore 路由装配 `cmd/cloudcore/main.go`、设备 API `cmd/cloudcore/device_api.go`、CRD 类型 `apis/edge/v1alpha1/`。
 > - 版本策略：v0.1.0 为 MVP 定稿版；后续接入 Kubernetes 后由 OpenAPI schema / CRD 校验取代，见 §7。
 
@@ -34,7 +34,7 @@
 | GET | `/api/v1/nodes/{nodeID}/pods` | 单节点 Pod 状态 | 200 / 404 |
 | GET | `/api/v1/devices` | 全部设备状态（properties + desired） | 200 |
 | GET | `/api/v1/nodes/{nodeID}/devices` | 单节点设备状态 | 200 / 404 |
-| POST | `/api/v1/nodes/{nodeID}/podsync` | 可靠下发 Pod 配置（add/update/delete） | 200 / 400 / 404 / 502 / 504 |
+| POST | `/api/v1/nodes/{nodeID}/podsync` | 可靠下发 Pod 配置（add/update/delete，含资源诉求） | 200 / 400 / 404 / 409 / 502 / 504 |
 | POST | `/api/v1/nodes/{nodeID}/config-sync` | 可靠下发 ConfigMap/Secret 配置 | 200 / 400 / 404 / 502 / 504 |
 | POST | `/api/v1/nodes/{nodeID}/device-command` | 下发设备指令（期望值） | 200 / 400 / 404 / 502 / 504 |
 | POST | `/ocsp` | OCSP 在线吊销查询（RFC 6960；请求/响应均为 DER 编码，Content-Type: application/ocsp-request / application/ocsp-response）。免认证（唯一例外，详见 §1.3）；per-IP 限流（默认 10 req/s，burst 20，超限 429）；成功响应带 `Cache-Control: max-age=3600` | 200 / 400 / 429 / 500 |
@@ -44,8 +44,9 @@
 | HTTP 状态码 | 语义 | 典型场景 |
 |------------|------|---------|
 | `200` | 成功；下发类接口表示**边缘已确认**（Ack ok），响应 `{"status":"ok","acked":true}` | 正常 |
-| `400` | 请求非法：JSON 解析失败 / 缺必填字段 / operation 或 kind 不在白名单 | 参数错误 |
+| `400` | 请求非法：JSON 解析失败 / 缺必填字段 / operation 或 kind 不在白名单 / 资源格式非法或 request>limit（仅 podsync，文案含具体超标字段，如 `CPU request (500m) 不能超过 CPU limit (250m)`） | 参数错误 |
 | `404` | 节点未注册或离线（`ErrNodeOffline`）；单资源查询不存在 | 节点不存在 |
+| `409` | 冲突：节点资源超卖，边缘准入拒绝（仅 podsync，WBS 6.5）——响应 `{"error":"EDGEFLOW_RESOURCE_EXHAUSTED: ..."}`，拒绝不落盘 | 已部署 request 求和 + 新请求超出节点容量 × 超卖率 |
 | `429` | 限流：per-IP 请求速率超限（当前仅 `/ocsp` 端点，默认 10 req/s，burst 20；`EDGEFLOW_CLOUDCORE_OCSP_RATE_LIMIT` 可调） | 客户端请求过频 |
 | `500` | 内部错误（消息构建失败、发送通道异常等兜底） | 服务端异常 |
 | `502` | 边缘明确拒绝（回 error Ack）：消息已送达但处理失败 | 边缘侧校验失败 |
@@ -53,7 +54,7 @@
 
 错误响应统一为 JSON：`{"error":"<机器可读原因>", ...可选字段}`（`http.Error` 输出）。
 
-> 语义区分：**404 = 没送达**（节点不在线，无需重试）；**502 = 送达但被拒绝**（重试无意义）；**504 = 可能送达但未确认**（可重试，边缘侧有幂等去重）。
+> 语义区分：**404 = 没送达**（节点不在线，无需重试）；**409 = 送达但超卖拒绝**（仅 podsync，重试无意义，与 502 区分）；**502 = 送达但被拒绝**（重试无意义）；**504 = 可能送达但未确认**（可重试，边缘侧有幂等去重）。
 
 ### 1.3 认证与限流（端点安全约定）
 
@@ -271,7 +272,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/device-command \
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | deviceName | string | ✅ | 目标设备名称（路由到对应 Mapper） |
-| namespace | string | 否 | 命名空间（缺省 `default`） |
+| namespace | string | 否 | 命名空间（缺省 `default`）；**参与 Mapper 路由**——路由键为 `namespace/deviceName`，同名设备按 ns 隔离，ns 不匹配任何 Mapper 时边缘拒绝 → 502 |
 | property | string | ✅ | 目标属性名（如 `targetTemp`） |
 | value | float64 | 否 | 期望值 |
 
@@ -281,7 +282,9 @@ curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/device-command \
 {"status":"ok","acked":true}
 ```
 
-错误：`400`（缺 deviceName/property、JSON 非法）、`404`（节点离线）、`502`（边缘拒绝）、`504`（确认超时）、`500`（兜底）。
+错误：`400`（缺 deviceName/property、JSON 非法）、`404`（节点离线）、`502`（边缘拒绝，含 namespace 无对应 Mapper）、`504`（确认超时）、`500`（兜底）。
+
+> **命名空间与装配开关（v0.2.0）**：设备命名空间由 Mapper 侧声明（`DeviceNamespaceResolver` 接口）——Modbus Mapper 三级解析：`WithNamespace` 选项 > 环境变量 `EDGEFLOW_MODBUS_NAMESPACE`（默认 `default`）> `default`；mock_sensor 固定 `default`。`EDGEFLOW_EDGECORE_ENABLE_MAPPER`（默认 `true`，`false`/`0`/`off`/`no` 大小写不敏感关闭）关闭时 edgecore 不装配任何 Mapper，指令仅更新 Twin.Desired（纯影子模式）。
 
 ---
 
@@ -296,7 +299,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/device-command \
 ```bash
 curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/podsync \
   -H 'Content-Type: application/json' \
-  -d '{"operation":"add","pod":{"name":"nginx","namespace":"default","image":"nginx:1.25-alpine","replicas":1}}'
+  -d '{"operation":"add","pod":{"name":"nginx","namespace":"default","image":"nginx:1.25-alpine","replicas":1,"resources":{"cpuRequest":"100m","cpuLimit":"250m","memoryRequest":"64Mi","memoryLimit":"128Mi"}}}'
 ```
 
 请求体：
@@ -308,6 +311,13 @@ curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/podsync \
 | pod.namespace | string | 否 | 命名空间（缺省 `default`） |
 | pod.image | string | add/update 必填 | 容器镜像（delete 不需要） |
 | pod.replicas | int | 否 | 副本数（Edged 按此保证多副本） |
+| pod.resources | object | 否 | 资源诉求（WBS 6.5 v0.2.0 新增，可选；**云边契约只增不改**，旧客户端不传 = 零值 = 不限制） |
+| pod.resources.cpuRequest | string | 否 | CPU 请求量，K8s 风格（如 `"250m"` 或 `"0.25"`）；request>limit → 400 |
+| pod.resources.cpuLimit | string | 否 | CPU 上限（如 `"500m"`）；落地为容器 `--cpus` |
+| pod.resources.memoryRequest | string | 否 | 内存请求量，K8s 风格（如 `"64Mi"`）；request>limit → 400 |
+| pod.resources.memoryLimit | string | 否 | 内存上限（如 `"128Mi"`）；落地为容器 `--memory`（swap 禁用） |
+
+> **资源字段格式与校验（v0.2.0）**：资源量格式解析失败（如 `"NaN"`/`"Inf"`/超范围/前导 `+`）→ 400；request>limit（CPU/内存分别校验）→ 400，文案含具体超标字段；`delete` 操作不携带资源字段，跳过校验。
 
 响应 `200`：
 
@@ -316,6 +326,11 @@ curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/podsync \
 ```
 
 边缘行为：MetaManager 将 Pod 元数据落盘（SQLite），Edged 调谐启动容器（命名 `edgeflow-<ns>-<name>-<index>`，标签 `edgeflow.pod` / `edgeflow.namespace`）；`delete` 时按 namespace+name 删除元数据，Edged 回收容器。
+
+**资源语义（WBS 6.5，v0.2.0）**：
+- 边缘准入 `admitPodResources`：request≤limit 校验 + 超卖率校验（节点容量 × 超卖率 ≥ 已部署 request 求和 + 新请求；副本乘数计入）；**拒绝时不落盘、不建容器**，回 error Ack（带 `EDGEFLOW_RESOURCE_EXHAUSTED` 标记）→ 云端映射 **409**；其余边缘拒绝仍为 502。
+- 容器落地：cpuLimit → `--cpus`、memoryLimit → `--memory`（`--memory-swap` 与 memory 同值，禁 swap）；零值字段不传参数（不限制）。
+- 漂移检测：调谐循环对健康 Running 容器比对镜像（WBS 6.4）与资源限制（WBS 6.5），任一漂移即 stop+重建（每轮最多重建 1 个的滚动门控）。
 
 ### 6.2 POST /api/v1/nodes/{nodeID}/config-sync —— 下发 ConfigMap/Secret 配置
 
@@ -341,16 +356,26 @@ curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/config-sync \
 
 边缘行为：MetaManager SQLite 存储，键 `configs/<namespace>/<name>`（与 Pod 元数据同库）。
 
-### 6.3 五态响应语义（三个下发端点通用）
+### 6.3 响应语义（三个下发端点通用；409 仅 podsync）
 
 | 状态码 | 响应体（示例） | 含义 |
 |--------|---------------|------|
 | 200 | `{"status":"ok","acked":true}` | 边缘已确认（Ack ok） |
-| 400 | `{"error":"operation and pod.name are required"}` | 参数非法（含白名单校验失败） |
+| 400 | `{"error":"operation and pod.name are required"}` | 参数非法（含白名单校验失败；podsync 另含资源格式非法/request>limit，文案含具体超标字段） |
 | 404 | `{"error":"node offline or not registered"}` | 节点未注册/离线 |
+| 409 | `{"error":"EDGEFLOW_RESOURCE_EXHAUSTED: ..."}` | **仅 podsync**：边缘超卖准入拒绝（不落盘），错误带资源耗尽标记 |
 | 502 | `{"error":"edge rejected ack"}` | 边缘回 error Ack（消息已送达但被拒绝） |
 | 504 | `{"error":"ack timeout after retries"}` | 确认超时重试耗尽 |
 | 500 | `{"error":"send failed"}` | 其他内部错误 |
+
+### 6.4 资源调度环境变量（edgecore，WBS 6.5 v0.2.0）
+
+| 环境变量 | 默认 | 说明 |
+|----------|------|------|
+| `EDGEFLOW_EDGECORE_NODE_CPU_MILLI` | 探测值（runtime.NumCPU×1000） | 节点 CPU 容量覆盖（毫核）；非法值回退探测值 |
+| `EDGEFLOW_EDGECORE_NODE_MEMORY_BYTES` | 探测值（仅 Linux /proc/meminfo；非 Linux 为 0，需覆盖） | 节点内存容量覆盖（字节）；非法值回退探测值 |
+| `EDGEFLOW_EDGECORE_OVERCOMMIT_CPU_RATE` | `1.5` | CPU 超卖率上限（>0）；非有限值（NaN/Inf）回退 1.5 |
+| `EDGEFLOW_EDGECORE_OVERCOMMIT_MEMORY_RATE` | `1.5` | 内存超卖率上限；非有限值回退 1.5 |
 
 ---
 

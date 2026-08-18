@@ -1,14 +1,23 @@
 # EdgeFlow 开发者指南（v0.1.0 定稿）
 
 > - 对应 ROADMAP WBS 9.4「开发者指南」：代码结构、开发流程、测试规范、贡献指南、常见任务。
-> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.1.1 发布轮已更新**（2026-08-18）。评审记录见 `docs/REVIEWS.md`（9.4 评审归档）。
+> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.1.1 发布轮已更新**（2026-08-18），**v0.2.0 开发轮已更新**（2026-08-18）。评审记录见 `docs/REVIEWS.md`（9.4 评审归档）。
 > - 目的：让后续开发者（包括零基础接手人）能按本文档独立接过开发工作。
 
 ---
 
 ## 1. 当前状态一句话
 
-EdgeFlow v0.1.1 已发布（2026-08-18）：在 v0.1.0 主体能力（M0-M4 云边通信/容器编排/设备链路/keadm/多架构镜像与 Helm Chart）基础上，本轮完成审计 3 项中等安全风险修复（/ocsp 限流+缓存、OCSP 新鲜度校验、CRL 降级日志）与 P2 遗留闭环（WriteTimeout/Encode 日志/namespace 路由/LastReportedAt 单调性等），预发冒烟签核通过、制品归档（release/v0.1.1/ 12 文件 + 双架构镜像）、发布保障三件套与两套手册（用户手册 v0.1.2 / 解决方案手册 v1.0.2）同步入档。**M5 前置（WBS 9.2-9.5 文档与端到端示例）已完成定稿**：`bash examples/demo.sh` 一键跑通温度传感器端到端 Demo（DEMO PASS）。v0.1.1 变更详见 `docs/RELEASE-NOTES-v011.md`。
+**EdgeFlow v0.2.0 发布轮准备中（2026-08-18）**：v0.2.0 开发轮已完成并验证通过（6 个主题 commit `9cf7772`~`d3f09fe`：资源调度基础 WBS 6.5 / Mapper 装配开关 WBS 5.1 / Modbus DeviceNamespaceResolver / M1 P3 四项收尾 / 资源漂移调谐接入），全仓测试 + 双 e2e 全绿、预发冒烟 8/8 PASS；**制品构建并行进行中**（release/v0.2.0/ 由发布 worker 构建，构建基线 `GOTOOLCHAIN=go1.26.6`），随后进入 v0.2.0 发布轮（复用 v0.1.1 发布保障三件套模板）。
+
+**本轮关键决策**：
+- **版本 minor**：功能增量 → v0.2.0（minor），发布轮复用 v0.1.1 发布保障三件套模板；
+- **OPC-UA 不开发**：零依赖手写 UA 协议栈工作量 ≥30 人天，独立立项，本轮只登记不开发（ROADMAP §10）；
+- **超卖率默认 150% 可调**：`EDGEFLOW_EDGECORE_OVERCOMMIT_CPU_RATE/MEMORY_RATE`（默认 1.5，非有限值回退）；
+- **Mapper 开关默认 true**：与 v0.1.1 制品行为一致；既有 e2e（DeviceCommand→Mapper 执行→周期上报）依赖装配；mock_sensor 纯本地模拟无外部依赖，默认开启不引入新风险——"无设备更安全"由 Modbus 显式 opt-in 门控承担；
+- **制品 GOTOOLCHAIN=go1.26.6**：v0.2.0 制品构建基线。
+
+v0.1.1 变更详见 `docs/RELEASE-NOTES-v011.md`；v0.2.0 开发轮台账见 `docs/PROGRESS.md §4N`、处置登记见 `docs/ROADMAP.md §10`。**M5 前置（WBS 9.2-9.5 文档与端到端示例）已完成定稿**：`bash examples/demo.sh` 一键跑通温度传感器端到端 Demo（DEMO PASS）。
 
 ## 2. 环境配置（接手第一步）
 
@@ -175,6 +184,10 @@ make lint       # 静态检查（golangci-lint）
 | `EDGEFLOW_EDGECORE_RECONCILE_INTERVAL=10s ./bin/edgecore` | Edged 调谐周期（默认 5s） |
 | `EDGEFLOW_EDGECORE_REPORT_INTERVAL=10s ./bin/edgecore` | Pod 状态上报周期（默认 30s，范围 1s~10min） |
 | `EDGEFLOW_EDGECORE_DEVICE_REPORT_INTERVAL=10s ./bin/edgecore` | 设备状态上报周期（默认 30s） |
+| `EDGEFLOW_EDGECORE_NODE_CPU_MILLI=4000 EDGEFLOW_EDGECORE_NODE_MEMORY_BYTES=8589934592 ./bin/edgecore` | 节点容量覆盖（毫核/字节，WBS 6.5） |
+| `EDGEFLOW_EDGECORE_OVERCOMMIT_CPU_RATE=2 ./bin/edgecore` | CPU 超卖率上限（默认 1.5，WBS 6.5） |
+| `EDGEFLOW_EDGECORE_ENABLE_MAPPER=false ./bin/edgecore` | 关闭 Mapper 装配（回纯影子模式，默认开启） |
+| `EDGEFLOW_MODBUS_NAMESPACE=plant-a ./bin/edgecore` | Modbus 设备命名空间（默认 default） |
 | `EDGEFLOW_EDGECORE_MQTT_ADDR=tcp://127.0.0.1:1883 ./bin/edgecore` | MQTT broker 地址（EventBus） |
 | `curl localhost:8080/api/v1/pods` | 查询全量 Pod 状态（K8s 风格 items） |
 | `curl localhost:8080/api/v1/nodes/{nodeID}/pods` | 查询单节点 Pod 状态 |
@@ -219,9 +232,9 @@ make lint       # 静态检查（golangci-lint）
 | 事项 | 状态 |
 |------|------|
 | 零第三方依赖（runtime） | 当前约束；modbus 驱动已用 modernc 纯 Go 方案；后续需要时评估 |
-| 日志级别过滤 | Level 仅前缀标记，未实现 SetLevel 过滤（P2） |
+| 日志级别过滤 | ✅ **已实现（v0.2.0）**：pkg/log SetLevel/GetLevel/Debugf，atomic 全局级别过滤（原 P2 待办已闭环） |
 | 云端状态内存态 | cloudcore 重启后节点/Pod/设备查询数据清空（边缘 SQLite 不受影响） |
-| 节点资源上报（CPU/内存） | `/api/v1/nodes` 的 memory 恒 0，待采集接入 |
+| 节点资源上报（CPU/内存） | `/api/v1/nodes` 的 memory 恒 0，待采集接入（边缘侧节点容量探测/覆盖已实现，WBS 6.5，见 §13） |
 | 升级回滚专项（keadm upgrade/rollback） | ✅ 已实现（WBS 10.2），见 docs/UPGRADE.md |
 | 可观测性基建（10.1） | M5/M6 内容：Prometheus 指标、Fluent Bit 日志、告警 |
 
@@ -248,3 +261,25 @@ make lint       # 静态检查（golangci-lint）
 - [ ] `docs/ROADMAP.md` 明确了下一个模块任务
 - [ ] `docs/PROGRESS.md` 记录了全部历史验证结果
 - [ ] Git 仓库干净，远程已关联（或已知未关联）
+
+## 13. v0.2.0 开发轮交接（新增能力速览，2026-08-18）
+
+> 本轮 6 个主题 commit（`9cf7772`/`5cb7336`/`238b0cc`/`566aff9`/`3e0d1ff`/`d3f09fe`），派单/复核/修复/冒烟证据见 `.cluster/a1c29599/`，台账见 `docs/PROGRESS.md §4N`，处置总登记见 `docs/ROADMAP.md §10`。
+
+| 能力 | 用法/说明 | commit |
+|------|-----------|--------|
+| 资源调度基础（6.5，P2 全量） | podsync `pod.resources` 四字段（cpuRequest/cpuLimit/memoryRequest/memoryLimit，K8s 风格 "250m"/"64Mi"，omitempty 零值=不限制，云边契约只增不改）；云端 400（request>limit）/409（`EDGEFLOW_RESOURCE_EXHAUSTED` 超卖拒绝，不落盘）/502（其余边缘拒绝）；边缘准入校验 + docker --cpus/--memory 落地 + 资源漂移检测重建 | `5cb7336`+`d3f09fe` |
+| Mapper 装配开关（5.1） | `EDGEFLOW_EDGECORE_ENABLE_MAPPER`（默认 true；false/0/off/no 大小写不敏感关闭，回纯影子模式） | `238b0cc` |
+| Modbus namespace 路由 | DeviceNamespaceResolver 接口（与 mock_sensor 同签名）；三级解析：`WithNamespace` 选项 > `EDGEFLOW_MODBUS_NAMESPACE` > `default`；注册表按 ns/deviceName 路由隔离，同名设备互不串扰 | `566aff9` |
+| M1 P3 收尾 | pkg/log SetLevel/GetLevel/Debugf；被踢标志即时清除；Shutdown 撞 Start 窗口防护补测；退避重置两段式断言 + flakyDialer 注入 | `3e0d1ff` |
+
+**环境变量速查（v0.2.0 新增）**：
+
+| 环境变量 | 默认 | 说明 |
+|----------|------|------|
+| `EDGEFLOW_EDGECORE_NODE_CPU_MILLI` | 探测值（NumCPU×1000） | 节点 CPU 容量覆盖（毫核），非法回退 |
+| `EDGEFLOW_EDGECORE_NODE_MEMORY_BYTES` | 探测值（仅 Linux /proc/meminfo） | 节点内存容量覆盖（字节），非法回退 |
+| `EDGEFLOW_EDGECORE_OVERCOMMIT_CPU_RATE` | 1.5 | CPU 超卖率上限，非有限值回退 |
+| `EDGEFLOW_EDGECORE_OVERCOMMIT_MEMORY_RATE` | 1.5 | 内存超卖率上限，非有限值回退 |
+| `EDGEFLOW_EDGECORE_ENABLE_MAPPER` | true | Mapper 装配开关，false/0/off/no 关闭 |
+| `EDGEFLOW_MODBUS_NAMESPACE` | default | Modbus Mapper 设备命名空间 |

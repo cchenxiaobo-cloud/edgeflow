@@ -1,6 +1,6 @@
 # EdgeFlow 项目进度台账（PROGRESS）
 
-> 最后更新：2026-08-15 21:40 (Asia/Shanghai)
+> 最后更新：2026-08-18 19:10 (Asia/Shanghai)
 > 维护规则：每个模块完成验证后更新本表；验证证据（命令输出）保留在对应模块记录中。
 
 ---
@@ -489,6 +489,67 @@
 - 无远程制品/镜像仓库凭据：本地归档 + 本地 registry 闭环，远程推送步骤在 RELEASE-CHECKLIST.md（CI release.yml 已就绪）
 - 生产演练仅排期建议（无运维团队确认窗口，DRILL-SCHEDULE.md 标注【需确认】）
 
+## 4N. v0.2.0 开发轮验证结果（资源调度/Mapper 装配/Modbus ns/P3 收尾，2026-08-18）
+
+> 基线 HEAD：`c906877`（v0.1.1 发布轮收官）→ 本轮 6 个主题 commit（`9cf7772`/`5cb7336`/`238b0cc`/`566aff9`/`3e0d1ff`/`d3f09fe`）。派单与复核证据见 `.cluster/a1c29599/`（plan.md/review.md/fix_report.md/fix2_report.md/smoke_report.md）。
+
+### 范围决策（4 开发项 + 明确不做项）
+
+| # | 项 | 出处 | 决策 |
+|---|----|------|------|
+| A | 6.5 资源调度基础（P2 全量）：request/limit、超卖率校验与拒绝、漂移检测重建 | ROADMAP §8「6.5 调度/超卖 P2」 | ✅ 开发 |
+| B | Mapper 框架 EventBus 装配开关（edgecore 启动链路装配 MapperRegistry） | PROGRESS §5「Mapper 未接入 EventBus」 | ✅ 开发 |
+| C | ModbusMapper DeviceNamespaceResolver（namespace 感知路由） | 代码复核 minor（S6 入 ROADMAP 登记） | ✅ 开发 |
+| D | P3 小项收尾：pkg/log SetLevel；M1 通道 P3×4（newID/Shutdown 撞 Start/被踢标志/退避重置） | PROGRESS §5 P3 待办 | ✅ 开发 |
+| — | OPC-UA 适配器（WBS 5.2） | ROADMAP §8 | ⏳ 独立立项：零依赖手写 UA 协议栈 ≥30 人天，本轮只登记不开发 |
+| — | cosign / 多节点集群 / 100 节点压测 / 30min 长跑 | 环境边界 | ⏸ 与上轮一致，不变 |
+
+**版本决策**：功能增量 → v0.2.0（minor），发布轮复用 v0.1.1 的发布保障三件套模板。
+
+### 4 路派工（并行无依赖）
+
+| worker | 角色 | 产物 |
+|--------|------|------|
+| worker-res-sched | A 资源调度功能开发 | subagent_01（超时无报告，复核员人工补审） |
+| worker-mapper-wire | B Mapper 装配开发 | subagent_02.md |
+| worker-modbus-ns | C Modbus 接口补齐 | subagent_03.md |
+| worker-p3 | D P3 收尾 | subagent_04.md |
+
+### 代码复核（.cluster/a1c29599/review.md）
+
+- 结论：**有条件通过 → 0 blocker / 1 major / 7 minor / 5 nit**；通过条件：Major-1 必须先修
+- Major-1：ParseCPU 接受 Inf/NaN/超 int64 毫核范围（fail-open，可绕过超卖校验）→ **已修**（拒绝 NaN/Inf/溢出 + 前导 `+`，补表驱动测试）
+- 数字口径核验 ✅：超卖率计算（4 核×150%=6000m）、request≤limit 跨单位比较、request 求和含副本乘数、update 排除同名同 ns 旧值、拒绝路径错误码（400/409/502）均有测试锁定
+
+### 缺陷修复两批
+
+| 批次 | 内容 | 结果 |
+|------|------|------|
+| 复核修复（fix_report.md） | P0×2（ParseCPU NaN/Inf/溢出 + 超卖率 env 非有限值回退）、P1×2（409 响应 json.Marshal、舍入口径统一 math.Round）、P2×2（手写函数换 stdlib strings、单边畸形值 fail-closed）+ 测试缺口 3 处补测；退避测试 m3 跳过（需生产代码注入点） | ✅ 完成 |
+| 冒烟修复（fix2_report.md） | 冒烟 1d FAIL：resourcesMatch 只挂在 DockerRuntime.EnsureRunning 内部，reconcileOnce 3c 对健康 Running 容器从不进入 → 资源漂移检测是死代码（docker update 后 60s 不重建）。修复：3c 分支 ImageMatches 一致后再查 ResourcesMatch，任一不匹配走同一 stop+重建路径，沿用每轮最多重建 1 个的滚动门控；ResourcesMatch 导出单点实现 + MockRuntime 补齐资源状态注入 | ✅ 完成（commit `d3f09fe`） |
+
+### 全量回归
+
+| 项目 | 结果 |
+|------|------|
+| go build / go vet / gofmt | ✅ 全部通过 |
+| go test -race（全仓） | ✅ 全绿 |
+| tests/e2e 双用例（设备链路 + 自治/多节点） | ✅ 全绿（真实进程 + 真实 Docker，约 204s） |
+| golangci-lint | ✅ 0 issues |
+
+### 预发冒烟（.cluster/a1c29599/smoke_report.md，真实进程 + 真实 Docker，8/8 PASS）
+
+| # | 冒烟项 | 结论 |
+|---|--------|------|
+| 1a | 资源 limit 端到端：pod 带 resources 下发 → 容器实际带 --cpus/--memory（docker inspect NanoCpus/Memory 核验） | ✅ PASS |
+| 1b | 超卖拒绝：超出节点资源 → 云端 409 `EDGEFLOW_RESOURCE_EXHAUSTED`，拒绝不落盘不建容器 | ✅ PASS |
+| 1c | request>limit → 云端 400（CPU/内存分别验证，容器未创建） | ✅ PASS |
+| 1d | 资源漂移：docker update 改 limit → 调谐重建（修复 commit `d3f09fe` 后复验） | ✅ PASS |
+| 2a | Mapper 默认开启：DeviceCommand 执行 + 周期上报链路 | ✅ PASS |
+| 2b | `EDGEFLOW_EDGECORE_ENABLE_MAPPER=false`：影子模式（仅更新 Twin.Desired） | ✅ PASS |
+| 3 | Modbus namespace（`EDGEFLOW_MODBUS_NAMESPACE=plant-a`）路由隔离（真实模拟器端到端 + 注册表级双证据） | ✅ PASS |
+| 4 | pkg/log SetLevel（按任务约定降级为库级验证） | ✅ PASS |
+
 ## 5. 待办项（Backlog）
 
 > 2026-08-14 收尾审计清理：已完成项已移除（Helm 骨架✅、edgecore 占位测试✅、M2 完整化已做部分✅、M3 MQTT EventBus✅、cmd-edgecore 覆盖率✅ 74.6%）；并新增 audit-m02/audit-m35 缺口跟踪项。完整缺口分级见 docs/audit-m02.md §4、docs/audit-m35.md §4。
@@ -513,15 +574,15 @@
 | ~~P2~~ ✅ | keadm 批量操作（batch join/upgrade/rollback） | 已闭环：keadm batch 子命令（清单文件逐节点，复用 join/upgrade/rollback 逻辑），单测 5 项+真实运行验证 2 节点（本轮） |
 | ~~P2~~ ✅ | 跨主机 CA 分发自动化 | 已闭环：gen-certs.sh CERT_DIST_DIR 分发包（cloud/ + edge/<CN>/，含 README 部署说明），openssl verify 验证（本轮） |
 | ~~P2~~ ✅ | 镜像安全扫描（trivy/grype） | 已闭环：release/v0.1.0 镜像扫描结果见 docs/SECURITY-SCAN.md（本轮） |
-| P2 | 6.5 资源管理（调度/资源超卖） | 仅 Replicas 伸缩；超卖/调度未做（audit-m02 §4） |
+| ~~P2~~ ✅ | 6.5 资源管理（调度/资源超卖） | ~~仅 Replicas 伸缩；超卖/调度未做（audit-m02 §4）~~ **已闭环（2026-08-18 v0.2.0 开发轮）**：request/limit 下发与校验、超卖率校验与拒绝（409）、资源漂移检测重建（commits `5cb7336` + `d3f09fe`） |
 | P2 | Flannel/边缘容器网络（缺口 6） | M2 交付物从未实现（Docker bridge 方案），需明确关闭或排期 CNI（audit-m02 §4） |
 | ~~P2~~ ✅ | 4.4 压缩显式延后登记 | 已闭环（2026-08-15）：gzip 协商式双向压缩已实现（commit `37f34f9`）；Protobuf 编码保留显式延后（规模化阶段，audit-m02 §4） |
 | ~~P2~~ ✅ | M3A 审查 P2 项×6 | 已闭环（2026-08-18）：byDevice 路由含 namespace（Route 加 namespace 参数 + DeviceNamespaceResolver 接口，commit `59dd396`）；LastReportedAt 单调性（max() 保护）；多实例 Mapper/空 deviceName/502 Desired 分叉/无 TTL/GC 四项按结论记录代码注释（mock_sensor/twin/devicestatus） |
 | ~~P2~~ ✅ | M1C 审查 P2 项×5 | 已闭环（2026-08-18）：context 取消与 handleDownlink 非原子经核验已在前轮修复（ReliableSendContext/downlinkMu），本轮补并发单测；pending 交叉清理与 ErrAckFailed→502 早前已修；云端 operation 校验结论记录 |
 | ~~P2~~ ✅ | M1B 审查 P2 项×9 | 已闭环（2026-08-18）：WriteTimeout=15s（newHTTPServer）+ API Encode 失败 Warn 日志 17 处（commit `59dd396`）；Broadcast 送达计数日志（P2-4）；WAL checkpoint 结论记录代码注释；其余 LIKE 转义/Offline TTL 等早前已闭环（2026-08-15） |
 | ~~P2~~ ✅ | 多架构发布镜像补 linux-arm64 二进制 | 已闭环：release/v0.1.0/ 新增 cloudcore/edgecore/keadm linux-arm64 交叉编译二进制 + checksums 更新（本轮） |
-| P3 | 日志级别过滤（SetLevel） | pkg/log 的 Level 目前仅前缀标记，后续模块需要时实现 |
-| P3 | M1 通道 P3 项×4 | newID 忽略 rand 错误 / Shutdown 撞 Start 初始化窗口 / 被踢连接标志延迟清除 / 退避重置缺单测（见 CODE-REVIEW-M1.md） |
+| ~~P3~~ ✅ | 日志级别过滤（SetLevel） | 已闭环（2026-08-18 v0.2.0 开发轮）：pkg/log SetLevel/GetLevel/Debugf + atomic.Int32 全局级别过滤，默认 LevelInfo 与旧行为逐字节兼容（commit `3e0d1ff`） |
+| ~~P3~~ ✅ | M1 通道 P3 项×4 | 已闭环（2026-08-18 v0.2.0 开发轮）：被踢标志即时清除（kick 立即 registered.Store(false)，窗口内心跳改收 not_registered）、Shutdown 撞 Start 窗口防护补测、退避重置两段式断言 + flakyDialer 注入（commit `3e0d1ff`）；newID 兜底经核验前轮已闭环（`d9bc9ec`） |
 | P2 | M4C 审查 P2-⑥ :latest immutable / cosign / SBOM | SBOM 已补（M5）；cosign 签名延后：需镜像仓库 + cosign 签名基础设施；风险已登记 MULTIARCH.md §5（处置台账见 4K 节） |
 
 ## 6. 里程碑状态

@@ -171,7 +171,7 @@ func (d *DockerRuntime) EnsureRunning(pod metamanager.Pod, index int) error {
 		// 资源漂移检测（WBS 6.5）：镜像一致但资源 limit 不一致 → 同样重建。
 		// 只在期望带 limit 时检查（不带 limit 的 Pod 不触发额外 inspect，
 		// 兼容既有镜像漂移语义与旧测试）。
-		rok, rerr := d.resourcesMatch(pod, index)
+		rok, rerr := d.ResourcesMatch(pod, index)
 		if rerr != nil {
 			return rerr
 		}
@@ -245,13 +245,43 @@ func (d *DockerRuntime) ImageMatches(pod metamanager.Pod, index int) (bool, erro
 	return strings.TrimSpace(out) == pod.Image, nil
 }
 
-// resourcesMatch 检查已运行容器的资源 limit 是否与期望一致（WBS 6.5 资源漂移）。
+// podResourceLimits 解析 Pod 期望的 CPU/内存 limit，统一到 docker 口径
+// （HostConfig.NanoCpus / HostConfig.Memory bytes）。
+// 期望不带任何 limit 时返回 hasLimit=false：调用方不做 inspect、不判漂移
+// （避免给每个无资源诉求的 Pod 增加一次 docker inspect）。
+// 供 DockerRuntime.ResourcesMatch 与 MockRuntime 复用（单点口径）。
+func podResourceLimits(r metamanager.ResourceRequirements) (cpuNano, memBytes int64, hasLimit bool, err error) {
+	if r.CPULimit == "" && r.MemoryLimit == "" {
+		return 0, 0, false, nil
+	}
+	if r.CPULimit != "" {
+		cpu, cerr := resource.ParseCPU(r.CPULimit)
+		if cerr != nil {
+			return 0, 0, true, fmt.Errorf("CPU limit 解析失败: %w", cerr)
+		}
+		cpuNano = cpu * 1e6 // 毫核 × 1e6 = nano
+	}
+	if r.MemoryLimit != "" {
+		mem, merr := resource.ParseMemory(r.MemoryLimit)
+		if merr != nil {
+			return 0, 0, true, fmt.Errorf("Memory limit 解析失败: %w", merr)
+		}
+		memBytes = mem
+	}
+	return cpuNano, memBytes, true, nil
+}
+
+// ResourcesMatch 检查已运行容器的资源 limit 是否与期望一致（WBS 6.5 资源漂移）。
 // 期望不带任何 limit 时不检查（返回 true，不触发重建——避免给每个 Pod
 // 增加一次 inspect，兼容既有镜像漂移语义）；带 limit 时取
 // {{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} 与期望值精确比对。
 // 容器不存在 → (true, nil)（由创建分支处理，不误报漂移）。
-func (d *DockerRuntime) resourcesMatch(pod metamanager.Pod, index int) (bool, error) {
-	hasLimit := pod.Resources.CPULimit != "" || pod.Resources.MemoryLimit != ""
+// 由 EnsureRunning 的 Running 分支与 reconcile 的 3c 漂移检查共用（单点实现）。
+func (d *DockerRuntime) ResourcesMatch(pod metamanager.Pod, index int) (bool, error) {
+	wantNano, wantMem, hasLimit, err := podResourceLimits(pod.Resources)
+	if err != nil {
+		return false, err
+	}
 	if !hasLimit {
 		return true, nil
 	}
@@ -271,23 +301,6 @@ func (d *DockerRuntime) resourcesMatch(pod metamanager.Pod, index int) (bool, er
 	actualMem, merr := strconv.ParseInt(fields[1], 10, 64)
 	if aerr != nil || merr != nil {
 		return false, fmt.Errorf("docker inspect HostConfig 数值解析失败: %q", out)
-	}
-
-	// 期望值：CPU limit（毫核 × 1e6 = nano）；Memory limit（字节）。
-	wantNano, wantMem := int64(0), int64(0)
-	if pod.Resources.CPULimit != "" {
-		cpu, cerr := resource.ParseCPU(pod.Resources.CPULimit)
-		if cerr != nil {
-			return false, fmt.Errorf("CPU limit 解析失败: %w", cerr)
-		}
-		wantNano = cpu * 1e6
-	}
-	if pod.Resources.MemoryLimit != "" {
-		mem, merr := resource.ParseMemory(pod.Resources.MemoryLimit)
-		if merr != nil {
-			return false, fmt.Errorf("Memory limit 解析失败: %w", merr)
-		}
-		wantMem = mem
 	}
 	return actualNano == wantNano && actualMem == wantMem, nil
 }

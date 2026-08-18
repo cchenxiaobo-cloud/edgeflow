@@ -1,14 +1,30 @@
 package edged
 
-// 本文件覆盖 WBS 6.4 镜像更新滚动策略的单元测试：
-//   - MockRuntime 镜像漂移语义（SetImage 注入 → EnsureRunning 重建）；
-//   - ImageMatches 接口行为；
-//   - reconcile 的滚动重建：按 index 顺序 0→N-1，每轮最多 1 个。
+// 本文件覆盖 WBS 6.4 镜像更新滚动策略与 WBS 6.5 资源漂移的单元测试：
+//   - MockRuntime 镜像/资源漂移语义（SetImage/SetResources 注入 → EnsureRunning 重建）；
+//   - ImageMatches / ResourcesMatch 接口行为；
+//   - reconcile 的滚动重建：按 index 顺序 0→N-1，每轮最多 1 个（镜像与资源共门控）。
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
+
+	"edgeflow/edge/pkg/metamanager"
 )
+
+// savePodWithResourcesN 落盘一条带资源 limit 的 Pod（副本数 replicas）。
+// 走真实 metamanager.SavePod 解析路径（资源漂移测试用）。
+func savePodWithResourcesN(t *testing.T, s *metamanager.Store, ns, name, image string, res metamanager.ResourceRequirements, replicas int) {
+	t.Helper()
+	b, err := json.Marshal(metamanager.Pod{Namespace: ns, Name: name, Image: image, Replicas: replicas, Resources: res})
+	if err != nil {
+		t.Fatalf("序列化 Pod 失败: %v", err)
+	}
+	if err := s.SavePod(string(b)); err != nil {
+		t.Fatalf("SavePod 失败: %v", err)
+	}
+}
 
 // TestMockEnsureRunningImageDrift 验证 MockRuntime 的镜像漂移处理：
 // 镜像一致 → no-op（不重建）；镜像不一致 → 重建（EnsureStoppedCount 与
@@ -247,5 +263,176 @@ func TestEdgedReconcileRollingRebuild(t *testing.T) {
 			t.Errorf("%s 重建后镜像 = %q，期望 nginx:1.27", k, img)
 		}
 		_ = i
+	}
+}
+
+// ---------- 资源漂移（WBS 6.5）reconcile 闭环测试 ----------
+
+// TestEdgedReconcileResourceDriftRebuild 验证资源漂移闭环：容器健康 Running
+// 但资源 limit 被外部改动（docker update --cpus 0.25，镜像不变）→
+// 下一轮调谐触发重建（先停再建），资源恢复期望值，且不计入 RestartCount
+// （主动更新，非崩溃重启）。
+func TestEdgedReconcileResourceDriftRebuild(t *testing.T) {
+	s := newTestStore(t)
+	rt := NewMockRuntime()
+	e := New(s, rt, 100*time.Millisecond)
+
+	res := metamanager.ResourceRequirements{CPULimit: "500m", MemoryLimit: "64Mi"}
+	savePodWithResourcesN(t, s, "default", "nginx", "nginx:1.27", res, 1)
+	if err := e.reconcileOnce(); err != nil {
+		t.Fatalf("第一次 reconcile 失败: %v", err)
+	}
+	key := "default/nginx#0"
+	if rt.CreateCount(key) != 1 || rt.EnsureStoppedCount(key) != 0 {
+		t.Fatalf("初始状态异常: create=%d stopped=%d", rt.CreateCount(key), rt.EnsureStoppedCount(key))
+	}
+	// 创建后记录期望资源：500m → 500000000 nano；64Mi → 67108864 bytes
+	if cpu, mem := rt.Resources(key); cpu != 500_000_000 || mem != 64<<20 {
+		t.Fatalf("创建后记录的资源 = (%d, %d)，期望 (500000000, 67108864)", cpu, mem)
+	}
+
+	// 模拟外部 docker update --cpus 0.25（CPU limit 漂移，容器仍在运行）
+	rt.SetResources(key, 250_000_000, 64<<20)
+
+	if err := e.reconcileOnce(); err != nil {
+		t.Fatalf("漂移后 reconcile 失败: %v", err)
+	}
+	// 重建完成：先停再建
+	if rt.EnsureStoppedCount(key) != 1 {
+		t.Errorf("EnsureStoppedCount = %d，期望 1", rt.EnsureStoppedCount(key))
+	}
+	if rt.CreateCount(key) != 2 {
+		t.Errorf("CreateCount = %d，期望 2", rt.CreateCount(key))
+	}
+	if st := rt.State(key); st != StateRunning {
+		t.Errorf("重建后状态 = %s，期望 running", st)
+	}
+	// 重建后资源恢复期望值
+	if cpu, mem := rt.Resources(key); cpu != 500_000_000 || mem != 64<<20 {
+		t.Errorf("重建后资源 = (%d, %d)，期望 (500000000, 67108864)", cpu, mem)
+	}
+	// 主动重建不计入 RestartCount（与镜像漂移同语义）
+	if st := e.Status()["default/nginx"]; st.RestartCount != 0 {
+		t.Errorf("资源重建不应计入 RestartCount，实际 %d", st.RestartCount)
+	}
+
+	// 下一轮：资源已一致 → 不再重建
+	if err := e.reconcileOnce(); err != nil {
+		t.Fatalf("第三轮 reconcile 失败: %v", err)
+	}
+	if rt.EnsureStoppedCount(key) != 1 || rt.CreateCount(key) != 2 {
+		t.Errorf("一致后不应再重建: stopped=%d create=%d",
+			rt.EnsureStoppedCount(key), rt.CreateCount(key))
+	}
+}
+
+// TestEdgedReconcileResourceMatchNoRebuild 验证：容器资源与期望一致时
+// 调谐不触发重建（ResourcesMatch 通过 → no-op），与镜像一致的幂等语义并列。
+func TestEdgedReconcileResourceMatchNoRebuild(t *testing.T) {
+	s := newTestStore(t)
+	rt := NewMockRuntime()
+	e := New(s, rt, 100*time.Millisecond)
+
+	res := metamanager.ResourceRequirements{CPULimit: "500m", MemoryLimit: "64Mi"}
+	savePodWithResourcesN(t, s, "default", "nginx", "nginx:1.27", res, 1)
+	if err := e.reconcileOnce(); err != nil {
+		t.Fatalf("第一次 reconcile 失败: %v", err)
+	}
+	key := "default/nginx#0"
+
+	// 资源与镜像都一致 → 健康副本不再触发任何重建/重启
+	if err := e.reconcileOnce(); err != nil {
+		t.Fatalf("第二次 reconcile 失败: %v", err)
+	}
+	if rt.EnsureStoppedCount(key) != 0 {
+		t.Errorf("资源一致不应重建: stopped=%d", rt.EnsureStoppedCount(key))
+	}
+	if rt.CreateCount(key) != 1 {
+		t.Errorf("资源一致不应重建: create=%d", rt.CreateCount(key))
+	}
+	if rt.EnsureRunningCount(key) != 1 {
+		t.Errorf("健康副本不应再调 EnsureRunning: running=%d，期望 1", rt.EnsureRunningCount(key))
+	}
+	if st := e.Status()["default/nginx"]; st.State != StateRunning || st.Err != nil {
+		t.Errorf("Status = %+v，期望 running 且无错误", st)
+	}
+}
+
+// TestEdgedReconcileResourceDriftRolling 验证资源漂移同样受滚动门控：
+// 3 副本全部资源漂移时，按 index 顺序 0→2 逐轮重建，每轮恰好 1 个；
+// 全部重建完成后不再有重建动作（与镜像漂移共用"每轮最多 1 个"门控）。
+func TestEdgedReconcileResourceDriftRolling(t *testing.T) {
+	s := newTestStore(t)
+	rt := NewMockRuntime()
+	e := New(s, rt, 100*time.Millisecond)
+
+	res := metamanager.ResourceRequirements{CPULimit: "500m", MemoryLimit: "64Mi"}
+	savePodWithResourcesN(t, s, "default", "web", "nginx:1.27", res, 3)
+	if err := e.reconcileOnce(); err != nil {
+		t.Fatalf("初始 reconcile 失败: %v", err)
+	}
+	keys := []string{
+		instanceKey("default", "web", 0),
+		instanceKey("default", "web", 1),
+		instanceKey("default", "web", 2),
+	}
+	for _, k := range keys {
+		if rt.CreateCount(k) != 1 {
+			t.Fatalf("%s 初始创建次数 = %d，期望 1", k, rt.CreateCount(k))
+		}
+	}
+
+	// 全部副本资源漂移（模拟外部 docker update 批量改动 limit）
+	for _, k := range keys {
+		rt.SetResources(k, 250_000_000, 32<<20) // 漂移值：250m / 32Mi
+	}
+
+	// 第 1 轮：只重建 index 0
+	if err := e.reconcileOnce(); err != nil {
+		t.Fatalf("第 1 轮 reconcile 失败: %v", err)
+	}
+	if got := rt.EnsureStoppedCount(keys[0]); got != 1 {
+		t.Errorf("第 1 轮 index 0 应重建（stopped=%d，期望 1）", got)
+	}
+	if got := rt.EnsureStoppedCount(keys[1]); got != 0 {
+		t.Errorf("第 1 轮 index 1 不应重建（stopped=%d，期望 0）", got)
+	}
+	if got := rt.EnsureStoppedCount(keys[2]); got != 0 {
+		t.Errorf("第 1 轮 index 2 不应重建（stopped=%d，期望 0）", got)
+	}
+
+	// 第 2 轮：index 1（index 0 已恢复一致，不再动）
+	if err := e.reconcileOnce(); err != nil {
+		t.Fatalf("第 2 轮 reconcile 失败: %v", err)
+	}
+	if got := rt.EnsureStoppedCount(keys[0]); got != 1 {
+		t.Errorf("第 2 轮 index 0 不应再重建（stopped=%d，期望 1）", got)
+	}
+	if got := rt.EnsureStoppedCount(keys[1]); got != 1 {
+		t.Errorf("第 2 轮 index 1 应重建（stopped=%d，期望 1）", got)
+	}
+	if got := rt.EnsureStoppedCount(keys[2]); got != 0 {
+		t.Errorf("第 2 轮 index 2 不应重建（stopped=%d，期望 0）", got)
+	}
+
+	// 第 3 轮：index 2
+	if err := e.reconcileOnce(); err != nil {
+		t.Fatalf("第 3 轮 reconcile 失败: %v", err)
+	}
+	if got := rt.EnsureStoppedCount(keys[2]); got != 1 {
+		t.Errorf("第 3 轮 index 2 应重建（stopped=%d，期望 1）", got)
+	}
+
+	// 第 4 轮：全部一致 → 无任何重建
+	if err := e.reconcileOnce(); err != nil {
+		t.Fatalf("第 4 轮 reconcile 失败: %v", err)
+	}
+	for _, k := range keys {
+		if got := rt.EnsureStoppedCount(k); got != 1 {
+			t.Errorf("第 4 轮 %s 不应再重建（stopped=%d，期望 1）", k, got)
+		}
+		if cpu, mem := rt.Resources(k); cpu != 500_000_000 || mem != 64<<20 {
+			t.Errorf("%s 重建后资源 = (%d, %d)，期望 (500000000, 67108864)", k, cpu, mem)
+		}
 	}
 }

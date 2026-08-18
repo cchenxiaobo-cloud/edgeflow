@@ -34,6 +34,13 @@ type MockRuntime struct {
 	// 直接 SetState 注入状态、未记录镜像的实例不误重建）。
 	images map[string]string
 
+	// resources 是每个实例当前持有的资源 limit（key 同 states，docker 口径：
+	// NanoCpus / Memory bytes）：创建/重建时按期望值写入。SetResources 可
+	// 改写（模拟 docker update 造成的资源漂移）；未记录的 key 在
+	// EnsureRunning/ResourcesMatch 漂移检查中视为与期望一致（兼容旧测试：
+	// 直接 SetState 注入状态、未记录资源的实例不误重建）。
+	resources map[string]resRecord
+
 	// 调用计数（测试断言用）
 	ensureRunningCalls map[string]int
 	ensureStoppedCalls map[string]int
@@ -49,11 +56,18 @@ type MockRuntime struct {
 	closed bool
 }
 
+// resRecord 是资源 limit 的 docker 口径表示（与 HostConfig.NanoCpus/Memory 对齐）。
+type resRecord struct {
+	cpuNano  int64 // CPU limit（nano，如 250m → 250000000）
+	memBytes int64 // Memory limit（bytes，如 64Mi → 67108864）
+}
+
 // NewMockRuntime 创建空的 MockRuntime。
 func NewMockRuntime() *MockRuntime {
 	return &MockRuntime{
 		states:             make(map[string]RuntimeState),
 		images:             make(map[string]string),
+		resources:          make(map[string]resRecord),
 		ensureRunningCalls: make(map[string]int),
 		ensureStoppedCalls: make(map[string]int),
 		createCalls:        make(map[string]int),
@@ -80,23 +94,65 @@ func (m *MockRuntime) EnsureRunning(pod metamanager.Pod, index int) error {
 	if st == StateAbsent {
 		m.createCalls[key]++
 		m.images[key] = pod.Image
+		m.recordResources(key, pod.Resources)
 		m.states[key] = StateRunning
 		return nil
 	}
-	// 镜像漂移重建（WBS 6.4）：已运行但镜像与期望不一致 → 先停再建。
-	// images 未记录（空串）视为一致，不误重建（兼容 SetState 直改状态表的旧测试）。
-	if st == StateRunning && m.images[key] != "" && m.images[key] != pod.Image {
-		m.ensureStoppedCalls[key]++
-		if m.states[key] != StateAbsent {
-			m.removeCalls[key]++
+	// 镜像/资源漂移重建（WBS 6.4 / 6.5）：已运行但镜像或资源 limit 与期望
+	// 不一致 → 先停再建。images 未记录（空串）视为一致；resources 未记录
+	// 视为一致（兼容 SetState 直改状态表的旧测试）。
+	if st == StateRunning {
+		imgDrift := m.images[key] != "" && m.images[key] != pod.Image
+		resDrift := false
+		if !imgDrift {
+			ok, rerr := m.resourcesMatchLocked(key, pod.Resources)
+			if rerr != nil {
+				return rerr // 期望 limit 非法：与 DockerRuntime.ResourcesMatch 语义一致
+			}
+			resDrift = !ok
 		}
-		m.createCalls[key]++
-		m.images[key] = pod.Image
-		m.states[key] = StateRunning
-		return nil
+		if imgDrift || resDrift {
+			m.ensureStoppedCalls[key]++
+			if m.states[key] != StateAbsent {
+				m.removeCalls[key]++
+			}
+			m.createCalls[key]++
+			m.images[key] = pod.Image
+			m.recordResources(key, pod.Resources)
+			m.states[key] = StateRunning
+			return nil
+		}
 	}
 	m.states[key] = StateRunning
 	return nil
+}
+
+// recordResources 解析期望 limit 并写入 resources（无 limit 或解析失败 →
+// 不记录；解析失败由 EnsureRunning/ResourcesMatch 的漂移检查路径报错，
+// 与 DockerRuntime 语义一致）。
+func (m *MockRuntime) recordResources(key string, res metamanager.ResourceRequirements) {
+	cpuNano, memBytes, hasLimit, err := podResourceLimits(res)
+	if err != nil || !hasLimit {
+		return
+	}
+	m.resources[key] = resRecord{cpuNano: cpuNano, memBytes: memBytes}
+}
+
+// resourcesMatchLocked 比对实例当前资源 limit 与期望（调用方必须持锁）：
+// 期望无 limit → true；未记录 → true（不误报漂移）；否则按 docker 口径精确比对。
+func (m *MockRuntime) resourcesMatchLocked(key string, res metamanager.ResourceRequirements) (bool, error) {
+	wantCPU, wantMem, hasLimit, err := podResourceLimits(res)
+	if err != nil {
+		return false, err
+	}
+	if !hasLimit {
+		return true, nil
+	}
+	rec, ok := m.resources[key]
+	if !ok {
+		return true, nil // 未记录：视为一致（不误报漂移）
+	}
+	return rec.cpuNano == wantCPU && rec.memBytes == wantMem, nil
 }
 
 // EnsureStopped 把 pod 第 index 个副本的状态置为 Absent（删除）；已 Absent 则 no-op（幂等）。
@@ -209,6 +265,23 @@ func (m *MockRuntime) SetImage(key, image string) {
 	m.images[key] = image
 }
 
+// SetResources 设置实例当前资源 limit（测试模拟资源漂移：外部 docker update
+// 改动已运行容器的 --cpus/--memory）。key 为 instanceKey（如
+// "default/nginx#0"）；参数为 docker 口径（nano CPU / bytes），与
+// HostConfig.NanoCpus/Memory 对齐。
+func (m *MockRuntime) SetResources(key string, cpuNano, memBytes int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resources[key] = resRecord{cpuNano: cpuNano, memBytes: memBytes}
+}
+
+// Resources 返回实例当前记录的资源 limit（测试断言；未记录返回 (0,0)）。
+func (m *MockRuntime) Resources(key string) (cpuNano, memBytes int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.resources[key].cpuNano, m.resources[key].memBytes
+}
+
 // Image 返回实例当前记录的镜像（测试断言；未记录返回 ""）。
 func (m *MockRuntime) Image(key string) string {
 	m.mu.Lock()
@@ -233,6 +306,19 @@ func (m *MockRuntime) ImageMatches(pod metamanager.Pod, index int) (bool, error)
 		return true, nil // 未记录：视为一致（不误报漂移）
 	}
 	return img == pod.Image, nil
+}
+
+// ResourcesMatch 返回实例资源 limit 是否与期望一致（WBS 6.5）：
+// 期望无 limit → true（不检查）；未记录资源（resources 无此 key）视为一致；
+// 已记录则按 docker 口径（NanoCpus / bytes）精确比对。
+func (m *MockRuntime) ResourcesMatch(pod metamanager.Pod, index int) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.closed {
+		return false, fmt.Errorf("mock runtime 已关闭")
+	}
+	return m.resourcesMatchLocked(instanceKey(pod.Namespace, pod.Name, index), pod.Resources)
 }
 
 // EnsureRunningCount 返回 EnsureRunning 的累计调用次数（测试断言）。

@@ -497,7 +497,7 @@ func TestResourcesMatchErrorPaths(t *testing.T) {
 
 	t.Run("HostConfig 输出垃圾（字段数不对）→报错", func(t *testing.T) {
 		d := newTestDocker(fakeRunner([]any{"only-one-field\n", nil}))
-		ok, err := d.resourcesMatch(pod, 0)
+		ok, err := d.ResourcesMatch(pod, 0)
 		if err == nil {
 			t.Fatal("字段数不对应报错")
 		}
@@ -511,7 +511,7 @@ func TestResourcesMatchErrorPaths(t *testing.T) {
 
 	t.Run("HostConfig 数值解析失败→报错", func(t *testing.T) {
 		d := newTestDocker(fakeRunner([]any{"abc def\n", nil}))
-		ok, err := d.resourcesMatch(pod, 0)
+		ok, err := d.ResourcesMatch(pod, 0)
 		if err == nil {
 			t.Fatal("数值解析失败应报错")
 		}
@@ -525,7 +525,7 @@ func TestResourcesMatchErrorPaths(t *testing.T) {
 
 	t.Run("容器不存在→(true,nil) 交给创建分支", func(t *testing.T) {
 		d := newTestDocker(fakeRunner([]any{"", errFakeNoObject}))
-		ok, err := d.resourcesMatch(pod, 0)
+		ok, err := d.ResourcesMatch(pod, 0)
 		if err != nil || !ok {
 			t.Errorf("容器不存在应返回 (true, nil)，实际 (%v, %v)", ok, err)
 		}
@@ -537,7 +537,7 @@ func TestResourcesMatchErrorPaths(t *testing.T) {
 			called = true
 			return "", nil
 		})
-		ok, err := d.resourcesMatch(podNginx(), 0)
+		ok, err := d.ResourcesMatch(podNginx(), 0)
 		if err != nil || !ok {
 			t.Errorf("无 limit 应返回 (true, nil)，实际 (%v, %v)", ok, err)
 		}
@@ -548,7 +548,7 @@ func TestResourcesMatchErrorPaths(t *testing.T) {
 
 	t.Run("daemon 不可用→错误透传", func(t *testing.T) {
 		d := newTestDocker(fakeRunner([]any{"", errFakeDaemonDown}))
-		ok, err := d.resourcesMatch(pod, 0)
+		ok, err := d.ResourcesMatch(pod, 0)
 		if err == nil || ok {
 			t.Errorf("daemon 不可用应透传错误，实际 (%v, %v)", ok, err)
 		}

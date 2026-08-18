@@ -65,6 +65,16 @@ type ContainerRuntime interface {
 	// 触发重建（EnsureRunning 内部先停再建，幂等收敛）。
 	ImageMatches(pod metamanager.Pod, index int) (bool, error)
 
+	// ResourcesMatch 检查 Pod 第 index 个副本容器的资源 limit 是否与期望
+	// 一致（WBS 6.5 资源漂移检测：docker update --cpus/--memory 等外部改动
+	// 使已运行容器的 limit 偏离期望）。
+	// 期望不带 limit 时返回 (true, nil)（不触发重建，也不产生额外查询）；
+	// 容器不存在时返回 (true, nil)——不算漂移，由 EnsureRunning 的创建
+	// 分支补齐；运行时不可用/查询失败返回错误。
+	// reconciler 对 StateRunning 且镜像一致的副本调用它，命中漂移后以
+	// EnsureRunning 触发重建（EnsureRunning 内部先停再建，幂等收敛）。
+	ResourcesMatch(pod metamanager.Pod, index int) (bool, error)
+
 	// List 列出本运行时上由 Edged 管理的全部容器实例（含已停止的）。
 	// reconciler 用它发现"本地存在但期望集合已删除"的孤儿容器，触发清理；
 	// 也用它按 Pod 统计实际副本数（多副本收敛的依据）。

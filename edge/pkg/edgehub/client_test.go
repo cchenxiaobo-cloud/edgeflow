@@ -451,6 +451,45 @@ func TestFirstReconnectDelayAtLeastOneSecond(t *testing.T) {
 	}
 }
 
+// TestBackoffResetAfterSuccessfulReconnect 验证 P3-4：连接失败使退避增长后，
+// 注册成功必须把退避重置回 base（契约「注册成功后重置退避」）。
+// 断言分两段：
+//  1. 前 4 次拨号失败使退避增长到 800ms，首次注册成功耗时 ≥500ms（增长证据）；
+//  2. 成功后 mock 断开，下一次重连间隔 <500ms（≈base 50ms）——若未重置，
+//     该间隔应为增长后的 800ms，断言必然失败（重置证据）。
+func TestBackoffResetAfterSuccessfulReconnect(t *testing.T) {
+	mock := startMockCloud(t, mockConfig{closeAfterRegisterCount: 1})
+	client := New(Options{
+		CloudAddr:         mock.url,
+		NodeID:            "backoff-reset-node",
+		HeartbeatInterval: 50 * time.Millisecond,
+		BackoffBase:       50 * time.Millisecond,
+		BackoffMax:        time.Second,
+		Dialer:            &flakyDialer{failures: 4, real: websocket.DefaultDialer},
+	})
+	statusCh := make(chan bool, 8)
+	client.SetStatusHandler(func(v bool) { statusCh <- v })
+	start := time.Now()
+	client.Start()
+	defer client.Stop()
+
+	// 前 4 次拨号失败：退避 50→100→200→400→800ms 增长
+	mock.waitRegister(t) // 第 5 次拨号成功注册
+	if elapsed := time.Since(start); elapsed < 500*time.Millisecond {
+		t.Fatalf("4 次失败后的注册应耗时 ≥500ms（退避已增长），实际 %v——退避增长前提不成立", elapsed)
+	}
+	waitStatus(t, statusCh, true)
+
+	// 注册成功 → 退避应重置回 50ms；mock 随后断开，重连间隔应为 base
+	reconnectStart := time.Now()
+	waitStatus(t, statusCh, false) // mock 在首个注册后主动断开
+	mock.waitRegister(t)           // 第二次注册：间隔应为 base（50ms），而非 800ms
+	if elapsed := time.Since(reconnectStart); elapsed >= 500*time.Millisecond {
+		t.Fatalf("注册成功后重连间隔 = %v，应重置为 base（50ms）；未重置时退避为 800ms", elapsed)
+	}
+	waitStatus(t, statusCh, true)
+}
+
 // TestRegisterRejectedRetries 验证：accepted=false 时客户端记录错误并
 // 按退避继续重试（决策：拒绝不特殊处理，统一走重连路径）。
 func TestRegisterRejectedRetries(t *testing.T) {
@@ -641,6 +680,27 @@ func TestNewAppliesDefaults(t *testing.T) {
 	if client.opts.NodeID == "" {
 		t.Error("默认 NodeID 不应为空")
 	}
+}
+
+// flakyDialer 前 N 次拨号返回失败（模拟云端不可达），之后委托真实拨号。
+// 用于验证：失败导致的退避增长在注册成功后必须重置（P3-4）。
+// 注意：failures 由单测试 goroutine 初始化后在 Dial 间共享（只减不增），
+// 但仍用互斥锁保护，兼容 -race。
+type flakyDialer struct {
+	mu       sync.Mutex
+	failures int
+	real     *websocket.Dialer
+}
+
+func (d *flakyDialer) Dial(urlStr string, h http.Header) (*websocket.Conn, *http.Response, error) {
+	d.mu.Lock()
+	if d.failures > 0 {
+		d.failures--
+		d.mu.Unlock()
+		return nil, nil, errors.New("模拟拨号失败")
+	}
+	d.mu.Unlock()
+	return d.real.Dial(urlStr, h)
 }
 
 // countingDialer 包装拨号器，统计拨号次数（注入测试用）。

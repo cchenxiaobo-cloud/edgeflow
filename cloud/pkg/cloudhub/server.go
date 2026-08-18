@@ -760,9 +760,12 @@ func (s *Server) handleAck(c *conn, m *protocol.Message) {
 }
 
 // kick 踢掉旧连接：先尽力送达 conflict Ack，再关闭连接。
+// 被踢连接立即清除注册态（P3-3）：readLoop 退出前的窗口内，旧连接
+// 再发心跳应收到 not_registered 而非 HeartbeatAck（状态语义更准确）。
 func (s *Server) kick(c *conn, reason string) {
 	target, _ := c.nodeID.Load().(string)
 	log.Warnf("踢掉旧连接: nodeID=%s ip=%s（%s）", target, c.remoteIP, reason)
+	c.registered.Store(false) // 立即清除注册态，P3-3
 	if target != "" {
 		m, err := protocol.NewMessage(protocol.TypeAck, "cloud", target,
 			AckPayload{Code: CodeConflict, Message: reason})

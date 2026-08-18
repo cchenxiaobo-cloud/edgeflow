@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -681,6 +682,116 @@ func TestShutdownDuringActiveDial(t *testing.T) {
 		case <-time.After(3 * time.Second):
 			t.Fatalf("第 %d 轮：Start 未在 Shutdown 后退出", i)
 		}
+	}
+}
+
+// TestShutdownDuringStartInit 验证 P3-2：Shutdown 撞上 Start 初始化窗口
+// （net.Listen 之后、stateMu 登记之前，或登记之后、Serve 尚未开跑）时，
+// Start 必须返回 nil（不得报“服务异常退出”致上层退出码 1），Shutdown 快速返回。
+func TestShutdownDuringStartInit(t *testing.T) {
+	for i := 0; i < 30; i++ {
+		srv := New("127.0.0.1:0")
+		done := make(chan error, 1)
+		go func() { done <- srv.Start() }()
+		// 微小错峰：覆盖 Start 的 net.Listen / stateMu 登记 / Serve 各阶段
+		time.Sleep(time.Duration(i%4) * time.Millisecond)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := srv.Shutdown(ctx)
+		cancel()
+		if err != nil {
+			t.Fatalf("第 %d 轮：Shutdown 返回错误: %v", i, err)
+		}
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("第 %d 轮：Shutdown 撞 Start 窗口时 Start 应返回 nil，实际: %v", i, err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("第 %d 轮：Start 未在 Shutdown 后退出", i)
+		}
+	}
+}
+
+// TestStartAfterShutdown 验证 P3-2 的另一侧：Shutdown 先于 Start 完成时，
+// 后续 Start 应安全返回（nil 且不监听），不 panic、不误报错误。
+func TestStartAfterShutdown(t *testing.T) {
+	srv := New("127.0.0.1:0")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatalf("未启动时 Shutdown 失败: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Shutdown 后 Start 应安全返回 nil，实际: %v", err)
+	}
+	if got := srv.Addr(); got != "" {
+		t.Errorf("Shutdown 后 Start 不应监听，Addr = %q", got)
+	}
+}
+
+// TestKickClearsRegisteredImmediately 验证 P3-3：kick 在调用时刻立即清除
+// 被踢连接的注册态（而非等其 readLoop 退出）——窗口内旧连接再发心跳将
+// 得到 not_registered 而非 HeartbeatAck（与 TestInvalidMessages 未注册
+// 心跳路径共同覆盖新语义）。
+func TestKickClearsRegisteredImmediately(t *testing.T) {
+	srv := New("127.0.0.1:0") // 仅复用其 kick/handleHeartbeat 逻辑，不经 Start
+	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	// 把服务端视角的 ws 传回测试，供 newConn 构造被踢连接视图
+	serverConns := make(chan *websocket.Conn, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		serverConns <- ws
+		// 模拟 readLoop：挂起读，直到连接被 kick 关闭
+		for {
+			if _, _, err := ws.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(ts.Close)
+	ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(ts.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("拨号失败: %v", err)
+	}
+	defer func() { _ = ws.Close() }()
+	srvWS := <-serverConns
+
+	// 构造一条已注册连接的服务端视图（不经 serveWS），模拟被踢旧连接
+	conn := newConn(srvWS, "127.0.0.1")
+	conn.nodeID.Store("edge-kick")
+	conn.registered.Store(true)
+
+	// 先设读超时再 kick：kick 会关闭连接，关闭后无法再设置 deadline
+	if err := ws.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("设置读超时失败: %v", err)
+	}
+	srv.kick(conn, "测试踢出")
+	if conn.registered.Load() {
+		t.Fatal("kick 后注册态应立即清除（P3-3）")
+	}
+
+	// 被踢连接应收到 conflict Ack 且随后被关闭
+	_, data, err := ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("读取 conflict Ack 失败: %v", err)
+	}
+	m, err := protocol.Decode(data)
+	if err != nil {
+		t.Fatalf("解码 conflict Ack 失败: %v", err)
+	}
+	var ack AckPayload
+	if err := m.DecodePayload(&ack); err != nil {
+		t.Fatalf("解析 conflict Ack 失败: %v", err)
+	}
+	if ack.Code != CodeConflict {
+		t.Errorf("Ack code = %q，期望 %q", ack.Code, CodeConflict)
+	}
+	if _, _, err := ws.ReadMessage(); err == nil {
+		t.Error("被踢连接应被服务端关闭，但仍可读到消息")
 	}
 }
 

@@ -187,14 +187,28 @@ func parseEdgeCoreInterval(filePath, field, raw string) (time.Duration, error) {
 }
 
 // edgeCoreIntervalFromEnv 解析环境变量为时长：未设置时保持当前值（文件值或默认值）；
-// 非法/越界时记录警告并回落当前值（与 cmd/edgecore 的 durationFromEnv
-// 语义一致：非法 env 视为未配置，按优先级链取下一级——文件值，无文件值时默认值）。
+// 合法时返回解析值；非法/越界时记录警告并回落当前值（与 cmd/edgecore 的
+// durationFromEnv 语义一致：非法 env 视为未配置，按优先级链取下一级——
+// 文件值，无文件值时默认值）。
+//
+// 启动日志（KNOWN-ISSUES §1 ④ 修复）：每次解析输出一条日志明示生效值——
+// 来源（环境变量或默认/文件）、请求值、生效值；越界/非法时 Warn 说明
+// 请求值与合法区间，运维不再被静默回落误导。
 func edgeCoreIntervalFromEnv(key string, def time.Duration) time.Duration {
 	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d >= minEdgeCoreInterval && d <= maxEdgeCoreInterval {
-			return d
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			log.Warnf("%s 非法（%q），回落 %v", key, v, def)
+			return def
 		}
-		log.Warnf("%s 非法（%q），回落 %v", key, v, def)
+		if d < minEdgeCoreInterval || d > maxEdgeCoreInterval {
+			log.Warnf("%s 请求 %s 超出合法区间 [%v,%v]，回落 %v",
+				key, v, minEdgeCoreInterval, maxEdgeCoreInterval, def)
+			return def
+		}
+		log.Infof("%s 生效值 %v（来源：环境变量，请求值 %s）", key, d, v)
+		return d
 	}
+	log.Infof("%s 生效值 %v（来源：默认/配置文件，未设置环境变量）", key, def)
 	return def
 }

@@ -545,7 +545,17 @@ func (api *nodeAPI) syncPod(w http.ResponseWriter, r *http.Request) {
 	// delete 操作不携带资源字段，跳过校验
 	if req.Operation != "delete" {
 		if err := req.Pod.Resources.validateResources(); err != nil {
-			http.Error(w, `{"error":"invalid resources: `+err.Error()+`"}`, http.StatusBadRequest)
+			// 错误文案可能包含引号/反斜杠等 JSON 敏感字符（如畸形资源量
+			// 经 %q 回显）：用 json.Marshal 构造响应体，避免裸拼字符串破坏
+			// JSON 结构（与 409 分支同构，KNOWN-ISSUES §1 ③ 修复）。
+			body, merr := json.Marshal(map[string]string{
+				"error": "invalid resources: " + err.Error(),
+			})
+			if merr != nil {
+				http.Error(w, `{"error":"marshal error response failed"}`, http.StatusInternalServerError)
+				return
+			}
+			http.Error(w, string(body), http.StatusBadRequest)
 			return
 		}
 	}

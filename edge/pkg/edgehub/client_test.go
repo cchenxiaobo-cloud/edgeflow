@@ -453,41 +453,83 @@ func TestFirstReconnectDelayAtLeastOneSecond(t *testing.T) {
 
 // TestBackoffResetAfterSuccessfulReconnect 验证 P3-4：连接失败使退避增长后，
 // 注册成功必须把退避重置回 base（契约「注册成功后重置退避」）。
-// 断言分两段：
-//  1. 前 4 次拨号失败使退避增长到 800ms，首次注册成功耗时 ≥500ms（增长证据）；
-//  2. 成功后 mock 断开，下一次重连间隔 <500ms（≈base 50ms）——若未重置，
-//     该间隔应为增长后的 800ms，断言必然失败（重置证据）。
+// 断言基于注入的退避观测（Options.BackoffSleepFunc 记录每次退避间隔，
+// 不依赖实时时间阈值——KNOWN-ISSUES §1 ② 修复，慢 CI 不再 flake）：
+//  1. 前 4 次拨号失败产生 4 次退避，间隔序列 1ms,2ms,4ms,8ms（增长证据）；
+//  2. 注册成功后 mock 断开，下一次重连前的退避间隔 = base 1ms（重置证据——
+//     若未重置，该间隔应为增长后的 8ms）。
 func TestBackoffResetAfterSuccessfulReconnect(t *testing.T) {
+	var mu sync.Mutex
+	var sleeps []time.Duration
 	mock := startMockCloud(t, mockConfig{closeAfterRegisterCount: 1})
+	// 注入：不真实休眠，只记录每次退避间隔（确定性 + 加速，无实时阈值）
 	client := New(Options{
 		CloudAddr:         mock.url,
 		NodeID:            "backoff-reset-node",
-		HeartbeatInterval: 50 * time.Millisecond,
-		BackoffBase:       50 * time.Millisecond,
-		BackoffMax:        time.Second,
+		HeartbeatInterval: 5 * time.Millisecond,
+		BackoffBase:       1 * time.Millisecond,
+		BackoffMax:        8 * time.Millisecond,
 		Dialer:            &flakyDialer{failures: 4, real: websocket.DefaultDialer},
+		BackoffSleepFunc: func(d time.Duration) bool {
+			mu.Lock()
+			sleeps = append(sleeps, d)
+			mu.Unlock()
+			return true
+		},
 	})
+
+	// 前 4 次拨号失败：退避 1→2→4→8ms 增长；第 5 次拨号成功注册
 	statusCh := make(chan bool, 8)
 	client.SetStatusHandler(func(v bool) { statusCh <- v })
-	start := time.Now()
 	client.Start()
 	defer client.Stop()
 
-	// 前 4 次拨号失败：退避 50→100→200→400→800ms 增长
 	mock.waitRegister(t) // 第 5 次拨号成功注册
-	if elapsed := time.Since(start); elapsed < 500*time.Millisecond {
-		t.Fatalf("4 次失败后的注册应耗时 ≥500ms（退避已增长），实际 %v——退避增长前提不成立", elapsed)
+	waitBackoffCount(t, &mu, &sleeps, 4)
+	mu.Lock()
+	growth := append([]time.Duration(nil), sleeps...)
+	mu.Unlock()
+	wantGrowth := []time.Duration{1 * time.Millisecond, 2 * time.Millisecond, 4 * time.Millisecond, 8 * time.Millisecond}
+	for i := range wantGrowth {
+		if growth[i] != wantGrowth[i] {
+			t.Fatalf("增长期退避第 %d 次 = %v，期望 %v（完整序列 %v）——退避增长前提不成立", i, growth[i], wantGrowth[i], growth)
+		}
 	}
 	waitStatus(t, statusCh, true)
 
-	// 注册成功 → 退避应重置回 50ms；mock 随后断开，重连间隔应为 base
-	reconnectStart := time.Now()
+	// 注册成功 → 退避应重置回 base（1ms）；mock 断开后重连前仅退避一次且 = base
 	waitStatus(t, statusCh, false) // mock 在首个注册后主动断开
-	mock.waitRegister(t)           // 第二次注册：间隔应为 base（50ms），而非 800ms
-	if elapsed := time.Since(reconnectStart); elapsed >= 500*time.Millisecond {
-		t.Fatalf("注册成功后重连间隔 = %v，应重置为 base（50ms）；未重置时退避为 800ms", elapsed)
+	mock.waitRegister(t)           // 第二次注册：此前应有一次退避，间隔 = base
+	waitBackoffCount(t, &mu, &sleeps, 5)
+	mu.Lock()
+	afterReset := append([]time.Duration(nil), sleeps...)
+	mu.Unlock()
+	if afterReset[4] != 1*time.Millisecond {
+		t.Fatalf("注册成功后重连退避 = %v，应重置为 base 1ms（未重置时为 8ms）；完整序列 %v", afterReset[4], afterReset)
 	}
 	waitStatus(t, statusCh, true)
+}
+
+// waitBackoffCount 轮询等待退避记录数达到 n（等待语义，非实时阈值断言：
+// 超时上限 5s 只判定「事件未发生」，不度量间隔长短）。
+func waitBackoffCount(t *testing.T, mu *sync.Mutex, sleeps *[]time.Duration, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		c := len(*sleeps)
+		mu.Unlock()
+		if c >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			mu.Lock()
+			got := append([]time.Duration(nil), (*sleeps)...)
+			mu.Unlock()
+			t.Fatalf("5s 内退避记录数 = %d，期望 ≥%d（已记录 %v）", c, n, got)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }
 
 // TestRegisterRejectedRetries 验证：accepted=false 时客户端记录错误并

@@ -13,6 +13,7 @@ package log
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"sync/atomic"
@@ -62,6 +63,16 @@ func GetLevel() Level {
 // logger 是内部使用的标准库 logger，带日期时间前缀。
 // 测试中会临时替换为内存 buffer，因此不导出。
 var logger = log.New(os.Stderr, "", log.LstdFlags)
+
+// SetOutput 设置日志输出目标（默认 stderr）。测试可注入 bytes.Buffer
+// 捕获输出断言（如周期配置启动日志）；传 nil 恢复默认 stderr。
+// 与 SetLevel 同为全局状态：测试注入后应 defer 恢复。
+func SetOutput(w io.Writer) {
+	if w == nil {
+		w = os.Stderr
+	}
+	logger.SetOutput(w)
+}
 
 // Debugf 打印一条 Debug 级别日志，用法与 fmt.Printf 相同。
 func Debugf(format string, args ...any) {

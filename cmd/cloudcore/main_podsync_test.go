@@ -197,6 +197,38 @@ func TestSyncPodOK(t *testing.T) {
 	}
 }
 
+// TestSyncPodInvalidResourcesJSONSafe 验证资源校验 400 分支的响应结构安全
+// （KNOWN-ISSUES §1 ③ 修复）：畸形资源量输入（含引号/反斜杠）经
+// validateResources → %q 回显进错误文案后，响应体仍是合法 JSON，
+// error 字段完整保留原始文案（修复前裸拼字符串会产出非法 JSON）。
+func TestSyncPodInvalidResourcesJSONSafe(t *testing.T) {
+	srv := newPodSyncServer(t, registry.New(), func(context.Context, string, *protocol.Message, cloudhub.ReliableOptions) error {
+		t.Error("非法资源不应触发可靠投递")
+		return nil
+	})
+	// cpuRequest 含引号与反斜杠：ParseCPU 错误文案用 %q 回显原值
+	body := `{"operation":"add","pod":{"name":"nginx","image":"nginx:1.25","resources":{"cpuRequest":"2\"g\"\\x"}}}`
+	resp := postPodSync(t, srv, "node-1", body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("状态码 = %d，期望 400", resp.StatusCode)
+	}
+	raw := readBody(t, resp)
+	var decoded map[string]string
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		t.Fatalf("400 响应体不是合法 JSON: %v\n原始响应: %s", err, raw)
+	}
+	msg, ok := decoded["error"]
+	if !ok {
+		t.Fatalf("400 响应缺少 error 字段: %s", raw)
+	}
+	if !strings.Contains(msg, "invalid resources") {
+		t.Errorf("error 文案应带 invalid resources 前缀: %q", msg)
+	}
+	if !strings.Contains(msg, `2\"g\"\\x`) {
+		t.Errorf("error 文案应保留含引号/反斜杠的原始输入: %q", msg)
+	}
+}
+
 // TestSyncPodUnexpectedError 验证非契约错误（未知错误）落入 500 兜底分支。
 // TestPodStatusHandlerAbsentDeletes 验证 P1 修复配套：收到 Absent 终态
 // 时云端删除记录（列表不再显示已删除 Pod）。

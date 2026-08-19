@@ -183,6 +183,11 @@ type Options struct {
 	BackoffBase time.Duration
 	// BackoffMax 是重连退避上限。
 	BackoffMax time.Duration
+	// BackoffSleepFunc 是退避休眠的实现（测试注入用）：每次退避被调用一次、
+	// 参数为本次退避间隔；返回 false 表示立即停止重连（与内置 sleep 收到
+	// 停止信号的语义一致）。nil 时使用内置 time.NewTimer 休眠——默认值路径
+	// 与历史行为逐字节一致（KNOWN-ISSUES §1 ② 的注入点）。
+	BackoffSleepFunc func(d time.Duration) bool
 	// Dialer 是自定义拨号器（测试注入用）；nil 时使用内置默认拨号器。
 	Dialer Dialer
 	// Token 是接入令牌（WBS 7.3 设备认证）：非空时随 Register 消息携带，
@@ -386,7 +391,7 @@ func (c *Client) run() {
 		if err != nil {
 			// 连接失败或注册失败：退避后重试
 			log.Errorf("EdgeHub 连接/注册失败（%s）: %v", c.opts.CloudAddr, err)
-			if !c.sleep(backoff) {
+			if !c.backoffSleep(backoff) {
 				return
 			}
 			backoff = nextBackoff(backoff, c.opts.BackoffMax)
@@ -408,7 +413,7 @@ func (c *Client) run() {
 			return
 		}
 		log.Warnf("EdgeHub 连接断开（%v），等待退避后重连", err)
-		if !c.sleep(backoff) {
+		if !c.backoffSleep(backoff) {
 			return
 		}
 		backoff = nextBackoff(backoff, c.opts.BackoffMax)
@@ -625,6 +630,16 @@ func (c *Client) sleep(d time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+// backoffSleep 执行一次退避休眠：默认走 c.sleep（time.NewTimer，历史行为
+// 逐字节一致）；注入 BackoffSleepFunc 时由其接管（测试记录/计数/加速用，
+// 见 Options.BackoffSleepFunc）。
+func (c *Client) backoffSleep(d time.Duration) bool {
+	if c.opts.BackoffSleepFunc != nil {
+		return c.opts.BackoffSleepFunc(d)
+	}
+	return c.sleep(d)
 }
 
 // isStopped 返回是否已收到停止信号。

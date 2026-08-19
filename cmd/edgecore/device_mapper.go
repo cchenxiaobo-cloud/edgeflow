@@ -157,9 +157,14 @@ func deviceNamesOf(m mapper.DeviceMapper) []string {
 // 上报循环每轮先执行本步骤再快照 Twin：影子因此始终持有设备最新数据，
 // 周期上报无需感知 Mapper 的存在。reg 为 nil 时静默跳过（纯影子模式）。
 //
-// 命名空间说明：Collect 只返回属性值、不带命名空间，此处按 default 汇入
-// （当前内置 Mapper 均为 default 命名空间）；多命名空间场景可在 Mapper
-// 采集结果扩展时一并解决。
+// 命名空间说明：Collect 只返回属性值、不带命名空间，写入影子时按 Mapper
+// 自身声明的命名空间补全（namespaceOfMapper，与注册表路由索引同一判定
+// 规则）——实现 mapper.DeviceNamespaceResolver 的 Mapper（如 Modbus 配置
+// EDGEFLOW_MODBUS_NAMESPACE=plant-a）采集值落在对应 ns 的影子下，与指令
+// 路径（Route 按 ns 路由）一致；未实现该接口的 Mapper 按 default 汇入。
+// 默认部署（所有内置 Mapper 均为 default 命名空间）行为与 v0.2.0 逐字节
+// 一致；多命名空间部署不再出现 default/x 与 plant-a/x 双条目
+// （KNOWN-ISSUES §1 ①）。
 func collectMapperReports(reg *mapper.MapperRegistry, twins *devicetwin.TwinStore, now int64) {
 	if reg == nil || twins == nil {
 		return
@@ -171,8 +176,20 @@ func collectMapperReports(reg *mapper.MapperRegistry, twins *devicetwin.TwinStor
 			log.Warnf("Mapper %s 采集失败: %v", m.Name(), err)
 			continue
 		}
+		ns := namespaceOfMapper(m)
 		for _, deviceName := range deviceNamesOf(m) {
-			twins.UpsertReported(deviceName, devicetwin.DefaultNamespace, props, now)
+			twins.UpsertReported(deviceName, ns, props, now)
 		}
 	}
+}
+
+// namespaceOfMapper 返回 Mapper 的设备命名空间：实现 DeviceNamespaceResolver
+// 且声明非空命名空间时用之；否则回退 default。判定规则与注册表路由索引
+// （mapper 包 Register 的 ns 解析 / deviceKeyOf）同源——采集汇入影子与指令
+// 路由对同一 Mapper 使用同一命名空间判定，两条路径不可能出现双条目。
+func namespaceOfMapper(m mapper.DeviceMapper) string {
+	if nsRes, ok := m.(mapper.DeviceNamespaceResolver); ok && nsRes.DeviceNamespace() != "" {
+		return nsRes.DeviceNamespace()
+	}
+	return devicetwin.DefaultNamespace
 }

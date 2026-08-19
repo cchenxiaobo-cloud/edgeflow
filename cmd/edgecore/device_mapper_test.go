@@ -19,9 +19,12 @@ import (
 
 // fakeMapper 是测试用 DeviceMapper：记录收到的指令、可配置失败、
 // 可配置采集值（避免测试依赖 mappers/ 下具体实现）。
+// namespace 非空时实现 DeviceNamespaceResolver（模拟多 ns 部署，
+// 如 Modbus 配置 EDGEFLOW_MODBUS_NAMESPACE）。
 type fakeMapper struct {
 	name       string
 	deviceName string
+	namespace  string
 	props      map[string]float64
 	cmdErr     error
 	collectErr error
@@ -32,6 +35,7 @@ func (f *fakeMapper) Name() string { return f.name }
 func (f *fakeMapper) DeviceNames() []string {
 	return []string{f.deviceName}
 }
+func (f *fakeMapper) DeviceNamespace() string     { return f.namespace }
 func (f *fakeMapper) Start(context.Context) error { return nil }
 func (f *fakeMapper) Stop() error                 { return nil }
 func (f *fakeMapper) HandleCommand(cmd mapper.DeviceCommand) (mapper.DeviceReport, error) {
@@ -130,6 +134,47 @@ func TestMapperExecutorNilRegistry(t *testing.T) {
 	exec := &mapperCommandExecutor{reg: nil, twins: devicetwin.NewStore()}
 	if err := exec.ExecuteCommand("sensor-01", "default", "targetTemp", 25); err == nil {
 		t.Fatal("nil 注册表应返回错误")
+	}
+}
+
+// TestCollectMapperReportsNamespace 验证采集汇入影子的命名空间判定
+// （KNOWN-ISSUES §1 ① 修复）：
+//   - 实现 DeviceNamespaceResolver 且声明非空 ns 的 Mapper（如 Modbus
+//     配置 EDGEFLOW_MODBUS_NAMESPACE=plant-a）采集值写入对应 ns 的影子，
+//     default 下不再出现双条目；
+//   - 未实现/空 ns 的 Mapper 按 default 汇入——与 v0.2.0 行为逐字节一致
+//     （默认部署单 ns 不重复）。
+func TestCollectMapperReportsNamespace(t *testing.T) {
+	// 显式 ns（多 ns 部署）：影子落在 plant-a 下，default 下无条目
+	f := &fakeMapper{name: "modbus", deviceName: "mb-sensor-01",
+		namespace: "plant-a", props: map[string]float64{"temperature": 41.2}}
+	twins := devicetwin.NewStore()
+	collectMapperReports(newFakeRegistry(t, f), twins, 999)
+
+	twin, ok := twins.Get("mb-sensor-01", "plant-a")
+	if !ok {
+		t.Fatal("显式 ns 的 Mapper 采集应写入 plant-a 影子")
+	}
+	if twin.Reported["temperature"] != 41.2 {
+		t.Errorf("采集值未写入 plant-a 影子 Reported: %v", twin.Reported)
+	}
+	if _, dup := twins.Get("mb-sensor-01", "default"); dup {
+		t.Error("显式 ns 的 Mapper 不应再写 default 影子（v0.2.0 双条目问题）")
+	}
+	if n := len(twins.SnapshotAll()); n != 1 {
+		t.Errorf("影子条目数 = %d，期望 1（单 ns 不重复）", n)
+	}
+
+	// 默认 ns：与 v0.2.0 行为逐字节一致
+	f2 := &fakeMapper{name: "fake", deviceName: "sensor-01",
+		props: map[string]float64{"temperature": 27.5}}
+	twins2 := devicetwin.NewStore()
+	collectMapperReports(newFakeRegistry(t, f2), twins2, 999)
+	if _, ok := twins2.Get("sensor-01", "default"); !ok {
+		t.Error("默认 ns 的 Mapper 采集应写入 default 影子（v0.2.0 兼容）")
+	}
+	if n := len(twins2.SnapshotAll()); n != 1 {
+		t.Errorf("默认 ns 部署影子条目数 = %d，期望 1", n)
 	}
 }
 

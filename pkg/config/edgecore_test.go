@@ -2,11 +2,14 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"edgeflow/pkg/log"
 )
 
 // clearEdgeCoreEnv 清空全部 edgecore 相关环境变量，隔离测试。
@@ -208,5 +211,55 @@ func TestLoadEdgeCoreReadError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "读取配置文件") {
 		t.Errorf("错误信息应指向读取失败: %v", err)
+	}
+}
+
+// TestEdgeCoreIntervalFromEnvLogging 验证周期配置启动日志明示生效值
+// （KNOWN-ISSUES §1 ④ 修复）：合法 env 输出 Info（来源+请求值+生效值）、
+// 越界 env 输出 Warn（请求值+合法区间+回落值）并回落默认，返回值两态
+// 与解析语义一致；未设置时输出 Info 并保持当前值。
+// 日志用 bytes.Buffer 捕获（log.SetOutput 注入），不依赖真实输出。
+func TestEdgeCoreIntervalFromEnvLogging(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(nil) // 恢复 stderr（与 pkg/log 既有测试同约定）
+
+	key := EdgeCoreReportIntervalEnv
+	const def = 30 * time.Second
+
+	// 合法值：返回解析值，Info 明示来源/请求值/生效值
+	clearEdgeCoreEnv(t)
+	t.Setenv(key, "2m")
+	if got := edgeCoreIntervalFromEnv(key, def); got != 2*time.Minute {
+		t.Errorf("合法 env 返回值 = %v，期望 2m", got)
+	}
+
+	// 越界值（300ms < 1s）：回落默认，Warn 说明请求值与合法区间
+	t.Setenv(key, "300ms")
+	if got := edgeCoreIntervalFromEnv(key, def); got != def {
+		t.Errorf("越界 env 返回值 = %v，期望回落 %v", got, def)
+	}
+
+	// 未设置：保持默认，Info 明示来源
+	clearEdgeCoreEnv(t)
+	if got := edgeCoreIntervalFromEnv(key, def); got != def {
+		t.Errorf("未设置 env 返回值 = %v，期望 %v", got, def)
+	}
+
+	out := buf.String()
+	for _, want := range []string{
+		key,                 // 日志含环境变量名
+		"生效值 2m0s",          // 合法态：生效值
+		"请求值 2m",            // 合法态：请求值
+		"来源：环境变量",           // 合法态：配置来源
+		"WARN",              // 越界态：警告级别
+		"请求 300ms",          // 越界态：请求值
+		"超出合法区间 [1s,10m0s]", // 越界态：合法区间
+		"回落 30s",            // 越界态：回落值
+		"来源：默认/配置文件",        // 未设置态：配置来源
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("日志缺少 %q：\n%s", want, out)
+		}
 	}
 }

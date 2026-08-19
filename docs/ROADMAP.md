@@ -42,7 +42,7 @@
 | WBS 2 | CloudCore 开发 | 63 | WBS 1、WBS 4（⚠️ CloudHub 需消息协议与连接管理） | 🟨 主体完成；2.8 NodeJob 已决策关闭（v0.1.0 范围外，协议占位标注，audit-m35 G7）；2.9 可观测性完成（合并 10.1，commit `4c5b9c6`） |
 | WBS 3 | EdgeCore 开发 | 65 | WBS 1、WBS 4（⚠️ EdgeHub 需消息协议与连接管理） | 🟨 主体完成；3.7 ServiceBus 决策关闭（Phase 3 范围外）；3.8 可观测性完成（合并 10.1） |
 | WBS 4 | 云边通信层 | 28 | WBS 1（协议定义在 WebSocket 通道之前，计划 §7.4 关键路径） | ✅ 完成（4.4 gzip 压缩 2026-08-15 完成、Protobuf 编码延后；4.5 实际在 M4 完成） |
-| WBS 5 | 设备映射器框架 | 22 | WBS 1（CRD）、WBS 2.2、WBS 3.5/3.6（⚠️ 数据流：DeviceTwin ← EventBus ← MetaManager） | ✅ 主体完成（v0.2.0 补 5.1 EventBus 装配开关 commit `238b0cc` + Modbus ns 解析 commit `566aff9`）；5.2 OPC-UA ⏳ 独立立项（≥30 人天，本轮不开发）；5.3 控制器决策关闭（§8） |
+| WBS 5 | 设备映射器框架 | 22 | WBS 1（CRD）、WBS 2.2、WBS 3.5/3.6（⚠️ 数据流：DeviceTwin ← EventBus ← MetaManager） | ✅ 主体完成（v0.2.0 补 5.1 EventBus 装配开关 commit `238b0cc` + Modbus ns 解析 commit `566aff9`）；5.2 OPC-UA 🟨 独立立项已启动（v0.3.0 M1：pkg/opcua UA Binary 协议栈核心交付，2026-08-19）；5.3 控制器决策关闭（§8） |
 | WBS 6 | 应用管理 | 20 | WBS 3（⚠️ Edged/MetaManager 就绪后） | ✅ 完成（v0.2.0 补齐 6.5 资源调度基础）；6.4 镜像漂移检测+重建（commit `a0a4344`）；6.5 调度基础 P2 全量（commits `5cb7336`/`d3f09fe`） |
 | WBS 7 | 安全与认证 | 18 | WBS 1；7.4 依赖 WBS 4.5（⚠️） | ✅ 7.1 证书管理（mTLS）+7.2 Token 认证+7.3 设备认证（2026-08-15 闭环）+7.4+7.5 审计台账完成；吊销闭环完成（CRL 离线 + OCSP 在线，2026-08-16） |
 | WBS 8 | 测试与部署 | 30 | 随各模块并行；8.5 依赖 WBS 2 产物；8.6 依赖 WBS 4 协议（⚠️） | 🟨 8.1/8.2/8.3/8.5 完成（E2E 三用例 commit `a0a4344`）；8.4 压测基线完成（10 节点 100%，PERFORMANCE-BASELINE.md）；8.6 基础+升级回滚（实际在 M4） |
@@ -86,7 +86,7 @@
 | 4.5 | 安全传输层 | TLS/MTLS、证书轮换 | 5 | 7.1（⚠️） | ✅ 完成（完整 mTLS，commit `0a7fcc2`；**实际在 M4 完成**，与 7.1/7.4 合并交付，M1-M3 通道无认证） |
 | 4.6 | 消息可靠投递 | ACK、重试、幂等 | 5 | 4.1、4.2（⚠️） | ✅ 完成（ReliableSend + Ack + 同 ID 重试 + 幂等去重 + P2 收尾，commits `3197ad3`/`19dd66f`/`8321b0e`） |
 | 5.1 | Mapper 框架 | Mapper SDK、设备注册/注销 | 6 | 1.4（⚠️） | ✅ 完成（DeviceMapper + MapperRegistry，commit `7d82c0c`，覆盖率 96.4%；**EventBus 装配开关** `EDGEFLOW_EDGECORE_ENABLE_MAPPER` 默认 true、false/0/off/no 回影子模式，commit `238b0cc`） |
-| 5.2 | 设备协议适配 | Modbus、OPC-UA、MQTT 适配器 | 5 | 5.1（⚠️） | 🟨 部分：Modbus ✅（commit `a290686`，**实际在 M4 完成**；DeviceNamespaceResolver + `EDGEFLOW_MODBUS_NAMESPACE` 补齐 commit `566aff9`）；OPC-UA ⏳ 独立立项（零依赖手写 UA 协议栈 ≥30 人天，2026-08-18 v0.2.0 登记，本轮不开发）；MQTT 仅 mock_sensor 数据面模式（audit-m35 G7） |
+| 5.2 | 设备协议适配 | Modbus、OPC-UA、MQTT 适配器 | 5 | 5.1（⚠️） | 🟨 部分：Modbus ✅（commit `a290686`，**实际在 M4 完成**；DeviceNamespaceResolver + `EDGEFLOW_MODBUS_NAMESPACE` 补齐 commit `566aff9`）；OPC-UA 🟨 独立立项已启动（v0.3.0 M1 交付 pkg/opcua：UA Binary 协议栈核心，零第三方依赖，41 顶层测试，commit `93458d6`；下一里程碑：SecureChannel/Read/Write/第三方 UA 栈互操作 cross-check）；MQTT 仅 mock_sensor 数据面模式（audit-m35 G7） |
 | 5.3 | 设备 CRD 控制器 | Device/DeviceModel CRD | 4 | 1.4（⚠️） | 🟨 部分：CRD 类型定义 ✅（commit `a541128`）+ manifest（`config/crd/`，2026-08-14）；K8s 控制器 ⬜（audit-m35 G6） |
 | 5.4 | 设备数据流水线 | 采集→转换→上报→持久化 | 4 | 5.1、3.3（⚠️） | ✅ 完成（采集→Twin 合并→周期上报→云端存储 + op_ledger） |
 | 5.5 | 设备示例 Mapper | 完整 Mapper 示例 | 3 | 5.2（⚠️） | ✅ 完成（mock_sensor 91.1% + modbus mapper 示例） |
@@ -330,7 +330,7 @@
 | M1B/M1C/M1/M3A 审查遗留 P2/P3 | WBS 8.x | ✅ 本次完成 | LIKE 通配/同 ID pending/错误映射/operation 校验/请求体限制/serveWS 竞态/ReadLimit/Memory 类型/newID/Offline TTL-GC（见 commit） |
 | 9.1 架构文档评审回写 | WBS 9.1 | ✅ 本次完成 | ARCHITECTURE.md 评审 + NATS→MQTT/Token→mTLS/进度回写（见 commit） |
 | 3.7 ServiceBus | WBS 3.7 | 🔒 决策关闭 | Phase 3 云边 HTTP 调用为 v0.1.0 范围外；协议占位标注，后续版本排期 |
-| 5.2 OPC-UA 适配器 | WBS 5.2 | ⏳ 独立立项（本轮不开发） | 零依赖手写 UA 协议栈工作量 ≥30 人天；v0.2.0 开发轮确认独立立项，本轮只登记不开发（2026-08-18） |
+| 5.2 OPC-UA 适配器 | WBS 5.2 | 🟨 独立立项已启动（M1 交付） | v0.2.0 确认独立立项只登记不开发（2026-08-18）；v0.3.0 启动并交付第一阶段：pkg/opcua UA Binary 协议栈核心（零第三方依赖，41 测试，commit `93458d6`，2026-08-19），见 §11 |
 | 5.3 设备 CRD K8s 控制器 | WBS 5.3 | 🔒 决策关闭 | 项目为 REST 适配架构（无 K8s apiserver），云端状态同步已由 2.2（REST 端点+内存态）覆盖；K8s 原生控制器不适用 |
 | 6.5 资源调度/超卖 | WBS 6.5 | ✅ 本次完成 | request/limit 下发与校验、超卖率校验与拒绝（默认 150% 可调）、节点容量探测/覆盖、资源漂移检测重建（commit `5cb7336`；调谐路径接入 `d3f09fe`，2026-08-18） |
 | Flannel/CNI（缺口 6） | M2 交付物 | 🔒 决策关闭 | Docker bridge 方案为 v0.1.0 既定网络形态（REAL-CLUSTER-GUIDE.md 已验证）；CNI 排后续版本 |
@@ -376,4 +376,19 @@
 | Mapper 框架 EventBus 装配开关 | WBS 5.1 | ✅ 本次完成 | `EDGEFLOW_EDGECORE_ENABLE_MAPPER`（默认 true，与 v0.1.1 制品行为一致；false/0/off/no 大小写不敏感关闭，回纯影子模式）（commit `238b0cc`） |
 | Modbus DeviceNamespaceResolver | WBS 5.2（Modbus） | ✅ 本次完成 | 命名空间三级解析：WithNamespace 选项 > `EDGEFLOW_MODBUS_NAMESPACE`（默认 default）> default；注册表按 namespace/deviceName 路由隔离，同名设备按 ns 互不串扰（commit `566aff9`） |
 | M1 P3 四项收尾 + log SetLevel | WBS 8.x | ✅ 本次完成 | pkg/log SetLevel/GetLevel/Debugf（atomic 全局级别过滤，默认 LevelInfo 与旧行为逐字节兼容）；被踢标志即时清除（kick 立即 registered.Store(false)）；Shutdown 撞 Start 窗口防护补测；退避重置两段式断言+flakyDialer 注入；newID 兜底经核验前轮（`d9bc9ec`）已闭环（commit `3e0d1ff`） |
-| OPC-UA 适配器 | WBS 5.2 | ⏳ 独立立项（本轮不开发） | 零依赖手写 UA 协议栈工作量 ≥30 人天；独立立项排期，本轮只登记不开发（2026-08-18） |
+| OPC-UA 适配器 | WBS 5.2 | 🟨 已启动（v0.3.0 M1 交付） | 2026-08-19 启动第一阶段：UA Binary 协议栈核心（pkg/opcua，零第三方依赖，41 测试）已交付；下一里程碑：SecureChannel/Read/Write/互操作 cross-check（commit `93458d6`，见 §11） |
+
+---
+
+## 11. v0.3.0 开发轮处置登记（2026-08-19）
+
+> 依据：KNOWN-ISSUES §1 四条闭环派单 + OPC-UA 独立立项启动（WBS 5.2-M1）+ 冒烟 10/10 PASS（基线 HEAD `93458d6`）。状态：✅ 本次完成 / 🟨 进行中。
+
+| 项 | 对应 WBS | 处置 | 结论/理由 |
+|----|----------|------|----------|
+| ① 采集命名空间同源 | WBS 5.2（采集路径） | ✅ 本次完成 | collectMapperReports 按 mapper 自身命名空间写入影子（与注册路由同源判定），显式 `EDGEFLOW_MODBUS_NAMESPACE` 时才改变 ns，默认行为与 v0.2.0 逐字节一致（commit `714d5ba`） |
+| ② 退避测试注入点 | WBS 8.1 | ✅ 本次完成 | `edgehub.Options.BackoffSleepFunc` 注入点（nil=默认退避）+ 计数断言测试，移除实时时间阈值 flake（commit `714d5ba`） |
+| ③ syncPod 400 JSON 安全 | WBS 2.5 | ✅ 本次完成 | 400 分支 `json.Marshal` 结构化输出（与 409 同构），畸形输入产出合法 JSON，响应结构不变 `{"error":...}`（commit `714d5ba`） |
+| ④ 周期环境变量生效值明示 | WBS 3.x | ✅ 本次完成 | `edgeCoreIntervalFromEnv` 三态启动日志（合法/越界回落 Warn/未设置），启动日志明示生效值（commit `714d5ba`） |
+| pkg/log SetOutput | WBS 1.5 | ✅ 本次完成 | `SetOutput(io.Writer)` 新增（nil 恢复 stderr，兼容 stdlib 约定），供测试捕获输出（commit `714d5ba`） |
+| OPC-UA 独立立项 M1 | WBS 5.2 | 🟨 第一阶段交付，项目进行中 | 2026-08-19 启动第一阶段：UA Binary 协议栈核心（pkg/opcua，零第三方依赖，41 顶层测试）已交付——内置类型系统（NodeId 全形式/Variant/DataValue/ExtensionObject/Guid/ByteString/DateTime）、UA Binary 大端 codec、MessageHeader/Hello/Ack/Error、Dial TCP→HEL→ACK 三态协商（SecurityPolicy None 明文，仅限可信隔离网络）；下一里程碑：SecureChannel/Read/Write/互操作 cross-check（commit `93458d6`） |

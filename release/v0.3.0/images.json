@@ -1,0 +1,66 @@
+{
+  "version": "v0.3.0",
+  "registry": "localhost:5001",
+  "generatedAt": "2026-08-19T15:17:38+08:00",
+  "notes": "构建基线 commit 93458d6（构建时 HEAD，工作区含未提交 release/v0.3.0/）。沿用 v0.2.0 离线策略：Docker Hub 不可达，跳过 golang builder 阶段，直接 COPY 预编译静态二进制（--version=v0.3.0 gitCommit=93458d6，GOTOOLCHAIN=go1.26.6）+ COPY-only 临时 Dockerfile（位于构建临时目录，未改动仓库 build/docker/Dockerfile），基镜像 gcr.io/distroless/static-debian12:nonroot（gcr.io 可达，不依赖 Docker Hub），ca-certificates/zoneinfo 取自 v0.1.1 镜像保证内容一致。构建方式：docker buildx（desktop-linux docker driver，containerd 镜像存储）--platform linux/amd64,linux/arm64 --provenance=false --load，docker push 至本地 registry（127.0.0.1:5001）。产物为 schemaVersion 2 双平台 manifest list（mediaType application/vnd.docker.distribution.manifest.list.v2+json，功能等价 OCI index；v0.1.1 为 OCI index mediaType，属 mediaType 差异非结构差异，与 v0.2.0 一致）。size 口径：平台 manifest 的 layers[].size 压缩层总大小求和（来源 registry API GET /v2/<name>/manifests/<platform-digest>）。4 个平台 docker run --rm --platform <os>/<arch> localhost:5001/edgeflow/<component>:v0.3.0 --version 实测均输出 version=v0.3.0 gitCommit=93458d6 buildTime=2026-08-19T15:13:51+0800 goVersion=go1.26.6。trivy 0.74.0（--severity HIGH,CRITICAL，--skip-db-update 缓存 DB）扫描两镜像：0 HIGH / 0 CRITICAL / 0 secrets。",
+  "images": [
+    {
+      "name": "edgeflow/cloudcore",
+      "tag": "v0.3.0",
+      "reference": "localhost:5001/edgeflow/cloudcore@sha256:7b0ba61137e1b07c5fc1fa345da2fcb61560bd329873375c531e9419d41d1d69",
+      "digest": "sha256:7b0ba61137e1b07c5fc1fa345da2fcb61560bd329873375c531e9419d41d1d69",
+      "manifest": {
+        "schemaVersion": 2,
+        "platforms": [
+          {
+            "os": "linux",
+            "architecture": "amd64",
+            "digest": "sha256:87973ba169e77f5c3f660ad8b3d890c69ff44796267c4a5da27139e9ec8cf44e",
+            "size": 4036595
+          },
+          {
+            "os": "linux",
+            "architecture": "arm64",
+            "digest": "sha256:c19023883118766b9cda5a42aaae52e00fa59020ad005f1b6f80c4598bbb01dd",
+            "size": 3749927
+          }
+        ]
+      },
+      "buildArgs": {
+        "VERSION": "v0.3.0",
+        "GIT_COMMIT": "93458d6",
+        "BUILD_TIME": "2026-08-19T15:13:51+0800"
+      },
+      "verifiedBy": "docker buildx imagetools inspect localhost:5001/edgeflow/cloudcore:v0.3.0 与 registry API（GET /v2/edgeflow/cloudcore/manifests/v0.3.0）结果一致：schemaVersion 2 双平台 manifest list 含 linux/amd64+linux/arm64 两个 manifest；index digest sha256:7b0ba61137e1... 与 Docker-Content-Digest 响应头一致；docker run --rm --platform linux/amd64 与 linux/arm64 实测 --version 均输出 version=v0.3.0 gitCommit=93458d6 buildTime=2026-08-19T15:13:51+0800 goVersion=go1.26.6"
+    },
+    {
+      "name": "edgeflow/edgecore",
+      "tag": "v0.3.0",
+      "reference": "localhost:5001/edgeflow/edgecore@sha256:a3330c3320314b4a19082b4871651a2cb096a2aeb6e6605ddfb543ed3caf2ea4",
+      "digest": "sha256:a3330c3320314b4a19082b4871651a2cb096a2aeb6e6605ddfb543ed3caf2ea4",
+      "manifest": {
+        "schemaVersion": 2,
+        "platforms": [
+          {
+            "os": "linux",
+            "architecture": "amd64",
+            "digest": "sha256:ff3e6f81072641655ed1ff4a3e3153c03190f46eac282fe6f9538605e6db3a73",
+            "size": 5747460
+          },
+          {
+            "os": "linux",
+            "architecture": "arm64",
+            "digest": "sha256:2ce8ad83cd6b1844c03b73ffb54dfb98e68fd9a2d027bfb4feb15a67c048fcfb",
+            "size": 5450569
+          }
+        ]
+      },
+      "buildArgs": {
+        "VERSION": "v0.3.0",
+        "GIT_COMMIT": "93458d6",
+        "BUILD_TIME": "2026-08-19T15:13:51+0800"
+      },
+      "verifiedBy": "docker buildx imagetools inspect localhost:5001/edgeflow/edgecore:v0.3.0 与 registry API（GET /v2/edgeflow/edgecore/manifests/v0.3.0）结果一致：schemaVersion 2 双平台 manifest list 含 linux/amd64+linux/arm64 两个 manifest；index digest sha256:a3330c332031... 与 Docker-Content-Digest 响应头一致；docker run --rm --platform linux/amd64 与 linux/arm64 实测 --version 均输出 version=v0.3.0 gitCommit=93458d6 buildTime=2026-08-19T15:13:51+0800 goVersion=go1.26.6"
+    }
+  ]
+}

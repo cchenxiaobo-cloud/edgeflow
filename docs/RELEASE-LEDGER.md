@@ -190,3 +190,16 @@
 - **验证**：全仓 go test 全绿 + e2e 双遍（204.7s/203.0s）；预发冒烟 8/8 PASS（含 1d 漂移重建复验：注入 500m → ≤15s 自动重建回 250m）；trivy 双镜像 0 HIGH/0 CRITICAL；4/4 平台镜像 docker run --version 实测。
 - **已知限制**：见 docs/KNOWN-ISSUES.md §1（4 条）+ RELEASE-NOTES-v020 §四（镜像 mediaType 为 docker manifest list v2）。
 - **遗留登记**：OPC-UA（WBS 5.2）独立立项（≥30 人天）；cloudcore 400 分支裸拼 JSON 下批修；远程镜像推送/kind 集群/生产灰度/cosign/100 节点压测仍为环境边界项。
+
+---
+
+## v0.3.0（2026-08-19）
+
+- **范围**：KNOWN-ISSUES §1 四条闭环（采集命名空间同源、退避测试注入点、400 分支 JSON 安全、周期环境变量生效值明示）+ OPC-UA 独立立项启动第一阶段（WBS 5.2-M1，`pkg/opcua` UA Binary 协议栈核心，零第三方依赖）。
+- **提交链**：`714d5ba`（fix(known-issues)，9 文件 +267/-28）→ `93458d6`（feat(opcua)，8 文件 +3558）。
+- **tag**：v0.3.0 → `93458d6`。
+- **制品**：release/v0.3.0/ 14 文件——9 二进制（GOTOOLCHAIN=go1.26.6，--version=v0.3.0 gitCommit=93458d6）、edgeflow-0.3.0.tgz（helm 0.3.0/appVersion v0.3.0）、sbom.json（CycloneDX 1.5，33 组件与 v0.2.0 零差异）、双架构镜像（cloudcore index `sha256:7b0ba611…` / edgecore index `sha256:a3330c33…`，amd64+arm64 manifest list，离线 COPY-only 构建）、images.json、checksums.txt（13/13）、govulncheck.txt（9/9 clean）。
+- **验证**：全仓 go test 全绿（32 含测试包）+ pkg/opcua `-race` 干净；预发冒烟 10/10 PASS（含 400 畸形 JSON 合法性、周期 env 三态日志、OPC-UA 握手走查、退避测试 -count=5）；trivy 双镜像 0 HIGH/0 CRITICAL；4/4 平台镜像 docker run --version 实测。
+- **质量过程**：代码复核员交叉核验（KNOWN-ISSUES 四条通过；opcua 复核出 2 major 全部修复）；主线复查 NodeId 编码与 Part 6 Table 5 逐字节核对（第二轮修复，golden 大端一致裁决）。
+- **已知限制**：docs/KNOWN-ISSUES.md §1 四条已闭环（原文保留），§3 新增四条（opcua 未实现边界/未互操作验证/类型骨架缺口/热重载重复日志）+ RELEASE-NOTES-v030 §五。
+- **遗留登记**：OPC-UA 下一里程碑（SecureChannel → Read/Write → 互操作 cross-check → Mapper 接入）；远程镜像推送/kind 集群/生产灰度/cosign/100 节点压测仍为环境边界项。

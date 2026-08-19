@@ -1,7 +1,7 @@
 # EdgeFlow API 规范（v0.1.0 定稿）
 
 > - 对应 ROADMAP WBS 9.2「API 文档」，覆盖两部分：**REST API 参考**（cloudcore 对外 HTTP 接口）与 **CRD 类型定义**（`apis/edge/v1alpha1/`）。
-> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.2.0 开发轮已更新**（2026-08-18：podsync 资源字段与 409 语义、device-command namespace 路由、资源调度环境变量）。评审记录见 `docs/REVIEWS.md`（9.2 评审归档）。
+> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.2.0 开发轮已更新**（2026-08-18：podsync 资源字段与 409 语义、device-command namespace 路由、资源调度环境变量），**v0.3.0 开发轮已更新**（2026-08-19：syncPod 400 响应 JSON 安全加固说明 + 第四部分共享库/协议包 API 边界）。评审记录见 `docs/REVIEWS.md`（9.2 评审归档）。
 > - 代码位置：cloudcore 路由装配 `cmd/cloudcore/main.go`、设备 API `cmd/cloudcore/device_api.go`、CRD 类型 `apis/edge/v1alpha1/`。
 > - 版本策略：v0.1.0 为 MVP 定稿版；后续接入 Kubernetes 后由 OpenAPI schema / CRD 校验取代，见 §7。
 
@@ -358,6 +358,8 @@ curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/config-sync \
 
 ### 6.3 响应语义（三个下发端点通用；409 仅 podsync）
 
+> v0.3.0 加固说明：podsync 400 分支已改 `json.Marshal` 结构化构造（与 409 同构），**响应结构不变**（仍为 `{"error":...}`），仅保证畸形输入也产出合法 JSON（commit `714d5ba`）。
+
 | 状态码 | 响应体（示例） | 含义 |
 |--------|---------------|------|
 | 200 | `{"status":"ok","acked":true}` | 边缘已确认（Ack ok） |
@@ -606,3 +608,53 @@ status:
 - 定稿版本：v0.1.0（2026-08-14）
 - 评审记录：`docs/REVIEWS.md` §9.2（评审人、已知问题、归档状态）
 - 相关文档：`docs/ARCHITECTURE.md`（9.1）、`docs/DEPLOYMENT.md`（9.3）、`docs/HANDOFF.md`（9.4）、`examples/README.md`（9.5 温度传感器 Demo 教程）
+
+---
+
+# 第四部分 共享库与协议包 API 边界（v0.3.0 新增）
+
+> 本节登记 v0.3.0 新增/变更的库级 API 与 `pkg/opcua` 包边界，供 Mapper/上层模块消费方与测试方引用。代码即契约，本节为摘要。
+
+## 10. pkg/log.SetOutput（v0.3.0）
+
+| 签名 | 说明 |
+|------|------|
+| `func SetOutput(w io.Writer)` | 设置日志输出目标（默认 stderr）。传 `nil` **恢复 stderr**（兼容 stdlib `log.SetOutput` 约定）。供测试捕获输出（如 `bytes.Buffer`），生产代码无需调用 |
+
+- 新增于 commit `714d5ba`；与既有 `SetLevel`/`GetLevel`/`Debugf`（v0.2.0）无交互约束。
+
+## 11. edge/pkg/edgehub Options.BackoffSleepFunc（v0.3.0）
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `BackoffSleepFunc` | `func(d time.Duration) bool` | nil=内置默认退避休眠 | 重连退避休眠实现注入点：每次退避被调用一次，返回 false 中止重连；nil 时由客户端内置实现接管（与 v0.2.0 行为逐字节一致）。测试注入计数/加速实现，替代实时时间阈值断言 |
+
+- 新增于 commit `714d5ba`（KNOWN-ISSUES §1 ② 闭环）；`bool` 返回值与客户端 `shuttingDown` 中止语义对齐。
+
+## 12. pkg/opcua 包边界（v0.3.0 M1，UA Binary 协议栈核心）
+
+> 零第三方依赖（纯标准库），OPC UA Part 6（UA Binary）。SecurityPolicy **None 明文**：无认证/完整性，仅限可信隔离网络（封闭 OT 网段/本机模拟），禁止暴露到不可信网络。
+
+### 12.1 导出符号（已实现）
+
+| 类别 | 符号 |
+|------|------|
+| 连接 | `Dial(endpoint string) (*Conn, error)`、`DialTimeout(endpoint string, timeout time.Duration) (*Conn, error)`——TCP→HEL→ACK 三态协商，返回就绪 Conn；`DefaultDialTimeout`（10s） |
+| Conn 方法 | `ReadMessage` / `WriteMessage`（单 chunk 帧级 I/O，长度溢出读体前拒绝）；Conn 为裸传输（ChannelId 恒 0，SecureChannel 未打开） |
+| 常量 | 消息类型 `MsgHello`(HEL)/`MsgAcknowledge`(ACK)/`MsgError`(ERR)/`MsgOpenSecureChannel`(OPN)/`MsgSecureMessage`(MSG)/`MsgCloseSecureChannel`(CLO)；chunk `ChunkFinal`(F)/`ChunkIntermediate`(C)/`ChunkAbort`(A)；`DefaultProtocolVersion`/`DefaultSendBufferSize`/`DefaultReceiveBufferSize`/`DefaultMaxMessageSize`/`DefaultMaxChunkCount`/`MinBufferSize`；Status 常量 `StatusGood`/`StatusUncertain`/`StatusBad` 系 |
+| 类型 | `NodeId`（+`NewNodeID`/`NewStringNodeID`/`NewByteStringNodeID`/`NewGuidNodeID`，Part 6 Table 5 全形式）、`NodeIdType`、`Variant`（`NewVariant`/`NullVariant`，type-mask，标量+数组）、`DataValue`（双时间戳+皮秒）、`ExtensionObject`、`Guid`、`ByteString`、`DateTime`（`DateTimeFromTime`）、`LocalizedText`（`NewLocalizedText`/`NewLocalizedTextWithLocale`）、`QualifiedName`、`StatusCode`、`Severity`、`MessageHeader`（`EncodeHeader`/`DecodeHeader`）、`Hello`/`Acknowledge`/`ErrorMessage`（`DecodeHello`/`DecodeAcknowledge`/`DecodeError`） |
+| 错误 | `ErrChunkingUnsupported`（中间 chunk 拒绝，MaxChunkCount=1）、`ErrMessageTooLarge`、`ErrTooLong`、`ErrInvalidEncoding`、`ErrUnsupportedType` |
+
+### 12.2 明确未实现（后续里程碑，见 docs/KNOWN-ISSUES.md §3）
+
+- Read/Write/Subscribe 等任何服务请求（无服务层）；
+- SecureChannel 打开/关闭（OPN/CLO 消息常量已定义，未实现会话层）；
+- 安全策略 Sign/SignAndEncrypt（仅 SecurityPolicy None 明文）；
+- UA 节点模型/对象树、Discovery 端点；
+- ExpandedNodeId 的 namespace-URI/server-index 形式、XmlElement、DiagnosticInfo 完整位域（当前为空骨架）；
+- 消息分块（MaxChunkCount=1，中间 chunk 拒绝）；
+- Mapper 层客户端 API（后续里程碑）。
+
+### 12.3 互操作状态
+
+- 本轮仅自研 mock 对端回环验证（transport_test 真实 TCP 握手）；**未**与第三方 UA 栈（open62541/node-opcua）互操作验证——下一里程碑安排 cross-check。

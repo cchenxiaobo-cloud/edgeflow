@@ -1,7 +1,7 @@
 # EdgeFlow 开发者指南（v0.1.0 定稿）
 
 > - 对应 ROADMAP WBS 9.4「开发者指南」：代码结构、开发流程、测试规范、贡献指南、常见任务。
-> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.1.1 发布轮已更新**（2026-08-18），**v0.2.0 开发轮已更新**（2026-08-18）。评审记录见 `docs/REVIEWS.md`（9.4 评审归档）。
+> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.1.1 发布轮已更新**（2026-08-18），**v0.2.0 开发轮已更新**（2026-08-18），**v0.3.0 开发轮已更新**（2026-08-19）。评审记录见 `docs/REVIEWS.md`（9.4 评审归档）。
 > - 目的：让后续开发者（包括零基础接手人）能按本文档独立接过开发工作。
 
 ---
@@ -12,7 +12,7 @@
 
 **本轮关键决策**：
 - **版本 minor**：功能增量 → v0.2.0（minor），发布轮复用 v0.1.1 发布保障三件套模板；
-- **OPC-UA 不开发**：零依赖手写 UA 协议栈工作量 ≥30 人天，独立立项，本轮只登记不开发（ROADMAP §10）；
+- **OPC-UA 已启动**：v0.2.0 确认独立立项只登记不开发（2026-08-18，零依赖手写 UA 协议栈 ≥30 人天）；**v0.3.0 已启动并交付第一阶段**——UA Binary 协议栈核心 `pkg/opcua`（零第三方依赖，41 测试，commit `93458d6`，2026-08-19）；下一里程碑：SecureChannel 打开 / Read/Write 服务 / 与第三方 UA 栈（open62541/node-opcua）互操作 cross-check（ROADMAP §11）；
 - **超卖率默认 150% 可调**：`EDGEFLOW_EDGECORE_OVERCOMMIT_CPU_RATE/MEMORY_RATE`（默认 1.5，非有限值回退）；
 - **Mapper 开关默认 true**：与 v0.1.1 制品行为一致；既有 e2e（DeviceCommand→Mapper 执行→周期上报）依赖装配；mock_sensor 纯本地模拟无外部依赖，默认开启不引入新风险——"无设备更安全"由 Modbus 显式 opt-in 门控承担；
 - **制品 GOTOOLCHAIN=go1.26.6**：v0.2.0 制品构建基线。
@@ -154,6 +154,8 @@ make lint       # 静态检查（golangci-lint）
 
 ### 7.3 新增一个设备协议（如 OPC-UA）
 
+> **OPC-UA 已落地 `pkg/opcua` 协议栈基础库**（v0.3.0 M1，UA Binary 核心 + SecurityPolicy None，零第三方依赖），Mapper 层后续接入；新增 OPC-UA Mapper 时复用该库，协议细节封装在 Mapper 内部，对上只暴露 DeviceMapper 接口。
+
 1. 协议客户端库评估（当前零第三方依赖约束可放宽，评估后修改 `go.mod`）；
 2. 按 §7.2 实现 Mapper（协议细节封装在 Mapper 内部，对上只暴露 DeviceMapper 接口）；
 3. 若协议有模拟器需求，参照 `pkg/modbussim` + `hack/modbus-sim` 提供开发用模拟器；
@@ -283,3 +285,18 @@ make lint       # 静态检查（golangci-lint）
 | `EDGEFLOW_EDGECORE_OVERCOMMIT_MEMORY_RATE` | 1.5 | 内存超卖率上限，非有限值回退 |
 | `EDGEFLOW_EDGECORE_ENABLE_MAPPER` | true | Mapper 装配开关，false/0/off/no 关闭 |
 | `EDGEFLOW_MODBUS_NAMESPACE` | default | Modbus Mapper 设备命名空间 |
+
+## 14. v0.3.0 开发轮交接（新增能力速览，2026-08-19）
+
+> 本轮 2 个 commit（`714d5ba` fix(known-issues) + `93458d6` feat(opcua)），台账见 `docs/PROGRESS.md §4O`，处置登记见 `docs/ROADMAP.md §11`，新登记已知限制见 `docs/KNOWN-ISSUES.md §3`。
+
+| 能力 | 用法/说明 | commit |
+|------|-----------|--------|
+| 采集命名空间同源 | collectMapperReports 按 mapper 自身命名空间写入影子（与注册路由同源判定）；显式 `EDGEFLOW_MODBUS_NAMESPACE` 时才改变 ns，默认行为与 v0.2.0 逐字节一致（修复 KNOWN-ISSUES ①） | `714d5ba` |
+| 退避测试注入点 | `edgehub.Options.BackoffSleepFunc`（nil=默认退避，bool 返回中止重连）；测试改注入+计数断言（修复 KNOWN-ISSUES ②） | `714d5ba` |
+| syncPod 400 JSON 安全 | 400 分支 `json.Marshal` 结构化输出（与 409 同构），畸形输入产出合法 JSON；响应结构不变 `{"error":...}`（修复 KNOWN-ISSUES ③） | `714d5ba` |
+| 周期 env 生效值明示 | `edgeCoreIntervalFromEnv` 三态启动日志（合法/越界 Warn/未设置），启动即核对生效值（修复 KNOWN-ISSUES ④） | `714d5ba` |
+| pkg/log.SetOutput | `SetOutput(io.Writer)`（nil 恢复 stderr），测试捕获输出用 | `714d5ba` |
+| OPC-UA 独立立项 M1 | `pkg/opcua` UA Binary 协议栈核心（零第三方依赖，41 顶层测试）：类型系统（NodeId 全形式/Variant/DataValue/ExtensionObject/Guid/ByteString/DateTime）、大端 codec、MessageHeader/Hello/Ack/Error、`Dial`/`DialTimeout` TCP→HEL→ACK 协商、`ReadMessage`/`WriteMessage`；**SecurityPolicy None 明文，仅限可信隔离网络**；Read/Write/SecureChannel/互操作验证为下一里程碑 | `93458d6` |
+
+**接手提示**：OPC-UA 协议栈已可作库使用（编解码/握手回环），但**尚无服务层与 Mapper 接入**；真实设备互操作需先完成 open62541/node-opcua cross-check 再对外承诺兼容性。

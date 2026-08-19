@@ -1,6 +1,6 @@
 # EdgeFlow 项目进度台账（PROGRESS）
 
-> 最后更新：2026-08-18 19:10 (Asia/Shanghai)
+> 最后更新：2026-08-19（v0.3.0 开发轮）
 > 维护规则：每个模块完成验证后更新本表；验证证据（命令输出）保留在对应模块记录中。
 
 ---
@@ -594,6 +594,46 @@
 | M0 架构基线与开发就绪 | ✅ **完成** | 骨架/共享库/CI/CRD 类型/Helm 全部就绪；2 项验收未实证（CI 未运行、CRD 从未 apply，见 audit-m02 §1.1） |
 | M1 云边核心通信链路 | ✅ **完成** | 协议/连接/路由/可靠投递/CloudHub/EdgeHub/MetaManager/Edged POC 全达成；3 项归属偏移（2.4/4.5/8.6 实际 M4 完成）；"kubectl get nodes"为 REST 适配 |
 | M2 应用部署与边缘自治 | ✅ **验收达成（收尾轮补齐）** | 部署/配置/状态上报/自治 ✅；8.3 E2E 套件 ✅（commit `a0a4344`）+ 6.4 镜像漂移重建 ✅（commit `a0a4344`） |
-| M3 设备管理 | 🟨 **第 1-3 轮完成** | DeviceTwin/EventBus/Mapper/流水线/示例 ✅；5.2 Modbus 实际 M4 完成、OPC-UA 未做；端到端延迟 ≤5s 从未测量（audit-m35 §2.1） |
+| M3 设备管理 | 🟨 **第 1-3 轮完成** | DeviceTwin/EventBus/Mapper/流水线/示例 ✅；5.2 Modbus 实际 M4 完成、OPC-UA 已启动（v0.3.0 M1 交付 pkg/opcua 协议栈核心，见 §4O）；端到端延迟 ≤5s 从未测量（audit-m35 §2.1） |
 | M4 生产化 | ✅ **验收达成（收尾轮补齐）** | mTLS/升级回滚/Helm/keadm 基础 ✅；7.2/7.5/10.1/8.4 ✅（commit `4c5b9c6`+`a0a4344`）；7.3 设备认证/10.3 兼容矩阵为 P2 残留（2026-08-15 后续开发轮已闭环，见 §5 回写） |
 | M5 发布 | 🟨 **发布完成** | v0.1.0 产物齐备（6 二进制+Chart+checksum+SBOM+镜像）；真实集群路径（15min 部署、kubectl get nodes Ready）未执行，已披露为 E2 限制；发布镜像已重建为双架构（2026-08-14，B5） |
+
+## 4O. v0.3.0 开发轮验证结果（KNOWN-ISSUES 四项闭环 + OPC-UA M1，2026-08-19）
+
+> 基线 HEAD：`93458d6`（上一轮 `714d5ba` fix(known-issues) + `93458d6` feat(opcua) 两个 commit 为本轮交付）。冒烟 10/10 PASS。
+
+### 4O.1 KNOWN-ISSUES §1 四项修复（commit `714d5ba`）
+
+| # | 项 | 修复内容 |
+|---|----|----------|
+| ① | 采集 ns 同源 | `collectMapperReports` 按 mapper 自身命名空间写入影子（与注册路由同源判定）；仅显式 `EDGEFLOW_MODBUS_NAMESPACE` 时改变 ns，默认行为与 v0.2.0 逐字节一致 |
+| ② | 退避测试注入点 | `edgehub.Options.BackoffSleepFunc`（nil=默认退避）；测试改注入+计数断言，移除实时时间阈值（消慢 CI flake） |
+| ③ | syncPod 400 JSON 安全 | 400 分支 `json.Marshal` 结构化输出（与 409 同构），畸形输入产出合法 JSON；响应结构不变 `{"error":...}` |
+| ④ | 周期 env 启动日志三态 | `edgeCoreIntervalFromEnv`：合法（来源：环境变量，请求值+生效值）/ 越界回落（Warn）/ 未设置（来源：默认/配置文件），启动日志明示生效值 |
+
+附带：`pkg/log.SetOutput(io.Writer)`（nil 恢复 stderr，供测试捕获输出）。
+
+### 4O.2 OPC-UA 独立立项 M1（commit `93458d6`）
+
+- **WBS 5.2 独立立项启动**（2026-08-19）：零第三方依赖（纯标准库），交付 `pkg/opcua` UA Binary 协议栈核心（OPC UA Part 6）。
+- 内置类型系统：NodeId（Part 6 Table 5 全形式：two/four/numeric/string/guid/byte-string + 扩展 32 位 ns 形式）、QualifiedName、LocalizedText、StatusCode（含 severity）、Guid、ByteString、ExtensionObject、DataValue（双时间戳+皮秒）、Variant（type-mask，标量+数组 round-trip）、DateTime（1601-01-01 起 100ns tick）。
+- UA Binary 大端 codec：Int32 长度前缀规则（-1=null）、字符串截断流对齐（MaxStringLength）、溢出读体前拒绝。
+- 消息与握手：MessageHeader（type/chunk/MessageSize/ChannelId）、Hello/Acknowledge/Error；`Dial`/`DialTimeout` 完成 TCP→HEL→ACK 三态协商返回就绪 Conn；`ReadMessage`/`WriteMessage` 单 chunk 帧级 I/O（chunking 拒绝 `ErrChunkingUnsupported`）。
+- **SecurityPolicy None 明文**（doc.go 标注生产限制：无认证/完整性，仅限可信隔离网络）。
+- 已实现/未实现边界登记：见 `docs/KNOWN-ISSUES.md §3`。
+
+### 4O.3 测试统计与验证
+
+| 项目 | 结果 |
+|------|------|
+| 全仓测试 | ✅ 全绿（32 个含测试包；`go list ./...` 38 包） |
+| pkg/opcua | ✅ 41 顶层测试：round-trip 全覆盖、wire 级 golden、真实 TCP 握手（自研 mock 对端）、错误路径 |
+| 提交链 | `714d5ba`（fix(known-issues) 四项闭环）→ `93458d6`（feat(opcua) M1） |
+| 冒烟 | 10/10 PASS（基线 `93458d6`） |
+
+### 4O.4 登记的新已知限制（见 docs/KNOWN-ISSUES.md §3）
+
+- pkg/opcua 未实现：Read/Write/Subscribe、SecureChannel 打开、节点模型、Discovery、Sign/SignAndEncrypt；
+- 未与第三方 UA 栈（open62541/node-opcua）互操作验证（本轮仅自研 mock 回环）；
+- DiagnosticInfo 骨架、Variant 不发射维度位（仅解码）、DateTime 负数未测；
+- 周期 env 日志在热重载时重复输出三条 Info（低频，量级小）。

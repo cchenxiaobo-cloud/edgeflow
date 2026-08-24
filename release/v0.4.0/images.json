@@ -1,0 +1,6 @@
+{
+  "version": "v0.4.0",
+  "registry": "ghcr.io（CI release.yml 发布）",
+  "generatedAt": "2026-08-24T12:00:00+08:00",
+  "notes": "v0.4.0 镜像由 CI workflow（.github/workflows/release.yml）构建发布至 ghcr.io，本地不重复构建。cloudcore 镜像因内嵌 etcd 体积增大（二进制 23-24MB，之前 10MB）。本地记录仅构建基线：commit 3bee082，9 二进制三平台构建完成，trivy 0.74.0 扫描 HIGH/CRITICAL = 0。"
+}

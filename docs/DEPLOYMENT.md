@@ -480,7 +480,166 @@ curl http://127.0.0.1:8080/api/v1/nodes
 
 ### 10.6 Helm 部署注意（replicaCount 与 PVC）
 
-- **`replicaCount` 必须 = 1（硬约束）**：嵌入式 etcd 为单成员；多副本各自 embed 单成员 + 共享 PVC = **脑裂**（各自独立的数据分叉）。Chart 注释已显式禁止，勿突破。
+- **`replicaCount` 必须 = 1（硬约束）**：嵌入式 etcd 为单成员；多副本各自 embed 单成员 + 共享 PVC = **脑裂**（各自独立的数据分叉）。Chart 注释已显式禁止，勿突破。**v0.5.0 起外部模式同样必须 = 1**（单写者铁律，见 §10.7），模板已加 `{{ fail }}` 渲染守卫双保险。
 - **默认创建 PVC**：`cloudcore.etcd.persistence.enabled=true`（默认），storageClass 留空 = 集群默认 StorageClass，容量默认 1Gi；`false` 时回退 emptyDir（**Pod 重建即丢数据，仅供无持久化需求的临时环境**）。
 - **资源上调**：requests 256Mi / limits 1Gi（v0.4.0 Chart 默认；实测 RSS 31-34MB，原 128Mi request 接近上限）。
 - etcd 客户端监听在容器内 127.0.0.1:12379/12380，**无需也不应**暴露为 Service 端口（仅进程内访问）。
+- 外部 etcd 模式的 Helm 配置与部署形态见 **§10.7**。
+
+---
+
+### 10.7 外部 etcd 模式（v0.5.0 起，方案④）
+
+> 核心能力：`EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS` 非空 = cloudcore **直连共享 etcd 集群**（跳过内嵌 embed），注册台账与设备 Desired 的持久化事实源外移到独立集群。业务层（registry/devicestatus/HTTP API）零改动（v0.4.0 冻结的 KVStore 接口即替换面）。设计见 ARCHITECTURE.md 决策 R14；限制登记见 KNOWN-ISSUES.md §5。
+
+#### 10.7.1 模式对比与故障语义
+
+| 维度 | embed 模式（默认，v0.4.0） | 外部模式（v0.5.0 起） |
+|------|---------------------------|----------------------|
+| 触发 | `ENDPOINTS` 未设置/为空（v0.4.0 行为逐位不变） | `ENDPOINTS` 非空（逗号分隔 http(s) URL） |
+| 数据位置 | 本机数据目录（`EDGEFLOW_CLOUDCORE_ETCD_DATA_DIR`） | 共享集群（`/edgeflow/` 键空间） |
+| 启动失败语义 | 默认**降级纯内存 + 告警**；`STRICT=1` 才拒绝启动 | **恒 fail-fast 拒绝启动**（显式依赖不静默降级；`STRICT` 对外部模式无意义） |
+| embed 字段（DATA_DIR/CLIENT_URL/PEER_URL/QUOTA/COMPACTION/STRICT） | 生效 | **全部忽略**；显式设置时启动期 `Warn`"仅 embed 生效" |
+| 端口/目录 | 监听 127.0.0.1:12379/12380，创建数据目录 | **不监听任何 etcd 端口、不创建数据目录**（验收项） |
+| 运行中断连 | 本地故障（罕见） | clientv3 **自动重连**（指数退避），应用层零重试；断连期写路径失败返回 error、内存不动，读路径纯内存不受影响，恢复后自愈 |
+| /healthz | 进程存活（不反映 etcd） | **同样不反映 etcd 连接状态**（有意为之，见 §10.7.6） |
+| 副本数 | **必须 1**（多副本 embed + 共享 PVC = 脑裂） | **同样必须 1**（单写者铁律，见下方 ⛔ 段） |
+
+**⛔ 单写者形态铁律（v0.5.0）**：两种模式都只支持**一个 cloudcore 写入方**。外部模式虽然共享同一键空间（写穿保证 etcd 侧一致、无数据分叉），但**心跳/Offline 判活是各副本内存瞬态**（不落盘）：副本 A 看不到连在副本 B 上的活节点心跳 → 180s+保留期后 A 会把它**从共享键空间判死删除并级联删设备 Desired**——活节点数据丢失且无任何信号。因此"外部集群支持多 cloudcore 副本"的表述是**错误的**，v0.5.0 受支持形态 = 单写者（replicaCount=1 或 active/standby 同一时刻仅一个真在服务）；真多活（etcd lease 心跳）划 v0.6+。Chart 模板已加 `{{ fail }}` 渲染守卫，embed 与外部模式 `replicaCount>1` 都会渲染失败。
+
+#### 10.7.2 配置表（新增环境变量，前缀 `EDGEFLOW_CLOUDCORE_`）
+
+| 环境变量 | 默认 | 说明 |
+|----------|------|------|
+| `EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS` | 空（embed） | 逗号分隔的 etcd 客户端端点（http/https URL，如 `http://10.0.0.11:2379,http://10.0.0.12:2379`）；**非空即外部模式**。逐条目校验 fail-fast：空条目/非合法 URL/缺端口/带路径或 query/带 userinfo/混合 scheme 均拒绝启动（host 为回环**允许**——外部模式不做回环限制） |
+| `EDGEFLOW_CLOUDCORE_ETCD_TLS_CA` | 空 | **非空 = 启用 TLS**（服务端证书校验）：指向 PEM CA 文件路径（容器内挂载后路径）；文件不存在/不可读 → 拒绝启动；启用时**全部端点必须 https**（混配 http 拒绝启动） |
+| `EDGEFLOW_CLOUDCORE_ETCD_TLS_CERT` | 空 | mTLS 客户端证书 PEM 路径；**与 KEY 同设即 mTLS**，只设其一 → 拒绝启动；证书 CN 建议 `edgeflow`（供 etcd 侧 `--client-cert-allowed-cn` 使用，v0.5.0 不做 CN→角色映射，见 KNOWN-ISSUES §5 ⑤） |
+| `EDGEFLOW_CLOUDCORE_ETCD_TLS_KEY` | 空 | mTLS 客户端私钥 PEM 路径（与 CERT 同设/同缺） |
+| `EDGEFLOW_CLOUDCORE_ETCD_ALLOW_INSECURE` | 空（off） | **逃生门**：`1` 时允许「非回环端点 + 无 TLS」启动（启用瞬间打大告警）；默认状态下存在非回环端点且未启用 TLS → **拒绝启动**（见 §10.7.3） |
+
+> 外部模式下 v0.4.0 embed 变量（DATA_DIR/CLIENT_URL/PEER_URL/QUOTA/COMPACTION/STRICT）**不解析、不生效**（显式设置仅启动期 Warn）。`ETCD_ENABLED=false` 总开关**优先于一切**（含 ENDPOINTS/TLS 配错也不报错——死路径不阻断逃生）；外部模式连接失败/无 quorum = 拒绝启动，"纯内存逃生"只有 `ETCD_ENABLED=false` 一条路。
+
+#### 10.7.3 明文护栏：非回环 + 无 TLS = 拒绝启动
+
+外部 etcd 是**网络可达的共享数据源**——默认明文 http + 无鉴权时，任何能路由到 2379 的客户端都能读写全部键空间（节点台账 + 设备 Desired，Desired 是边缘指令事实源，篡改即指令投毒）。因此 v0.5.0 提供**代码级护栏**：
+
+- 存在**非回环端点**（非 127.0.0.1/localhost/::1）**且未启用 TLS** → 装配期**拒绝启动**，报错指引二选一：配置 `EDGEFLOW_CLOUDCORE_ETCD_TLS_CA`（推荐），或显式逃生门 `EDGEFLOW_CLOUDCORE_ETCD_ALLOW_INSECURE=1`（仅限可信内网/开发，开启时启动期大告警）。
+- 逃生门 ≠ 安全：明文仍然可嗅探、可写入；生产环境必须 TLS（服务端校验）或 mTLS（双向，客户端证书兼作 cloudcore 身份，配合 etcd 侧 `--client-cert-auth`）。
+- **外部 etcd 键空间即安全边界**：与 cloudcore API Token（`EDGEFLOW_CLOUDCORE_AUTH`）是两套体系、互不替代。v0.5.0 不透传 etcd 原生鉴权（username/password/CN 映射），见 KNOWN-ISSUES §5 ⑤。
+
+#### 10.7.4 外部 etcd 集群拓扑要点与运维基线
+
+- **3 节点、奇数**（2/3 法定人数；4 节点不增加可用性只增加成本），成员分布跨故障域（不同节点/机架/AZ），**不跨地域**（raft 副本延迟放大写延迟，网络分区 = 可用性风险）。
+- **无需负载均衡器**：cloudcore 的 ENDPOINTS 列表即客户端 failover（clientv3 round-robin + 失败转移），leader 重定向透明；etcd 无固定 leader（raft 选举），cloudcore 无需感知。
+- 部署形态：独立 etcd 集群（二进制/systemd 或 etcd-operator 类编排），**与 EdgeFlow Chart 解耦**（cloudcore 只消费端点；K8s 中建议 etcd 先就绪再起 cloudcore，或加 initContainer 依赖检查——启动检查最坏 ≈17s（预算 ≤20s）内失败即拒绝启动）。
+- 运维基线（集群侧配置，cloudcore 不再也不应重复设置）：
+  ```bash
+  # quota/compaction 对齐 embed 默认口径（三类数据量级为 MB）
+  --quota-backend-bytes=268435456            # 256MiB
+  --auto-compaction-mode=periodic --auto-compaction-retention=1h
+  # TLS（peer + client）与最小权限鉴权（二选一或叠加；mTLS 推荐生产）
+  --client-cert-auth --trusted-ca-file=/etc/edgeflow/etcd-ca.pem [--client-cert-allowed-cn=edgeflow]
+  ```
+- **etcdctl 最小权限**（auth enable 前置条件 = root 用户已存在；`/edgeflow/` 前缀权限覆盖 `_meta/*` 与全部业务键）：
+  ```bash
+  etcdctl user add root:<强密码>
+  etcdctl auth enable
+  etcdctl role add edgeflow-rw
+  etcdctl role grant-permission edgeflow-rw readwrite /edgeflow/
+  etcdctl user add edgeflow:<强密码>
+  etcdctl user grant-role edgeflow edgeflow-rw
+  etcdctl role add edgeflow-ro
+  etcdctl role grant-permission edgeflow-ro read /edgeflow/   # 只读角色供 O&M 巡检
+  # 读写分离：cloudcore 用 edgeflow-rw（网络层由 mTLS 客户端证书标识身份）；巡检工具用 edgeflow-ro
+  # ⚠ 集群开启鉴权后 cloudcore 未获授权 → 启动检查 PermissionDenied → fail-fast（v0.5.0 不支持鉴权参数透传）
+  ```
+- 备份：每成员 WAL+snapshot + 全集群级 `etcdutl snapshot save --endpoints=<客户端端点>`（复用 §10.4 工具链）；成员级故障演练：停 1 成员 cloudcore 无感知；停 2 成员写路径失败但**不崩**，恢复后自动续写。
+
+#### 10.7.5 迁移 runbook（embed → 外部集群）
+
+> 工具统一 `etcdutl`（etcd 官方快照工具，与二进制同版本 3.5.x）。**⛔ 铁律**：迁移窗口内**只允许一个写入方**（先停 cloudcore 再动数据）；restore 一律到**全新目录**，绝不覆盖。
+
+```bash
+# ① 在线快照（cloudcore 运行中，embed 客户端端口按实际 CLIENT_URL）
+etcdutl snapshot save --endpoints=http://127.0.0.1:12379 /opt/backups/edgeflow-$(date +%s).db
+# ② 校验快照：revision/总键数符合预期
+etcdutl snapshot status /opt/backups/edgeflow-<TS>.db
+
+# ③ 停 cloudcore（双写禁止；优雅关停 SIGTERM）
+#    systemctl stop edgeflow-cloudcore   # 或 kubectl scale deploy edgeflow-cloudcore --replicas=0
+
+# ④ 恢复到外部集群——单节点外部集群：
+etcdutl snapshot restore /opt/backups/edgeflow-<TS>.db \
+  --data-dir=/var/lib/etcd/edgeflow-ext --name=ext-1 \
+  --initial-cluster=ext-1=http://10.0.0.11:2380 --initial-cluster-token=edgeflow-v050 \
+  --initial-advertise-peer-urls=http://10.0.0.11:2380
+#    三节点外部集群：每节点各执行一次 restore（同源备份、各自 name/peer URL），再同时启动：
+#    etcd-1: --name=ext-1 --data-dir=/var/lib/etcd/ext1 \
+#            --initial-cluster=ext-1=http://10.0.0.11:2380,ext-2=http://10.0.0.12:2380,ext-3=http://10.0.0.13:2380 \
+#            --initial-advertise-peer-urls=http://10.0.0.11:2380 --initial-cluster-token=edgeflow-v050
+#    etcd-2/3 同理（--name=ext-2/3、各自 advertise-peer-urls）；三份 restore 必须同源同 token、
+#    三个成员同时启动才能达成初始 quorum。然后按 §10.7.4 运维基线参数启动。
+
+# ⑤ 切 cloudcore 到外部模式
+export EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS="http://10.0.0.11:2379,http://10.0.0.12:2379,http://10.0.0.13:2379"
+# 可选 TLS：export EDGEFLOW_CLOUDCORE_ETCD_TLS_CA=/etc/edgeflow/etcd-ca.pem
+# ⑥ 启动 cloudcore（外部模式 fail-fast：连不上/无 quorum 直接拒绝启动）
+# ⑦ 验证
+curl http://127.0.0.1:8080/api/v1/nodes            # 节点清单完整（Status=Unknown，等心跳翻新）
+etcdctl get /edgeflow/ --prefix --write-out=json | head -20   # 键空间已在外部集群
+etcdctl get /edgeflow/_meta/schemaVersion          # = "1"（快照自带则保持不变）
+# ⑧ 回滚保险：旧 embed 数据目录保留 ≥1 周再清理（回滚 = 恢复 ③ 前的启动方式即可）
+```
+
+要点：
+
+- restore 生成**全新集群身份**（新 cluster ID/member ID），与原 embed（`name=edgeflow`、`initial-cluster-token=edgeflow-v0.4.0`）无冲突；restore 只搬 KV 快照，不含成员/集群元数据。单成员 embed 快照恢复成 3 节点集群是标准操作（每成员各自 restore 同一备份），反向（3→1）同样成立。
+- 快照含 `/edgeflow/_meta/schemaVersion` → 恢复后键保持；空集群首次启动由 v0.5.0 自动写入。
+- 迁移后 embed 的 QUOTA(256MiB)/COMPACTION(1h) 约束**由集群侧配置承接**（§10.7.4），cloudcore 侧不再重复设置。
+- 外部 → 外部（集群替换/DR/扩容拓扑）：同工具同流程，仅①的 endpoints 指向旧外部集群端点；集群内成员日常增减（`etcdctl member add/remove`）属外部集群运维，不进本 runbook。
+
+**零迁移自愈路径（可用，限定场景）**：停 cloudcore → 启动**空**外部集群 → 配好 ENDPOINTS 启动 cloudcore → 边缘节点重连时**自动重注册**（台账重建）→ Pod 状态/设备 Properties ≤1 上报周期翻新。
+
+| 适用 | 不适用 |
+|------|--------|
+| 开发/演示/小规模；**设备 Desired 可丢**（无活跃 device-command 历史） | 生产有已下发指令（Desired 是云端唯一事实源，丢失后需人工/脚本重发）；对台账连续性有审计要求的环境 |
+
+判定口诀：**"Desired 可接受重建" → 零迁移；否则走快照恢复。**
+
+#### 10.7.6 排障
+
+| 现象 | 排查 |
+|------|------|
+| 启动失败，报错含 `外部 etcd 不可达（endpoints=...）` | 懒连接探活失败：`clientv3.New` 不发起连接，v0.5.0 以**线性一致读**元键落实 fail-fast（至多 3 次尝试、单次 5s、间隔 1s，最坏 ≈17s、预算 ≤20s）。逐一检查：端点连通/防火墙（`etcdctl endpoint health --endpoints=<...>`）、DNS 可解析、集群有 quorum（1/3 存活时 Get 超时 → 拒绝启动是**预期行为**，验证的是"集群可服务"而非仅端口可达）、TLS 证书/CA 路径可读 |
+| 启动失败，报错含 `鉴权被拒（PermissionDenied）` 引导文案 | 外部集群开启了鉴权而 cloudcore 无凭证：**v0.5.0 不支持鉴权参数透传**（KNOWN-ISSUES §5 ⑤），按 §10.7.4 在 etcd 侧为 `/edgeflow/` 授权（edgeflow-rw 角色）或改用 mTLS 客户端证书；救急：`ETCD_ENABLED=false` 纯内存启动（丢持久化） |
+| 启动失败，报错含 "非回环端点且未启用 TLS" | 明文护栏触发（§10.7.3）：配置 `EDGEFLOW_CLOUDCORE_ETCD_TLS_CA`（推荐）或显式 `EDGEFLOW_CLOUDCORE_ETCD_ALLOW_INSECURE=1`（仅可信内网） |
+| 启动失败，报错含端点校验原因（缺端口/带路径/userinfo/混合 scheme） | 端点格式错误（§10.7.2 逐条目 fail-fast），修正 ENDPOINTS |
+| 运行中写失败（节点注册失败、设备指令落点报错），读 API 正常 | 外部集群故障窗口：读路径纯内存不受影响（最后一致状态）；clientv3 自动重连，恢复后下一笔写自动成功，**无需重启 cloudcore**；/healthz 恒 200（不反映 etcd，避免 K8s 批量重启放大故障——v0.5.0 有意为之）；监控建议走外部集群自身的 `etcdctl endpoint health` 与备份告警 |
+| 多副本误配 | 模板渲染期 `{{ fail }}` 已拦截（embed 与外部模式 replicaCount>1 均失败）；手工裸跑二进制时请遵守单写者铁律 |
+
+#### 10.7.7 Helm 部署（外部模式）
+
+```yaml
+cloudcore:
+  replicaCount: 1          # 单写者铁律：外部模式同样必须 1（模板 fail 守卫兜底）
+  etcd:
+    enabled: true
+    external:
+      enabled: true
+      endpoints:
+        - http://10.0.0.11:2379
+        - http://10.0.0.12:2379
+        - http://10.0.0.13:2379
+      tls:
+        ca: /etc/edgeflow/etcd-tls/ca.crt      # 非空才注入 EDGEFLOW_CLOUDCORE_ETCD_TLS_CA
+        cert: /etc/edgeflow/etcd-tls/tls.crt   # mTLS（与 key 同设）
+        key: /etc/edgeflow/etcd-tls/tls.key
+      allowInsecure: false  # 逃生门：true → 注入 EDGEFLOW_CLOUDCORE_ETCD_ALLOW_INSECURE=1
+    persistence:            # 外部模式不落本地盘：PVC 自动跳过、/data 回退 emptyDir
+      enabled: true         # （保持 true 也不创建 PVC）
+```
+
+- 模板行为：`external.enabled=true` → 注入 `EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS`（endpoints 逗号连接）+ TLS/逃生门 env；**不注入** `ETCD_DATA_DIR` 等 embed env；**不创建 PVC**。
+- 渲染守卫（`{{ fail }}`）：embed 模式 `replicaCount>1` → 失败（脑裂）；外部模式 `replicaCount>1` → 失败（单写者铁律）；`external.enabled=true` 且 `endpoints` 为空 → 失败。`etcd.enabled=false` 时强制注入 `EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false` 并**忽略 external.***（总开关优先，纯内存逃生）。
+- TLS 证书文件建议经 Secret/ConfigMap 挂载到容器的只读路径（distroless 镜像无 shell，路径即注入值）。
+- cloudcore 与外部 etcd 的依赖就绪时序：建议 K8s 外部依赖探活（initContainer：`etcdctl endpoint health` 或 nc 探活）或先部署 etcd 再部署本 Chart。

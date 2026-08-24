@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"reflect"
 )
 
 // 测试基建约定（对齐设计 §8.2 / 风险审查 §6）：
@@ -117,7 +119,7 @@ func TestConfigDefaultsAndInvalid(t *testing.T) {
 		t.Fatalf("默认配置解析失败: %v", err)
 	}
 	d := DefaultConfig()
-	if cfg != d {
+	if !reflect.DeepEqual(cfg, d) {
 		t.Errorf("默认配置不匹配:\n got=%+v\nwant=%+v", cfg, d)
 	}
 

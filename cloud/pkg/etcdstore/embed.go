@@ -63,6 +63,9 @@ func Start(cfg Config) (*EmbeddedEtcd, error) {
 	ecfg.QuotaBackendBytes = cfg.QuotaBackendBytes
 	ecfg.AutoCompactionMode = cfg.AutoCompactionMode
 	ecfg.AutoCompactionRetention = compactionRetentionString(cfg.AutoCompactionMode, cfg.AutoCompactionRetention)
+	// 快照/WAL 自动清理保留上限：0 = 禁用 purge（测试用；生产经 DefaultConfig 保持 5）
+	ecfg.MaxSnapFiles = uint(cfg.MaxSnapFiles)
+	ecfg.MaxWalFiles = uint(cfg.MaxWALFiles)
 	ecfg.Logger = "zap"
 	// etcd 内部日志压到 warn（业务日志走 edgeflow/pkg/log，避免 stderr 噪声）。
 	ecfg.LogLevel = "warn"

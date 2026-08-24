@@ -154,7 +154,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	defer stopSignals()
 
 	var (
-		nodeReg     registry.Store    // 节点注册表（纯内存或 EtcdRegistry 写穿包装）
+		nodeReg     registry.Store     // 节点注册表（纯内存或 EtcdRegistry 写穿包装）
 		deviceStore devicestatus.Store // 设备状态存储（纯内存或 EtcdDeviceStore 写穿包装）
 		closeEtcd   func()             // etcd 关停闭包（§6.1：注册表循环 → kv → embed，最后执行）
 	)
@@ -174,12 +174,74 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	if !etcdCfg.Enabled {
 		// v0.3.x 纯内存路径：不建目录、不占端口、不写盘，行为与旧版完全一致。
+		// 总开关优先（设计 §9）：ETCD_ENABLED=false + ENDPOINTS 非空 → 仍走纯内存。
 		log.Infof("存储: EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false，纯内存模式（重启后节点/设备数据丢失）")
 		nodeReg = registry.New(registry.WithOfflineTTL(retention))
 		deviceStore = devicestatus.NewStore()
+	} else if len(etcdCfg.Endpoints) > 0 {
+		// ── v0.5.0 外部 etcd 模式（方案④，配置级切换）────────────────────
+		// 跳过 embed：不建目录/不占端口/忽略 DATA_DIR，clientv3 直连
+		// EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS 指向的集群。
+		// ⚠️ 单写者铁律（v0.5.0）：只允许一个 cloudcore 实例连接共享 etcd——
+		// 判活（心跳/Offline 内存瞬态）没有跨副本视野，多副本都会把"连在
+		// 另一副本上的节点"判离线 → TTL 后误删共享键（活节点数据丢失）。
+		// 高可用由存储层（外部 etcd 集群）与崩溃恢复式故障转移提供（新实例
+		// 启动 Load 全量）；真多活（lease 心跳）划 v0.6+。
+		// 故障语义与 embed 不同：连接/TLS 配置失败 = fail-fast 拒绝启动——
+		// 外部集群是主动选择的依赖，静默降级违背部署意图。
+		tlsCfg, err := etcdCfg.BuildTLS()
+		if err != nil {
+			log.Errorf("[etcdstore] 外部 etcd TLS 配置无效，拒绝启动: %v", err)
+			return 1
+		}
+		kv, err := etcdstore.NewKVStoreWithTLS(etcdCfg.Endpoints, tlsCfg)
+		if err != nil {
+			log.Errorf("[etcdstore] 外部 etcd 连接失败（endpoints=%v），拒绝启动（fail-fast，不降级）: %v",
+				etcdCfg.Endpoints, err)
+			return 1
+		}
+		log.Infof("[etcdstore] 外部 etcd 模式 endpoints=%v tls=%v", etcdCfg.Endpoints, tlsCfg != nil)
+		// R3 启动探活：clientv3.New 是懒连接，必须显式线性一致 Get 验证集群
+		// 可读可写（quorum），失败 = fail-fast（至多 3 次尝试/预算 ≤20s）。
+		if err := etcdstore.ProbeAlive(kv); err != nil {
+			log.Errorf("[etcdstore] 外部 etcd 启动探活失败（endpoints=%v），拒绝启动: %v",
+				etcdCfg.Endpoints, err)
+			_ = kv.Close()
+			return 1
+		}
+		// M10：明文护栏由 ConfigFromEnv 裁决（非回环+无 TLS 默认拒绝）；能
+		// 走到这里说明全回环明文或已开逃生门——后一种情况每次启动都大告警。
+		if etcdCfg.AllowInsecure && !etcdCfg.TLSEnabled() {
+			for _, ep := range etcdCfg.Endpoints {
+				if !etcdstore.HostIsLoopback(etcdstore.EndpointHost(ep)) {
+					log.Warnf("[etcdstore] ⚠️ 明文暴露模式：通过 %s=1 绕过明文护栏连接非回环端点 %q（无 TLS、无鉴权——任何能触达的客户端可读写全部键空间，风险自担）",
+						etcdstore.EnvAllowInsecure, ep)
+					break
+				}
+			}
+		}
+		// 前置条件 #4：显式设置的 embed 字段在外部模式下被忽略 → 明示告警。
+		warnEmbedFieldsIgnored()
+		// 与 embed 路径共用同一段装配逻辑（创建包装 → schema 钩子 → Load → 装配循环）。
+		// ⚠️ downgrade 闭包仅 embed 路径可触（设计 §10.2 / M7）：外部集群是显式
+		// 部署依赖，包装创建失败 = 拒绝启动（fail-fast），不得静默降级纯内存。
+		externalFailFast := func(reason string) {
+			log.Errorf("[etcdstore] 外部模式 %s，拒绝启动（不降级——外部 etcd 是显式部署依赖）", reason)
+		}
+		nodeReg, deviceStore, closeEtcd, err = assembleEtcdStores(
+			kv, func() {
+				if err := kv.Close(); err != nil {
+					log.Errorf("[etcdstore] 外部 etcd 关停失败: %v", err)
+				}
+			}, "外部 etcd", retention, sigCtx, externalFailFast)
+		if err != nil {
+			log.Errorf("[etcdstore] 外部模式装配失败，拒绝启动（不降级）: %v", err)
+			return 1
+		}
 	} else {
 		// etcd 路径：safeStart 兜住坏 WAL 的 panic（基础层实测：坏库在 raft
 		// 恢复阶段是 panic 不是 error，必须 recover 才能按 Strict 决策）。
+		log.Infof("[etcdstore] 嵌入式 etcd 模式 dataDir=%s", etcdCfg.DataDir)
 		et, kv, err := safeStartEmbeddedKV(etcdCfg)
 		if err != nil {
 			if etcdCfg.Strict {
@@ -188,45 +250,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 			}
 			downgrade(fmt.Sprintf("嵌入式 etcd 启动失败（dataDir=%s）", etcdCfg.DataDir))
 		} else {
-			var eErr error
-			nodeReg, eErr = registry.NewEtcdRegistry(kv, registry.WithOfflineTTL(retention))
-			if eErr != nil {
-				downgrade("创建 etcd 注册表包装失败")
-				closeEtcd = func() { _ = et.Close() }
-			} else {
-				deviceStore, eErr = devicestatus.NewEtcdDeviceStore(kv)
-				if eErr != nil {
-					downgrade("创建 etcd 设备存储包装失败")
-					_ = nodeReg.Close()
-					closeEtcd = func() { _ = et.Close() }
-				} else {
-					// 启动加载：先 Load+Seed 再对外服务（加载失败/坏键跳过+告警，
-					// 不阻断启动——空库继续，等心跳/指令重建）。
-					if err := nodeReg.Load(sigCtx); err != nil {
-						log.Errorf("[etcdstore] 节点台账加载失败（以空库继续，等心跳重注册）: %v", err)
+			nodeReg, deviceStore, closeEtcd, _ = assembleEtcdStores(
+				kv, func() {
+					if err := et.Close(); err != nil {
+						log.Errorf("[etcdstore] 嵌入式 etcd 关停失败: %v", err)
 					}
-					if err := deviceStore.Load(sigCtx); err != nil {
-						log.Errorf("[etcdstore] 设备影子加载失败（以空库继续）: %v", err)
-					}
-					log.Infof("[etcdstore] 嵌入式 etcd 装配完成：恢复节点 %d 台账 + 设备影子（Desired），retention=%v",
-						nodeReg.Count(), retention)
-					// 定期 GC（每小时，与 ledger.RunCleanupLoop 同模式）+ 设备子树级联。
-					nodeReg.CleanupLoop(sigCtx, time.Hour)
-					go gcCascadeLoop(sigCtx, nodeReg, deviceStore)
-					closeEtcd = func() {
-						// 先停注册表清理循环，再关 kv 客户端，最后关 embed（sync.Once 幂等）。
-						if err := nodeReg.Close(); err != nil {
-							log.Errorf("[etcdstore] 注册表包装关停失败: %v", err)
-						}
-						if err := deviceStore.Close(); err != nil {
-							log.Errorf("[etcdstore] 设备存储包装关停失败（kv Close）: %v", err)
-						}
-						if err := et.Close(); err != nil {
-							log.Errorf("[etcdstore] 嵌入式 etcd 关停失败: %v", err)
-						}
-					}
-				}
-			}
+				}, "嵌入式 etcd", retention, sigCtx, downgrade)
 		}
 	}
 

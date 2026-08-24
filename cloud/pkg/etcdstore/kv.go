@@ -2,6 +2,9 @@ package etcdstore
 
 import (
 	"context"
+	"crypto/tls"
+	"fmt"
+	"sync"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -37,18 +40,37 @@ const opTimeout = 5 * time.Second
 type kvStore struct {
 	client *clientv3.Client
 	kv     clientv3.KV
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // 编译期断言：*kvStore 满足固定接口。
 var _ KVStore = (*kvStore)(nil)
 
-// NewKVStore 创建指向任意 endpoints 的 KVStore。
+// NewKVStore 创建指向任意 endpoints 的 KVStore（明文）。
 // v0.5+ 外部 etcd 模式下跳过 embed、直接用本工厂连接 EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS
 // 指向的集群（设计 §7：业务层零改动）。
 func NewKVStore(endpoints []string) (KVStore, error) {
+	return newKVStore(endpoints, nil)
+}
+
+// NewKVStoreWithTLS 创建带 TLS 的 KVStore（外部 etcd 模式 TLS/mTLS 路径）：
+// tlsCfg 非 nil 时启用 TLS（CA 池 + 可选客户端证书，见 Config.BuildTLS）。
+func NewKVStoreWithTLS(endpoints []string, tlsCfg *tls.Config) (KVStore, error) {
+	return newKVStore(endpoints, tlsCfg)
+}
+
+// newKVStore 是两种工厂的公共实现：clientv3 直连，DialTimeout 5s
+// （对齐接口注释 5s 约定），clientv3 自带自动重连，无需应用层处理。
+func newKVStore(endpoints []string, tlsCfg *tls.Config) (KVStore, error) {
+	if len(endpoints) == 0 {
+		return nil, fmt.Errorf("etcdstore: NewKVStore 需要非空 endpoints")
+	}
 	client, err := clientv3.New(clientv3.Config{
 		Endpoints:   endpoints,
 		DialTimeout: opTimeout,
+		TLS:         tlsCfg,
 	})
 	if err != nil {
 		return nil, err
@@ -120,4 +142,7 @@ func (s *kvStore) DeleteRange(ctx context.Context, prefix string) error {
 	return err
 }
 
-func (s *kvStore) Close() error { return s.client.Close() }
+func (s *kvStore) Close() error {
+	s.closeOnce.Do(func() { s.closeErr = s.client.Close() })
+	return s.closeErr
+}

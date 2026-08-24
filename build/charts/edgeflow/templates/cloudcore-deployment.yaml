@@ -5,6 +5,17 @@ metadata:
   labels:
     {{- include "edgeflow.labels" . | nindent 4 }}
     app.kubernetes.io/component: cloudcore
+{{- /* ============ 渲染守卫（v0.5.0 单写者铁律，替代注释警示的不可执行性） ============ */}}
+{{- if and .Values.cloudcore.etcd.enabled .Values.cloudcore.etcd.external.enabled (not .Values.cloudcore.etcd.external.endpoints) }}
+  {{- fail "cloudcore.etcd.external.enabled=true 时 endpoints 不能为空（至少一个 http(s) 端点）" }}
+{{- end }}
+{{- if and .Values.cloudcore.etcd.enabled (gt (int .Values.cloudcore.replicaCount) 1) }}
+  {{- if .Values.cloudcore.etcd.external.enabled }}
+    {{- fail "cloudcore.replicaCount>1 在外部 etcd 模式（cloudcore.etcd.external.enabled=true）下不受支持：v0.5.0 为单写者形态（心跳/Offline 判活是各副本内存瞬态，多副本 active-active 会把彼此存活的节点误判离线并从共享键空间删键+级联删设备 Desired）。请保持 replicaCount=1（真多活划 v0.6+ lease 方案）" }}
+  {{- else }}
+    {{- fail "cloudcore.replicaCount>1 在 embed 模式（cloudcore.etcd.external.enabled=false）下 = 多副本各自 embed + 共享 PVC 脑裂（键空间互相覆盖），显式禁止。请保持 replicaCount=1" }}
+  {{- end }}
+{{- end }}
 spec:
   replicas: {{ .Values.cloudcore.replicaCount }}
   selector:
@@ -25,10 +36,11 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       volumes:
         - name: data
-          {{- if and .Values.cloudcore.etcd.persistence.enabled .Values.cloudcore.etcd.enabled }}
+          {{- if and .Values.cloudcore.etcd.persistence.enabled .Values.cloudcore.etcd.enabled (not .Values.cloudcore.etcd.external.enabled) }}
           persistentVolumeClaim:
             claimName: {{ include "edgeflow.fullname" . }}-cloudcore-data
           {{- else }}
+          # 外部 etcd 模式不落本地盘（数据在共享集群），/data 仅备用（如 mTLS 证书目录）→ emptyDir
           emptyDir: {}
           {{- end }}
       terminationGracePeriodSeconds: {{ .Values.cloudcore.terminationGracePeriodSeconds }}
@@ -69,12 +81,39 @@ spec:
               value: {{ $value | quote }}
             {{- end }}
             {{- if .Values.cloudcore.etcd.enabled }}
-            {{- range $key, $value := .Values.cloudcore.etcd.env }}
+              {{- if .Values.cloudcore.etcd.external.enabled }}
+            # 外部 etcd 模式（v0.5.0）：共享集群直连；embed 字段（DATA_DIR/CLIENT_URL/PEER_URL/
+            # QUOTA/COMPACTION/STRICT）不注入——应用侧对显式设置的 embed 字段会 Warn「仅 embed 生效」
+            - name: EDGEFLOW_CLOUDCORE_ETCD_ENABLED
+              value: "true"
+            - name: EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS
+              value: {{ join "," .Values.cloudcore.etcd.external.endpoints | quote }}
+              {{- if .Values.cloudcore.etcd.external.tls.ca }}
+            - name: EDGEFLOW_CLOUDCORE_ETCD_TLS_CA
+              value: {{ .Values.cloudcore.etcd.external.tls.ca | quote }}
+              {{- end }}
+              {{- if .Values.cloudcore.etcd.external.tls.cert }}
+            - name: EDGEFLOW_CLOUDCORE_ETCD_TLS_CERT
+              value: {{ .Values.cloudcore.etcd.external.tls.cert | quote }}
+              {{- end }}
+              {{- if .Values.cloudcore.etcd.external.tls.key }}
+            - name: EDGEFLOW_CLOUDCORE_ETCD_TLS_KEY
+              value: {{ .Values.cloudcore.etcd.external.tls.key | quote }}
+              {{- end }}
+              {{- if .Values.cloudcore.etcd.external.allowInsecure }}
+            # 逃生门（显式 opt-in）：允许「非回环端点 + 无 TLS」启动；应用启动期打大告警
+            - name: EDGEFLOW_CLOUDCORE_ETCD_ALLOW_INSECURE
+              value: "1"
+              {{- end }}
+              {{- else }}
+              {{- range $key, $value := .Values.cloudcore.etcd.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}
-            {{- end }}
+              {{- end }}
+              {{- end }}
             {{- else }}
-            # etcd 显式关闭：覆盖任何可能残留的 ETCD_ENABLED=true（防环境变量透传误开）
+            # etcd 显式关闭：覆盖任何可能残留的 ETCD_ENABLED=true（防环境变量透传误开）；
+            # 此时忽略 external.enabled（总开关优先，M1 一刀切）
             - name: EDGEFLOW_CLOUDCORE_ETCD_ENABLED
               value: "false"
             {{- end }}

@@ -24,9 +24,14 @@ podSecurityContext:
 
 ## CloudCore（云端组件）配置
 cloudcore:
-  # 副本数：★ 硬约束：必须 = 1（v0.4.0 起）★
-  # cloudcore 内嵌单成员 etcd（嵌入式持久化）；多副本各自 embed + 共享 PVC = 脑裂
-  # （各自独立的数据分叉，键空间互相覆盖），显式禁止。云边为长连接，多副本本就需会话粘性支持。
+  # 副本数：★ v0.5.0 起两种 etcd 模式均必须 = 1（单写者）★
+  # ① embed 模式（cloudcore.etcd.external.enabled=false，默认）：内嵌单成员 etcd，
+  #   多副本各自 embed + 共享 PVC = 脑裂（各自独立的数据分叉），显式禁止。
+  # ② 外部模式（cloudcore.etcd.external.enabled=true）：v0.5.0 为单写者形态——
+  #   心跳/Offline 判活是各副本内存瞬态，多副本 active-active 会把彼此存活的节点
+  #   误判离线，并从共享键空间删键 + 级联删设备 Desired（活节点数据丢失）。
+  #   真多活（etcd lease 心跳）划 v0.6+。模板已加 {{ fail }} 渲染守卫，两种模式下
+  #   replicaCount>1 都会渲染失败。
   replicaCount: 1
 
   # 优雅退出宽限期：cloudcore 收到 SIGTERM 后需时间排空存量连接
@@ -80,14 +85,39 @@ cloudcore:
 
   # 嵌入式 etcd（v0.4.0：云端状态持久化，写穿 write-through）：
   # 注册元数据 + 设备 Desired 跨重启保留；Pod 状态/上报属性不落盘（重启短暂清空自愈）。
-  # 全量环境变量与键空间见 docs/DEPLOYMENT.md §10 / docs/RELEASE-NOTES-v040.md
+  # 全量环境变量与键空间见 docs/DEPLOYMENT.md §10 / docs/RELEASE-NOTES-v050.md
+  #
+  # v0.5.0 新增外部 etcd 模式（方案④）：external.enabled=true 时直连共享 etcd 集群
+  # （EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS），跳过内嵌 embed（不建目录/不占端口）。
+  # 两种模式互斥：external.enabled=true 时本段 embed 环境变量（env 映射）不注入；
+  # etcd.enabled=false 时强制注入 EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false，并忽略 external.*。
   etcd:
     # 总开关：true=etcd 持久化模式（默认）；false=纯内存（v0.3.x 行为，Pod 重建即丢）
     enabled: true
     # 数据目录（容器内路径；工作目录=/，挂载自 persistence PVC）
     dataDir: /data/etcd
+    # v0.5.0 外部 etcd（共享集群直连；仅 external.enabled=true 时生效）
+    external:
+      # true = 外部模式：注入 EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS（及 TLS/逃生门 env）、
+      # 跳过本地数据卷（不创建 PVC、不注入 EDGEFLOW_CLOUDCORE_ETCD_DATA_DIR）。
+      # ⚠ 外部 etcd 是显式部署依赖：连接失败/无 quorum = 拒绝启动（fail-fast），无降级路径。
+      enabled: false
+      # 外部 etcd 客户端端点（http/https URL 列表，逗号分隔语义）；enabled=true 且为空 → 渲染期 fail
+      endpoints: []
+      #   # 示例：
+      #   - http://10.0.0.11:2379
+      #   - http://10.0.0.12:2379
+      # TLS（PEM 文件路径，注入容器后使用）：
+      #   ca 非空 = 启用 TLS（服务端证书校验）；cert+key 同设 = mTLS（客户端证书）；只设其一 → 启动 fail-fast
+      tls:
+        ca: ""      # 例：/etc/edgeflow/etcd-tls/ca.crt（挂载 Secret/ConfigMap 后路径）
+        cert: ""    # 例：/etc/edgeflow/etcd-tls/tls.crt（mTLS 客户端证书）
+        key: ""     # 例：/etc/edgeflow/etcd-tls/tls.key（mTLS 客户端私钥）
+      # 逃生门：true = 允许「非回环端点 + 无 TLS」启动（默认拒绝，仅限可信内网/开发）；
+      # 开启后注入 EDGEFLOW_CLOUDCORE_ETCD_ALLOW_INSECURE=1（应用启动期打大告警）
+      allowInsecure: false
     # etcd 配置环境变量透传（EDGEFLOW_CLOUDCORE_ETCD_*），enabled=false 时模板强制注入
-    # EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false，其余不生效
+    # EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false，其余不生效；external.enabled=true 时不注入（忽略）
     env:
       EDGEFLOW_CLOUDCORE_ETCD_ENABLED: "true"
       EDGEFLOW_CLOUDCORE_ETCD_DATA_DIR: "/data/etcd"

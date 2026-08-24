@@ -1,7 +1,8 @@
-{{- if and .Values.cloudcore.etcd.persistence.enabled .Values.cloudcore.etcd.enabled }}
+{{- if and .Values.cloudcore.etcd.persistence.enabled .Values.cloudcore.etcd.enabled (not .Values.cloudcore.etcd.external.enabled) }}
 # v0.4.0：云端持久化（嵌入式 etcd 写穿）要求数据卷在 Pod 重建/漂移后仍在——
 # emptyDir 会使"持久化"名存实亡（风险审查前置条件 4），故默认为 PVC；
 # persistence.enabled=false 或 etcd.enabled=false 时回退 emptyDir（v0.3.x 行为）。
+# v0.5.0：外部 etcd 模式（external.enabled=true）数据在共享集群、不落本地盘 → 不创建 PVC。
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

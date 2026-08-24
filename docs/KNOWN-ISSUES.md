@@ -1,6 +1,6 @@
 # EdgeFlow 已知限制与问题台账（KNOWN-ISSUES）
 
-> 最后更新：2026-08-24（v0.4.0 开发轮）
+> 最后更新：2026-08-24（v0.5.0 开发轮）
 > 收录原则：只登记**已实现功能上的已知边界/脆弱点**；未实现功能见 `docs/ROADMAP.md §8-§11` 与 `docs/PROGRESS.md §5`。每轮开发/发布时复查本表，已闭环项移出。
 
 ---
@@ -21,6 +21,7 @@
 - 2026-08-18（v0.2.0 开发轮）：新增 ①②③④ 四条；历史已知问题（v0.1.x）仍见 `docs/API-SPEC.md §8` 与 `docs/HANDOFF.md §10`，未迁移本表。
 - 2026-08-19（v0.3.0 开发轮）：§1 四条全部闭环并逐行标注（commit `714d5ba`）；新增 §3 登记四条（pkg/opcua 首阶段未实现边界 + 周期 env 日志热重载重复输出）。历史已知问题（v0.1.x）位置不变。
 - 2026-08-24（v0.4.0 开发轮）：新增 §4 登记（嵌入式 etcd 坏库/坏 WAL 场景与降级行为 + POD/reported 短暂清空语义）；API-SPEC §8 首条"重启清空"已随分级持久化闭环，不再迁移本表。
+- 2026-08-24（v0.5.0 开发轮）：新增 §5 登记三条（L1 无鉴权参数透传 / L5 多副本 SetDesired 整记录覆盖 / L7 GC 删除失败不重试——后两条为 v0.4.0 既有缺陷在多副本/外部集群场景下的新发现，v0.5.0 按单写者形态登记不修）；编号沿用全局序列（⑤⑥⑦），对应设计定稿限制清单 L1/L5/L7。
 
 ## 3. v0.3.0 开发轮登记（2026-08-19）
 
@@ -41,6 +42,18 @@
 | ② | `data/etcd/member/` 目录整体丢失 | embed 重建空库正常启动（旧数据不在、新写可用）——**单目录丢失 ≠ 崩溃，但等于全量丢数据** | 注册台账与设备 Desired 从零重建：节点靠边缘重连重新注册，Desired 靠指令重发；Pod/上报 ≤1 上报周期自愈 | 备份策略兜底：在线 `etcdutl snapshot save` / 离线 `cp -a data/etcd`（停进程后整体拷贝，**文件拷贝≠有效备份**），见 DEPLOYMENT §10.4 |
 | ③ | 云端 Pod 状态 / 设备 reported（properties/LastReportedAt） | v0.4.0 起**整表不落盘**（写穿范围仅注册元数据 + Desired）：cloudcore 重启后 pods 列表短时为空、设备 properties 为空 map `{}` | 重启窗口内查询 API 显示"暂时缺失"；≤1 上报周期（默认 30s）边缘重连后自愈，**非永久丢失**；监控/告警阈值需容忍该窗口 | API-SPEC §8 已登记为"短暂清空"语义；后续版本若需持久化，键空间 `/edgeflow/podstatus/...` 已预留，直接启用即 |
 | ④ | `cloud/pkg/etcdstore` embed.Close() 幂等性 | v3.5.33 的 `close(e.errc)` 无 closeOnce 保护，二次 Close 会 `panic: close of closed channel` | 已在本层用 sync.Once 整体幂等化解（`Close()` 可安全重复调用）；集成层勿绕过 `EmbeddedEtcd` 直接持有 embed.Etcd | 已闭环（包内化解）；登记备忘 |
+
+---
+
+## 5. v0.5.0 开发轮登记（2026-08-24，外部 etcd 模式，对应设计定稿 L1/L5/L7）
+
+> 背景：v0.5.0 新增外部 etcd 模式（`EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS` 非空即直连共享集群，ARCHITECTURE 决策 R14）。以下 ⑤⑥ 是外部/多副本场景暴露的**既有设计边界**——v0.5.0 受支持形态为**单写者**（replicaCount=1，Chart 模板 fail 守卫兜底），因此 ⑤⑥ 在受支持形态下不触发，但仍登记、不修复（改动涉及键空间/GC/写穿联动，超配置级切换范围）；⑦ 为 v0.4.0 既有缺口在外部集群故障窗口的放大项。
+
+| # | 位置 | 限制 | 影响 | 计划 |
+|---|------|------|------|------|
+| ⑤ | 外部模式连接层（clientv3 配置）；L1 无鉴权参数透传 | v0.5.0 **不实现任何 etcd 鉴权参数**（无 username/password/证书 CN→角色映射 env）；外部集群开启鉴权且未为 cloudcore 授权 → 启动探活返回 `PermissionDenied` → fail-fast 拒绝启动，错误文案引导"检查 etcd 鉴权 / 在 etcd 侧为 `/edgeflow/` 授权"（见 DEPLOYMENT §10.7.6） | 鉴权只能在 etcd 侧配置（§10.7.4 最小权限角色 readwrite `/edgeflow/` / mTLS `--client-cert-auth`）；安全边界 = TLS/mTLS + 网络隔离（非回环+明文默认拒绝启动，逃生门 `EDGEFLOW_CLOUDCORE_ETCD_ALLOW_INSECURE`）；明文+非回环未配逃生门时连启动都不可行，属护栏而非缺口 | v0.6+ 候选：`EDGEFLOW_CLOUDCORE_ETCD_USERNAME/PASSWORD`、CN→角色映射 |
+| ⑥ | `cloud/pkg/devicestatus/etcd_store.go` `SetDesired`（L5 跨副本整记录覆盖） | `SetDesired` 是"读**本副本**内存合并 → 整记录 Put"（读-改-写）；多副本 active-active 时，副本 B 的内存基准可能旧于 etcd（副本 A 刚写的属性 P1 不在 B 内存），B 对同一设备写 P2 → 整记录覆盖 → **P1 丢失**。v0.4.0 单副本语义正确（自身写穿保证内存最新） | v0.5.0 单写者形态（replicaCount=1）下不触发；多副本部署已被 Chart fail 守卫与文档禁止（心跳/判活内存态是更根本的原因，见 ARCHITECTURE R14）。文档级缓解：同一设备的连续指令尽量落同一副本（粘性会话） | v0.6+ 候选：SetDesired 改 etcd 条件写（带 revision/Compare）或按 property 拆键；未修（零改动约束） |
+| ⑦ | `cloud/pkg/registry/node_registry.go` `requeueGCEvent`（L7 死代码） | GC 删除失败**只告警、不重入队**：`requeueGCEvent` 存在但**从未被调用**（死代码）；注释声称"下一轮 CleanupLoop 重扫会再次产生事件"**不成立**——节点已从内存 map 移除，重扫不会再见到它 | etcd 残留**孤儿节点键**（及设备子树），直到该节点重新注册（再被 GC）或 cloudcore 重启（Load 读回为 Unknown → 保留期后再 GC 一次）。**外部模式放大可见性**：集群故障窗口内的失败删除会留孤儿；单机 embed 故障窗口短、影响小（v0.4.0 既有缺口） | 重启自愈 + 备份兜底；v0.6+ 修复候选：GC 删除失败时调用 `requeueGCEvent`（登记不修） |
 
 ---
 

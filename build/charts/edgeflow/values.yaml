@@ -24,7 +24,9 @@ podSecurityContext:
 
 ## CloudCore（云端组件）配置
 cloudcore:
-  # 副本数：云边通信为有状态长连接，生产建议 1；多副本需配合会话粘性（后续版本支持）
+  # 副本数：★ 硬约束：必须 = 1（v0.4.0 起）★
+  # cloudcore 内嵌单成员 etcd（嵌入式持久化）；多副本各自 embed + 共享 PVC = 脑裂
+  # （各自独立的数据分叉，键空间互相覆盖），显式禁止。云边为长连接，多副本本就需会话粘性支持。
   replicaCount: 1
 
   # 优雅退出宽限期：cloudcore 收到 SIGTERM 后需时间排空存量连接
@@ -35,7 +37,7 @@ cloudcore:
     # 镜像仓库：构建命令见 docs/DEPLOYMENT.md；推送到私有仓库后改为完整地址
     repository: edgeflow/cloudcore
     # 镜像标签：默认跟随 Chart appVersion（.Chart.AppVersion）
-    tag: "v0.1.0"
+    tag: "v0.4.0"
     # 拉取策略：IfNotPresent 生产推荐；本地频繁构建调试可改 Always
     pullPolicy: IfNotPresent
 
@@ -58,22 +60,51 @@ cloudcore:
     timeoutSeconds: 3
     failureThreshold: 3
 
-  # 资源配额：当前为保守值，生产建议先压测再收紧
+  # 资源配额：v0.4.0 上调（cloudcore 内嵌 etcd，实测 RSS 31-34MB；原 128Mi request 接近上限）
+  # 实测依据与观测方法见 docs/RELEASE-NOTES-v040.md §四
   resources:
     requests:
       cpu: 100m
-      memory: 128Mi
+      memory: 256Mi
     limits:
       cpu: 500m
-      memory: 512Mi
+      memory: 1Gi
 
   # 环境变量透传（key: value 形式）：
   #   EDGEFLOW_CLOUDCORE_PORT / EDGEFLOW_CLOUDCORE_HUB_PORT 是 cloudcore 的最高优先级配置来源，
   #   mTLS 启用：EDGEFLOW_CLOUDCORE_TLS=on + EDGEFLOW_CLOUDCORE_CERT_DIR=/data/certs
-  #   （/data 已挂载可写 emptyDir；生产建议 Secret 预置证书，见 docs/DEPLOYMENT.md）
+  #   （/data 挂载自持久卷 PVC（v0.4.0 起）；生产建议 Secret 预置证书，见 docs/DEPLOYMENT.md）
   env:
     EDGEFLOW_CLOUDCORE_PORT: "8080"
     EDGEFLOW_CLOUDCORE_HUB_PORT: "10000"
+
+  # 嵌入式 etcd（v0.4.0：云端状态持久化，写穿 write-through）：
+  # 注册元数据 + 设备 Desired 跨重启保留；Pod 状态/上报属性不落盘（重启短暂清空自愈）。
+  # 全量环境变量与键空间见 docs/DEPLOYMENT.md §10 / docs/RELEASE-NOTES-v040.md
+  etcd:
+    # 总开关：true=etcd 持久化模式（默认）；false=纯内存（v0.3.x 行为，Pod 重建即丢）
+    enabled: true
+    # 数据目录（容器内路径；工作目录=/，挂载自 persistence PVC）
+    dataDir: /data/etcd
+    # etcd 配置环境变量透传（EDGEFLOW_CLOUDCORE_ETCD_*），enabled=false 时模板强制注入
+    # EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false，其余不生效
+    env:
+      EDGEFLOW_CLOUDCORE_ETCD_ENABLED: "true"
+      EDGEFLOW_CLOUDCORE_ETCD_DATA_DIR: "/data/etcd"
+      EDGEFLOW_CLOUDCORE_ETCD_CLIENT_URL: "http://127.0.0.1:12379"
+      EDGEFLOW_CLOUDCORE_ETCD_PEER_URL: "http://127.0.0.1:12380"
+      EDGEFLOW_CLOUDCORE_ETCD_QUOTA_BACKEND_BYTES: "268435456"
+      EDGEFLOW_CLOUDCORE_ETCD_AUTO_COMPACTION_MODE: "periodic"
+      EDGEFLOW_CLOUDCORE_ETCD_AUTO_COMPACTION_RETENTION: "1h"
+      # EDGEFLOW_CLOUDCORE_ETCD_STRICT: "1"   # 1=embed 启动失败即拒绝启动（fail-fast）
+      # EDGEFLOW_CLOUDCORE_NODE_RETENTION: "24h"  # 节点保留期（默认 24h）
+    # 数据卷（PVC）：Pod 重建/漂移不丢数据的唯一前提；enabled=false 回退 emptyDir
+    persistence:
+      enabled: true
+      # storageClass: 留空 = 集群默认 StorageClass
+      storageClass: ""
+      # 容量：三类状态数据量级为 MB，1Gi 富余
+      size: 1Gi
   # 扩展环境变量（标准 env 列表格式，用于 valueFrom/secretKeyRef 等复杂场景）
   extraEnv: []
   # 示例：
@@ -86,7 +117,8 @@ cloudcore:
   #         name: edgeflow-tls
   #         key: tls.key
 
-  # 容器安全上下文（与 distroless nonroot 双重保险；cloudcore 不写文件系统）
+  # 容器安全上下文（与 distroless nonroot 双重保险；cloudcore 写持久卷 /data：
+  # etcd 数据 /data/etcd + mTLS 证书 /data/certs，由 PVC 提供可写）
   securityContext:
     allowPrivilegeEscalation: false
     readOnlyRootFilesystem: true
@@ -113,5 +145,5 @@ service:
   httpPort: 8080
   # CloudHub WebSocket 端口：云边通信入口
   hubPort: 10000
-  # 是否暴露 CloudHub 端口（边缘节点跨集群接入时开启，并同步防火墙）
+    # 是否暴露 CloudHub 端口（边缘节点跨集群接入时开启，并同步防火墙）
   hubEnabled: false

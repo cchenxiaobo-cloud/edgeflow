@@ -25,7 +25,12 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       volumes:
         - name: data
+          {{- if and .Values.cloudcore.etcd.persistence.enabled .Values.cloudcore.etcd.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "edgeflow.fullname" . }}-cloudcore-data
+          {{- else }}
           emptyDir: {}
+          {{- end }}
       terminationGracePeriodSeconds: {{ .Values.cloudcore.terminationGracePeriodSeconds }}
       {{- with .Values.cloudcore.nodeSelector }}
       nodeSelector:
@@ -62,6 +67,16 @@ spec:
             {{- range $key, $value := .Values.cloudcore.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}
+            {{- end }}
+            {{- if .Values.cloudcore.etcd.enabled }}
+            {{- range $key, $value := .Values.cloudcore.etcd.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- else }}
+            # etcd 显式关闭：覆盖任何可能残留的 ETCD_ENABLED=true（防环境变量透传误开）
+            - name: EDGEFLOW_CLOUDCORE_ETCD_ENABLED
+              value: "false"
             {{- end }}
             {{- with .Values.cloudcore.extraEnv }}
             {{- toYaml . | nindent 12 }}

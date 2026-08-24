@@ -1,6 +1,6 @@
 # EdgeFlow 已知限制与问题台账（KNOWN-ISSUES）
 
-> 最后更新：2026-08-19（v0.3.0 开发轮）
+> 最后更新：2026-08-24（v0.4.0 开发轮）
 > 收录原则：只登记**已实现功能上的已知边界/脆弱点**；未实现功能见 `docs/ROADMAP.md §8-§11` 与 `docs/PROGRESS.md §5`。每轮开发/发布时复查本表，已闭环项移出。
 
 ---
@@ -20,6 +20,7 @@
 
 - 2026-08-18（v0.2.0 开发轮）：新增 ①②③④ 四条；历史已知问题（v0.1.x）仍见 `docs/API-SPEC.md §8` 与 `docs/HANDOFF.md §10`，未迁移本表。
 - 2026-08-19（v0.3.0 开发轮）：§1 四条全部闭环并逐行标注（commit `714d5ba`）；新增 §3 登记四条（pkg/opcua 首阶段未实现边界 + 周期 env 日志热重载重复输出）。历史已知问题（v0.1.x）位置不变。
+- 2026-08-24（v0.4.0 开发轮）：新增 §4 登记（嵌入式 etcd 坏库/坏 WAL 场景与降级行为 + POD/reported 短暂清空语义）；API-SPEC §8 首条"重启清空"已随分级持久化闭环，不再迁移本表。
 
 ## 3. v0.3.0 开发轮登记（2026-08-19）
 
@@ -29,6 +30,17 @@
 | ② | `pkg/opcua` 互操作 | 未与第三方 UA 栈（open62541/node-opcua）做互操作验证，本轮仅自研 mock 服务端回环（transport_test 真实 TCP 握手为自建对端） | wire 级编解码符合 Part 6 但未经验证真栈互认，存在字段约定偏差风险 | 下一里程碑安排 open62541/node-opcua 互操作 cross-check |
 | ③ | `pkg/opcua/types.go` | `DiagnosticInfo` 仅空骨架（无字段/无位域语义）；Variant 解码维度位仅解析不发射（Encode 不写 Dimensions 位，仅 Decode 支持）；DateTime 负数（1601-01-01 之前）未测试 | 诊断信息无法承载；编码维度信息丢失（当前无消费方）；1601 年前时间戳行为未验证 | 随后续里程碑按需补齐 |
 | ④ | `pkg/config/edgecore.go` 周期 env 日志 | 周期 env 三态启动日志（KNOWN-ISSUES §1 ④ 修复引入）在**热重载**（SIGHUP/mtime）时每次重载重复输出三条 Info | 日志量轻微增长（低频，量级小，仅热重载时） | 可接受，暂不处理；如后续日志规范收紧再评估 |
+
+---
+
+## 4. v0.4.0 开发轮登记（2026-08-24，嵌入式 etcd 持久化）
+
+| # | 位置 | 限制 | 影响 | 计划 |
+|---|------|------|------|------|
+| ① | `data/etcd/member/wal/` 坏 WAL（内容损坏/截断） | **实测 etcd v3.5.33 在 raft 恢复阶段直接 panic**（`panic: cannot use none as id`，RestartNode），**不是返回 error**——设计初稿预期"启动失败 → error → 降级"，实际需装配层 `defer recover()` 兜底 | 无兜底则进程裸崩（系统级重启循环）；现有装配已 recover：默认降级纯内存 + 启动期大告警（数据未持久化），`EDGEFLOW_CLOUDCORE_ETCD_STRICT=1` 时 fail-fast 退出。恢复路径：etcdutl restore 或清空数据目录重收敛（边缘重连重新注册） | 已按实测修订设计 §6.5 与文档口径（DEPLOYMENT §10.5）；保持 recover 兜底 + 回归测试 `TestBadWALTolerance` |
+| ② | `data/etcd/member/` 目录整体丢失 | embed 重建空库正常启动（旧数据不在、新写可用）——**单目录丢失 ≠ 崩溃，但等于全量丢数据** | 注册台账与设备 Desired 从零重建：节点靠边缘重连重新注册，Desired 靠指令重发；Pod/上报 ≤1 上报周期自愈 | 备份策略兜底：在线 `etcdutl snapshot save` / 离线 `cp -a data/etcd`（停进程后整体拷贝，**文件拷贝≠有效备份**），见 DEPLOYMENT §10.4 |
+| ③ | 云端 Pod 状态 / 设备 reported（properties/LastReportedAt） | v0.4.0 起**整表不落盘**（写穿范围仅注册元数据 + Desired）：cloudcore 重启后 pods 列表短时为空、设备 properties 为空 map `{}` | 重启窗口内查询 API 显示"暂时缺失"；≤1 上报周期（默认 30s）边缘重连后自愈，**非永久丢失**；监控/告警阈值需容忍该窗口 | API-SPEC §8 已登记为"短暂清空"语义；后续版本若需持久化，键空间 `/edgeflow/podstatus/...` 已预留，直接启用即 |
+| ④ | `cloud/pkg/etcdstore` embed.Close() 幂等性 | v3.5.33 的 `close(e.errc)` 无 closeOnce 保护，二次 Close 会 `panic: close of closed channel` | 已在本层用 sync.Once 整体幂等化解（`Close()` 可安全重复调用）；集成层勿绕过 `EmbeddedEtcd` 直接持有 embed.Etcd | 已闭环（包内化解）；登记备忘 |
 
 ---
 

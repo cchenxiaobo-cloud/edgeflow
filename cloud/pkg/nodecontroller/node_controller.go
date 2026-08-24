@@ -76,7 +76,7 @@ func WithNow(f func() time.Time) Option {
 // 可与 CloudHub 事件回调（注册/心跳/断开）并行运行；Start/Stop 的
 // 状态与 channel 由内部互斥锁保护。
 type NodeController struct {
-	reg      *registry.Registry
+	reg      registry.Store
 	interval time.Duration    // 扫描周期
 	timeout  time.Duration    // 心跳超时阈值
 	now      func() time.Time // 可注入时钟
@@ -88,7 +88,9 @@ type NodeController struct {
 }
 
 // New 创建节点控制器，opts 可覆盖周期/阈值/时钟。
-func New(reg *registry.Registry, opts ...Option) *NodeController {
+// 形参为 registry.Store（v0.4.0：纯内存与 etcd 写穿两种实现均可注入；
+// 本控制器只用 List/MarkOffline，均在接口方法集内）。
+func New(reg registry.Store, opts ...Option) *NodeController {
 	c := &NodeController{
 		reg:      reg,
 		interval: DefaultScanInterval,

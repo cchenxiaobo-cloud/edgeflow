@@ -22,7 +22,7 @@ import (
 // （/api/v1/devices、/api/v1/nodes/{nodeID}/devices、device-command），
 // 并注入 fake reliableSend（替代真实 CloudHub，无需 WebSocket 即可
 // 覆盖各错误路径）。
-func newDeviceAPIServer(t *testing.T, reg *registry.Registry, devices *devicestatus.DeviceStatusStore, send func(ctx context.Context, nodeID string, msg *protocol.Message, opts cloudhub.ReliableOptions) error) *httptest.Server {
+func newDeviceAPIServer(t *testing.T, reg *registry.Registry, devices devicestatus.Store, send func(ctx context.Context, nodeID string, msg *protocol.Message, opts cloudhub.ReliableOptions) error) *httptest.Server {
 	t.Helper()
 	api := &nodeAPI{reg: reg, devices: devices, reliableSend: send}
 	mux := http.NewServeMux()
@@ -209,7 +209,7 @@ func TestDeviceCommandOK(t *testing.T) {
 
 // TestDeviceCommandOKNilStore 验证存储未注入时成功路径仍返回 200（不 panic）。
 func TestDeviceCommandOKNilStore(t *testing.T) {
-	srv := newDeviceAPIServer(t, registry.New(), nil, func(context.Context, string, *protocol.Message, cloudhub.ReliableOptions) error {
+	srv := newDeviceAPIServer(t, registry.New(), devicestatus.Store(nil), func(context.Context, string, *protocol.Message, cloudhub.ReliableOptions) error {
 		return nil
 	})
 	resp := postDeviceCommand(t, srv, "node-1", `{"deviceName":"sensor-01","property":"targetTemp","value":25}`)

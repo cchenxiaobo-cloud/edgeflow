@@ -1,0 +1,21 @@
+{{- if and .Values.cloudcore.etcd.persistence.enabled .Values.cloudcore.etcd.enabled }}
+# v0.4.0：云端持久化（嵌入式 etcd 写穿）要求数据卷在 Pod 重建/漂移后仍在——
+# emptyDir 会使"持久化"名存实亡（风险审查前置条件 4），故默认为 PVC；
+# persistence.enabled=false 或 etcd.enabled=false 时回退 emptyDir（v0.3.x 行为）。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "edgeflow.fullname" . }}-cloudcore-data
+  labels:
+    {{- include "edgeflow.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cloudcore
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.cloudcore.etcd.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.cloudcore.etcd.persistence.size | quote }}
+{{- end }}

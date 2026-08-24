@@ -12,9 +12,51 @@
 package devicestatus
 
 import (
+	"context"
 	"sort"
 	"sync"
 )
+
+// Store 是设备状态存储的读写契约（v0.4.0 引入）。
+//
+// v0.4.0 键空间：/edgeflow/devicestatus/<nodeID>/<ns>/<deviceName>，
+// 持久化范围仅设备 Desired（云端唯一事实源，见存储改造设计 §2/§5）；
+// Properties/LastReportedAt 为 reported 周期上报瞬态，不落盘，
+// 重启后 Properties 归一为空 map（JSON 编码 {}），≤1 上报周期翻新。
+//
+// 错误约定：仅 Upsert/SetDesired 返回 error（v0.4.0 纯内存实现恒返回
+// nil；EtcdDeviceStore 的 SetDesired 写穿失败时返回 error、内存不动）。
+// Delete/Get/ListByNode/ListAll/Count 保持原签名——现有调用点（单测、
+// HTTP API）在条件/多值绑定上下文中使用，Go 不允许忽略多余返回值
+// （设计 §8.1 的"调用点可忽略返回值"仅对语句调用成立）；读路径恒走
+// 内存缓存，本就不存在失败路径（见设计 §1）。
+type Store interface {
+	// Upsert 写入（或更新）一台设备的已上报状态（reported，不落盘）。
+	Upsert(nodeID string, ds DeviceStatus) error
+	// SetDesired 写入（或更新）一台设备的期望值（写穿落盘）。
+	SetDesired(nodeID, namespace, deviceName, property string, value float64) error
+	// Delete 删除一台设备状态；返回是否存在且被删除。
+	Delete(nodeID, namespace, deviceName string) bool
+	// Get 查询单台设备状态。
+	Get(nodeID, namespace, deviceName string) (DeviceStatus, bool)
+	// ListByNode 返回指定节点的全部设备状态（排序确定）。
+	ListByNode(nodeID string) []DeviceStatus
+	// ListAll 返回全部设备状态（排序确定）。
+	ListAll() []DeviceStatus
+	// Count 返回记录总数。
+	Count() int
+	// Load 从持久化后端全量加载并灌入内存缓存（etcd 实现：Desired 恢复、
+	// Properties 归一为空 map；纯内存实现为空操作）。
+	Load(ctx context.Context) error
+	// Close 释放持久化后端资源（etcd 实现；纯内存实现为空操作）。
+	Close() error
+	// DeleteByNode 删除某节点的全部设备记录（etcd 实现：DeleteRange 级联删
+	// 子树，供节点 GC 事件调用；纯内存实现为空操作，保留 v0.3.x 孤儿数据语义）。
+	DeleteByNode(nodeID string) error
+}
+
+// 编译期断言：DeviceStatusStore 实现 Store 契约。
+var _ Store = (*DeviceStatusStore)(nil)
 
 // DeviceStatus 是单台设备的云端状态快照，字段与边→云 DeviceReport
 // 消息契约一致，同时也是 HTTP API 的 JSON 形态。
@@ -84,9 +126,11 @@ func NewStore() *DeviceStatusStore {
 //   - properties/lastReportedAt 以本次上报为准整体替换；
 //   - desired 保留云端已有期望值：DeviceReport 不含 desired 字段，整体
 //     覆盖会清空设备指令写入的期望值，因此这里做字段级合并。
-func (s *DeviceStatusStore) Upsert(nodeID string, ds DeviceStatus) {
+//
+// v0.4.0 恒返回 nil：reported 瞬态不落盘（见 Store 接口注释）。
+func (s *DeviceStatusStore) Upsert(nodeID string, ds DeviceStatus) error {
 	if nodeID == "" || ds.DeviceName == "" {
-		return
+		return nil
 	}
 	ds.NodeID = nodeID
 	if ds.Namespace == "" {
@@ -104,6 +148,7 @@ func (s *DeviceStatusStore) Upsert(nodeID string, ds DeviceStatus) {
 		ds.Desired = existing.Desired
 	}
 	byNode[key] = cloneDeviceStatus(ds)
+	return nil
 }
 
 // SetDesired 写入（或更新）一台设备的期望值（云端设备指令下发成功的落点）。
@@ -111,9 +156,11 @@ func (s *DeviceStatusStore) Upsert(nodeID string, ds DeviceStatus) {
 // 语义：仅更新指定属性的期望值；已上报属性（properties/lastReportedAt）
 // 保留；设备记录不存在时自动创建（云端已下发指令，设备即进入云端视野）。
 // namespace 缺省补 "default"；nodeID/deviceName/property 为空时忽略。
-func (s *DeviceStatusStore) SetDesired(nodeID, namespace, deviceName, property string, value float64) {
+//
+// v0.4.0 恒返回 nil（etcd 包装实现为该写法的写穿落盘点，见 etcd_store.go）。
+func (s *DeviceStatusStore) SetDesired(nodeID, namespace, deviceName, property string, value float64) error {
 	if nodeID == "" || deviceName == "" || property == "" {
-		return
+		return nil
 	}
 	key := deviceKeyOf(namespace, deviceName)
 	s.mu.Lock()
@@ -135,6 +182,7 @@ func (s *DeviceStatusStore) SetDesired(nodeID, namespace, deviceName, property s
 	ds = cloneDeviceStatus(ds)
 	ds.Desired[property] = value
 	byNode[key] = ds
+	return nil
 }
 
 // Count 返回存储内设备状态记录总数（供 /metrics 的 devices_total 指标使用）。
@@ -164,6 +212,8 @@ func (s *DeviceStatusStore) Get(nodeID, namespace, deviceName string) (DeviceSta
 
 // Delete 删除一台设备状态；不存在时静默成功（幂等）。
 // namespace 缺省补 "default"；返回是否存在且被删除。
+//
+// 保持 bool 签名：现有调用点（单测条件、main.go 语句）约束，见 Store 注释。
 func (s *DeviceStatusStore) Delete(nodeID, namespace, deviceName string) bool {
 	if nodeID == "" || deviceName == "" {
 		return false
@@ -207,6 +257,16 @@ func (s *DeviceStatusStore) ListByNode(nodeID string) []DeviceStatus {
 
 // ListAll 返回全部设备状态（按 nodeID → namespace/deviceName 排序，
 // 保证输出确定性）；无数据时返回空切片（非 nil，JSON 编码为 []）。
+// Load 纯内存实现：无可加载的持久化后端，空操作。
+func (s *DeviceStatusStore) Load(ctx context.Context) error { return nil }
+
+// Close 纯内存实现：无可释放资源，空操作。
+func (s *DeviceStatusStore) Close() error { return nil }
+
+// DeleteByNode 纯内存实现：v0.3.x 语义保留孤儿数据（设备缺席 ≠ 节点离线
+// 的既有结论），空操作返回 nil。
+func (s *DeviceStatusStore) DeleteByNode(nodeID string) error { return nil }
+
 func (s *DeviceStatusStore) ListAll() []DeviceStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

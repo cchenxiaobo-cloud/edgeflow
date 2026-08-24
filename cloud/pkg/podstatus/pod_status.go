@@ -14,6 +14,38 @@ import (
 	"sync"
 )
 
+// Store 是 Pod 状态存储的读写契约（v0.4.0 引入）。
+//
+// v0.4.0 键空间预留：/edgeflow/podstatus/<nodeID>/<ns>/<podName>。
+// 当前版本暂不落盘：Pod 状态是边缘 reported 周期上报的瞬态数据，
+// cloudcore 重启后 pods 列表短暂为空（≤1 个上报周期即自愈），
+// 落盘只会造成写放大 + 重启后服务陈旧快照误导客户端。
+// 未来如需持久化，键空间不变，直接新增 etcd 包装实现即可。
+//
+// 错误约定：仅 Upsert 返回 error（v0.4.0 纯内存实现恒返回 nil；未来
+// 写穿 etcd 后失败即返回 error、内存不动）。Delete/Get/ListByNode/
+// ListAll/Count 保持原签名——现有调用点（单测、HTTP API）在条件/多值
+// 绑定上下文中使用，Go 不允许忽略多余返回值（设计 §8.1 的"调用点可
+// 忽略返回值"仅对语句调用成立）；读路径恒走内存缓存，本就不存在
+// 失败路径（见存储改造设计 §1）。
+type Store interface {
+	// Upsert 写入（或更新）一条 Pod 状态。
+	Upsert(nodeID string, ps PodStatus) error
+	// Delete 删除一条 Pod 状态；返回是否存在且被删除。
+	Delete(nodeID, namespace, podName string) bool
+	// Get 查询单条 Pod 状态。
+	Get(nodeID, namespace, podName string) (PodStatus, bool)
+	// ListByNode 返回指定节点的全部 Pod 状态（排序确定）。
+	ListByNode(nodeID string) []PodStatus
+	// ListAll 返回全部 Pod 状态（排序确定）。
+	ListAll() []PodStatus
+	// Count 返回记录总数。
+	Count() int
+}
+
+// 编译期断言：PodStatusStore 实现 Store 契约。
+var _ Store = (*PodStatusStore)(nil)
+
 // 阶段取值（与边缘侧 PodStatus 契约一致，勿单独修改）。
 const (
 	// PhaseRunning 表示 Pod 运行中。
@@ -82,9 +114,11 @@ func NewStore() *PodStatusStore {
 //   - ps.NodeID 以参数 nodeID 为准（消息来源即权威，防 payload 伪造错位）
 //   - namespace 缺省补 "default"
 //   - 已存在同键记录时整体覆盖（以最新上报为准）
-func (s *PodStatusStore) Upsert(nodeID string, ps PodStatus) {
+//
+// v0.4.0 纯内存实现恒返回 nil（不落盘，见 Store 接口注释）。
+func (s *PodStatusStore) Upsert(nodeID string, ps PodStatus) error {
 	if nodeID == "" || ps.PodName == "" {
-		return
+		return nil
 	}
 	ps.NodeID = nodeID
 	if ps.Namespace == "" {
@@ -98,6 +132,7 @@ func (s *PodStatusStore) Upsert(nodeID string, ps PodStatus) {
 		s.pods[nodeID] = byNode
 	}
 	byNode[podKeyOf(ps.Namespace, ps.PodName)] = ps
+	return nil
 }
 
 // Count 返回存储内 Pod 状态记录总数（供 /metrics 的 pods_total 指标使用）。
@@ -127,6 +162,8 @@ func (s *PodStatusStore) Get(nodeID, namespace, podName string) (PodStatus, bool
 
 // Delete 删除一条 Pod 状态；不存在时静默成功（幂等）。
 // namespace 缺省补 "default"；返回是否存在且被删除。
+//
+// 保持 bool 签名：现有调用点（单测条件、main.go 语句）约束，见 Store 注释。
 func (s *PodStatusStore) Delete(nodeID, namespace, podName string) bool {
 	if nodeID == "" || podName == "" {
 		return false

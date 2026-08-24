@@ -14,6 +14,7 @@ import (
 
 	"edgeflow/cloud/pkg/cloudhub"
 	"edgeflow/cloud/pkg/devicestatus"
+	"edgeflow/pkg/log"
 	"edgeflow/pkg/protocol"
 )
 
@@ -148,7 +149,11 @@ func (a *nodeAPI) sendDeviceCommand(w http.ResponseWriter, r *http.Request) {
 	// Twin.Desired 构成云端视角的期望态；设备上报（Upsert）不会覆盖它
 	// （见 devicestatus.Upsert 的字段级合并语义）。
 	if a.devices != nil {
-		a.devices.SetDesired(nodeID, req.Namespace, req.DeviceName, req.Property, req.Value)
+		// 下发成功但云端 Desired 写穿失败（v0.4.0：etcd 写穿可能失败）→ 必须
+		// 记日志暴露：指令已到边缘但云端影子未持久化，重启后 Desired 会丢。
+		if err := a.devices.SetDesired(nodeID, req.Namespace, req.DeviceName, req.Property, req.Value); err != nil {
+			log.Errorf("device-command 已下发成功但云端 Desired 写穿失败: %v", err)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

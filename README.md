@@ -2,11 +2,11 @@
 
 EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备接入、数据采集、模型分发与弱网通信能力，采用云边两级架构：
 
-- **CloudCore（云端）**：云边通信（WebSocket）、消息路由、节点注册与设备管理（CRD）、mTLS 安全通道、REST API 与指标暴露。
+- **CloudCore（云端）**：云边通信（WebSocket）、消息路由、节点注册与设备管理（CRD）、**云端状态持久化（v0.4.0：嵌入式 etcd 写穿，跨重启保留注册台账与设备期望态）**、mTLS 安全通道、REST API 与指标暴露。
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.3.0**（2026-08-19 发布）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0 新增）。
+> 当前版本：**v0.4.0**（2026-08-24）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0）、**云端状态持久化（嵌入式 etcd 写穿：注册台账与设备 Desired 跨重启保留；v0.4.0 起）**。
 
 ## 目录结构
 
@@ -46,7 +46,7 @@ make build
 # 3. 验证健康检查
 curl http://127.0.0.1:8080/healthz
 # 期望返回 HTTP 200 和 JSON，例如：
-# {"status":"ok","version":{"version":"v0.3.0","gitCommit":"...","buildTime":"...","goVersion":"go1.26.2"}}
+# {"status":"ok","version":{"version":"v0.4.0","gitCommit":"...","buildTime":"...","goVersion":"go1.26.2"}}
 
 # 4. 运行单元测试（含竞态检测与覆盖率）
 make test
@@ -93,9 +93,11 @@ helm install edgeflow build/charts/edgeflow/
 | [docs/manual/](docs/manual/) | 用户手册（LaTeX 工程 + [PDF 下载](docs/manual/EdgeFlow-用户手册-v0.1.0.pdf)） |
 | [docs/solution-manual/](docs/solution-manual/) | 解决方案手册（[v1.0.0 PDF](docs/solution-manual/EdgeFlow-解决方案手册-v1.0.0.pdf) · [v1.0.0 Markdown](docs/solution-manual/EdgeFlow-解决方案手册-v1.0.0.md) · [v1.0.2 HTML](docs/solution-manual/EdgeFlow-解决方案手册-v1.0.2.html)） |
 | [docs/RELEASE-NOTES-v030.md](docs/RELEASE-NOTES-v030.md) | 各版本发布说明 |
+| [docs/RELEASE-NOTES-v040.md](docs/RELEASE-NOTES-v040.md) | v0.4.0 发布说明（云端持久化） |
 
 ## 版本历史
 
+- **v0.4.0**（2026-08-24）：云端状态持久化——嵌入式 etcd 写穿（注册台账与设备 Desired 跨重启保留），Helm PVC + 资源上调（详见 [RELEASE-NOTES-v040.md](docs/RELEASE-NOTES-v040.md)）
 - **v0.3.0**（2026-08-19）：KNOWN-ISSUES 闭环 + OPC-UA UA Binary 协议栈第一阶段
 - **v0.2.0**（2026-08-18）：功能增量（详见 [RELEASE-NOTES-v020.md](docs/RELEASE-NOTES-v020.md)）
 - **v0.1.1**（2026-08-18）：安全加固 + 收尾（详见 [RELEASE-NOTES-v011.md](docs/RELEASE-NOTES-v011.md)）

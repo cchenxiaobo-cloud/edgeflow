@@ -28,6 +28,7 @@ import (
 	"edgeflow/cloud/pkg/auth"
 	"edgeflow/cloud/pkg/cloudhub"
 	"edgeflow/cloud/pkg/devicestatus"
+	"edgeflow/cloud/pkg/etcdstore"
 	"edgeflow/cloud/pkg/metrics"
 	"edgeflow/cloud/pkg/nodecontroller"
 	"edgeflow/cloud/pkg/podstatus"
@@ -131,10 +132,106 @@ func run(args []string, stdout, stderr io.Writer) int {
 		// 协商式兼容：旧边缘不声明能力 → 云端对其保持明文下发，互操作不受影响。
 		cloudhub.WithCompress(cfg.Compress))
 
-	// 节点注册表（内存态）与 CloudHub 事件桥接：
+	// ── v0.4.0 存储装配：嵌入式 etcd 写穿 vs v0.3.x 纯内存 ────────────────
+	// 配置 fail-fast（与 nodecontroller.DurationsFromEnv 同约定）：
+	//   EDGEFLOW_CLOUDCORE_ETCD_ENABLED（默认 true）→ etcd 路径；
+	//   EDGEFLOW_CLOUDCORE_NODE_RETENTION（默认 24h）喂给 registry 的
+	//   OfflineTTL（内存 TTL 与 etcd 键生命周期同口径；纯内存模式默认值
+	//   与 v0.3.x 的 registry.New() 完全一致，行为不变）。
+	etcdCfg, err := etcdstore.ConfigFromEnv()
+	if err != nil {
+		log.Errorf("etcd 配置无效: %v", err)
+		return 1
+	}
+	retention, err := nodeRetentionFromEnv()
+	if err != nil {
+		log.Errorf("节点保留时长配置无效: %v", err)
+		return 1
+	}
+	// 清理循环/GC 级联 goroutine 的取消信号（serve 内另有同源的优雅关停，
+	// 二者并行不冲突）。
+	sigCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+
+	var (
+		nodeReg     registry.Store    // 节点注册表（纯内存或 EtcdRegistry 写穿包装）
+		deviceStore devicestatus.Store // 设备状态存储（纯内存或 EtcdDeviceStore 写穿包装）
+		closeEtcd   func()             // etcd 关停闭包（§6.1：注册表循环 → kv → embed，最后执行）
+	)
+	// 最先注册 → 最后执行：保证在 ledger.Close()（审计）之后、进程退出前才关
+	// etcd（write-through 无待刷缓冲，Close 即数据完整；EmbeddedEtcd.Close 幂等）。
+	defer func() {
+		if closeEtcd != nil {
+			closeEtcd()
+		}
+	}()
+
+	downgrade := func(reason string) {
+		log.Errorf("[etcdstore] %s，降级纯内存模式——数据未持久化，重启将丢失", reason)
+		nodeReg = registry.New(registry.WithOfflineTTL(retention))
+		deviceStore = devicestatus.NewStore()
+	}
+
+	if !etcdCfg.Enabled {
+		// v0.3.x 纯内存路径：不建目录、不占端口、不写盘，行为与旧版完全一致。
+		log.Infof("存储: EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false，纯内存模式（重启后节点/设备数据丢失）")
+		nodeReg = registry.New(registry.WithOfflineTTL(retention))
+		deviceStore = devicestatus.NewStore()
+	} else {
+		// etcd 路径：safeStart 兜住坏 WAL 的 panic（基础层实测：坏库在 raft
+		// 恢复阶段是 panic 不是 error，必须 recover 才能按 Strict 决策）。
+		et, kv, err := safeStartEmbeddedKV(etcdCfg)
+		if err != nil {
+			if etcdCfg.Strict {
+				log.Errorf("[etcdstore] 嵌入式 etcd 启动失败且 STRICT=1，拒绝启动: %v", err)
+				return 1
+			}
+			downgrade(fmt.Sprintf("嵌入式 etcd 启动失败（dataDir=%s）", etcdCfg.DataDir))
+		} else {
+			var eErr error
+			nodeReg, eErr = registry.NewEtcdRegistry(kv, registry.WithOfflineTTL(retention))
+			if eErr != nil {
+				downgrade("创建 etcd 注册表包装失败")
+				closeEtcd = func() { _ = et.Close() }
+			} else {
+				deviceStore, eErr = devicestatus.NewEtcdDeviceStore(kv)
+				if eErr != nil {
+					downgrade("创建 etcd 设备存储包装失败")
+					_ = nodeReg.Close()
+					closeEtcd = func() { _ = et.Close() }
+				} else {
+					// 启动加载：先 Load+Seed 再对外服务（加载失败/坏键跳过+告警，
+					// 不阻断启动——空库继续，等心跳/指令重建）。
+					if err := nodeReg.Load(sigCtx); err != nil {
+						log.Errorf("[etcdstore] 节点台账加载失败（以空库继续，等心跳重注册）: %v", err)
+					}
+					if err := deviceStore.Load(sigCtx); err != nil {
+						log.Errorf("[etcdstore] 设备影子加载失败（以空库继续）: %v", err)
+					}
+					log.Infof("[etcdstore] 嵌入式 etcd 装配完成：恢复节点 %d 台账 + 设备影子（Desired），retention=%v",
+						nodeReg.Count(), retention)
+					// 定期 GC（每小时，与 ledger.RunCleanupLoop 同模式）+ 设备子树级联。
+					nodeReg.CleanupLoop(sigCtx, time.Hour)
+					go gcCascadeLoop(sigCtx, nodeReg, deviceStore)
+					closeEtcd = func() {
+						// 先停注册表清理循环，再关 kv 客户端，最后关 embed（sync.Once 幂等）。
+						if err := nodeReg.Close(); err != nil {
+							log.Errorf("[etcdstore] 注册表包装关停失败: %v", err)
+						}
+						if err := deviceStore.Close(); err != nil {
+							log.Errorf("[etcdstore] 设备存储包装关停失败（kv Close）: %v", err)
+						}
+						if err := et.Close(); err != nil {
+							log.Errorf("[etcdstore] 嵌入式 etcd 关停失败: %v", err)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 节点注册表与 CloudHub 事件桥接（依赖注入，CloudHub 不感知实现）：
 	// 节点注册/心跳/断开时实时维护节点元数据，供查询 API 使用。
-	// 依赖注入（SetNodeEvents），CloudHub 不感知注册表实现。
-	nodeReg := registry.New()
 	hub.SetNodeEvents(registry.NewCloudHubAdapter(nodeReg))
 
 	// 节点心跳静默超时管理（WBS 2.4）：定时扫描注册表，把心跳停滞
@@ -191,10 +288,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		})
 	})
 
-	// 设备状态存储（内存态，WBS 5.3）与 CloudHub 上报回调桥接：
-	// 边侧上报的 DeviceReport 消息经 CloudHub 校验后注入存储，供查询 API 使用。
-	// 依赖注入（SetDeviceReportHandler），CloudHub 不感知存储实现。
-	deviceStore := devicestatus.NewStore()
+	// 设备状态存储与 CloudHub 上报回调桥接（WBS 5.3）：
+	// 边侧上报的 DeviceReport 消息经 CloudHub 校验后注入存储（内存或 etcd
+	// 写穿实现已在上方装配），供查询 API 使用。依赖注入（SetDeviceReportHandler），
+	// CloudHub 不感知存储实现。
 	hub.SetDeviceReportHandler(func(nodeID string, dr cloudhub.DeviceReportPayload) {
 		// 回调运行在 CloudHub 读循环 goroutine 内：recover 兜底，
 		// 防止单条异常数据导致整个连接处理崩溃（与 PodStatus 回调同约定）。
@@ -838,12 +935,13 @@ func applyConfigReload(old, next *config.Config, hr *httpReloader) error {
 // 通过结构体字段注入注册表、Pod 状态存储与设备状态存储
 // （依赖注入，避免全局变量）。
 type nodeAPI struct {
-	// reg 是节点注册表（与 CloudHub 事件桥接共享同一实例）。
-	reg *registry.Registry
+	// reg 是节点注册表存储（纯内存或 etcd 写穿实现；与 CloudHub 事件桥接共享同一实例）。
+	reg registry.Store
 	// pods 是 Pod 状态存储（与 CloudHub 上报回调共享同一实例）。
 	pods *podstatus.PodStatusStore
-	// devices 是设备状态存储（与 CloudHub 上报回调共享同一实例，WBS 5.3）。
-	devices *devicestatus.DeviceStatusStore
+	// devices 是设备状态存储（纯内存或 etcd 写穿实现；与 CloudHub 上报回调
+	// 共享同一实例，WBS 5.3）。
+	devices devicestatus.Store
 	// reliableSend 是可靠投递函数，默认指向 hub.ReliableSend（run 装配时注入）。
 	// 独立成字段是为了让 syncPod 可测：测试注入 fake 即可覆盖各错误路径
 	// （离线/超时/失败），无需真实 WebSocket 节点与 Ack 往返。

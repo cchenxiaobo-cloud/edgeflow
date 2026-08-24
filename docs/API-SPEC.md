@@ -1,7 +1,7 @@
 # EdgeFlow API 规范（v0.1.0 定稿）
 
 > - 对应 ROADMAP WBS 9.2「API 文档」，覆盖两部分：**REST API 参考**（cloudcore 对外 HTTP 接口）与 **CRD 类型定义**（`apis/edge/v1alpha1/`）。
-> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.2.0 开发轮已更新**（2026-08-18：podsync 资源字段与 409 语义、device-command namespace 路由、资源调度环境变量），**v0.3.0 开发轮已更新**（2026-08-19：syncPod 400 响应 JSON 安全加固说明 + 第四部分共享库/协议包 API 边界）。评审记录见 `docs/REVIEWS.md`（9.2 评审归档）。
+> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.2.0 开发轮已更新**（2026-08-18：podsync 资源字段与 409 语义、device-command namespace 路由、资源调度环境变量），**v0.3.0 开发轮已更新**（2026-08-19：syncPod 400 响应 JSON 安全加固说明 + 第四部分共享库/协议包 API 边界），**v0.4.0 开发轮已更新**（2026-08-24：§1 并发语义、§8 已知限制首条改为分级持久化、nodeID 字符约束登记）。评审记录见 `docs/REVIEWS.md`（9.2 评审归档）。
 > - 代码位置：cloudcore 路由装配 `cmd/cloudcore/main.go`、设备 API `cmd/cloudcore/device_api.go`、CRD 类型 `apis/edge/v1alpha1/`。
 > - 版本策略：v0.1.0 为 MVP 定稿版；后续接入 Kubernetes 后由 OpenAPI schema / CRD 校验取代，见 §7。
 
@@ -17,8 +17,8 @@
 | 数据格式 | JSON；请求 `Content-Type: application/json`；响应同样为 JSON |
 | 时间戳 | Unix 毫秒（心跳/上报/注册时间）；CRD 对象内的时间字段为 RFC3339 字符串 |
 | List 风格 | 查询类端点采用 K8s List 风格（`kind`/`apiVersion`/`items`），空数据编码为 `[]` 而非 `null` |
-| 路径参数 | `{nodeID}` 为边缘节点 ID（edgecore 注册时上报，默认 `edge-<hostname>`） |
-| 并发语义 | cloudcore 状态为内存态（节点/ Pod /设备注册表），重启即清空；边缘侧 MetaManager（SQLite）持久化 |
+| 路径参数 | `{nodeID}` 为边缘节点 ID（edgecore 注册时上报，默认 `edge-<hostname>`）。**v0.4.0 硬约束**：nodeID 必须匹配 `^[A-Za-z0-9._-]+$`，含 `/` 的 nodeID 写入（注册/设备指令/删除）被拒绝并告警（见 §8） |
+| 并发语义 | **v0.4.0 起分级持久化**：云端注册元数据与设备 Desired 跨重启保留（嵌入式 etcd 写穿）；Pod 状态与上报属性（properties）为内存态，重启后短暂清空（≤1 上报周期，边缘重连自愈）；边缘侧 MetaManager（SQLite）持久化 |
 
 ### 1.1 端点总览
 
@@ -597,7 +597,8 @@ status:
 
 | 限制 | 影响 | 计划 |
 |------|------|------|
-| 云端节点/Pod/设备状态为内存态 | cloudcore 重启后查询数据清空（边缘 SQLite 不受影响） | 对接 K8s apiserver 后消除 |
+| 云端状态**分级持久化**（v0.4.0 起） | 注册元数据（节点台账）与设备 Desired **跨重启保留**（嵌入式 etcd 同步写穿，`EDGEFLOW_CLOUDCORE_ETCD_ENABLED=true` 默认启用）；Pod 状态与上报属性（properties/reported）**重启后短暂清空**（≤1 上报周期，边缘重连后自愈，**非永久丢失**）；心跳/Status 不落盘（重启后待首次心跳翻新） | v0.4.0 起已消除"重启清空"整体性限制；对接 K8s apiserver 后进一步统一 |
+| nodeID 字符约束（v0.4.0 新增硬约束） | nodeID 必须匹配 `^[A-Za-z0-9._-]+$`；namespace/podName/deviceName 不得含 `/`。含 `/` 的 nodeID 写入（注册、device-command、GC 级联删除）被**拒绝并告警**（防破坏 etcd 键空间前缀扫描）。现有边缘 nodeID 为 UUID/主机名形态，不受影响 | 协议/部署文档登记（API-SPEC §1、DEPLOYMENT §10） |
 | `/api/v1/nodes` 与 `/api/v1/edgenodes` 双视图并存 | 两种响应形态，客户端需按端点区分 | 属设计取舍（运行视角 vs CRD 视角），v0.1.0 保留 |
 | device-command 的 value 为 float64 | 非数值属性（string/boolean）暂无法通过本端点下发 | Mapper 扩展时评估 |
 | config-sync 的 Secret value 明文传输存储 | 生产环境需加密 | PROGRESS.md 待办 |

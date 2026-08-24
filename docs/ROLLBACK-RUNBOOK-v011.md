@@ -34,7 +34,7 @@
 
 ```bash
 # 1. 记录当前状态（回滚后对比用）
-cd /Users/mac/Documents/edgeflow
+cd ~/edgeflow
 curl -s http://127.0.0.1:8080/healthz | tee /tmp/rollback-pre-healthz.json
 curl -s http://127.0.0.1:8080/api/v1/nodes | jq -r '.[].nodeID' | tee /tmp/rollback-pre-nodes.txt
 curl -s http://127.0.0.1:8080/api/v1/pods | jq -r '.[].phase' | sort | uniq -c | tee /tmp/rollback-pre-pods.txt

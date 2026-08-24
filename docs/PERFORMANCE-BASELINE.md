@@ -9,7 +9,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 机器 | MacBook Pro（Apple Silicon, arm64），本机回环 |
+| 机器 | Apple Silicon 开发机（arm64，本机回环） |
 | OS | macOS（Darwin 25.1.0） |
 | Go | 1.26.2 |
 | cloudcore | `cmd/cloudcore`，本机编译，HTTP 18080 / CloudHub 19000 |

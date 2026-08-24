@@ -21,7 +21,7 @@
 ## 2. 快速开始（推荐）
 
 ```bash
-cd /Users/mac/Documents/edgeflow
+cd ~/edgeflow
 chmod +x setup-env.sh
 ./setup-env.sh                 # 完整安装（含 VS Code，耗时较长）
 # 或跳过 VS Code：
@@ -58,7 +58,7 @@ go env -w GOPROXY=https://goproxy.cn,direct
 echo 'export PATH="$(go env GOPATH)/bin:$PATH"' >> ~/.zshrc
 ```
 
-- 原因：`go install` 安装的工具（如 dlv）默认落在 `$(go env GOPATH)/bin`（本机为 `/Users/mac/go/bin`），该目录不在 PATH 中。
+- 原因：`go install` 安装的工具（如 dlv）默认落在 `$(go env GOPATH)/bin`（本机为 `$(go env GOPATH)/bin`），该目录不在 PATH 中。
 - 验收：**新开终端**后执行 `command -v dlv` 能输出路径；当前终端可用 `export PATH="$(go env GOPATH)/bin:$PATH"` 临时生效。
 
 ### 3.3 golangci-lint（静态检查）
@@ -162,7 +162,7 @@ echo "== dlv ==";                dlv version
 echo "== SSH key ==";            ls -l ~/.ssh/id_ed25519.pub
 echo "== VS Code ==";            code --version 2>/dev/null | head -1 || echo "(未安装，可选)"
 echo "== GitHub SSH ==";         ssh -T -o ConnectTimeout=5 git@github.com 2>&1 | head -1
-echo "== 项目编译 ==";           cd /Users/mac/Documents/edgeflow && make build
+echo "== 项目编译 ==";           cd ~/edgeflow && make build
 ```
 
 全部通过即环境就绪。若有失败项，重新执行 `./setup-env.sh`（幂等，安全）。

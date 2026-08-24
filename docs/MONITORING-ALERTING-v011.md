@@ -66,7 +66,7 @@ groups:
         labels: { severity: critical, component: cloudcore }
         annotations:
           summary: "cloudcore 实例不可达（scrape 失败）"
-          runbook: "docs/../rollback-runbook-v011.md#3-①"   # 占位，发布时替换为真实 URL
+          runbook: "docs/ROLLBACK-RUNBOOK-v011.md#3-①"
 
       - alert: EdgeConnectionsDropped
         expr: edgeflow_cloudcore_active_connections == 0

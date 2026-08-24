@@ -90,8 +90,8 @@ helm install edgeflow build/charts/edgeflow/
 | [docs/SECURITY.md](docs/SECURITY.md) | 安全机制（mTLS/Token/CRL/OCSP） |
 | [docs/MAPPER-GUIDE.md](docs/MAPPER-GUIDE.md) | Mapper 开发指南 |
 | [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) | 已知问题台账 |
-| [docs/manual/](docs/manual/) | 用户手册（LaTeX 工程 + PDF） |
-| [docs/solution-manual/](docs/solution-manual/) | 解决方案手册 |
+| [docs/manual/](docs/manual/) | 用户手册（LaTeX 工程 + [PDF 下载](docs/manual/EdgeFlow-用户手册-v0.1.0.pdf)） |
+| [docs/solution-manual/](docs/solution-manual/) | 解决方案手册（[v1.0.0 PDF](docs/solution-manual/EdgeFlow-解决方案手册-v1.0.0.pdf) · [v1.0.0 Markdown](docs/solution-manual/EdgeFlow-解决方案手册-v1.0.0.md) · [v1.0.2 HTML](docs/solution-manual/EdgeFlow-解决方案手册-v1.0.2.html)） |
 | [docs/RELEASE-NOTES-v030.md](docs/RELEASE-NOTES-v030.md) | 各版本发布说明 |
 
 ## 版本历史

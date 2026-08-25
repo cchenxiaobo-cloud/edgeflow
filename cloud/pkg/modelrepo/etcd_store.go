@@ -606,10 +606,18 @@ func (s *EtcdModelStore) CreateRelease(ctx context.Context, r *ModelRelease) err
 			return &ReleaseConflictError{InFlight: inFlight}
 		}
 	}
-	// D7：guard 已持有 → 复查模型 meta（防与 DeleteModel 竞态）
-	if _, err := s.kv.Get(ctx, modelKey(r.Model)); err != nil {
+	// D7：guard 已持有 → 复查模型 meta（防与 DeleteModel 竞态）。
+	// 注意：KVStore.Get 对缺失键返回 (nil, nil)——存在性必须显式判定，
+	// 只判 err 会把"模型已删"当成"存在"（单测 TestEtcdCreateRelease_D7模型meta复查
+	// 锁定；实施登记：修复前实现只捕错误不捕缺失，D7 语义未真正生效）。
+	mv, err := s.kv.Get(ctx, modelKey(r.Model))
+	if err != nil {
 		_ = s.deleteGuardByValue(ctx, r.Model)
 		return fmt.Errorf("modelrepo: CreateRelease 复查模型失败: %w", err)
+	}
+	if mv == nil {
+		_ = s.deleteGuardByValue(ctx, r.Model)
+		return fmt.Errorf("%w: %s", ErrModelNotFound, r.Model)
 	}
 	ok, err = s.atomic.CompareAndPut(ctx, releaseKey(r.ID), head, 0)
 	if err != nil {
@@ -892,7 +900,12 @@ func (s *EtcdModelStore) ListNodeResults(_ context.Context, releaseID string) ([
 
 // SetDeployment 实现 ModelStore（普通 Put 整值覆盖——派生台账非权威指令，
 // 无 CAS 需求；v0.6.0 审稿线索 3 裁定，与 Desired 的差异为有意设计）。
+// 前置校验模型存在（与内存实现语义一致；模型删除与回滚发布的竞态由
+// D2 执行期复查封堵）。
 func (s *EtcdModelStore) SetDeployment(ctx context.Context, model, nodeID string, d DeploymentState) error {
+	if _, err := s.GetModel(ctx, model); err != nil {
+		return err
+	}
 	d.Model = model
 	d.NodeID = nodeID
 	d.UpdatedAt = s.nowMs()

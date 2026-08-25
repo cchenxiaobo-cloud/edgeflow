@@ -30,6 +30,8 @@ import (
 	"edgeflow/cloud/pkg/devicestatus"
 	"edgeflow/cloud/pkg/etcdstore"
 	"edgeflow/cloud/pkg/metrics"
+	"edgeflow/cloud/pkg/modelrelease"
+	"edgeflow/cloud/pkg/modelrepo"
 	"edgeflow/cloud/pkg/nodecontroller"
 	"edgeflow/cloud/pkg/podstatus"
 	"edgeflow/cloud/pkg/registry"
@@ -47,6 +49,26 @@ func main() {
 	if code := run(os.Args[1:], os.Stdout, os.Stderr); code != 0 {
 		os.Exit(code)
 	}
+}
+
+// registerNodeAPIRoutes 注册既有节点/设备/应用管理 API 路由（11 条：
+// /api/v1/nodes×2 + /edgenodes×2 + podsync + config-sync + pods×2 +
+// devices×2 + device-command）。v0.7.0 自 run() 机械抽出（注册行原样迁
+// 移，行为零变化——既有端点测试全量通过 = 回归锚点），目的是让契约测试
+// 经 routeRegistrar 计数既有 11 条（D1 口径：14 = 11 apiMux + /healthz
+// + /metrics + /ocsp；+17 模型端点 = 31）。
+func registerNodeAPIRoutes(mux routeRegistrar, api *nodeAPI) {
+	mux.HandleFunc("GET /api/v1/nodes", api.listNodes)
+	mux.HandleFunc("GET /api/v1/nodes/{nodeID}", api.getNode)
+	mux.HandleFunc("GET /api/v1/edgenodes", api.listEdgeNodes)
+	mux.HandleFunc("GET /api/v1/edgenodes/{nodeID}", api.getEdgeNode)
+	mux.HandleFunc("POST /api/v1/nodes/{nodeID}/podsync", api.syncPod)
+	mux.HandleFunc("POST /api/v1/nodes/{nodeID}/config-sync", api.syncConfig)
+	mux.HandleFunc("GET /api/v1/pods", api.listPods)
+	mux.HandleFunc("GET /api/v1/nodes/{nodeID}/pods", api.listNodePods)
+	mux.HandleFunc("GET /api/v1/devices", api.listDevices)
+	mux.HandleFunc("GET /api/v1/nodes/{nodeID}/devices", api.listNodeDevices)
+	mux.HandleFunc("POST /api/v1/nodes/{nodeID}/device-command", api.sendDeviceCommand)
 }
 
 // run 是 main 的可测试入口：解析命令行 → 加载配置 → 启动服务，
@@ -167,8 +189,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		deviceStore devicestatus.Store // 设备状态存储（纯内存或 EtcdDeviceStore 写穿包装）
 		closeEtcd   func()             // etcd 关停闭包（§6.1：注册表循环 → kv → embed，最后执行）
 		// v0.6.0 多副本参数（外部模式解析；其余形态零值/默认，路由区按 externalMode 消费）
-		leaseTTL    time.Duration      // 判活租约 TTL（EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL，默认 300s）
-		multiReplica bool              // 多副本标识（EDGEFLOW_CLOUDCORE_MULTI_REPLICA="1"/"true"）
+		leaseTTL     time.Duration // 判活租约 TTL（EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL，默认 300s）
+		multiReplica bool          // 多副本标识（EDGEFLOW_CLOUDCORE_MULTI_REPLICA="1"/"true"）
+		// v0.7.0：模型仓库存储装配捕获（embed 成功路径的 kv / 外部模式的
+		// ext；纯内存与 embed 降级路径保持 nil → 模型仓库退化为纯内存）
+		modelKV etcdstore.KVStore
 	)
 	// 最先注册 → 最后执行：保证在 ledger.Close()（审计）之后、进程退出前才关
 	// etcd（write-through 无待刷缓冲，Close 即数据完整；EmbeddedEtcd.Close 幂等）。
@@ -258,6 +283,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			_ = kv.Close()
 			return 1
 		}
+		modelKV = ext // v0.7.0：模型仓库存储复用同一 ExtendedKV（CAS+watch）
 		externalFailFast := func(reason string) {
 			log.Errorf("[etcdstore] 外部模式 %s，拒绝启动（不降级——外部 etcd 是显式部署依赖）", reason)
 		}
@@ -292,12 +318,94 @@ func run(args []string, stdout, stderr io.Writer) int {
 						log.Errorf("[etcdstore] 嵌入式 etcd 关停失败: %v", err)
 					}
 				}, "嵌入式 etcd", retention, sigCtx, downgrade)
+			modelKV = kv // v0.7.0：模型仓库存储复用 embed kvStore（CAS 恒成功，D4 口径）
 		}
 	}
 
 	// 节点注册表与 CloudHub 事件桥接（依赖注入，CloudHub 不感知实现）：
 	// 节点注册/心跳/断开时实时维护节点元数据，供查询 API 使用。
 	hub.SetNodeEvents(registry.NewCloudHubAdapter(nodeReg))
+
+	// ── v0.7.0 模型仓库与灰度发布装配（WBS-8）───────────────────────────
+	// 新 env（设计 §9.3）：发布控制器扫描周期 EDGEFLOW_CLOUDCORE_RELEASE_
+	// SCAN_INTERVAL（默认 5s，>0）/ 领跑锁 TTL EDGEFLOW_CLOUDCORE_RELEASE_
+	// LOCK_TTL（默认 60s，>=15s 下限，D5：TTL ≥ 3×refresh）。非法值
+	// fail-fast（对齐 duration env 风格）；embed/纯内存对 LOCK_TTL 显式
+	// 设置 → Warn 忽略（并入 warnEmbedFieldsIgnored 同族）。
+	releaseScan, err := releaseScanIntervalFromEnv()
+	if err != nil {
+		log.Errorf("[modelrelease] %v", err)
+		return 1
+	}
+	releaseLockTTL, err := releaseLockTTLFromEnv()
+	if err != nil {
+		log.Errorf("[modelrelease] %v", err)
+		return 1
+	}
+	var (
+		modelStore modelrepo.ModelStore     // 模型仓库存储（三模式）
+		relCtrl    *modelrelease.Controller // 灰度发布控制器
+		closeModel func()                   // 模型存储关停（etcd 停 watch；内存空操作）
+	)
+	externalEtcd := etcdCfg.Enabled && len(etcdCfg.Endpoints) > 0
+	if modelKV == nil {
+		// 纯内存（ETCD_ENABLED=false，总开关优先）/ embed 启动失败降级路径：
+		// MemoryModelStore + NoopLockKV（单实例天然领跑者，锁逻辑空转无害，
+		// 设计 §3.4/§5.4）；重启后模型/版本/发布/部署影子丢失为明示行为（L22）。
+		warnReleaseLockTTLIgnored()
+		modelStore = modelrepo.NewMemoryModelStore()
+		deploy, derr := modelrelease.NewDeployer(modelStore, hub.ReliableSendContext)
+		if derr != nil {
+			log.Errorf("[modelrelease] 部署执行器装配失败: %v", derr)
+			return 1
+		}
+		relCtrl, err = modelrelease.NewController(modelStore, deploy, &modelrelease.NoopLockKV{}, modelrelease.Options{
+			ScanInterval: releaseScan,
+			LockTTL:      releaseLockTTL,
+		})
+		if err != nil {
+			log.Errorf("[modelrelease] 发布控制器装配失败: %v", err)
+			return 1
+		}
+		closeModel = func() {}
+		log.Infof("[modelrepo] 模型仓库装配完成（纯内存）：重启后模型/版本/发布/部署影子丢失（KNOWN-ISSUES L22 明示行为）")
+	} else {
+		// embed / 外部 etcd：EtcdModelStore（写穿 + CAS + guard 自愈 D3）
+		// + 部署执行器 + 领跑锁（外部=租约锁、embed=Noop 恒成功）+
+		// 加载（embed Load / 外部 LoadAnchored+StartWatch）
+		if !externalEtcd {
+			warnReleaseLockTTLIgnored()
+		}
+		modeLabel := "嵌入式 etcd"
+		if externalEtcd {
+			modeLabel = "外部 etcd"
+		}
+		modelStore, relCtrl, closeModel, err = assembleModelStores(
+			modelKV, hub.ReliableSendContext, externalEtcd, modeLabel, sigCtx, releaseScan, releaseLockTTL)
+		if err != nil {
+			if externalEtcd {
+				log.Errorf("[modelrelease] 外部模式模型仓库装配失败，拒绝启动（不降级——外部 etcd 是显式部署依赖）: %v", err)
+				return 1
+			}
+			// embed：与注册表装配同口径降级（理论不可达——embed kvStore 恒
+			// 满足 AtomicKV；防御性兜底，模型功能退化但进程继续）
+			log.Errorf("[modelrelease] 嵌入式模型仓库装配失败，降级纯内存: %v", err)
+			modelStore = modelrepo.NewMemoryModelStore()
+		}
+	}
+	if relCtrl != nil {
+		// 控制器 goroutine：sigCtx 取消即退出（优雅关停随主流程）
+		go relCtrl.Run(sigCtx)
+	}
+	// 模型存储关停追加进 closeEtcd 链（最早注册 → 最晚执行语义：在注册表
+	// 循环关停后停 watch，不关底层 kv——kv 生命周期归 closeEtcd）
+	if closeModel != nil && closeEtcd != nil {
+		prevCloseEtcd := closeEtcd
+		closeEtcd = func() {
+			closeModel()
+			prevCloseEtcd()
+		}
+	}
 
 	// 节点心跳静默超时管理（WBS 2.4）：定时扫描注册表，把心跳停滞
 	// （LastHeartbeatAt 超过 timeout 未更新）的节点标记 Offline。
@@ -442,18 +550,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	//   - 认证在内层：校验通过后把身份写入身份槽（audit.SetIdentity），
 	//     审计落盘 operator=token。
 	apiMux := http.NewServeMux()
-	apiMux.HandleFunc("GET /api/v1/nodes", api.listNodes)
-	apiMux.HandleFunc("GET /api/v1/nodes/{nodeID}", api.getNode)
-	apiMux.HandleFunc("GET /api/v1/edgenodes", api.listEdgeNodes)
-	apiMux.HandleFunc("GET /api/v1/edgenodes/{nodeID}", api.getEdgeNode)
-	apiMux.HandleFunc("POST /api/v1/nodes/{nodeID}/podsync", api.syncPod)
-	apiMux.HandleFunc("POST /api/v1/nodes/{nodeID}/config-sync", api.syncConfig)
-	apiMux.HandleFunc("GET /api/v1/pods", api.listPods)
-	apiMux.HandleFunc("GET /api/v1/nodes/{nodeID}/pods", api.listNodePods)
-	// 设备链路 API（WBS 5.3/2.2）：设备状态查询 + 设备指令下发
-	apiMux.HandleFunc("GET /api/v1/devices", api.listDevices)
-	apiMux.HandleFunc("GET /api/v1/nodes/{nodeID}/devices", api.listNodeDevices)
-	apiMux.HandleFunc("POST /api/v1/nodes/{nodeID}/device-command", api.sendDeviceCommand)
+	// 既有 11 条节点/设备/应用管理路由（v0.1-v0.6.0 形态；v0.7.0 机械抽出
+	// 为 registerNodeAPIRoutes，行为零变化——契约测试经 routeRegistrar
+	// 计数既有 11 条，与 17 条模型路由合计 28 个 /api/v1/* 端点）
+	registerNodeAPIRoutes(apiMux, api)
+	// v0.7.0 模型仓库 API（17 条，设计定稿 §4.1 表逐一落地：模型 5 +
+	// 版本 6 + 发布 5 + 部署影子 1；注册在既有 apiMux → auth/audit 链
+	// 自动覆盖，零新中间件代码）
+	(&modelAPI{store: modelStore, reg: nodeReg}).Register(apiMux)
 
 	var apiHandler http.Handler = apiMux
 	if authEnabled {

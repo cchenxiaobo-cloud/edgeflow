@@ -8,11 +8,15 @@ import (
 	"os"
 	"time"
 
+	"edgeflow/cloud/pkg/cloudhub"
 	"edgeflow/cloud/pkg/devicestatus"
 	"edgeflow/cloud/pkg/etcdstore"
+	"edgeflow/cloud/pkg/modelrelease"
+	"edgeflow/cloud/pkg/modelrepo"
 	"edgeflow/cloud/pkg/registry"
 	"edgeflow/pkg/httpx"
 	"edgeflow/pkg/log"
+	"edgeflow/pkg/protocol"
 )
 
 // nodeRetentionFromEnv 解析 EDGEFLOW_CLOUDCORE_NODE_RETENTION（默认
@@ -131,6 +135,148 @@ func safeStartEmbeddedKV(cfg etcdstore.Config) (et *etcdstore.EmbeddedEtcd, kv e
 	return etcdstore.NewEmbeddedKV(cfg)
 }
 
+// ── v0.7.0 模型仓库/灰度发布装配 ───────────────────────────────────────
+
+// 环境变量（设计 §9.3 配置表；全部可选，非法值 fail-fast）。
+const (
+	// envReleaseScanInterval 是发布控制器扫描周期（默认 5s，>0）。
+	envReleaseScanInterval = "EDGEFLOW_CLOUDCORE_RELEASE_SCAN_INTERVAL"
+	// envReleaseLockTTL 是发布领跑锁租约 TTL（默认 60s，>=15s——D5 护栏：
+	// TTL ≥ 3×refresh，refresh=max(5s,TTL/3)；仅外部模式消费，embed/纯内存
+	// 显式设置 → Warn 忽略，并入 warnEmbedFieldsIgnored 同族）。
+	envReleaseLockTTL = "EDGEFLOW_CLOUDCORE_RELEASE_LOCK_TTL"
+)
+
+// releaseScanIntervalFromEnv 解析发布控制器扫描周期（默认 5s；支持
+// "5s" 或正整数秒；非法值 fail-fast，对齐 nodeRetentionFromEnv 风格）。
+func releaseScanIntervalFromEnv() (time.Duration, error) {
+	v := os.Getenv(envReleaseScanInterval)
+	if v == "" {
+		return modelrelease.DefaultScanInterval, nil
+	}
+	if d, err := time.ParseDuration(v); err == nil {
+		if d <= 0 {
+			return 0, fmt.Errorf("%s=%q 必须为正时长（默认 5s）", envReleaseScanInterval, v)
+		}
+		return d, nil
+	}
+	var secs int64
+	if _, err := fmt.Sscanf(v, "%d", &secs); err != nil || secs <= 0 {
+		return 0, fmt.Errorf("%s=%q 无效（支持 \"5s\" 或正整数秒）", envReleaseScanInterval, v)
+	}
+	return time.Duration(secs) * time.Second, nil
+}
+
+// releaseLockTTLFromEnv 解析发布领跑锁 TTL（默认 60s；>=15s 下限，D5；
+// 非法值 fail-fast）。
+func releaseLockTTLFromEnv() (time.Duration, error) {
+	v := os.Getenv(envReleaseLockTTL)
+	if v == "" {
+		return modelrelease.DefaultLockTTL, nil
+	}
+	d := time.Duration(0)
+	if pd, err := time.ParseDuration(v); err == nil {
+		d = pd
+	} else {
+		var secs int64
+		if _, err := fmt.Sscanf(v, "%d", &secs); err != nil || secs <= 0 {
+			return 0, fmt.Errorf("%s=%q 无效（支持 \"60s\" 或正整数秒）", envReleaseLockTTL, v)
+		}
+		d = time.Duration(secs) * time.Second
+	}
+	if d < modelrelease.MinLockTTL {
+		return 0, fmt.Errorf("%s=%q 必须 >= %v（D5：TTL ≥ 3×refresh 护栏，refresh=max(5s,TTL/3)）",
+			envReleaseLockTTL, v, modelrelease.MinLockTTL)
+	}
+	return d, nil
+}
+
+// warnReleaseLockTTLIgnored 在 embed/纯内存模式检测用户显式设置了
+// EDGEFLOW_CLOUDCORE_RELEASE_LOCK_TTL（仅外部模式消费）→ Warn 忽略
+// （对齐 warnLeaseTTLIgnored 同族风格，设计 §9.3）。
+func warnReleaseLockTTLIgnored() {
+	if v := os.Getenv(envReleaseLockTTL); v != "" {
+		log.Warnf("[modelrelease] 当前运行模式不使用领跑锁租约（embed/纯内存单实例恒成功）：环境变量 %s 仅外部模式（EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS 非空）生效，当前被忽略（显式设置值 %q）", envReleaseLockTTL, v)
+	}
+}
+
+// assembleModelStores 装配模型仓库存储 + 灰度发布控制器（v0.7.0，
+// WBS-8；embed/外部两条 etcd 路径末尾调用）：
+//
+//   - EtcdModelStore（写穿 + CAS + guard 自愈 D3 + meta 复查 D7；
+//     fakeKV 单测见 modelrepo/etcd_store_test.go）；
+//   - Deployer（ReliableSend 注入 = hub.ReliableSendContext，Run 前
+//     由调用方装配）；
+//   - 领跑锁：external=true → EtcdLockKV（租约锁 grant-per-claim，
+//     TTL/刷新绑定 D5）；embed/内存 → NoopLockKV（单实例恒成功，
+//     逻辑空转无害，设计 §3.4/§5.4）；
+//   - 加载：embed → Load（全量）；external → LoadAnchored + StartWatch
+//     （锚定 + 增量应用器，断线全量重放）；加载失败以空库继续（与
+//     registry Load 同口径）；
+//   - 返回 (store, controller, closeModel, error)；closeModel 停 watch
+//     （不关底层 kv——kv 生命周期归调用方 closeEtcd 链）。
+func assembleModelStores(kv etcdstore.KVStore,
+	send func(ctx context.Context, nodeID string, msg *protocol.Message, opts cloudhub.ReliableOptions) error,
+	external bool, modeLabel string, sigCtx context.Context, scanInterval, lockTTL time.Duration) (modelrepo.ModelStore, *modelrelease.Controller, func(), error) {
+
+	closeModel := func() {} // 失败路径兜底：无可关（成功路径会覆盖）
+
+	store, err := modelrepo.NewEtcdModelStore(kv)
+	if err != nil {
+		return nil, nil, closeModel, err
+	}
+	closeModel = func() { _ = store.Close() }
+
+	deploy, err := modelrelease.NewDeployer(store, send)
+	if err != nil {
+		return nil, nil, closeModel, err
+	}
+	var locks modelrelease.LockKV = &modelrelease.NoopLockKV{}
+	if external {
+		// 外部模式：租约锁（grant-per-claim，值内编码过期；kv 恒为
+		// ExtendedKV 满足 Get+GrantHeartbeatLease 能力面）
+		lb, ok := kv.(modelrelease.LockBackend)
+		if !ok {
+			return nil, nil, closeModel, fmt.Errorf("modelrelease: 外部模式要求 LockBackend（Get + GrantHeartbeatLease），当前 KV 不满足")
+		}
+		locks = modelrelease.NewEtcdLockKV(lb, nil)
+	}
+	ctrl, err := modelrelease.NewController(store, deploy, locks, modelrelease.Options{
+		ScanInterval: scanInterval,
+		LockTTL:      lockTTL,
+	})
+	if err != nil {
+		return nil, nil, closeModel, err
+	}
+
+	if external {
+		rev, err := store.LoadAnchored(sigCtx)
+		if err != nil {
+			log.Errorf("[modelrepo] 模型仓库锚定加载失败（以空库继续，watch/重扫会收敛）: %v", err)
+		}
+		store.StartWatch(sigCtx)
+		log.Infof("[modelrepo] 模型仓库装配完成（%s）：锚定 rev=%d", modeLabel, rev)
+	} else {
+		if err := store.Load(sigCtx); err != nil {
+			log.Errorf("[modelrepo] 模型仓库加载失败（以空库继续）: %v", err)
+		}
+		models, _ := store.ListModels(sigCtx)
+		releases, _ := store.ListReleases(sigCtx, "")
+		deploys := 0
+		for i := range models {
+			if ds, err := store.ListDeployments(sigCtx, models[i].Name); err == nil {
+				deploys += len(ds)
+			}
+		}
+		log.Infof("[modelrepo] 模型仓库装配完成（%s）：恢复模型 %d / 发布 %d / 部署影子 %d（版本与 perNode 随模型/发布加载）",
+			modeLabel, len(models), len(releases), deploys)
+	}
+	return store, ctrl, closeModel, nil
+}
+
+// 把被移除节点的设备子树（/edgeflow/devicestatus/<nodeID>/）从 etcd 级联
+// 删除——"节点生命周期是设备数据唯一正确清理信号"（设计文档 §3.1）。
+// 清理失败只记日志不阻断（等下一轮，与 ledger.RunCleanupLoop 同模式）。
 // gcCascadeLoop 轮询注册表 GC 事件（惰性 GC + 启动清理 + CleanupLoop 产生），
 // 把被移除节点的设备子树（/edgeflow/devicestatus/<nodeID>/）从 etcd 级联
 // 删除——"节点生命周期是设备数据唯一正确清理信号"（设计文档 §3.1）。
@@ -214,14 +360,14 @@ func assembleEtcdStores(kv etcdstore.KVStore, closeBackend func(), modeLabel str
 // assembleExternalEtcdStores 是 v0.6.0 外部模式（真多活）装配逻辑（设计
 // §12.5 + 主线裁决 D1/D2/D3）：
 //
-//	1) LeaseEtcdRegistry（判活 = etcd 租约视角）+ EtcdDeviceStore（CAS + watch）
-//	2) schema 钩子（同值 Put 幂等，多副本首启无竞态——v0.5.0 D8 不变）
-//	3) LoadAnchored 双存储锚定加载（失败以空库继续 + 日志，不阻断启动——
-//	   与 v0.5.0「加载失败以空库继续」同口径；rev=0 时 watch 只收新事件，
-//	   周期重扫 30s 内收敛）
-//	4) StartWatch 双存储（watch 增量 + 续约 worker + 周期重扫）
-//	5) CleanupLoop（两阶段 GC，周期 = max(30s, NODE_SCAN_INTERVAL)）+
-//	   gcCascadeLoop（级联删设备子树，严格排在守卫删除确认之后——R4-2）
+//  1. LeaseEtcdRegistry（判活 = etcd 租约视角）+ EtcdDeviceStore（CAS + watch）
+//  2. schema 钩子（同值 Put 幂等，多副本首启无竞态——v0.5.0 D8 不变）
+//  3. LoadAnchored 双存储锚定加载（失败以空库继续 + 日志，不阻断启动——
+//     与 v0.5.0「加载失败以空库继续」同口径；rev=0 时 watch 只收新事件，
+//     周期重扫 30s 内收敛）
+//  4. StartWatch 双存储（watch 增量 + 续约 worker + 周期重扫）
+//  5. CleanupLoop（两阶段 GC，周期 = max(30s, NODE_SCAN_INTERVAL)）+
+//     gcCascadeLoop（级联删设备子树，严格排在守卫删除确认之后——R4-2）
 //
 // 启动失败一律 fail-fast（不降级纯内存——外部 etcd 是显式部署依赖，v0.5.0
 // 决策延续）；closeEtcd 关停顺序：注册表循环 → 设备存储（内部关 kv，

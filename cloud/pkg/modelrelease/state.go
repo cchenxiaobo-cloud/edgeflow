@@ -106,12 +106,13 @@ func AllNodesDeployed(targetNodes []string, results []modelrepo.NodeReleaseResul
 }
 
 // NodeSummary 是发布详情接口的 perNode 汇总（设计 §4.2：现算，非冗余存储）。
+// JSON 形态（设计 §4.2 summary 字段表）：total/deployed/failed/pending/skipped。
 type NodeSummary struct {
-	Total    int
-	Deployed int
-	Failed   int
-	Pending  int
-	Skipped  int
+	Total    int `json:"total"`
+	Deployed int `json:"deployed"`
+	Failed   int `json:"failed"`
+	Pending  int `json:"pending"`
+	Skipped  int `json:"skipped"`
 }
 
 // SummarizeNodes 现算逐节点结果汇总（控制器 finish 判定失败计数与

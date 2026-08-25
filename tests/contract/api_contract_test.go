@@ -281,16 +281,20 @@ var httpClient = &http.Client{Timeout: 5 * time.Second}
 //   - 405 = 路径存在但未以契约方法注册 → 契约违约；
 //   - 404 + 非 JSON 响应体（text/plain "404 page not found"）= 路径未注册；
 //   - 无路径参数端点（/healthz、/metrics、列表类）应精确返回 200；
-//   - 有路径参数的 GET（节点不存在）由处理器返回 404 + JSON error 体
-//     （Content-Type: application/json，body 以 { 开头）；
+//   - 有路径参数的 GET（节点/模型不存在）由处理器返回 404 + JSON error 体
+//     （参数非法名则 400 + JSON，两种都证明路由已注册）；
 //   - POST 端点空 body 由处理器返回 400 + JSON error 体（解码失败即返回，
-//     不触发可靠投递，无 5s×3 重试耗时）。
+//     不触发可靠投递，无 5s×3 重试耗时）；无 body 的 POST（activate/archive/
+//     cancel/rollback）在模型不存在时返回 404 + JSON。
 func TestContractRoutesRegisteredAtRuntime(t *testing.T) {
 	proc := startCloudcore(t)
 
 	for _, ep := range ContractEndpoints {
 		t.Run(ep.Method+" "+ep.Path, func(t *testing.T) {
 			path := strings.ReplaceAll(ep.Path, "{nodeID}", "contract-test-node")
+			path = strings.ReplaceAll(path, "{modelName}", "contract-test-model")
+			path = strings.ReplaceAll(path, "{version}", "v1.0.0")
+			path = strings.ReplaceAll(path, "{releaseID}", "contract-test-release")
 			req, err := http.NewRequest(ep.Method, proc.base+path, nil)
 			if err != nil {
 				t.Fatalf("构造请求失败: %v", err)
@@ -317,6 +321,7 @@ func TestContractRoutesRegisteredAtRuntime(t *testing.T) {
 			}
 
 			// 判别 3：各端点按契约期望的精确状态码
+			hasParam := strings.Contains(ep.Path, "{")
 			switch {
 			case ep.Path == "/ocsp":
 				// OCSP 协议端点：空 body 为非法请求 → 400（协议要求 DER 请求体）
@@ -324,22 +329,29 @@ func TestContractRoutesRegisteredAtRuntime(t *testing.T) {
 					t.Fatalf("%s %s 状态码 = %d，期望 400（空 body 为非法 OCSP 请求，body=%q）",
 						ep.Method, path, resp.StatusCode, bodyStr)
 				}
-			case ep.Path == "/healthz", ep.Path == "/metrics", !strings.Contains(ep.Path, "{nodeID}"):
-				// 无路径参数端点：200（列表端点空数据返回 200 空列表）
+			case !hasParam && ep.Method == http.MethodPost:
+				// 无路径参数 POST（创建类，需 body）：空 body → 400 + JSON
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Fatalf("%s %s 状态码 = %d，期望 400（空 body 解码失败，body=%q）",
+						ep.Method, path, resp.StatusCode, bodyStr)
+				}
+			case !hasParam:
+				// 无路径参数 GET：200（列表端点空数据返回 200 空列表）
 				if resp.StatusCode != http.StatusOK {
 					t.Fatalf("%s %s 状态码 = %d，期望 200（body=%q）",
 						ep.Method, path, resp.StatusCode, bodyStr)
 				}
 			case ep.Method == http.MethodGet:
-				// 有路径参数的 GET：未知节点 → 处理器 404 + JSON
-				if resp.StatusCode != http.StatusNotFound {
-					t.Fatalf("%s %s 状态码 = %d，期望 404（未知节点，body=%q）",
+				// 有路径参数的 GET：未知资源 → 404 + JSON；参数非法 → 400 + JSON
+				if resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusBadRequest {
+					t.Fatalf("%s %s 状态码 = %d，期望 404/400（未知资源或非法参数，body=%q）",
 						ep.Method, path, resp.StatusCode, bodyStr)
 				}
 			default:
-				// POST 端点：空 body → 处理器 400 + JSON
-				if resp.StatusCode != http.StatusBadRequest {
-					t.Fatalf("%s %s 状态码 = %d，期望 400（空 body 校验失败，body=%q）",
+				// 有参数的 POST：空 body → 400 + JSON；无 body 动作 POST（activate/
+				// archive/cancel/rollback）在资源缺失时 → 404 + JSON
+				if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
+					t.Fatalf("%s %s 状态码 = %d，期望 400/404（body=%q）",
 						ep.Method, path, resp.StatusCode, bodyStr)
 				}
 			}
@@ -366,13 +378,26 @@ type registeredRoute struct {
 	line   int
 }
 
-// registeredRoutesFromSource 静态解析 cmd/cloudcore/main.go 的路由注册。
-// 全仓 grep 确认 HandleFunc/Handle 调用点仅 main.go 一处（路由装配集中在 run()）。
+// registeredRoutesFromSource 静态解析 cmd/cloudcore 的路由注册。
+// v0.7.0 起模型 API 17 条路由注册在 model_api.go（modelAPI.Register），
+// 与 main.go 同扫：main.go 为既有 11 条 + 前缀挂载，model_api.go 为
+// 17 条新端点（D1 口径：31 = 14 文档 + 17 模型）。
 func registeredRoutesFromSource(t *testing.T) []registeredRoute {
 	t.Helper()
-	f, err := os.Open(filepath.Join(repoRoot(t), "cmd", "cloudcore", "main.go"))
+	var routes []registeredRoute
+	for _, file := range []string{"main.go", "model_api.go"} {
+		paths := scanRouteFile(t, filepath.Join(repoRoot(t), "cmd", "cloudcore", file))
+		routes = append(routes, paths...)
+	}
+	return routes
+}
+
+// scanRouteFile 扫描单个源文件的 HandleFunc/Handle 注册模式。
+func scanRouteFile(t *testing.T, file string) []registeredRoute {
+	t.Helper()
+	f, err := os.Open(file)
 	if err != nil {
-		t.Fatalf("打开 cmd/cloudcore/main.go 失败: %v", err)
+		t.Fatalf("打开 %s 失败: %v", file, err)
 	}
 	defer f.Close()
 
@@ -389,7 +414,7 @@ func registeredRoutesFromSource(t *testing.T) []registeredRoute {
 			rest := line[i+len(`HandleFunc("`):]
 			end := strings.Index(rest, `"`)
 			if end < 0 {
-				t.Fatalf("第 %d 行 HandleFunc 模式解析失败: %q", lineNo, line)
+				t.Fatalf("%s 第 %d 行 HandleFunc 模式解析失败: %q", file, lineNo, line)
 			}
 			pattern := rest[:end]
 			method, path, ok := strings.Cut(pattern, " ")
@@ -405,13 +430,13 @@ func registeredRoutesFromSource(t *testing.T) []registeredRoute {
 			rest := line[i+len(`.Handle("`):]
 			end := strings.Index(rest, `"`)
 			if end < 0 {
-				t.Fatalf("第 %d 行 Handle 模式解析失败: %q", lineNo, line)
+				t.Fatalf("%s 第 %d 行 Handle 模式解析失败: %q", file, lineNo, line)
 			}
 			routes = append(routes, registeredRoute{method: "PREFIX", path: rest[:end], line: lineNo})
 		}
 	}
 	if err := sc.Err(); err != nil {
-		t.Fatalf("读取 cmd/cloudcore/main.go 失败: %v", err)
+		t.Fatalf("读取 %s 失败: %v", file, err)
 	}
 	return routes
 }

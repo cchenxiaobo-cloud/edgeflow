@@ -1,10 +1,10 @@
 // v0.6.0「真多活」LeaseEtcdRegistry 核心契约测试（fake ExtendedKV 驱动）：
-//   1) Register/UpdateHeartbeat → 台账 CAS 写 + 心跳续约入队（grant-per-heartbeat）
-//   2) 判活 = hb 键存在性：hb PUT → Ready；hb DELETE（非服务）→ Offline
-//   3) 本地覆盖规则（R2-4）：hb 键被删但本副本仍在服务 → 忽略 + 修复性重写
-//   4) watch 应用器只读铁律（应用期间零扩展面写调用）
-//   5) GuardedDelete：rev 不匹配（重注册）→ 放弃删除不级联；网络错误 → pending 重试
-//   6) EtcdHealthyWithin / LoadAnchored 锚定加载
+//  1. Register/UpdateHeartbeat → 台账 CAS 写 + 心跳续约入队（grant-per-heartbeat）
+//  2. 判活 = hb 键存在性：hb PUT → Ready；hb DELETE（非服务）→ Offline
+//  3. 本地覆盖规则（R2-4）：hb 键被删但本副本仍在服务 → 忽略 + 修复性重写
+//  4. watch 应用器只读铁律（应用期间零扩展面写调用）
+//  5. GuardedDelete：rev 不匹配（重注册）→ 放弃删除不级联；网络错误 → pending 重试
+//  6. EtcdHealthyWithin / LoadAnchored 锚定加载
 package registry
 
 import (
@@ -225,6 +225,15 @@ func (f *fakeExtKV) keys() []string {
 	return out
 }
 
+// has 带锁检查键存在（测试轮询读——直接读 f.m 会与 worker 写并发产生
+// DATA RACE，统一走加锁访问）。
+func (f *fakeExtKV) has(key string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.m[key]
+	return ok
+}
+
 // ---- 测试 ----
 
 func newLeaseReg(f *fakeExtKV) (*LeaseEtcdRegistry, error) {
@@ -251,7 +260,7 @@ func TestLeaseRegRegisterWritesNodeRecord(t *testing.T) {
 	if err := r.Register(testInfo("n1")); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if _, ok := f.m[KeyNodesPrefix+"n1"]; !ok {
+	if !f.has(KeyNodesPrefix + "n1") {
 		t.Fatalf("台账键未写入 etcd: keys=%v", f.keys())
 	}
 }
@@ -312,7 +321,7 @@ func TestLeaseRegApplyDeleteServingNodeIgnoredAndRenewed(t *testing.T) {
 	// 修复性重写已入续约队列：等 worker 消费后 hb 键必须重新出现
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, ok := f.m[KeyHeartbeatsPrefix+"n1"]; ok {
+		if f.has(KeyHeartbeatsPrefix + "n1") {
 			return // 修复性重写成功
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -358,7 +367,7 @@ func TestLeaseRegGuardedDeleteBlockedByLiveGuard(t *testing.T) {
 	if deleted {
 		t.Fatal("守卫缺失：guard 键存在时仍删除了台账键")
 	}
-	if _, ok := f.m[KeyNodesPrefix+"n1"]; !ok {
+	if !f.has(KeyNodesPrefix + "n1") {
 		t.Fatal("台账键被误删（活节点）")
 	}
 }
@@ -379,7 +388,7 @@ func TestLeaseRegGuardedDeleteProceedsWhenGuardGone(t *testing.T) {
 	if !deleted {
 		t.Fatal("guard 已消失却拒绝删除")
 	}
-	if _, ok := f.m[KeyNodesPrefix+"n1"]; ok {
+	if f.has(KeyNodesPrefix + "n1") {
 		t.Fatal("台账键未被删除")
 	}
 }

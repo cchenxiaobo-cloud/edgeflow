@@ -23,7 +23,7 @@ type Endpoint struct {
 	Note   string // 契约说明（与文档矩阵口径一致）
 }
 
-// ContractEndpoints 是 cloudcore HTTP 端点契约表（14 条）。
+// ContractEndpoints 是 cloudcore HTTP 端点契约表（31 条 = 既有 14 + v0.7.0 模型 API 17）。
 //
 // ⚠️ 路径以 cmd/cloudcore/main.go 实际注册为准（任务提示 podsync/pod-sync
 // 存在歧义：grep 确认代码与两份文档均为 /podsync，无连字符）。
@@ -44,6 +44,24 @@ var ContractEndpoints = []Endpoint{
 	{Method: "POST", Path: "/api/v1/nodes/{nodeID}/config-sync", Note: "可靠下发 ConfigMap/Secret 配置"},
 	{Method: "POST", Path: "/api/v1/nodes/{nodeID}/device-command", Note: "下发设备指令（期望值）"},
 	{Method: "POST", Path: "/ocsp", Note: "OCSP 在线吊销查询（RFC 6960，DER 请求/响应）"},
+	// ── v0.7.0 模型仓库/版本管理/灰度发布（17 条，设计定稿 §4.1 表）──
+	{Method: "GET", Path: "/api/v1/models", Note: "模型列表（K8s List 风格）"},
+	{Method: "POST", Path: "/api/v1/models", Note: "创建模型"},
+	{Method: "GET", Path: "/api/v1/models/{modelName}", Note: "模型详情"},
+	{Method: "PUT", Path: "/api/v1/models/{modelName}", Note: "更新模型"},
+	{Method: "DELETE", Path: "/api/v1/models/{modelName}", Note: "删除模型（无 active 版本/在途发布；级联）"},
+	{Method: "GET", Path: "/api/v1/models/{modelName}/versions", Note: "版本列表"},
+	{Method: "POST", Path: "/api/v1/models/{modelName}/versions", Note: "创建版本（初始 draft）"},
+	{Method: "GET", Path: "/api/v1/models/{modelName}/versions/{version}", Note: "版本详情"},
+	{Method: "DELETE", Path: "/api/v1/models/{modelName}/versions/{version}", Note: "删除版本（仅 draft/archived）"},
+	{Method: "POST", Path: "/api/v1/models/{modelName}/versions/{version}/activate", Note: "激活版本（draft→active）"},
+	{Method: "POST", Path: "/api/v1/models/{modelName}/versions/{version}/archive", Note: "归档版本（active→archived）"},
+	{Method: "POST", Path: "/api/v1/models/{modelName}/releases", Note: "创建灰度发布（202 异步）"},
+	{Method: "GET", Path: "/api/v1/models/{modelName}/releases", Note: "发布列表"},
+	{Method: "GET", Path: "/api/v1/models/{modelName}/releases/{releaseID}", Note: "发布详情（含 perNode 汇总）"},
+	{Method: "POST", Path: "/api/v1/models/{modelName}/releases/{releaseID}/cancel", Note: "取消发布（pending/running）"},
+	{Method: "POST", Path: "/api/v1/models/{modelName}/releases/{releaseID}/rollback", Note: "回滚发布（202 异步，逆序批量）"},
+	{Method: "GET", Path: "/api/v1/models/{modelName}/deployments", Note: "部署影子（版本—节点—时间台账）"},
 }
 
 // MessageType 描述一种云边通道消息类型契约。

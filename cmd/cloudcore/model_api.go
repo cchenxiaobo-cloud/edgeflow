@@ -521,7 +521,13 @@ func (a *modelAPI) createVersion(w http.ResponseWriter, r *http.Request) {
 		modelError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, version)
+	// 读回存储对象（status 由实现填充为 draft，响应完整字段）
+	created, err := a.store.GetVersion(r.Context(), modelName, req.Version)
+	if err != nil {
+		modelError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, created)
 }
 
 // getVersion 处理 GET /api/v1/models/{modelName}/versions/{version}。

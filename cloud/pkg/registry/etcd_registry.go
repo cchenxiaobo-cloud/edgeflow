@@ -246,9 +246,12 @@ func (e *EtcdRegistry) sweepGC() {
 		// 不能用 DeleteRange 前缀删除——"n1" 会连带命中 "n10"/"n1abc" 等
 		// 前缀冲突节点的合法台账键（跨节点数据丢失，复核 🔴-2）。
 		if err := e.kv.Delete(ctx, nodeKey(id)); err != nil {
-			log.Warnf("[EtcdRegistry] 删除节点 %s 的 etcd 键失败: %v（下一轮 CleanupLoop 重扫）", id, err)
-			// 删除失败不重入队（避免 pendingEvents 无限累积与事件重复外露）：
-			// 下一轮 CleanupLoop 的内存 GC 重扫会再次产生该节点事件。
+			log.Warnf("[EtcdRegistry] 删除节点 %s 的 etcd 键失败: %v（v0.6.0 L7 修复：重入队，下一轮清理重试——内存已移除，重扫不再产生该事件，必须显式重入队）", id, err)
+			// v0.6.0 L7 修复（设计 §4.1，embed 唯一行为改动）：启用既有 requeueGCEvent
+			// 死代码——该函数本身已实现、幂等（gcEvents 去重由 sweepGC 排空语义保证），
+			// 注释语义正是此用途，只是 v0.4.0 以来无人调用。行为差异：孤儿键现在必然
+			// 在下轮重试被清（v0.5.0 是永久孤儿直到重启）；其余语义逐位不变。
+			e.reg.requeueGCEvent(id)
 		} else {
 			e.pmu.Lock()
 			e.pendingEvents = append(e.pendingEvents, id)

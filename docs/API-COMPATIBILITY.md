@@ -9,7 +9,7 @@
 
 | # | 方法 | 路径 | v0.1.0 状态 | 认证要求（A4） | 说明 |
 |---|------|------|------------|---------------|------|
-| 1 | GET | `/healthz` | ✅ 稳定 | 免认证 | 健康检查（探针） |
+| 1 | GET | `/healthz` | ✅ 稳定 | 免认证 | 健康检查（探针）。**v0.6.0 语义分叉**：外部模式 + 多副本（`EDGEFLOW_CLOUDCORE_MULTI_REPLICA=1`，Chart 在 replicaCount>1 时自动注入）→ 反映 etcd 连接（失联 >TTL → 503，liveness 重启自愈）；其余形态（embed、单副本外部）保持进程存活语义（恒 200）。见 ARCHITECTURE R15 / DEPLOYMENT §10.8.3 |
 | 2 | GET | `/metrics` | ✅ 新增（10.1） | 免认证 | Prometheus 文本格式，五指标 |
 | 3 | GET | `/api/v1/nodes` | ✅ 稳定 | Bearer Token | 运行视角节点列表 |
 | 4 | GET | `/api/v1/nodes/{nodeID}` | ✅ 稳定 | Bearer Token | 单节点详情 |

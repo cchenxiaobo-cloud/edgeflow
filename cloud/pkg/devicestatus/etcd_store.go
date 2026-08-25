@@ -20,11 +20,14 @@ package devicestatus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"edgeflow/cloud/pkg/etcdstore"
 	"edgeflow/pkg/log"
@@ -90,25 +93,40 @@ func WithKeyPrefix(prefix string) Option {
 	return func(c *deviceStoreConfig) { c.prefix = prefix }
 }
 
+// ErrDesiredConflict 是 SetDesired 的 CAS 冲突耗尽哨兵（v0.6.0 设计 §3.2）：
+// 并发修改重试 ≤3 次后仍冲突，Desired 未更新。API 层语义不变（200 + 日志，
+// 不翻转——指令已到边缘，运维凭日志重发）。
+var ErrDesiredConflict = errors.New("devicestatus: SetDesired 写冲突（并发修改，重试耗尽），Desired 未更新")
+
 // EtcdDeviceStore 是 DeviceStatusStore 的写穿 etcd 包装：
 // 内存缓存（*DeviceStatusStore）+ 底层 KV。
 //
+// v0.6.0 多副本（设计 §3）：SetDesired 改 etcd modRevision CAS（读 etcd 基准
+// → 合并 → CompareAndPut，冲突重试 ≤3，耗尽返回 ErrDesiredConflict）——
+// 消灭 L5 整记录覆盖；两模式统一走 CAS（D4：embed 单副本无并发 → CAS 恒
+// 成功，行为等价）。StartWatch/LoadAnchored 仅外部模式装配消费（非
+// ExtendedKV 时 StartWatch no-op + Warn）。
+//
 // 并发安全：写穿关键区（SetDesired/Delete/DeleteByNode）由内部 mu 串行化，
-// 保证"读内存合并 → etcd Put → 内存更新"原子，避免并发指令丢失更新；
-// 读方法直接委托内存存储（自身加锁），不触碰 etcd。
+// 保证"CAS/写穿 → 内存更新"原子，避免并发指令丢失更新；读方法直接委托
+// 内存存储（自身加锁），不触碰 etcd。
 type EtcdDeviceStore struct {
 	mu     sync.Mutex
-	mem    *DeviceStatusStore // 读写缓存（读路径唯一事实源）
-	kv     KVStore            // 持久化事实源（写穿目标）
+	mem    *DeviceStatusStore  // 读写缓存（读路径唯一事实源）
+	kv     KVStore             // 持久化事实源（写穿目标）
+	ext     etcdstore.ExtendedKV // 扩展面（CAS/watch；非扩展 KV 时为 nil，退化路径）
 	prefix string
+
+	watchRev atomic.Int64 // LoadAnchored 返回的锚点（watch 应用器重连/重放用）
+
+	lastReload time.Time // 最近一次全量重放时刻（重放降频，s.mu 保护）
 }
 
 // NewEtcdDeviceStore 创建写穿包装。
 //
 // 错误：kv 为 nil、或前缀非法（空 / 不以 "/" 开头）时返回 error。
 // 内存缓存从空开始，启动后调用方需先 Load(ctx) 灌回持久化数据再对外服务。
-func NewEtcdDeviceStore(kv KVStore, opts ...Option) (*EtcdDeviceStore, error) {
-	if kv == nil {
+func NewEtcdDeviceStore(kv KVStore, opts ...Option) (*EtcdDeviceStore, error) {	if kv == nil {
 		return nil, fmt.Errorf("devicestatus: NewEtcdDeviceStore 需要非 nil KVStore")
 	}
 	cfg := deviceStoreConfig{prefix: KeyPrefixDeviceStatus}
@@ -120,9 +138,11 @@ func NewEtcdDeviceStore(kv KVStore, opts ...Option) (*EtcdDeviceStore, error) {
 	if cfg.prefix == "" || !strings.HasPrefix(cfg.prefix, "/") {
 		return nil, fmt.Errorf("devicestatus: 非法键前缀 %q（须非空且以 '/' 开头）", cfg.prefix)
 	}
+	ext, _ := kv.(etcdstore.ExtendedKV) // 非扩展 KV（理论仅自定义实现）→ nil，CAS/watch 退化
 	return &EtcdDeviceStore{
 		mem:    NewStore(),
 		kv:     kv,
+		ext:     ext,
 		prefix: strings.TrimSuffix(cfg.prefix, "/"),
 	}, nil
 }
@@ -163,9 +183,11 @@ func (s *EtcdDeviceStore) Upsert(nodeID string, ds DeviceStatus) error {
 
 // SetDesired 写入（或更新）一台设备的期望值（云端指令落点，写穿）。
 //
-// 顺序：读内存合并已有 Desired → etcd Put 成功 → 内存更新。etcd 失败
-// → 返回 error、内存不动（"写成功 = 已持久化"）。设备记录不存在时
-// 自动创建并落盘（指令即声明）。
+// v0.6.0（设计 §3，D4）：**CAS 是唯一写穿路径**（两模式统一）——读 etcd 基准
+// （非内存！任何副本的陈旧内存都不可能成为合并基准，L5 整记录覆盖消失）→
+// 合并 → CompareAndPut（ModRevision 比较；基准不存在 → create-if-absent）→
+// 冲突重试 ≤3 次，耗尽返回 ErrDesiredConflict（内存不动）。
+// 非扩展 KV（理论仅自定义实现）退化为 v0.5.0 读内存合并写穿路径。
 //
 // 键约束：nodeID/namespace/deviceName 非法（含 '/' 等）→ 拒绝写入并
 // 返回 error；空参数与内存实现一致忽略（返回 nil）。
@@ -180,22 +202,65 @@ func (s *EtcdDeviceStore) SetDesired(nodeID, namespace, deviceName, property str
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 字段级合并：保留已有期望值（Get 返回拷贝，不污染存储）。
-	merged, ok := s.mem.Get(nodeID, ns, deviceName)
-	if !ok {
-		merged = DeviceStatus{NodeID: nodeID, DeviceName: deviceName, Namespace: ns}
-		merged = cloneDeviceStatus(merged) // nil map 归一为空 map
+	if s.ext == nil {
+		// 退化路径（非 ExtendedKV）：v0.5.0 读内存合并 → Put。
+		merged, ok := s.mem.Get(nodeID, ns, deviceName)
+		if !ok {
+			merged = DeviceStatus{NodeID: nodeID, DeviceName: deviceName, Namespace: ns}
+			merged = cloneDeviceStatus(merged)
+		}
+		merged.Desired[property] = value
+		data, err := json.Marshal(toDeviceShadowRecord(merged))
+		if err != nil {
+			return err
+		}
+		if err := s.kv.Put(context.Background(), s.deviceKey(nodeID, ns, deviceName), data); err != nil {
+			return fmt.Errorf("devicestatus: SetDesired 写穿失败（内存未更新）: %w", err)
+		}
+		return s.mem.SetDesired(nodeID, ns, deviceName, property, value)
 	}
-	merged.Desired[property] = value
 
-	data, err := json.Marshal(toDeviceShadowRecord(merged))
-	if err != nil {
-		return err
+	key := s.deviceKey(nodeID, ns, deviceName)
+	ctx := context.Background()
+	for attempt := 0; attempt < 3; attempt++ {
+		cur, modRev, err := s.ext.GetWithRev(ctx, key)
+		if err != nil {
+			return fmt.Errorf("devicestatus: SetDesired 读 etcd 基准失败（内存未更新）: %w", err)
+		}
+		var merged DeviceStatus
+		if modRev > 0 {
+			var rec deviceShadowRecord
+			if err := json.Unmarshal(cur, &rec); err != nil {
+				return fmt.Errorf("devicestatus: SetDesired 基准记录损坏（键 %s）: %w", key, err)
+			}
+			merged = rec.toDeviceStatus()
+		} else {
+			merged = DeviceStatus{
+				NodeID:     nodeID,
+				DeviceName: deviceName,
+				Namespace:  ns,
+				Properties: map[string]float64{},
+			}
+		}
+		if merged.Desired == nil {
+			merged.Desired = map[string]float64{}
+		}
+		merged.Desired[property] = value
+		data, err := json.Marshal(toDeviceShadowRecord(merged))
+		if err != nil {
+			return err
+		}
+		ok, err := s.ext.CompareAndPut(ctx, key, data, modRev)
+		if err != nil {
+			return fmt.Errorf("devicestatus: SetDesired 写穿失败（内存未更新）: %w", err)
+		}
+		if ok {
+			// CAS 成功：内存更新（保 reported，语义与 v0.5.0 逐值一致）
+			return s.mem.SetDesired(nodeID, ns, deviceName, property, value)
+		}
+		// 冲突（他副本/他请求刚写过）→ 读最新基准再合并重试
 	}
-	if err := s.kv.Put(context.Background(), s.deviceKey(nodeID, ns, deviceName), data); err != nil {
-		return fmt.Errorf("devicestatus: SetDesired 写穿失败（内存未更新）: %w", err)
-	}
-	return s.mem.SetDesired(nodeID, ns, deviceName, property, value)
+	return fmt.Errorf("%w（nodeID=%s device=%s property=%s）", ErrDesiredConflict, nodeID, deviceName, property)
 }
 
 // Delete 删除一台设备状态（写穿：先删 etcd 键，成功后再删内存）。
@@ -247,22 +312,36 @@ func (s *EtcdDeviceStore) DeleteByNode(nodeID string) error {
 	return nil
 }
 
-// Load 从 etcd 全量加载设备影子并灌回内存缓存（启动时调用，服务前完成）。
-//
-// 语义（设计 §2/§5/§6.5）：
-//   - 前缀扫描 <prefix>/ 全部键，反序列化 DeviceShadowRecord；
-//   - 加载归一：Properties 为空 map {}、LastReportedAt=0（不落盘字段）；
-//   - 单键 JSON 损坏或键字段非法：跳过该键 + 告警，不阻断全库；
-//   - kv 层失败（ListByPrefix error）：整体失败返回 error（由集成层按
-//     降级策略处理，见设计 §6.5）。
-//
-// 加载完成后内存态 Upsert 合并保 Desired 的语义照常成立（单测覆盖）。
+// Load 从 etcd 全量加载设备影子并灌回内存缓存（启动时调用，服务前完成，
+// 语义与 v0.5.0 逐位不变——embed 路径回归锚点）。
 func (s *EtcdDeviceStore) Load(ctx context.Context) error {
 	entries, err := s.kv.ListByPrefix(ctx, s.prefix+"/")
 	if err != nil {
 		return fmt.Errorf("devicestatus: Load 前缀扫描失败: %w", err)
 	}
+	s.applyLoad(entries)
+	return nil
+}
 
+// LoadAnchored 锚定加载（v0.6.0 设计 §2.1，外部模式装配用）：前缀扫描 +
+// 返回响应头 revision 作为 watch 锚点。内存重建语义与 Load 完全一致。
+// 非 ExtendedKV（无法锚定）→ 返回 error。
+func (s *EtcdDeviceStore) LoadAnchored(ctx context.Context) (int64, error) {
+	if s.ext == nil {
+		return 0, fmt.Errorf("devicestatus: LoadAnchored 需要 ExtendedKV（当前 KV 不支持修订锚定）")
+	}
+	entries, rev, err := s.ext.ListByPrefixRev(ctx, s.prefix+"/")
+	if err != nil {
+		return 0, fmt.Errorf("devicestatus: LoadAnchored 前缀扫描失败: %w", err)
+	}
+	s.applyLoad(entries)
+	s.watchRev.Store(rev)
+	return rev, nil
+}
+
+// applyLoad 把扫描结果整体灌回内存缓存（Load/LoadAnchored 共用；锁序与
+// v0.5.0 Load 一致：s.mu → s.mem.mu）。
+func (s *EtcdDeviceStore) applyLoad(entries []KVEntry) {
 	fresh := make(map[string]map[deviceKey]DeviceStatus, len(entries))
 	skipped := 0
 	for _, e := range entries {
@@ -294,7 +373,172 @@ func (s *EtcdDeviceStore) Load(ctx context.Context) error {
 	s.mem.devices = fresh
 	s.mem.mu.Unlock()
 	s.mu.Unlock()
-	return nil
+}
+
+// StartWatch 启动 watch 应用器（v0.6.0 多副本读一致，设计 §2）：单 goroutine
+// 单调应用 PUT/DELETE；断线/ErrCompacted → 全量重放（降频）→ 重锚定。
+// 应用器只读铁律：只改内存（保留本地 reported/LastReportedAt），绝不发
+// etcd 写（设计 §2.2②）。非 ExtendedKV → no-op + Warn。
+func (s *EtcdDeviceStore) StartWatch(ctx context.Context) {
+	if s.ext == nil {
+		log.Warnf("devicestatus: 底层 KV 不支持 watch（非 ExtendedKV），watch 缓存同步停用（no-op）——读一致性降级为启动快照")
+		return
+	}
+	go s.watchLoop(ctx)
+}
+
+// watchLoop 锚定增量应用主循环：watch 断开/Err（含 ErrCompacted）→ 全量
+// 重放（逐记录合并，保留本地瞬态）→ 重锚定 → 重启 watch。
+func (s *EtcdDeviceStore) watchLoop(ctx context.Context) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		rev := s.watchRev.Load()
+		ch := s.ext.WatchPrefix(ctx, s.prefix+"/", etcdstore.StartRevision(rev))
+		for ev := range ch {
+			switch ev.Type {
+			case etcdstore.WatchEventPut:
+				s.applyPut(ev.Key, ev.Value)
+				s.watchRev.Store(ev.ModRevision) // 单调推进锚点：断线重放只补增量，不重放已应用事件（R2-3）
+			case etcdstore.WatchEventDelete:
+				s.applyDelete(ev.Key)
+				s.watchRev.Store(ev.ModRevision)
+			case etcdstore.WatchEventErr:
+				if ctx.Err() != nil {
+					return
+				}
+				s.reloadAll(ctx)
+			}
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		s.reloadAll(ctx)
+	}
+}
+
+// applyPut 应用设备影子 PUT（多副本合并语义：只覆盖 Desired 与身份字段，
+// 保留本地 reported/LastReportedAt——reported 是各副本本地瞬态，不能被他
+// 副本的持久化数据冲掉，设计 §2.2 表）。
+func (s *EtcdDeviceStore) applyPut(key string, value []byte) {
+	var rec deviceShadowRecord
+	if err := json.Unmarshal(value, &rec); err != nil {
+		log.Warnf("devicestatus: 忽略坏影子事件 %q（JSON 反序列化失败: %v）", key, err)
+		return
+	}
+	if err := validateKeyParts(rec.NodeID, normNamespace(rec.Namespace), rec.DeviceName); err != nil {
+		log.Warnf("devicestatus: 忽略非法影子事件 %q（%v）", key, err)
+		return
+	}
+	s.mu.Lock()
+	s.mem.mu.Lock()
+	ns := normNamespace(rec.Namespace)
+	byNode, ok := s.mem.devices[rec.NodeID]
+	if !ok {
+		byNode = make(map[deviceKey]DeviceStatus)
+		s.mem.devices[rec.NodeID] = byNode
+	}
+	k := deviceKeyOf(ns, rec.DeviceName)
+	if existing, ok := byNode[k]; ok {
+		// 合并：Desired 以 etcd 为准，reported（Properties/LastReportedAt）保留本地
+		existing.Desired = normalizeDesiredMap(rec.Desired)
+		existing.NodeID = rec.NodeID
+		existing.DeviceName = rec.DeviceName
+		existing.Namespace = ns
+		byNode[k] = existing
+	} else {
+		byNode[k] = rec.toDeviceStatus()
+	}
+	s.mem.mu.Unlock()
+	s.mu.Unlock()
+}
+
+// applyDelete 应用设备影子 DELETE（单键移除）。
+func (s *EtcdDeviceStore) applyDelete(key string) {
+	parts := strings.Split(strings.TrimPrefix(key, s.prefix+"/"), "/")
+	if len(parts) != 3 {
+		log.Warnf("devicestatus: 忽略非法删除事件 %q（键段数 %d ≠ 3）", key, len(parts))
+		return
+	}
+	s.mu.Lock()
+	s.mem.Delete(parts[0], parts[1], parts[2])
+	s.mu.Unlock()
+}
+
+// reloadAll 全量重放（断线/ErrCompacted）：ListByPrefixRev → 逐记录合并
+// （不整体替换内存——保留本地 reported 与刚写入未回流的瞬态，设计 §2.3）
+// → 移除 etcd 已不存在的记录 → 重锚定。重放降频：相邻重放间隔 ≥ 30s。
+func (s *EtcdDeviceStore) reloadAll(ctx context.Context) {
+	s.mu.Lock()
+	now := time.Now()
+	if !s.lastReload.IsZero() && now.Sub(s.lastReload) < watchReloadMinInterval {
+		wait := watchReloadMinInterval - now.Sub(s.lastReload)
+		s.mu.Unlock()
+		log.Warnf("devicestatus: watch 重放过频，降频等待 %v 后全量重放", wait)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+	} else {
+		s.mu.Unlock()
+	}
+
+	entries, rev, err := s.ext.ListByPrefixRev(ctx, s.prefix+"/")
+	if err != nil {
+		log.Warnf("devicestatus: 全量重放失败（保持旧内存，stale-but-consistent）: %v", err)
+		return
+	}
+	s.mu.Lock()
+	s.lastReload = time.Now()
+	s.mu.Unlock()
+
+	present := make(map[string]struct{}, len(entries))
+	for _, ent := range entries {
+		var rec deviceShadowRecord
+		if err := json.Unmarshal(ent.Value, &rec); err != nil {
+			continue
+		}
+		if err := validateKeyParts(rec.NodeID, normNamespace(rec.Namespace), rec.DeviceName); err != nil {
+			continue
+		}
+		present[ent.Key] = struct{}{}
+		s.applyPut(ent.Key, ent.Value)
+	}
+	// 内存有、etcd 无 → 已被删除（GC 级联/他副本）：移除
+	s.mu.Lock()
+	s.mem.mu.Lock()
+	for nodeID, byNode := range s.mem.devices {
+		for k := range byNode {
+			full := s.prefix + "/" + nodeID + "/" + string(k)
+			if _, ok := present[full]; !ok {
+				delete(byNode, k)
+			}
+		}
+		if len(byNode) == 0 {
+			delete(s.mem.devices, nodeID)
+		}
+	}
+	s.mem.mu.Unlock()
+	s.mu.Unlock()
+	s.watchRev.Store(rev)
+}
+
+// watchReloadMinInterval 是 watch 全量重放的最小间隔（防重连风暴，设计 §2.3；
+// 对齐默认重扫周期 30s）。
+const watchReloadMinInterval = 30 * time.Second
+
+// normalizeDesiredMap 归一 Desired 为恒非 nil 的 map（JSON null → {}）。
+func normalizeDesiredMap(m map[string]float64) map[string]float64 {
+	if m == nil {
+		return map[string]float64{}
+	}
+	out := make(map[string]float64, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // Close 关闭底层 KV 存储（集成层按关停顺序最后调用，见设计 §6.1）。

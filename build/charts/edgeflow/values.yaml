@@ -24,14 +24,16 @@ podSecurityContext:
 
 ## CloudCore（云端组件）配置
 cloudcore:
-  # 副本数：★ v0.5.0 起两种 etcd 模式均必须 = 1（单写者）★
-  # ① embed 模式（cloudcore.etcd.external.enabled=false，默认）：内嵌单成员 etcd，
-  #   多副本各自 embed + 共享 PVC = 脑裂（各自独立的数据分叉），显式禁止。
-  # ② 外部模式（cloudcore.etcd.external.enabled=true）：v0.5.0 为单写者形态——
-  #   心跳/Offline 判活是各副本内存瞬态，多副本 active-active 会把彼此存活的节点
-  #   误判离线，并从共享键空间删键 + 级联删设备 Desired（活节点数据丢失）。
-  #   真多活（etcd lease 心跳）划 v0.6+。模板已加 {{ fail }} 渲染守卫，两种模式下
-  #   replicaCount>1 都会渲染失败。
+  # 副本数：默认 1。
+  # ① embed 模式（cloudcore.etcd.external.enabled=false，默认）：**必须 = 1**——内嵌单成员 etcd，
+  #   多副本各自 embed + 共享 PVC = 脑裂（各自独立的数据分叉），模板 {{ fail }} 渲染守卫兜底。
+  # ② 外部模式（cloudcore.etcd.external.enabled=true）：**v0.6.0 起支持 >1（真多活）**——
+  #   判活 = etcd 租约视角（心跳键存在性）+ 删除守卫，多副本安全；
+  #   replicaCount>1 时模板自动注入 EDGEFLOW_CLOUDCORE_MULTI_REPLICA=1（/healthz 绑定 etcd 连接）。
+  #   要求（不满足即数据风险，见 docs/DEPLOYMENT.md §10.8）：
+  #   ① 全部副本同版本，禁止新旧混跑（v0.5.0 与 v0.6.0 副本同连一集群 = 旧版 GC 误删活节点）；
+  #   ② etcd 集群 3 节点 quorum 健康（判活依赖 etcd 可用性：故障 >TTL 全量软离线，数分钟自愈，零数据删除）；
+  #   ③ cloudcore 无状态（fleet 共享同一 endpoints，副本间无协调/无选主）。
   replicaCount: 1
 
   # 优雅退出宽限期：cloudcore 收到 SIGTERM 后需时间排空存量连接
@@ -89,6 +91,8 @@ cloudcore:
   #
   # v0.5.0 新增外部 etcd 模式（方案④）：external.enabled=true 时直连共享 etcd 集群
   # （EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS），跳过内嵌 embed（不建目录/不占端口）。
+  # v0.6.0 起外部模式支持多副本真多活（replicaCount>1，自动注入 MULTI_REPLICA=1），
+  # embed 模式仍必须 = 1（脑裂）。
   # 两种模式互斥：external.enabled=true 时本段 embed 环境变量（env 映射）不注入；
   # etcd.enabled=false 时强制注入 EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false，并忽略 external.*。
   etcd:
@@ -116,6 +120,11 @@ cloudcore:
       # 逃生门：true = 允许「非回环端点 + 无 TLS」启动（默认拒绝，仅限可信内网/开发）；
       # 开启后注入 EDGEFLOW_CLOUDCORE_ETCD_ALLOW_INSECURE=1（应用启动期打大告警）
       allowInsecure: false
+      # 心跳租约 TTL（v0.6.0 新增，仅外部模式消费）：非空注入 EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL；
+      # 空 = 不注入，应用默认 300s（5m，= 10× 边缘心跳周期 30s）。
+      # 调参权衡（故障免疫 vs 检测延迟）与校验（<90s Warn；≤0/非法 fail-fast）见 docs/DEPLOYMENT.md §10.8。
+      # 例："300s" / "5m"（Go duration 或秒数）
+      nodeLeaseTTL: ""
     # etcd 配置环境变量透传（EDGEFLOW_CLOUDCORE_ETCD_*），enabled=false 时模板强制注入
     # EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false，其余不生效；external.enabled=true 时不注入（忽略）
     env:

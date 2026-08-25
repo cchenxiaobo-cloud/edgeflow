@@ -148,6 +148,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		log.Errorf("节点保留时长配置无效: %v", err)
 		return 1
 	}
+	// v0.6.0：NODE_SCAN_INTERVAL / NODE_TIMEOUT 提前到存储装配前解析——
+	// 外部模式的扫描周期（NODE_SCAN_INTERVAL）要喂给 lease 注册表（重扫/
+	// GC 周期，设计 §12.5）；embed/纯内存用法不变（解析结果继续喂
+	// NodeController）。非法值 fail-fast（与 v0.5.0 同约定）。
+	scanInterval, nodeTimeout, err := nodecontroller.DurationsFromEnv()
+	if err != nil {
+		log.Errorf("NodeController/外部模式扫描周期配置无效: %v", err)
+		return 1
+	}
 	// 清理循环/GC 级联 goroutine 的取消信号（serve 内另有同源的优雅关停，
 	// 二者并行不冲突）。
 	sigCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -157,6 +166,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		nodeReg     registry.Store     // 节点注册表（纯内存或 EtcdRegistry 写穿包装）
 		deviceStore devicestatus.Store // 设备状态存储（纯内存或 EtcdDeviceStore 写穿包装）
 		closeEtcd   func()             // etcd 关停闭包（§6.1：注册表循环 → kv → embed，最后执行）
+		// v0.6.0 多副本参数（外部模式解析；其余形态零值/默认，路由区按 externalMode 消费）
+		leaseTTL    time.Duration      // 判活租约 TTL（EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL，默认 300s）
+		multiReplica bool              // 多副本标识（EDGEFLOW_CLOUDCORE_MULTI_REPLICA="1"/"true"）
 	)
 	// 最先注册 → 最后执行：保证在 ledger.Close()（审计）之后、进程退出前才关
 	// etcd（write-through 无待刷缓冲，Close 即数据完整；EmbeddedEtcd.Close 幂等）。
@@ -176,17 +188,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		// v0.3.x 纯内存路径：不建目录、不占端口、不写盘，行为与旧版完全一致。
 		// 总开关优先（设计 §9）：ETCD_ENABLED=false + ENDPOINTS 非空 → 仍走纯内存。
 		log.Infof("存储: EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false，纯内存模式（重启后节点/设备数据丢失）")
+		warnLeaseTTLIgnored() // M1/M15：纯内存不解析新 env 死路径，显式设置 → Warn 忽略
 		nodeReg = registry.New(registry.WithOfflineTTL(retention))
 		deviceStore = devicestatus.NewStore()
 	} else if len(etcdCfg.Endpoints) > 0 {
 		// ── v0.5.0 外部 etcd 模式（方案④，配置级切换）────────────────────
 		// 跳过 embed：不建目录/不占端口/忽略 DATA_DIR，clientv3 直连
 		// EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS 指向的集群。
-		// ⚠️ 单写者铁律（v0.5.0）：只允许一个 cloudcore 实例连接共享 etcd——
-		// 判活（心跳/Offline 内存瞬态）没有跨副本视野，多副本都会把"连在
-		// 另一副本上的节点"判离线 → TTL 后误删共享键（活节点数据丢失）。
-		// 高可用由存储层（外部 etcd 集群）与崩溃恢复式故障转移提供（新实例
-		// 启动 Load 全量）；真多活（lease 心跳）划 v0.6+。
+		// v0.6.0「真多活」：判活改为 etcd 租约视角（心跳键存在性）+ 删除守卫
+		// + watch 缓存同步，多副本安全（单写者铁律解除；设计定稿 §0.3/§1）。
 		// 故障语义与 embed 不同：连接/TLS 配置失败 = fail-fast 拒绝启动——
 		// 外部集群是主动选择的依赖，静默降级违背部署意图。
 		tlsCfg, err := etcdCfg.BuildTLS()
@@ -222,26 +232,52 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		// 前置条件 #4：显式设置的 embed 字段在外部模式下被忽略 → 明示告警。
 		warnEmbedFieldsIgnored()
-		// 与 embed 路径共用同一段装配逻辑（创建包装 → schema 钩子 → Load → 装配循环）。
-		// ⚠️ downgrade 闭包仅 embed 路径可触（设计 §10.2 / M7）：外部集群是显式
-		// 部署依赖，包装创建失败 = 拒绝启动（fail-fast），不得静默降级纯内存。
+
+		// ── v0.6.0 多副本参数（主线裁决 D2/D3，仅外部模式解析）────────────
+		// 判活租约 TTL：EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL，默认 300s（独立于
+		// NODE_TIMEOUT——D2：3m 是检测延迟不是故障免疫，解耦后互不牺牲）。
+		leaseTTL, err = etcdstore.LeaseTTLFromEnv()
+		if err != nil {
+			log.Errorf("[etcdstore] 判活租约 TTL 配置无效，拒绝启动: %v", err)
+			_ = kv.Close()
+			return 1
+		}
+		// 多副本标识：EDGEFLOW_CLOUDCORE_MULTI_REPLICA（"1"/"true" 生效）→
+		// /healthz 反映 etcd 连接（失联 >TTL → 503 → K8s liveness 重启自愈）。
+		multiReplica, err = multiReplicaFromEnv()
+		if err != nil {
+			log.Errorf("[etcdstore] 多副本标识配置无效，拒绝启动: %v", err)
+			_ = kv.Close()
+			return 1
+		}
+
+		// ExtendedKV 断言（防御）：kv 恒由 etcdstore 自身实现满足，理论不可达。
+		ext, ok := etcdstore.AsExtended(kv)
+		if !ok {
+			log.Errorf("[etcdstore] 外部模式要求 ExtendedKV（CAS/watch/lease 扩展面），当前 KV 不满足，拒绝启动")
+			_ = kv.Close()
+			return 1
+		}
 		externalFailFast := func(reason string) {
 			log.Errorf("[etcdstore] 外部模式 %s，拒绝启动（不降级——外部 etcd 是显式部署依赖）", reason)
 		}
-		nodeReg, deviceStore, closeEtcd, err = assembleEtcdStores(
-			kv, func() {
+		nodeReg, deviceStore, closeEtcd, err = assembleExternalEtcdStores(
+			ext, func() {
 				if err := kv.Close(); err != nil {
 					log.Errorf("[etcdstore] 外部 etcd 关停失败: %v", err)
 				}
-			}, "外部 etcd", retention, sigCtx, externalFailFast)
+			}, "外部 etcd", retention, leaseTTL, scanInterval, sigCtx)
 		if err != nil {
-			log.Errorf("[etcdstore] 外部模式装配失败，拒绝启动（不降级）: %v", err)
+			externalFailFast(fmt.Sprintf("装配失败: %v", err))
 			return 1
 		}
+		log.Infof("[etcdstore] 外部模式判活 = etcd 租约机制（心跳键 /edgeflow/registry/heartbeats/ 存在性，TTL=%v，grant-per-heartbeat）；NodeController 内存扫描停用；NODE_TIMEOUT=%v 不再参与判活（D2 解耦）；NODE_SCAN_INTERVAL=%v 语义迁移为 etcd 重扫/GC 周期",
+			leaseTTL, nodeTimeout, scanInterval)
 	} else {
 		// etcd 路径：safeStart 兜住坏 WAL 的 panic（基础层实测：坏库在 raft
 		// 恢复阶段是 panic 不是 error，必须 recover 才能按 Strict 决策）。
 		log.Infof("[etcdstore] 嵌入式 etcd 模式 dataDir=%s", etcdCfg.DataDir)
+		warnLeaseTTLIgnored() // M2/M15：embed 模式下 LEASE_TTL 显式设置 → Warn 忽略
 		et, kv, err := safeStartEmbeddedKV(etcdCfg)
 		if err != nil {
 			if etcdCfg.Strict {
@@ -270,17 +306,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// （对标 KubeEdge NodeController）。
 	// 周期/阈值环境变量覆盖：EDGEFLOW_CLOUDCORE_NODE_SCAN_INTERVAL /
 	// EDGEFLOW_CLOUDCORE_NODE_TIMEOUT（默认 30s / 180s，支持 "15s" 或秒数）。
-	scanInterval, nodeTimeout, err := nodecontroller.DurationsFromEnv()
-	if err != nil {
-		log.Errorf("NodeController 配置无效: %v", err)
-		return 1
-	}
+	// v0.6.0（设计定稿 §1.3b）：外部模式停用 NodeController 内存扫描——
+	// 判活 = etcd 租约视角（心跳键存在性，grant-per-heartbeat）；内存扫描的
+	// LastHeartbeatAt 判定是多副本误判离线的病灶，被 watch + 重扫替代。
+	externalMode := etcdCfg.Enabled && len(etcdCfg.Endpoints) > 0
 	nc := nodecontroller.New(nodeReg,
 		nodecontroller.WithInterval(scanInterval),
 		nodecontroller.WithTimeout(nodeTimeout),
 	)
-	nc.Start()
-	log.Infof("NodeController 装配完成: 扫描周期 %v, 心跳超时 %v", scanInterval, nodeTimeout)
+	if externalMode {
+		log.Infof("NodeController 停用（外部模式判活 = etcd 租约机制；NODE_TIMEOUT=%v 不再参与判活，D2 解耦）", nodeTimeout)
+	} else {
+		nc.Start()
+		log.Infof("NodeController 装配完成: 扫描周期 %v, 心跳超时 %v", scanInterval, nodeTimeout)
+	}
 
 	// Pod 状态存储（内存态，WBS 6.3）与 CloudHub 上报回调桥接：
 	// 边侧上报的 PodStatus 消息经 CloudHub 校验后注入存储，供查询 API 使用。
@@ -373,7 +412,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 	//   /api/v1/nodes      → NodeInfo 视图（运行视角：CPU/内存/IP 等）
 	//   /api/v1/edgenodes  → EdgeNode 视图（CRD 对象视角，对标 K8s Node）
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", httpx.Healthz())
+	// /healthz：进程存活语义（默认）或 etcd 连接健康（外部多副本模式，D3）——
+	// External() && MULTI_REPLICA → 失联 >TTL 返回 503（K8s liveness 重启自愈）；
+	// 其余形态（embed / 单副本外部）保持 v0.5.0 语义（恒 200 进程存活检查）。
+	var healthzHandler http.HandlerFunc = httpx.Healthz()
+	if externalMode && multiReplica {
+		if checker, ok := nodeReg.(etcdHealthChecker); ok {
+			healthzHandler = etcdAwareHealthz(checker, leaseTTL)
+			log.Infof("/healthz 已绑定 etcd 连接健康（多副本模式，失联 >%v → 503 触发 K8s liveness 重启自愈）", leaseTTL)
+		} else {
+			log.Warnf("/healthz 多副本绑定跳过：nodeReg 未实现 etcdHealthChecker（不应发生，外部模式装配异常）")
+		}
+	}
+	mux.HandleFunc("/healthz", healthzHandler)
 	// OCSP 在线吊销（WBS 7.1）：标准 OCSP responder 端点。
 	// 数据源与 mTLS 同一证书目录，状态直接读 crl.json（与 CRL 同源）；
 	// 不挂 API Token 认证（协议端点，响应自带 CA 签名，见 ocsp.go 说明）。

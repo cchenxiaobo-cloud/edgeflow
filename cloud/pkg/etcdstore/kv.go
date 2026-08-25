@@ -10,10 +10,13 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-// KVEntry 是 ListByPrefix 返回的单个键值对。
+// KVEntry 是 ListByPrefix / ListByPrefixRev 返回的单个键值对。
+// Revision 为键的 ModRevision（v0.6.0 多副本扩展：锚定加载与 CAS 删除守卫用；
+// 既有消费方只读 Key/Value，该字段为纯增量）。
 type KVEntry struct {
-	Key   string
-	Value []byte
+	Key      string
+	Value    []byte
+	Revision int64 // ModRevision（0 = 未知/未填充）
 }
 
 // KVStore 是 etcdstore 对外固定的 KV 接口契约（供 registry/devicestatus
@@ -37,9 +40,16 @@ type KVStore interface {
 const opTimeout = 5 * time.Second
 
 // kvStore 是 KVStore 的 clientv3 薄封装（Put/Get/prefix Range/Delete/WithPrefix）。
+// v0.6.0：追加 lease/watch 客户端（懒初始化，扩展面 LeaseKV/WatchKV 用），
+// 与既有 KV 面共享同一 client。
 type kvStore struct {
 	client *clientv3.Client
 	kv     clientv3.KV
+
+	leaseOnce sync.Once
+	lease     clientv3.Lease
+	watchOnce sync.Once
+	watch     clientv3.Watcher
 
 	closeOnce sync.Once
 	closeErr  error
@@ -123,7 +133,11 @@ func (s *kvStore) ListByPrefix(ctx context.Context, prefix string) ([]KVEntry, e
 	entries := make([]KVEntry, 0, len(resp.Kvs))
 	for _, kv := range resp.Kvs {
 		// 拷贝 Value，避免共享 mvcc 底层缓冲。
-		entries = append(entries, KVEntry{Key: string(kv.Key), Value: append([]byte(nil), kv.Value...)})
+		entries = append(entries, KVEntry{
+			Key:      string(kv.Key),
+			Value:    append([]byte(nil), kv.Value...),
+			Revision: kv.ModRevision,
+		})
 	}
 	return entries, nil
 }
@@ -145,4 +159,16 @@ func (s *kvStore) DeleteRange(ctx context.Context, prefix string) error {
 func (s *kvStore) Close() error {
 	s.closeOnce.Do(func() { s.closeErr = s.client.Close() })
 	return s.closeErr
+}
+
+// leaseClient 懒创建并返回 clientv3 Lease 客户端（并发安全，幂等）。
+func (s *kvStore) leaseClient() clientv3.Lease {
+	s.leaseOnce.Do(func() { s.lease = clientv3.NewLease(s.client) })
+	return s.lease
+}
+
+// watchClient 懒创建并返回 clientv3 Watcher 客户端（并发安全，幂等）。
+func (s *kvStore) watchClient() clientv3.Watcher {
+	s.watchOnce.Do(func() { s.watch = clientv3.NewWatcher(s.client) })
+	return s.watch
 }

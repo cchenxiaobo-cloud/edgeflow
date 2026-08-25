@@ -5,16 +5,12 @@ metadata:
   labels:
     {{- include "edgeflow.labels" . | nindent 4 }}
     app.kubernetes.io/component: cloudcore
-{{- /* ============ 渲染守卫（v0.5.0 单写者铁律，替代注释警示的不可执行性） ============ */}}
+{{- /* ============ 渲染守卫（v0.6.0 收窄：仅 embed 模式禁止多副本；外部模式 v0.6.0 起支持多副本真多活） ============ */}}
 {{- if and .Values.cloudcore.etcd.enabled .Values.cloudcore.etcd.external.enabled (not .Values.cloudcore.etcd.external.endpoints) }}
   {{- fail "cloudcore.etcd.external.enabled=true 时 endpoints 不能为空（至少一个 http(s) 端点）" }}
 {{- end }}
-{{- if and .Values.cloudcore.etcd.enabled (gt (int .Values.cloudcore.replicaCount) 1) }}
-  {{- if .Values.cloudcore.etcd.external.enabled }}
-    {{- fail "cloudcore.replicaCount>1 在外部 etcd 模式（cloudcore.etcd.external.enabled=true）下不受支持：v0.5.0 为单写者形态（心跳/Offline 判活是各副本内存瞬态，多副本 active-active 会把彼此存活的节点误判离线并从共享键空间删键+级联删设备 Desired）。请保持 replicaCount=1（真多活划 v0.6+ lease 方案）" }}
-  {{- else }}
-    {{- fail "cloudcore.replicaCount>1 在 embed 模式（cloudcore.etcd.external.enabled=false）下 = 多副本各自 embed + 共享 PVC 脑裂（键空间互相覆盖），显式禁止。请保持 replicaCount=1" }}
-  {{- end }}
+{{- if and .Values.cloudcore.etcd.enabled (not .Values.cloudcore.etcd.external.enabled) (gt (int .Values.cloudcore.replicaCount) 1) }}
+  {{- fail "cloudcore.replicaCount>1 在 embed 模式（cloudcore.etcd.external.enabled=false）下 = 多副本各自 embed + 共享 PVC 脑裂（键空间互相覆盖），显式禁止。请保持 replicaCount=1（外部 etcd 模式（external.enabled=true）支持多副本，见 values 注释）" }}
 {{- end }}
 spec:
   replicas: {{ .Values.cloudcore.replicaCount }}
@@ -82,7 +78,7 @@ spec:
             {{- end }}
             {{- if .Values.cloudcore.etcd.enabled }}
               {{- if .Values.cloudcore.etcd.external.enabled }}
-            # 外部 etcd 模式（v0.5.0）：共享集群直连；embed 字段（DATA_DIR/CLIENT_URL/PEER_URL/
+            # 外部 etcd 模式（v0.6.0 起支持多副本真多活）：共享集群直连；embed 字段（DATA_DIR/CLIENT_URL/PEER_URL/
             # QUOTA/COMPACTION/STRICT）不注入——应用侧对显式设置的 embed 字段会 Warn「仅 embed 生效」
             - name: EDGEFLOW_CLOUDCORE_ETCD_ENABLED
               value: "true"
@@ -104,6 +100,17 @@ spec:
             # 逃生门（显式 opt-in）：允许「非回环端点 + 无 TLS」启动；应用启动期打大告警
             - name: EDGEFLOW_CLOUDCORE_ETCD_ALLOW_INSECURE
               value: "1"
+              {{- end }}
+              {{- if gt (int .Values.cloudcore.replicaCount) 1 }}
+            # 多副本真多活（v0.6.0）：注入多副本标识——/healthz 绑定 etcd 连接状态（失联 >TTL
+            # → 503 → liveness 重启自愈）；单副本（replicaCount=1）保持 v0.5.0 healthz 进程存活语义
+            - name: EDGEFLOW_CLOUDCORE_MULTI_REPLICA
+              value: "1"
+              {{- end }}
+              {{- if .Values.cloudcore.etcd.external.nodeLeaseTTL }}
+            # 心跳租约 TTL（v0.6.0，仅外部模式消费）：判活阈值（默认 300s）；空 = 应用默认，不注入
+            - name: EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL
+              value: {{ .Values.cloudcore.etcd.external.nodeLeaseTTL | quote }}
               {{- end }}
               {{- else }}
               {{- range $key, $value := .Values.cloudcore.etcd.env }}

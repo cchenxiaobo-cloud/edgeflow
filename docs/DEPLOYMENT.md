@@ -181,13 +181,14 @@ curl http://127.0.0.1:8080/healthz
 | values 路径 | 默认值 | 说明 |
 | --- | --- | --- |
 | `cloudcore.image.repository` / `.tag` / `.pullPolicy` | `edgeflow/cloudcore` / `v0.1.0` / `IfNotPresent` | 镜像地址与拉取策略；私有仓库改地址并配 `imagePullSecrets` |
-| `cloudcore.replicaCount` | `1` | 副本数；**硬约束（v0.4.0 起）**：嵌入式 etcd 为单成员，多副本各自 embed 会脑裂，必须保持 1 |
+| `cloudcore.replicaCount` | `1` | 副本数；**embed 模式必须 1**（多副本各自 embed 脑裂，模板 `{{ fail }}` 兜底）；**外部模式 v0.6.0 起可 >1**（真多活，自动注入 `EDGEFLOW_CLOUDCORE_MULTI_REPLICA=1`，前置要求见 §10.8.1） |
 | `cloudcore.port.http` / `.hub` | `8080` / `10000` | 容器监听端口（与 Dockerfile EXPOSE 对齐） |
 | `cloudcore.env` | `EDGEFLOW_CLOUDCORE_PORT=8080`、`EDGEFLOW_CLOUDCORE_HUB_PORT=10000`、`EDGEFLOW_CLOUDCORE_ETCD_*`（v0.4.0，见下方 etcd 段） | 环境变量透传（key/value 形式） |
 | `cloudcore.extraEnv` | `[]` | 扩展 env 列表（valueFrom/secretKeyRef 等复杂引用） |
 | `cloudcore.etcd.enabled` / `.dataDir` | `true` / `/data/etcd` | v0.4.0 嵌入式 etcd 总开关与数据目录（容器内路径，PVC 挂载 `/data`） |
 | `cloudcore.etcd.persistence.enabled` / `.storageClass` / `.size` | `true` / 空（默认 StorageClass） / `1Gi` | 数据卷 PVC 开关/存储类/容量；**Pod 重建不丢数据的前提**（emptyDir 会丢） |
 | `cloudcore.etcd.env.*` | `EDGEFLOW_CLOUDCORE_ETCD_*` 全量默认（见 §10.2 配置表） | etcd 配置透传：quota 256MiB / compaction periodic 1h / 回环端口 12379/12380 / STRICT 默认 off |
+| `cloudcore.etcd.external.{enabled,endpoints,tls.*,allowInsecure,nodeLeaseTTL}` | `false` / `[]` / 空 / `false` / `""` | v0.5.0 外部 etcd 段（ENDPOINTS/TLS/逃生门注入，不创建 PVC，见 §10.7.7）；**v0.6.0 新增 `nodeLeaseTTL`**（非空注入 `EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL`，默认 300s，见 §10.8.4）；`enabled=true ∧ replicaCount>1` 时自动注入 `EDGEFLOW_CLOUDCORE_MULTI_REPLICA=1`（见 §10.8.2） |
 | `cloudcore.livenessProbe` / `.readinessProbe` | 10s/5s 起检，间隔 10s/5s | 探针路径固定 `/healthz`（端口按名称 `http` 引用） |
 | `cloudcore.resources` | requests 100m/256Mi；limits 500m/1Gi | v0.4.0 上调（嵌入式 etcd，实测 RSS 31-34MB，128Mi 接近上限）；生产仍建议压测 |
 | `cloudcore.nodeSelector` / `.tolerations` / `.affinity` | 空（注释示例） | 节点调度、污点容忍、亲和性 |
@@ -480,7 +481,7 @@ curl http://127.0.0.1:8080/api/v1/nodes
 
 ### 10.6 Helm 部署注意（replicaCount 与 PVC）
 
-- **`replicaCount` 必须 = 1（硬约束）**：嵌入式 etcd 为单成员；多副本各自 embed 单成员 + 共享 PVC = **脑裂**（各自独立的数据分叉）。Chart 注释已显式禁止，勿突破。**v0.5.0 起外部模式同样必须 = 1**（单写者铁律，见 §10.7），模板已加 `{{ fail }}` 渲染守卫双保险。
+- **`replicaCount`（v0.6.0 修订）**：embed 模式（默认）**必须 = 1（硬约束）**——嵌入式 etcd 为单成员；多副本各自 embed 单成员 + 共享 PVC = **脑裂**（各自独立的数据分叉）。Chart 注释已显式禁止，模板 `{{ fail }}` 渲染守卫兜底。**外部模式（external.enabled=true）v0.6.0 起支持 >1**（真多活，见 §10.8）；v0.5.0 的单写者铁律已按 R15 解除（v0.5.0 历史口径见 §10.7.1 ⛔ 段）。
 - **默认创建 PVC**：`cloudcore.etcd.persistence.enabled=true`（默认），storageClass 留空 = 集群默认 StorageClass，容量默认 1Gi；`false` 时回退 emptyDir（**Pod 重建即丢数据，仅供无持久化需求的临时环境**）。
 - **资源上调**：requests 256Mi / limits 1Gi（v0.4.0 Chart 默认；实测 RSS 31-34MB，原 128Mi request 接近上限）。
 - etcd 客户端监听在容器内 127.0.0.1:12379/12380，**无需也不应**暴露为 Service 端口（仅进程内访问）。
@@ -502,10 +503,10 @@ curl http://127.0.0.1:8080/api/v1/nodes
 | embed 字段（DATA_DIR/CLIENT_URL/PEER_URL/QUOTA/COMPACTION/STRICT） | 生效 | **全部忽略**；显式设置时启动期 `Warn`"仅 embed 生效" |
 | 端口/目录 | 监听 127.0.0.1:12379/12380，创建数据目录 | **不监听任何 etcd 端口、不创建数据目录**（验收项） |
 | 运行中断连 | 本地故障（罕见） | clientv3 **自动重连**（指数退避），应用层零重试；断连期写路径失败返回 error、内存不动，读路径纯内存不受影响，恢复后自愈 |
-| /healthz | 进程存活（不反映 etcd） | **同样不反映 etcd 连接状态**（有意为之，见 §10.7.6） |
-| 副本数 | **必须 1**（多副本 embed + 共享 PVC = 脑裂） | **同样必须 1**（单写者铁律，见下方 ⛔ 段） |
+| /healthz | 进程存活（不反映 etcd） | **单副本：不反映 etcd**（同左，避免 K8s 批量重启放大故障）；**多副本（MULTI_REPLICA，v0.6.0 起）：反映 etcd 连接**（失联 >TTL → 503 → liveness 重启自愈，见 §10.8.3） |
+| 副本数 | **必须 1**（多副本 embed + 共享 PVC = 脑裂） | **v0.6.0 起：可 >1**（真多活：判活 = etcd 租约视角 + 删除守卫，见 §10.8）；v0.5.0 单写者铁律，见下方 ⛔ 段（历史口径） |
 
-**⛔ 单写者形态铁律（v0.5.0）**：两种模式都只支持**一个 cloudcore 写入方**。外部模式虽然共享同一键空间（写穿保证 etcd 侧一致、无数据分叉），但**心跳/Offline 判活是各副本内存瞬态**（不落盘）：副本 A 看不到连在副本 B 上的活节点心跳 → 180s+保留期后 A 会把它**从共享键空间判死删除并级联删设备 Desired**——活节点数据丢失且无任何信号。因此"外部集群支持多 cloudcore 副本"的表述是**错误的**，v0.5.0 受支持形态 = 单写者（replicaCount=1 或 active/standby 同一时刻仅一个真在服务）；真多活（etcd lease 心跳）划 v0.6+。Chart 模板已加 `{{ fail }}` 渲染守卫，embed 与外部模式 `replicaCount>1` 都会渲染失败。
+**⛔ 单写者形态铁律（v0.5.0 历史口径；v0.6.0 已在外部模式解除，见 R15/§10.8）**：v0.5.0 两种模式都只支持**一个 cloudcore 写入方**。外部模式虽然共享同一键空间（写穿保证 etcd 侧一致、无数据分叉），但**心跳/Offline 判活是各副本内存瞬态**（不落盘）：副本 A 看不到连在副本 B 上的活节点心跳 → 180s+保留期后 A 会把它**从共享键空间判死删除并级联删设备 Desired**——活节点数据丢失且无任何信号。v0.5.0 受支持形态 = 单写者（replicaCount=1 或 active/standby 同一时刻仅一个真在服务）；真多活（etcd lease 心跳）v0.6.0 落地（R15）：心跳落盘为租约、判活 = etcd 视角 hb 键存在性、删除带 GuardedDelete 守卫，多副本对判活与删除均安全。**v0.6.0 起 embed 模式仍必须 1**（脑裂不因代码演进消失）；外部模式多副本要求与配置见 **§10.8**。
 
 #### 10.7.2 配置表（新增环境变量，前缀 `EDGEFLOW_CLOUDCORE_`）
 
@@ -615,13 +616,13 @@ etcdctl get /edgeflow/_meta/schemaVersion          # = "1"（快照自带则保�
 | 启动失败，报错含 "非回环端点且未启用 TLS" | 明文护栏触发（§10.7.3）：配置 `EDGEFLOW_CLOUDCORE_ETCD_TLS_CA`（推荐）或显式 `EDGEFLOW_CLOUDCORE_ETCD_ALLOW_INSECURE=1`（仅可信内网） |
 | 启动失败，报错含端点校验原因（缺端口/带路径/userinfo/混合 scheme） | 端点格式错误（§10.7.2 逐条目 fail-fast），修正 ENDPOINTS |
 | 运行中写失败（节点注册失败、设备指令落点报错），读 API 正常 | 外部集群故障窗口：读路径纯内存不受影响（最后一致状态）；clientv3 自动重连，恢复后下一笔写自动成功，**无需重启 cloudcore**；/healthz 恒 200（不反映 etcd，避免 K8s 批量重启放大故障——v0.5.0 有意为之）；监控建议走外部集群自身的 `etcdctl endpoint health` 与备份告警 |
-| 多副本误配 | 模板渲染期 `{{ fail }}` 已拦截（embed 与外部模式 replicaCount>1 均失败）；手工裸跑二进制时请遵守单写者铁律 |
+| 多副本误配 | **v0.6.0 起仅 embed 模式被 `{{ fail }}` 拦截**（embed 多副本 = 脑裂）；外部模式合法（见 §10.8，需满足前置要求）；手工裸跑二进制时，embed/纯内存请保持单副本，外部模式多副本请按 §10.8 检查同版本/quorum/共享 endpoints |
 
 #### 10.7.7 Helm 部署（外部模式）
 
 ```yaml
 cloudcore:
-  replicaCount: 1          # 单写者铁律：外部模式同样必须 1（模板 fail 守卫兜底）
+  replicaCount: 1          # 单副本：healthz 保持进程存活语义；多副本（v0.6.0 真多活）见 §10.8
   etcd:
     enabled: true
     external:
@@ -635,11 +636,122 @@ cloudcore:
         cert: /etc/edgeflow/etcd-tls/tls.crt   # mTLS（与 key 同设）
         key: /etc/edgeflow/etcd-tls/tls.key
       allowInsecure: false  # 逃生门：true → 注入 EDGEFLOW_CLOUDCORE_ETCD_ALLOW_INSECURE=1
+      nodeLeaseTTL: ""      # v0.6.0：非空注入 EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL（默认 300s，见 §10.8.4）
     persistence:            # 外部模式不落本地盘：PVC 自动跳过、/data 回退 emptyDir
       enabled: true         # （保持 true 也不创建 PVC）
 ```
 
 - 模板行为：`external.enabled=true` → 注入 `EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS`（endpoints 逗号连接）+ TLS/逃生门 env；**不注入** `ETCD_DATA_DIR` 等 embed env；**不创建 PVC**。
-- 渲染守卫（`{{ fail }}`）：embed 模式 `replicaCount>1` → 失败（脑裂）；外部模式 `replicaCount>1` → 失败（单写者铁律）；`external.enabled=true` 且 `endpoints` 为空 → 失败。`etcd.enabled=false` 时强制注入 `EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false` 并**忽略 external.***（总开关优先，纯内存逃生）。
+- 渲染守卫（`{{ fail }}`）：**仅 embed 模式** `replicaCount>1` → 失败（脑裂；v0.6.0 起外部模式放行）；`external.enabled=true` 且 `endpoints` 为空 → 失败。`etcd.enabled=false` 时强制注入 `EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false` 并**忽略 external.***（总开关优先，纯内存逃生）。
+- **v0.6.0 多副本注入**：`external.enabled=true` ∧ `replicaCount>1` → 自动注入 `EDGEFLOW_CLOUDCORE_MULTI_REPLICA=1`（/healthz 绑定 etcd，见 §10.8.3）；`nodeLeaseTTL` 非空 → 注入 `EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL`。
 - TLS 证书文件建议经 Secret/ConfigMap 挂载到容器的只读路径（distroless 镜像无 shell，路径即注入值）。
 - cloudcore 与外部 etcd 的依赖就绪时序：建议 K8s 外部依赖探活（initContainer：`etcdctl endpoint health` 或 nc 探活）或先部署 etcd 再部署本 Chart。
+
+
+---
+
+### 10.8 多副本部署指南（v0.6.0 真多活，外部模式）
+
+> 核心能力：外部 etcd 模式下 cloudcore 支持 `replicaCount>1` 的 active-active 多副本（**真多活**）——心跳落盘为 etcd 租约（`/edgeflow/registry/heartbeats/<nodeID>`），判活 = etcd 视角的 hb 键存在性（所有副本同一事实源），删除带 GuardedDelete 守卫（防误删活节点），读一致 = Load 锚定 + watch 增量 + 重扫兜底。设计见 ARCHITECTURE.md 决策 **R15**；限制登记见 KNOWN-ISSUES.md §6（L12-L20）。**embed 模式多副本仍显式禁止（脑裂），本节只适用于外部模式。**
+
+#### 10.8.1 前置要求（不满足即数据风险）
+
+1. **外部 etcd 集群 3 节点、quorum 健康**（§10.7.4 基线：2/3 法定人数、同地域、quota 256MiB/compaction 1h、TLS 或 mTLS）。**判活依赖 etcd 可用性**（KNOWN-ISSUES L12）：quorum 丢失/全断 > lease TTL（默认 300s）时节点会**全量软离线**，恢复后数分钟内自愈、**零数据删除**——这是相对 v0.5.0「判活不受存储故障影响」的语义变化，监控告警阈值按 TTL 折算（见 §10.8.4）。
+2. **全部副本同版本，禁止新旧混跑**（KNOWN-ISSUES L15）：v0.5.0 与 v0.6.0 cloudcore 副本同连一个集群 = 旧版本无心跳键视角，其 GC 会把存活的节点**误删**（数据丢失）。升级/回滚必须「全停再全起」（scale 0 → 1，见 §10.8.5/§10.8.6）。
+3. **fleet 共享同一 endpoints**：cloudcore 无状态、无选主、无逐副本差异化 env（副本对称）；各副本服务不同边缘子集或由负载均衡打散均可（CAS + 删除守卫使正确性不依赖粘性路由，粘性仅为体验建议）。
+
+#### 10.8.2 配置（replicaCount>1）
+
+```yaml
+cloudcore:
+  replicaCount: 2            # v0.6.0 起外部模式支持 >1
+  etcd:
+    enabled: true
+    external:
+      enabled: true
+      endpoints:             # fleet 共享同一列表（clientv3 自动 failover）
+        - http://10.0.0.11:2379
+        - http://10.0.0.12:2379
+        - http://10.0.0.13:2379
+      tls:
+        ca: /etc/edgeflow/etcd-tls/ca.crt
+        cert: /etc/edgeflow/etcd-tls/tls.crt
+        key: /etc/edgeflow/etcd-tls/tls.key
+      # nodeLeaseTTL: "300s"   # 可选：心跳租约 TTL（默认 300s，调参见 §10.8.4）
+```
+
+- 模板自动行为：`external.enabled=true` ∧ `replicaCount>1` → 注入 `EDGEFLOW_CLOUDCORE_MULTI_REPLICA=1`（healthz 绑定，见 §10.8.3）；`nodeLeaseTTL` 非空 → 注入 `EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL`。
+- 手动裸跑二进制（非 Helm）时，需自行设置 `EDGEFLOW_CLOUDCORE_MULTI_REPLICA=1`（"1"/"true" 生效）——该 env 是纯环境变量派生，Chart 注入只是自动化的便捷。
+- 缩容/扩容副本数随时可做（各副本对称、启动即 Load 追平 + 续约接管），无需维护排他状态。
+
+#### 10.8.3 healthz / liveness 语义（多副本绑定）
+
+| 形态 | /healthz 语义 | 说明 |
+|------|--------------|------|
+| embed 模式（任何副本数=1） | 进程存活（恒 200） | v0.5.0 语义不变 |
+| 外部模式 + 单副本（无 MULTI_REPLICA） | 进程存活（恒 200） | v0.5.0 语义不变（避免 K8s 批量重启放大故障——单副本重启即全量断连） |
+| 外部模式 + 多副本（MULTI_REPLICA=1） | **进程存活 + etcd 连接**：周期探活/续约成功率，失联 >TTL → **503** | K8s liveness 判定失败 → 重启该副本 → 自愈（收敛「边连接面分叉」残余窗口：A 与 etcd 分区但仍在服务边缘时，重启 A 即可） |
+
+- liveness 探针保持默认（path `/healthz`，failureThreshold 3 × period 10s）；多副本形态下 503 只重启故障副本，其余副本正常服务。
+- 残余窗口记录：多副本形态下若某副本与 etcd 分区但继续服务其边缘连接（心跳无法续约），其他副本会按 TTL 将该批节点判离线——该副本被 liveness 重启后收敛；窗口内跨副本读可能不一致（KNOWN-ISSUES L12/L13）。
+
+#### 10.8.4 NODE_LEASE_TTL 调参权衡（故障免疫 vs 检测延迟）
+
+`EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL`（Helm：`cloudcore.etcd.external.nodeLeaseTTL`）是心跳租约 TTL = 外部模式判活阈值。**默认 300s（5m）= 10× 边缘心跳周期 30s**；校验：<90s Warn（低于心跳周期 3 倍，抖动误判风险）；≤0/非法 fail-fast；仅外部模式消费（embed/纯内存显式设置 → 启动期 Warn 忽略，不阻断）。
+
+| TTL | 故障免疫（etcd 故障期间判活不波动） | 离线检测时延上界（断开事件丢失场景） | 备注 |
+|-----|-----------------------------------|-----------------------------------|------|
+| 90s（下限，Warn 边界） | 90s | ≈ 2×TTL = 180s | 抖动误判风险高，仅测试/短故障窗口场景 |
+| 180s（v0.5.0 NodeController 阈值同值） | 3m | ≈ 6m | 与 v0.5.0 判活阈值同量级，但故障免疫从「无限」塌缩为 3m |
+| **300s（默认）** | **5m** | **≈ 10m** | 覆盖：CloudHub 90s 断开事件 + 边缘重连上限 60s + 副本重启/迁移预算 ~2m + 常见 quorum 恢复窗口 |
+| 600s | 10m | ≈ 20m | 长故障窗口场景：降低假离线，牺牲离线检出时延（孤儿台账保留期不变，仍 24h） |
+
+- **检测延迟语义**：正常断开仍由 CloudHub 90s 断开事件**快路径**判离线（不变）；lease 过期只兜「断开事件丢失/副本死亡」场景。监控告警阈值按上表「时延上界」折算（L13b）。
+- **`NODE_RETENTION` 24h 不变**：lease TTL 只是「hb 键寿命」= 软离线判定；台账键不绑租约，24h 保留期（Offline 展示 + GC 门槛）与 v0.5.0 完全一致。
+- 语义迁移（L20）：外部模式下 `NODE_SCAN_INTERVAL` = etcd 重扫/GC 周期（不变，语义迁用）；**`NODE_TIMEOUT` 不再作为外部模式判活阈值**（NodeController 停用，判活阈值 = `NODE_LEASE_TTL` 独立默认 300s——主线裁决 D2 与 NODE_TIMEOUT 解耦）；embed/纯内存两 env 语义不变（NodeController 扫描周期/阈值）。
+
+#### 10.8.5 升级（v0.5.0 单写者 → v0.6.0 多副本）
+
+**零迁移动作**：台账 JSON、设备 Desired JSON、既有键空间全部兼容（v0.6.0 只新增 `/edgeflow/registry/heartbeats/` 前缀；v0.5.0 进程不读该前缀）。唯一要求：**全停再全起，禁止混跑**（L15）。
+
+```bash
+# ① 停旧（关键！防混跑）
+kubectl scale deploy <rel>-cloudcore --replicas=0
+# ② 换镜像部署 v0.6.0（replicas=1）
+helm upgrade <rel> . --set cloudcore.image.tag=v0.6.0 \
+  --set cloudcore.etcd.external.enabled=true --set <endpoints...>
+# ③ 验证：节点注册回（≤重连+心跳周期）、台账/Desired 完整（Load 全量恢复）、
+#    etcdctl get /edgeflow/registry/heartbeats/ --prefix 出现租约键
+# ④ 扩容多副本（可选）
+kubectl scale deploy <rel>-cloudcore --replicas=2
+# ⑤ 验证双副本：另一副本 /api/v1/nodes 可见同样节点且 Ready（≤2×扫描周期 + watch 余量）
+```
+
+- 升级窗口内的判活空窗：旧实例停 → 新实例 Load 完成期间节点短暂 Unknown/Offline（租约 TTL 内自动恢复，≤300s），与 v0.5.0 崩溃恢复式故障转移同口径。
+- 遗留：v0.5.0 期孤儿台账键（L7 时代产物）→ v0.6.0 Load 后按 Unknown + 保留期 GC 正常清理（自愈）。
+
+#### 10.8.6 回滚（v0.6.0 → v0.5.0）
+
+```bash
+# ① 停 v0.6.0（全部副本）
+kubectl scale deploy <rel>-cloudcore --replicas=0
+# ② （可选但推荐）清理 lease 键空间——心跳键独立前缀，v0.5.0 的 Load 前缀扫描扫不到，
+#    残留零脏键、零告警；显式清理可让键空间与 v0.5.0 完全同构：
+etcdctl del /edgeflow/registry/heartbeats --prefix
+# ③ 部署 v0.5.0（replicas=1）
+# ④ 验证：台账/Desired 完整（v0.6.0 未改格式）；节点经重注册/心跳翻新为 Ready
+```
+
+- **双向断言**：v0.6.0 写的数据 v0.5.0 可读（JSON 逐字段兼容）；v0.5.0 写的数据 v0.6.0 可读（无新必填字段）。schemaVersion 不 bump（业务键形态未变，新增键空间属向后兼容扩展）。
+- **禁止**：v0.6.0 与 v0.5.0 副本同时运行（L15）。
+
+#### 10.8.7 排障
+
+| 现象 | 排查 |
+|------|------|
+| **全量软离线**（所有节点短时 Offline，随后自动恢复 Ready） | etcd 故障窗口 > lease TTL 的预期行为（L12）：quorum 丢失/全断期间租约不续 → 到期删 hb 键 → 判离线；**etcd 恢复后 ≤1 心跳周期自动重建租约自愈，零数据删除**（台账 24h 保留 + GuardedDelete 守卫）。确认：`etcdctl endpoint health`；观察「续约失败」日志；如需更长免疫窗口调大 TTL（§10.8.4）。若故障 <TTL，应有续约重试缓冲、节点不判离线 |
+| 节点真正断开但迟迟不判 Offline | 断开事件丢失场景下，判离线依赖租约到期：时延上界 ≈ 2×TTL（L13b）；要更快可调小 TTL（权衡免疫）或确认 CloudHub 90s 断开事件在服务 |
+| 日志出现 `concurrent-write`（SetDesired 冲突重试耗尽） | **预期语义，非错误**：多副本并发对同一设备写 Desired 时 CAS 冲突；重试 ≤3 次后返回 error、**HTTP 仍 200**（指令已 Ack 到边缘），Desired 未更新，凭日志（含 nodeID/device/property）重发指令或等下次下发收敛（见 API-SPEC 设备指令语义） |
+| 单副本误设 MULTI_REPLICA | 不推荐（healthz 绑定 etcd 后，etcd 故障窗口会触发自身重启放大影响）；Helm 只在 replicaCount>1 时注入，手工裸跑请勿单副本设置 |
+| 多副本下某副本与 etcd 分区但边缘连接正常 | 该副本无法续约 → 其节点 ≤TTL 判离线（etcd 视角正确）；读路径仍服务自身内存（可能陈旧）；**liveness（healthz 503）会重启该副本自愈**（§10.8.3 残余窗口） |
+| embed 模式 replicaCount>1 | 渲染期 `{{ fail }}` 拦截（脑裂文案）；手工裸跑请保持 1 |

@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
 	"edgeflow/cloud/pkg/devicestatus"
 	"edgeflow/cloud/pkg/etcdstore"
 	"edgeflow/cloud/pkg/registry"
+	"edgeflow/pkg/httpx"
 	"edgeflow/pkg/log"
 )
 
@@ -57,6 +60,60 @@ func warnEmbedFieldsIgnored() {
 	}
 }
 
+// warnLeaseTTLIgnored 在 embed / 纯内存模式下检测用户显式设置了
+// EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL（仅外部模式生效的判活租约 TTL）→
+// Warn 忽略（主线裁决 D2 + 兼容矩阵 M2/M15：不报错，对齐
+// warnEmbedFieldsIgnored 同族风格）。
+func warnLeaseTTLIgnored() {
+	if v := os.Getenv(etcdstore.EnvLeaseTTL); v != "" {
+		log.Warnf("[etcdstore] 当前运行模式不使用租约判活（embed/纯内存）：环境变量 %s 仅外部模式（EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS 非空）生效，当前被忽略（显式设置值 %q）", etcdstore.EnvLeaseTTL, v)
+	}
+}
+
+// envMultiReplica 是多副本模式标识（主线裁决 D3）：External() && 本值为
+// 1/true → /healthz 反映 etcd 连接（失联 >TTL → 503 → K8s liveness 重启
+// 自愈）；其余形态保持 v0.5.0 语义（healthz 恒 200 进程存活语义）。
+// 纯 env 派生（Chart 在 external.enabled && replicaCount>1 时自动注入）。
+const envMultiReplica = "EDGEFLOW_CLOUDCORE_MULTI_REPLICA"
+
+// multiReplicaFromEnv 解析 EDGEFLOW_CLOUDCORE_MULTI_REPLICA：
+// "1"/"true" → 生效；空/"0"/"false" → 关闭；其他值 → fail-fast。
+// 注意：仅外部模式装配路径调用（纯内存/embed 是死路径，不解析不报错）。
+func multiReplicaFromEnv() (bool, error) {
+	switch v := os.Getenv(envMultiReplica); v {
+	case "", "0", "false":
+		return false, nil
+	case "1", "true":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s=%q 只支持空/'0'/'false'（关）或 '1'/'true'（开）", envMultiReplica, v)
+	}
+}
+
+// etcdHealthChecker 是 /healthz 的 etcd 连接健康检查抽象（外部多副本模式）。
+// 实现：registry.LeaseEtcdRegistry（续约/重扫/watch 的成功接触时间戳）。
+type etcdHealthChecker interface {
+	EtcdHealthyWithin(d time.Duration) bool
+}
+
+// etcdAwareHealthz 构造多副本模式的 /healthz：底层 etcd 失联超过 staleAfter
+// （= 判活租约 TTL）→ 503（K8s liveness 失败 → 重启副本自愈，主线裁决 D3）；
+// 健康时输出与 httpx.Healthz 完全一致的 200 响应（进程存活语义不变）。
+func etcdAwareHealthz(checker etcdHealthChecker, staleAfter time.Duration) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !checker.EtcdHealthyWithin(staleAfter) {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status": "unhealthy",
+				"reason": fmt.Sprintf("etcd 失联超过 %v（多副本判活依赖 etcd 租约），等待 K8s liveness 重启自愈", staleAfter),
+			})
+			return
+		}
+		httpx.Healthz()(w, r)
+	}
+}
+
 // safeStartEmbeddedKV 兜住坏 WAL 的 panic：基础层实测（subagent_04 §6.1）
 // 数据目录损坏时 etcd 在 raft 恢复阶段是进程内 panic 而非返回 error，
 // 必须 recover 才能按 STRICT 决策（=1 拒绝启动 / 默认降级纯内存 + 告警）。
@@ -95,9 +152,10 @@ func gcCascadeLoop(ctx context.Context, nodeReg registry.Store, deviceStore devi
 	}
 }
 
-// assembleEtcdStores 是嵌入式/外部两种 etcd 模式共用的装配逻辑（v0.5.0
-// 抽取，避免复制）：创建写穿包装 → schema 版本钩子 → Load 恢复 →
-// CleanupLoop + gcCascadeLoop。
+// assembleEtcdStores 是**嵌入式** etcd 模式的装配逻辑（v0.5.0 抽取，embed
+// 路径回归锚点）：创建写穿包装 → schema 版本钩子 → Load 恢复 →
+// CleanupLoop + gcCascadeLoop。外部模式 v0.6.0 起走 assembleExternalEtcdStores
+// （Lease 注册表 + watch 同步，见下）。
 //
 //   - closeBackend 关闭底层连接：embed 模式 = et.Close()；外部模式 = kv.Close()；
 //   - 任一包装创建失败 → 调用 downgrade（降级纯内存 + 告警），
@@ -149,6 +207,76 @@ func assembleEtcdStores(kv etcdstore.KVStore, closeBackend func(), modeLabel str
 		modeLabel, nodeReg.Count(), retention)
 	// 定期 GC（每小时，与 ledger.RunCleanupLoop 同模式）+ 设备子树级联。
 	nodeReg.CleanupLoop(sigCtx, time.Hour)
+	go gcCascadeLoop(sigCtx, nodeReg, deviceStore)
+	return nodeReg, deviceStore, closeEtcd, nil
+}
+
+// assembleExternalEtcdStores 是 v0.6.0 外部模式（真多活）装配逻辑（设计
+// §12.5 + 主线裁决 D1/D2/D3）：
+//
+//	1) LeaseEtcdRegistry（判活 = etcd 租约视角）+ EtcdDeviceStore（CAS + watch）
+//	2) schema 钩子（同值 Put 幂等，多副本首启无竞态——v0.5.0 D8 不变）
+//	3) LoadAnchored 双存储锚定加载（失败以空库继续 + 日志，不阻断启动——
+//	   与 v0.5.0「加载失败以空库继续」同口径；rev=0 时 watch 只收新事件，
+//	   周期重扫 30s 内收敛）
+//	4) StartWatch 双存储（watch 增量 + 续约 worker + 周期重扫）
+//	5) CleanupLoop（两阶段 GC，周期 = max(30s, NODE_SCAN_INTERVAL)）+
+//	   gcCascadeLoop（级联删设备子树，严格排在守卫删除确认之后——R4-2）
+//
+// 启动失败一律 fail-fast（不降级纯内存——外部 etcd 是显式部署依赖，v0.5.0
+// 决策延续）；closeEtcd 关停顺序：注册表循环 → 设备存储（内部关 kv，
+// kvStore.Close 幂等）→ closeBackend。
+func assembleExternalEtcdStores(kv etcdstore.ExtendedKV, closeBackend func(), modeLabel string,
+	retention, leaseTTL, scanInterval time.Duration, sigCtx context.Context) (registry.Store, devicestatus.Store, func(), error) {
+
+	closeEtcd := func() { closeBackend() }
+
+	nodeReg, err := registry.NewLeaseEtcdRegistry(kv, registry.LeaseRegOptions{
+		OfflineTTL:   retention,
+		LeaseTTL:     leaseTTL,
+		ScanInterval: scanInterval,
+		RenewWorkers: 4,
+	})
+	if err != nil {
+		return nil, nil, closeEtcd, err
+	}
+	deviceStore, err := devicestatus.NewEtcdDeviceStore(kv)
+	if err != nil {
+		_ = nodeReg.Close()
+		return nil, nil, closeEtcd, err
+	}
+	closeEtcd = func() {
+		if err := nodeReg.Close(); err != nil {
+			log.Errorf("[etcdstore] 注册表包装关停失败: %v", err)
+		}
+		if err := deviceStore.Close(); err != nil {
+			log.Errorf("[etcdstore] 设备存储包装关停失败（kv Close）: %v", err)
+		}
+		closeBackend()
+	}
+
+	// schema 版本钩子（v0.4.0 预留项，v0.5.0 随外部模式落地；v0.6.0 不 bump——
+	// 新增心跳键空间属向后兼容扩展，既有键/JSON 逐字不变）。
+	if err := etcdstore.EnsureSchemaVersion(sigCtx, kv, etcdstore.DefaultSchemaVersion); err != nil {
+		log.Warnf("[etcdstore] schema 版本检查: %v", err)
+	}
+
+	// 锚定加载（失败以空库继续，等心跳/指令重建——与 v0.5.0 同口径）。
+	rRev, err := nodeReg.LoadAnchored(sigCtx)
+	if err != nil {
+		log.Errorf("[etcdstore] 节点台账锚定加载失败（以空库继续，等心跳重注册）: %v", err)
+	}
+	dRev, err := deviceStore.LoadAnchored(sigCtx)
+	if err != nil {
+		log.Errorf("[etcdstore] 设备影子锚定加载失败（以空库继续）: %v", err)
+	}
+	log.Infof("[etcdstore] %s 装配完成：恢复节点 %d 台账 + 设备影子（Desired），retention=%v leaseTTL=%v（锚点 registry rev=%d / devicestatus rev=%d）",
+		modeLabel, nodeReg.Count(), retention, leaseTTL, rRev, dRev)
+
+	// watch 应用器 + 续约 worker（grant-per-heartbeat）+ 周期重扫 + 两阶段 GC。
+	nodeReg.StartWatch(sigCtx)
+	deviceStore.StartWatch(sigCtx)
+	nodeReg.CleanupLoop(sigCtx, scanInterval)
 	go gcCascadeLoop(sigCtx, nodeReg, deviceStore)
 	return nodeReg, deviceStore, closeEtcd, nil
 }

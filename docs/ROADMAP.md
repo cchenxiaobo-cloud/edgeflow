@@ -395,16 +395,50 @@
 
 ---
 
-## 12. v0.7.0 开发轮处置登记（2026-08-25）
+## 12. v0.4.0 开发轮处置登记（2026-08-24）
 
-> 依据：.cluster/edgeflow-v070/plan.md + 设计定稿 subagent_01.md + 审稿复核 subagent_02.md + 主线裁决 decision.md（D1-D11）。状态：✅ 本文档轮已完成 / ⏳ 实施与验证在途。
+> 依据：RELEASE-NOTES-v040 + KNOWN-ISSUES L6-L9 闭环。状态：✅ 已完成（2026-08-24 发布）。
 
 | 项 | 对应 WBS/手册 | 处置 | 结论/理由 |
 |----|----------|------|----------|
-| 模型仓库与版本管理（F41） | 手册 F41（原规划中） | ✅ v0.7.0 已实现（文档轮登记；实施在途） | 云模型台账 + 版本状态机 + 部署影子：17 个新端点之一部（模型 5 + 版本 6）；键空间 `/edgeflow/models/`，guard + CAS；版本状态 draft/active/archived（两键 CAS + 补偿）。契约见 API-SPEC §7；架构决策 ARCHITECTURE R16；发布说明 RELEASE-NOTES-v070 |
-| 模型灰度发布（F42） | 手册 F42（原部分实现：仅 keadm 升级分批） | ✅ v0.7.0 已实现（文档轮登记；实施在途） | 服务端灰度执行器：白名单/按比例（创建时快照）、分批、fail-fast、取消、逆序回滚；领跑锁 + 崩溃接管（外部多副本）；下发复用 podsync/config-sync（边缘零改动）。keadm 升级分批保留为**产品升级灰度**（双轨并行） |
+| 云端分级持久化（嵌入式 etcd） | WBS 2（CloudCore 存储） | ✅ 已完成 | registry/podstatus/devicestatus 三存储由纯内存改为嵌入式单成员 etcd（v3.5.33，127.0.0.1:12379/12380 只绑回环）写穿持久化：落盘 = 节点注册元数据 + 设备 Desired；心跳/Status/Pod 状态/属性快照不落盘（重启 ≤1 上报周期自愈）；读路径全走内存缓存，启动前缀 Range Load→Seed；GC 级联（CleanupLoop 1h）；坏库降级纯内存 + 大告警（ETCD_STRICT=1 fail-fast）；键空间 /edgeflow/{_meta,registry/nodes,devicestatus}；nodeID 字符约束 ^[A-Za-z0-9._-]+$；env +9（ETCD_ENABLED/DATA_DIR/CLIENT_URL/PEER_URL/QUOTA/COMPACTION/STRICT/NODE_RETENTION 等） |
+| 升级与运维约束 | WBS 8（部署） | ✅ 已登记 | 升级后首次启动自动建库（无迁移脚本）；Helm 必须挂 PVC（默认 1Gi，emptyDir 名存实亡）；embed 模式 replicaCount 必须 1（多副本各自 embed=脑裂）；备份恢复走 etcdutl snapshot（文件拷贝≠有效备份）；监控阈值容忍重启短暂清空窗口 |
+| 手册同步 | 手册 F09/附录 | ✅ 已完成 | 用户手册/方案手册"云端内存态"口径升级为分级持久化（本次手册轮再全面同步）；KNOWN-ISSUES L6-L9 闭环 |
+
+## 13. v0.5.0 开发轮处置登记（2026-08-24）
+
+> 依据：RELEASE-NOTES-v050 + DEPLOYMENT §10.7（外部模式迁移 runbook）。状态：✅ 已完成（2026-08-24 发布）。
+
+| 项 | 对应 WBS/手册 | 处置 | 结论/理由 |
+|----|----------|------|----------|
+| 外部 etcd 模式 | WBS 2（CloudCore 存储） | ✅ 已完成 | `EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS` 非空 = 外部直连共享 etcd 集群（clientv3，跳过 embed，不建目录不占端口）；业务层零改动；单写者铁律：两种模式 replicaCount 均必须 1（多副本互判离线删键，Chart {{ fail }} 守卫）；env +5（ETCD_ENDPOINTS/TLS_CA/TLS_CERT/TLS_KEY/ALLOW_INSECURE） |
+| 安全护栏 | WBS 7（安全） | ✅ 已完成 | 非回环端点+无 TLS → 拒绝启动（逃生门 ETCD_ALLOW_INSECURE=1 仅限可信内网）；TLS_CA 非空启用（全 https）、CERT/KEY 同设即 mTLS（只设其一 fail-fast）、TLS1.2+；启动连通性探活（线性一致读 schemaVersion，至多 3×5s，失败拒绝启动）；schemaVersion 钩子（≠1 Warn） |
+| 迁移与运维 | WBS 8（部署） | ✅ 已登记 | 首次切换走 DEPLOYMENT §10.7.5 迁移 runbook（快照恢复或零迁移自愈）；外部集群建议 3 节点奇数/同地域/quota 256MiB/compaction 1h/最小权限角色 readwrite /edgeflow/ |
+| 手册同步 | 手册 ch2/ch7/ch8/附录 A | ✅ 已完成 | 部署形态/安全章节补外部模式（本次手册轮再全面同步）；KNOWN-ISSUES L10/L11 登记 |
+
+## 14. v0.6.0 开发轮处置登记（2026-08-25）
+
+> 依据：RELEASE-NOTES-v060 + ARCHITECTURE R15 + KNOWN-ISSUES L12-L17。状态：✅ 已完成（2026-08-25 发布）。
+
+| 项 | 对应 WBS/手册 | 处置 | 结论/理由 |
+|----|----------|------|----------|
+| 真多活（外部模式多副本放开） | WBS 2（CloudCore 高可用） | ✅ 已完成 | 外部模式 replicaCount>1 active-active：心跳落盘为 etcd 租约（grant-per-heartbeat，/edgeflow/registry/heartbeats/<nodeID>，到期自动删键=软离线）；判活三态 = hb 键存在性（事件源三路互兜：watch 增量/周期重扫/断开事件）；GuardedDelete 守卫（活租约拒绝删台账）；watch 缓存同步（ListByPrefixRev→Watch→断线全量重放）；SetDesired CAS（冲突重试 ≤3）；/healthz 多副本绑定（失联 >TTL → 503）；NodeController 外部模式停用；env +2（NODE_LEASE_TTL 300s/MULTI_REPLICA） |
+| 混跑禁令 | WBS 8（升级运维） | ✅ 已登记 | 升级/回滚必须全停再全起（scale 0→1），禁止 v0.5.0×v0.6.0 混跑（旧版 GC 误删活节点，L15）；回滚零脏键（hb 前缀 v0.5.0 扫不到，租约 ≤TTL 自动到期）；多副本前置：同版本/3 节点 quorum/共享 endpoints |
+| 语义变化 | WBS 2/手册 | ✅ 已登记 | etcd 故障 >TTL → 全量软离线（有界自愈、零数据删除），与 v0.5.0"判活不受存储故障影响"不同；NODE_TIMEOUT 不再参与判活、NODE_SCAN_INTERVAL 迁用重扫/GC 周期；监控阈值按 ≈2×TTL 折算 |
+| 手册同步 | 手册 ch4/ch5/ch7/ch9/附录 A | ✅ 已完成 | 判活机制/healthz 语义/扩缩容入册（本次手册轮再全面同步） |
+
+---
+
+## 15. v0.7.0 开发轮处置登记（2026-08-25）
+
+> 依据：.cluster/edgeflow-v070/plan.md + 设计定稿 subagent_01.md + 审稿复核 subagent_02.md + 主线裁决 decision.md（D1-D11）。状态：✅ 已完成（2026-08-25 发布，Release v0.7.0 15 制品；E2E 全链路验证通过）。
+
+| 项 | 对应 WBS/手册 | 处置 | 结论/理由 |
+|----|----------|------|----------|
+| 模型仓库与版本管理（F41） | 手册 F41（原规划中） | ✅ v0.7.0 已实现（2026-08-25 发布） | 云模型台账 + 版本状态机 + 部署影子：17 个新端点之一部（模型 5 + 版本 6）；键空间 `/edgeflow/models/`，guard + CAS；版本状态 draft/active/archived（两键 CAS + 补偿）。契约见 API-SPEC §7；架构决策 ARCHITECTURE R16；发布说明 RELEASE-NOTES-v070 |
+| 模型灰度发布（F42） | 手册 F42（原部分实现：仅 keadm 升级分批） | ✅ v0.7.0 已实现（2026-08-25 发布） | 服务端灰度执行器：白名单/按比例（创建时快照）、分批、fail-fast、取消、逆序回滚；领跑锁 + 崩溃接管（外部多副本）；下发复用 podsync/config-sync（边缘零改动）。keadm 升级分批保留为**产品升级灰度**（双轨并行） |
 | 端点口径 | API-SPEC/API-COMPATIBILITY | ✅ 全稿统一 **17 新端点 / 14→31** | 主线裁决 D1（F-1 🔴 修正）；P10 三处一致抽查随实施验证执行 |
 | 已知限制 | KNOWN-ISSUES §7 | ✅ 本文档轮登记完成 | L21-L31（设计 §13.1 + 主线 D2/D3/D4/D9/P9 补项；§6 原 L21 更名 L20b 消除编号冲突） |
 | 解决方案手册 | 手册 F41/F42 状态翻转 | ✅ 本文档轮完成 | 手册升 v1.1.0：第 4 章重写为正式能力（过渡路径降级为兼容路径）；附录 C 表 C-1 追加 F41/F42、表 C-2 摘除；FAQ A7/术语表/附录 D 同步 |
 | Chart | build/charts/edgeflow | ✅ 本文档轮完成 | version/appVersion → 0.7.0；无新增 values 必填项；helm lint 0 failed + 多场景渲染验证 |
-| 代码实现与 E2E | WBS 1-10（实施清单） | ⏳ 实施 Agent 并行在途 | 单测/E2E/三处一致抽查结果回填 RELEASE-NOTES-v070 §七.7.2 |
+| 代码实现与 E2E | WBS 1-10（实施清单） | ✅ 已完成（2026-08-25 发布） | 全量 `go test -race ./...` 33 包全绿、vet 干净；契约测试 31 端点；E2E 全链路实测（发布 v1/v2 succeeded→回滚 rolled_back→影子回退→embed 重启恢复）；E2E 发现并修复回滚链缺陷（cf23ee7：ActivateVersion 记录 PrevActive）；12 制品交叉编译 + helm lint/template 通过；验证摘要已回填 RELEASE-NOTES-v070 §七.7.2 |

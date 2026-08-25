@@ -2,11 +2,11 @@
 
 EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备接入、数据采集、模型分发与弱网通信能力，采用云边两级架构：
 
-- **CloudCore（云端）**：云边通信（WebSocket）、消息路由、节点注册与设备管理（CRD）、**云端状态持久化（v0.4.0：嵌入式 etcd 写穿，跨重启保留注册台账与设备期望态）**、mTLS 安全通道、REST API 与指标暴露。
+- **CloudCore（云端）**：云边通信（WebSocket）、消息路由、节点注册与设备管理（CRD）、**云端分级持久化（v0.4.0 嵌入式 etcd 写穿 / v0.5.0 外部 etcd 模式 / v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0）**、mTLS 安全通道、REST API 与指标暴露。
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.4.0**（2026-08-24）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0）、**云端状态持久化（嵌入式 etcd 写穿：注册台账与设备 Desired 跨重启保留；v0.4.0 起）**。
+> 当前版本：**v0.7.0**（2026-08-25）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**云端分级持久化（v0.4.0 嵌入式 etcd 写穿：注册台账与设备 Desired 跨重启保留；v0.5.0 外部 etcd 模式；v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**。
 
 ## 目录结构
 
@@ -46,7 +46,7 @@ make build
 # 3. 验证健康检查
 curl http://127.0.0.1:8080/healthz
 # 期望返回 HTTP 200 和 JSON，例如：
-# {"status":"ok","version":{"version":"v0.4.0","gitCommit":"...","buildTime":"...","goVersion":"go1.26.2"}}
+# {"status":"ok","version":{"version":"v0.7.0","gitCommit":"...","buildTime":"...","goVersion":"go1.26.2"}}
 
 # 4. 运行单元测试（含竞态检测与覆盖率）
 make test
@@ -73,11 +73,11 @@ helm install edgeflow build/charts/edgeflow/
 
 ### 从 Release 安装
 
-每个版本在 [GitHub Releases](https://github.com/cchenxiaobo-cloud/edgeflow/releases) 提供以下制品（以 v0.3.0 为例）：
+每个版本在 [GitHub Releases](https://github.com/cchenxiaobo-cloud/edgeflow/releases) 提供以下制品（以 v0.7.0 为例）：
 
-- 二进制：`cloudcore` / `edgecore` / `keadm` × `darwin-arm64` / `linux-amd64` / `linux-arm64`
-- 部署包：`edgeflow-0.3.0.tgz`（Helm Chart）
-- 物料：`sbom.json`（SBOM）、`checksums.txt`（sha256 校验清单）
+- 二进制：`cloudcore` / `edgecore` / `keadm` × `darwin-amd64` / `darwin-arm64` / `linux-amd64` / `linux-arm64`（12 个）
+- 部署包：`edgeflow-0.7.0.tgz`（Helm Chart）
+- 物料：`sbom-0.7.0.json`（SBOM）、`checksums-0.7.0.txt`（sha256 校验清单）
 
 ## 文档
 
@@ -90,13 +90,15 @@ helm install edgeflow build/charts/edgeflow/
 | [docs/SECURITY.md](docs/SECURITY.md) | 安全机制（mTLS/Token/CRL/OCSP） |
 | [docs/MAPPER-GUIDE.md](docs/MAPPER-GUIDE.md) | Mapper 开发指南 |
 | [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) | 已知问题台账 |
-| [docs/manual/](docs/manual/) | 用户手册（LaTeX 工程 + [PDF 下载](docs/manual/EdgeFlow-用户手册-v0.1.0.pdf)） |
-| [docs/solution-manual/](docs/solution-manual/) | 解决方案手册（[v1.0.0 PDF](docs/solution-manual/EdgeFlow-解决方案手册-v1.0.0.pdf) · [v1.0.0 Markdown](docs/solution-manual/EdgeFlow-解决方案手册-v1.0.0.md) · [v1.0.2 HTML](docs/solution-manual/EdgeFlow-解决方案手册-v1.0.2.html)） |
-| [docs/RELEASE-NOTES-v030.md](docs/RELEASE-NOTES-v030.md) | 各版本发布说明 |
-| [docs/RELEASE-NOTES-v040.md](docs/RELEASE-NOTES-v040.md) | v0.4.0 发布说明（云端持久化） |
+| [docs/manual/](docs/manual/) | 用户手册（LaTeX 工程 + [PDF 下载（v0.7.0，91 页）](docs/manual/EdgeFlow-用户手册-v0.7.0.pdf)） |
+| [docs/solution-manual/](docs/solution-manual/) | 解决方案手册 v1.1.0（[Markdown 主源](docs/solution-manual/EdgeFlow-解决方案手册-v1.0.0.md) · [PDF](docs/solution-manual/latex/EdgeFlow-解决方案手册-v1.0.0.pdf) · [LaTeX 工程](docs/solution-manual/latex/)；历史版本 HTML 见目录内） |
+| [docs/RELEASE-NOTES-v070.md](docs/RELEASE-NOTES-v070.md) | v0.7.0 发布说明（模型仓库/版本管理/灰度发布） |
 
 ## 版本历史
 
+- **v0.7.0**（2026-08-25）：模型仓库/版本管理/灰度发布——云端模型台账（F41）+ 服务端灰度执行器（F42：白名单/按比例、分批、fail-fast、取消、逆序回滚），模型 API 17 端点（总 HTTP 端点 14→31），边缘零改动（详见 [RELEASE-NOTES-v070.md](docs/RELEASE-NOTES-v070.md)）
+- **v0.6.0**（2026-08-25）：真多活——外部 etcd 模式多副本 active-active（租约判活/GuardedDelete/CAS/领跑锁），/healthz 多副本语义（详见 [RELEASE-NOTES-v060.md](docs/RELEASE-NOTES-v060.md)）
+- **v0.5.0**（2026-08-24）：外部 etcd 模式——`EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS` 直连共享集群，TLS/mTLS 与明文护栏，启动探活（详见 [RELEASE-NOTES-v050.md](docs/RELEASE-NOTES-v050.md)）
 - **v0.4.0**（2026-08-24）：云端状态持久化——嵌入式 etcd 写穿（注册台账与设备 Desired 跨重启保留），Helm PVC + 资源上调（详见 [RELEASE-NOTES-v040.md](docs/RELEASE-NOTES-v040.md)）
 - **v0.3.0**（2026-08-19）：KNOWN-ISSUES 闭环 + OPC-UA UA Binary 协议栈第一阶段
 - **v0.2.0**（2026-08-18）：功能增量（详见 [RELEASE-NOTES-v020.md](docs/RELEASE-NOTES-v020.md)）

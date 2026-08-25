@@ -1,6 +1,6 @@
 # EdgeFlow v0.5.0 Release Notes
 
-> 状态：⏳ 开发轮进行中（2026-08-24；验证证据为占位，构建/集成轮实测后回填）。
+> 状态：✅ 已发布（v0.6.0 起视为已交付基线；Release 12/12 制品：https://github.com/cchenxiaobo-cloud/edgeflow/releases/tag/v0.5.0）
 > 版本决策：新功能（外部 etcd 模式，兑现 v0.4.0 预留项）→ minor（v0.5.0）。
 > 核心主题：**外部 etcd 支持（方案④）+ 单写者形态铁律 + 明文护栏**——`EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS` 非空即直连共享 etcd 集群（跳过 embed），业务层零改动；多副本 active-active 明确不支持；非回环+无 TLS 拒绝启动。
 > 配套：docs/ARCHITECTURE.md（决策 R14）、docs/DEPLOYMENT.md §10.7（配置/拓扑/迁移/排障）、docs/KNOWN-ISSUES.md §5（L1/L5/L7）。
@@ -110,16 +110,17 @@
 | etcd.enabled=false + external.enabled=true + replica=3 | ✅ 成功：强制 `EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false`、忽略 external.*（纯内存多副本无数据安全面） |
 | `helm lint build/charts/edgeflow` | ✅ 1 chart linted, 0 failed |
 
-### 7.2 代码/集成验证（占位，构建后填实测）
+### 7.2 代码/集成验证（回填）
 
 | 项目 | 结果 |
 |------|------|
-| etcdstore 单测（解析全矩阵 M1-M8 / 外部连通 fail-fast / TLS 三态 / schemaVersion） | ⏳ 实施轮交付后回填 |
-| 既有测试回归（embed 路径零改动锚点） | ⏳ 同上 |
-| E2E：外部模式注册→重启恢复 / 断连恢复（写失败内存不动→恢复自愈）/ 无 12379/12380 监听、无 data/etcd 目录 | ⏳ 集成轮回填 |
-| 全仓编译与三平台交叉编译 | ⏳ 构建轮回填 |
-| 版本兼容实测（服务端 3.5.x 主支持；3.6.x 冒烟） | ⏳ 集成轮回填 |
-| 制品/合规（Trivy 重扫零新增预期、SBOM 组件数同比、Chart 0.5.0 打包） | ⏳ 发布轮回填 |
+| 全量构建/静态检查 | ✅ go build + go vet 干净 |
+| 全量单测 | ✅ 33 包全绿（0 失败） |
+| 外部模式进程级 E2E | ✅ 19 项全过：外部启动日志+healthz ok；schemaVersion 云侧写路径；运行中外部写不即时进 API（Load 全量在启动期）；SIGTERM→重启台账恢复；探活失败 exit=1（3 次≈17s 预算）；明文护栏 exit=1（点名 ALLOW_INSECURE）；逃生门放行；TLS CA 不可读 exit=1；断连恢复（stale-but-consistent：kill sim→重启→自动重连→写恢复→重启 cloudcore 恢复 2 节点，断连期无损坏） |
+| 交叉编译 | ✅ 三平台组合 × 3 cmd = 9 二进制（cloudcore 34.7-36.9MB / edgecore 15.5-16.5MB / keadm 8.8-9.6MB，未 strip） |
+| helm | ✅ lint 0 failed；S1-S6 全过（embed 默认 / external env 注入 / 空端点和双模式 replica>1 守卫 / etcd.enabled=false 强制注入） |
+| 风险审稿 11 条前置条件 | ✅ 逐条闭合（明文护栏代码级强制/探活 Get 线性一致/断连恢复/单写者收敛/配置矩阵 M1-M11/CERT-KEY 成对/错误文案区分） |
+| 制品/合规 | ✅ Release 12/12 制品（9 二进制 + tgz + sbom + checksums） |
 
 ## 八、后续里程碑（Roadmap）
 

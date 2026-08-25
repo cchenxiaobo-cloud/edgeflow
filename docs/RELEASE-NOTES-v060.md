@@ -1,6 +1,6 @@
 # EdgeFlow v0.6.0 Release Notes
 
-> 状态：⏳ 开发轮进行中（2026-08-25；代码/集成验证为占位，构建/集成轮实测后回填；**Chart 验证已完成**，见 §七.7.1）。
+> 状态：✅ 已发布（v0.6.0，2026-08-25，Releases 12/12 制品：https://github.com/cchenxiaobo-cloud/edgeflow/releases/tag/v0.6.0）
 > 版本决策：新功能（真多活，兑现 v0.5.0 R14 预留方向）→ minor（v0.6.0）。
 > 核心主题：**真多活（etcd Lease 心跳）**——心跳落盘为租约、判活 = etcd 视角 hb 键存在性、删除带 GuardedDelete 守卫、读一致 = Load 锚定 + watch 增量 + 重扫兜底、SetDesired/Register 条件写（CAS）；外部模式多副本 active-active 放开（v0.5.0 单写者铁律解除）；L5/L7 顺带闭环。
 > 配套：docs/ARCHITECTURE.md（决策 R15）、docs/DEPLOYMENT.md §10.8（多副本部署指南）、docs/KNOWN-ISSUES.md §6（L12-L20）。
@@ -114,7 +114,7 @@
 | SetDesired 并发两值并存 | ✅ 单测级验证（冲突注入 → 重读基准 → merge 两值并存；耗尽 ErrDesiredConflict）；进程级双写未单独模拟（需 Ack 仿真边端，排未来 E2E 工具） |
 | 交叉编译 | ✅ darwin/linux × amd64/arm64 × 3 cmd = 12 二进制（CGO_ENABLED=0）；windows 断链为既有现状（v0.5.0 起 Flock），登记排未来 |
 | helm | ✅ lint 0 failed；(embed,2) 脑裂守卫 fail；(external,2) replicas=2+MULTI_REPLICA；(external,1) 不注入；nodeLeaseTTL→NODE_LEASE_TTL |
-| 制品/合规（Trivy / SBOM / Chart 打包） | ⏳ 发布轮回填 |
+| 制品/合规 | ✅ Trivy SBOM（52KB，0 高危阻断）、edgeflow-0.6.0.tgz、checksums 13 条；Release 12/12 制品已上传 |
 
 ## 八、后续里程碑（Roadmap）
 

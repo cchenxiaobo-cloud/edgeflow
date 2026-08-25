@@ -90,8 +90,8 @@ helm install edgeflow build/charts/edgeflow/
 | [docs/SECURITY.md](docs/SECURITY.md) | 安全机制（mTLS/Token/CRL/OCSP） |
 | [docs/MAPPER-GUIDE.md](docs/MAPPER-GUIDE.md) | Mapper 开发指南 |
 | [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) | 已知问题台账 |
-| [docs/manual/](docs/manual/) | 用户手册（LaTeX 工程 + [PDF 下载（v0.7.0，91 页）](docs/manual/EdgeFlow-用户手册-v0.7.0.pdf)） |
-| [docs/solution-manual/](docs/solution-manual/) | 解决方案手册 v1.1.0（[Markdown 主源](docs/solution-manual/EdgeFlow-解决方案手册-v1.0.0.md) · [PDF](docs/solution-manual/latex/EdgeFlow-解决方案手册-v1.0.0.pdf) · [LaTeX 工程](docs/solution-manual/latex/)；历史版本 HTML 见目录内） |
+| [docs/manual/](docs/manual/) | 用户手册 v0.7.0（[Markdown（GitHub 在线可读）](docs/manual/EdgeFlow-用户手册-v0.7.0.md) · [PDF（91 页）](docs/manual/EdgeFlow-用户手册-v0.7.0.pdf) · [LaTeX 工程](docs/manual/main.tex)） |
+| [docs/solution-manual/](docs/solution-manual/) | 解决方案手册 v1.1.0（[Markdown（GitHub 在线可读）](docs/solution-manual/EdgeFlow-解决方案手册-v1.0.0.md) · [PDF（36 页）](docs/solution-manual/latex/EdgeFlow-解决方案手册-v1.0.0.pdf) · [LaTeX 工程](docs/solution-manual/latex/)） |
 | [docs/RELEASE-NOTES-v070.md](docs/RELEASE-NOTES-v070.md) | v0.7.0 发布说明（模型仓库/版本管理/灰度发布） |
 
 ## 版本历史

@@ -1,7 +1,7 @@
 \chapter{快速入门}
 \label{ch:3}
 
-本章内容：在单台开发机上用约 10 分钟跑通 EdgeFlow 完整链路：构建制品、启动云端与边缘、注册节点、下发 Pod、查看容器、查看设备数据、下发设备指令。适合第一次接触 EdgeFlow 的操作人员。
+本章内容：在单台开发机上用约 10 分钟跑通 EdgeFlow 完整链路：构建制品、启动云端与边缘、注册节点、下发 Pod、查看容器、查看设备数据、下发设备指令，并可选体验模型发布。适合第一次接触 EdgeFlow 的操作人员。
 
 \section{准备工作}
 
@@ -26,7 +26,7 @@ go version         # 确认 Go 版本（源码构建时需要）
 make build
 \end{lstlisting}
 
-构建产物位于 \texttt{bin/}：\texttt{bin/cloudcore}、\texttt{bin/edgecore}。也可以直接使用发布目录 \texttt{release/v0.1.0/} 中的预编译二进制（获取方式见第 2 章 \autoref{ch:2}）。
+构建产物位于 \texttt{bin/}：\texttt{bin/cloudcore}、\texttt{bin/edgecore}。也可以直接使用发布目录 \texttt{release/v0.7.0/} 中的预编译二进制（获取方式见第 2 章 \autoref{ch:2}）。
 
 \section{第二步：启动云端 cloudcore}
 
@@ -59,7 +59,7 @@ EDGEFLOW_EDGECORE_CLOUD_ADDR=ws://127.0.0.1:10000/v1/edge \
 说明：
 
 \begin{itemize}
-  \item \texttt{EDGEFLOW\_EDGECORE\_NODE\_ID}：节点 ID。不设置时默认为 \texttt{edge-<主机名>}，仅允许字母、数字、连字符与下划线；
+  \item \texttt{EDGEFLOW\_EDGECORE\_NODE\_ID}：节点 ID。不设置时默认为 \texttt{edge-<主机名>}，仅允许字母、数字、点、连字符与下划线；
   \item \texttt{EDGEFLOW\_EDGECORE\_CLOUD\_ADDR}：云端 CloudHub 地址（明文通道用 \texttt{ws://}；启用 mTLS 时用 \texttt{wss://}，见第 2 章 \autoref{ch:2}）；
   \item edgecore 启动后自动完成节点注册、云边连接，并随进程启动内置模拟温湿度传感器 \texttt{sensor-01}（mock\_sensor），无需额外配置。
 \end{itemize}
@@ -84,6 +84,16 @@ curl -X POST http://127.0.0.1:8080/api/v1/nodes/node-1/podsync \
 
 预期返回 \texttt{\{"status":"ok","acked":true\}}，表示边缘节点已确认。镜像首次拉取可能需要一些时间。
 
+如需限制容器资源（可选，v0.2.0 起支持），在 \texttt{pod} 中追加 \texttt{resources} 字段（K8s 风格，零值表示不限制）：
+
+\begin{lstlisting}
+curl -X POST http://127.0.0.1:8080/api/v1/nodes/node-1/podsync \
+  -H 'Content-Type: application/json' \
+  -d '{"operation":"add","pod":{"name":"nginx","namespace":"default","image":"nginx:1.25-alpine","replicas":1,"resources":{"cpuRequest":"100m","cpuLimit":"250m","memoryRequest":"64Mi","memoryLimit":"128Mi"}}}'
+\end{lstlisting}
+
+资源语义（v0.2.0）：请求量大于上限（\texttt{request} > \texttt{limit}）返回 400；超出节点超卖容量返回 409（\texttt{EDGEFLOW\_RESOURCE\_EXHAUSTED}，不落盘不建容器）；格式非法（如 NaN/Inf/前导 \texttt{+}）同样返回 400。
+
 \section{第六步：查看容器与 Pod 状态}
 
 在边缘侧查看容器（本机即边缘）：
@@ -101,6 +111,8 @@ curl http://127.0.0.1:8080/api/v1/pods
 \end{lstlisting}
 
 预期返回 \texttt{phase} 为 \texttt{Running} 的 Pod 记录。
+
+\begin{note}资源漂移说明（v0.2.0 起）：在边缘侧直接修改容器资源限制（如 \texttt{docker update}）会被 Edged 判定为与期望状态不一致并自动重建容器（每轮最多重建 1 个），资源以云端下发为准。\end{note}
 
 \section{第七步：查看设备数据}
 
@@ -127,6 +139,58 @@ curl http://127.0.0.1:8080/api/v1/devices
 \end{lstlisting}
 
 预期 \texttt{sensor-01} 的 \texttt{desired} 中写入 \texttt{\{"targetTemp":25\}}，表明指令已被边缘执行并写回云端设备状态。
+
+\section{体验模型发布（可选，v0.7.0）}
+
+以下步骤在已完成第八步的同一环境上体验模型仓库与灰度发布。该能力为云端内置（v0.7.0），边缘零代码改动；发布器复用既有 podsync 与 config-sync 经可靠投递下发，旧版 edgecore 直接可用。前置条件：\texttt{node-1} 处于 \texttt{Ready} 状态（百分比发布的分母为创建时刻 Ready 节点数，0 台会返回 422）。
+
+\subsection{第一步：注册模型}
+
+\begin{lstlisting}
+curl -X POST http://127.0.0.1:8080/api/v1/models \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"defect-detector","description":"缺陷检测模型","type":"detection"}'
+\end{lstlisting}
+
+预期返回 200 与完整 Model 对象（含 \texttt{createdAt}/\texttt{updatedAt}）。模型名全局唯一（重复创建返回 409）。
+
+\subsection{第二步：登记版本}
+
+\begin{lstlisting}
+curl -X POST http://127.0.0.1:8080/api/v1/models/defect-detector/versions \
+  -H 'Content-Type: application/json' \
+  -d '{"version":"v1.2.0","mirror":"registry.example.com/edgeflow/models/defect-detector:v1.2.0","sha256":"sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","archs":["amd64","arm64"],"metadata":{"threshold":"0.8"}}'
+\end{lstlisting}
+
+预期返回 200 与 ModelVersion（\texttt{status} 为 \texttt{draft}）。\textquotedblleft Tag 即版本\textquotedblright ：\texttt{mirror} 必须带 tag，\texttt{sha256} 为镜像防篡改登记（\texttt{\textasciicircum{}sha256:[0-9a-f]\{64\}\$}）。
+
+\subsection{第三步：激活版本}
+
+\begin{lstlisting}
+curl -X POST http://127.0.0.1:8080/api/v1/models/defect-detector/versions/v1.2.0/activate
+\end{lstlisting}
+
+预期返回 200；版本状态 \texttt{draft} → \texttt{active}（自动降级旧 active 版本）。发布目标必须是 active 版本。
+
+\subsection{第四步：全量发布}
+
+\begin{lstlisting}
+curl -X POST http://127.0.0.1:8080/api/v1/models/defect-detector/releases \
+  -H 'Content-Type: application/json' \
+  -d '{"version":"v1.2.0","target":{"type":"percentage","percentage":100}}'
+\end{lstlisting}
+
+预期返回 202 与 release 对象（\texttt{status} 为 \texttt{pending}，\texttt{targetNodes} 已物化）。发布为异步受理：可用 \texttt{GET /api/v1/models/defect-detector/releases/<releaseID>} 跟踪执行进度，全部目标节点 \texttt{deployed} 后进入 \texttt{succeeded}。
+
+\subsection{第五步：查询部署影子}
+
+\begin{lstlisting}
+curl http://127.0.0.1:8080/api/v1/models/defect-detector/deployments
+\end{lstlisting}
+
+预期返回每台目标节点的\textquotedblleft 版本—节点—时间\textquotedblright 记录（\texttt{model}/\texttt{version}/\texttt{mirror}/\texttt{releaseID}/\texttt{updatedAt}），即云端写穿的部署影子。
+
+说明：模型发布为云端能力——发布器自动执行 podsync（Pod 名 \texttt{edgeflow-model-<模型名>}、命名空间固定 \texttt{edgeflow}、replicas=1）与 config-sync（ConfigMap 携带 model/version/mirror/sha256/type/releasedAt 与版本参数），两步均被边缘确认后写穿部署影子。注意：\textbf{发布成功 ≠ 镜像可用}——拉取发生在边缘，请以试点节点 PodStatus（Running/CrashLoop）为准；灰度节奏建议先白名单 1 台试点 → 小批（\texttt{batchSize}+\texttt{pauseBetween}）→ 全量；生产环境建议 embed/外部 etcd 模式（纯内存模式下发布任务与部署影子重启丢失）。
 
 \section{一键 Demo（可选）}
 

@@ -6,8 +6,9 @@
 \chapter{安全与认证}
 \label{ch:8}
 
-EdgeFlow v0.1.0 的安全基线由三层构成：\textbf{云边通道 mTLS}（双向认证）、
-\textbf{管理 API Token 认证}（默认关闭）与\textbf{审计台账}（默认开启）。
+EdgeFlow v0.7.0 的安全基线由四层构成：\textbf{云边通道 mTLS}（双向认证）、
+\textbf{管理 API Token 认证}（默认关闭）、\textbf{审计台账}（默认开启）与
+\textbf{外部 etcd 安全}（v0.5.0 起，控制面存储）。
 本章按层说明启用方式与运维要点。
 
 \section{云边通道 mTLS}
@@ -221,6 +222,58 @@ bin/cloudcore
         （单令牌模型，持有令牌即管理员；完整 RBAC 角色模型为后续版本）。
 \end{itemize}
 
+\textbf{模型 API 自动覆盖（v0.7.0）}：v0.7.0 新增的 17 个模型 API
+（模型/版本/发布/部署影子，见第 4 章）注册于\textbf{同一 apiMux}，
+\texttt{EDGEFLOW\_CLOUDCORE\_AUTH=on} 时\textbf{自动要求}
+\texttt{Authorization: Bearer <token>}（缺失/不匹配 → \texttt{401}
+fail-fast），审计台账自动记录——无需任何额外配置。
+
+\section{外部 etcd 安全（v0.5.0 起）}
+
+云端持久化存储可选择外部 etcd 集群（\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_ENDPOINTS}
+非空即启用，配置与迁移见第 2/7 章）。etcd 存储节点注册台账、设备 Desired
+与模型仓库数据，属于\textbf{控制面敏感数据}，其安全配置与云边 mTLS、
+管理 API Token 是\textbf{两套独立体系，互不替代}：云边通道与 API 的认证
+不会自动保护 etcd 链路，反之亦然。
+
+\subsection{明文护栏（默认拒绝）}
+
+\begin{itemize}
+  \item 端点含\textbf{非回环地址}（非 \texttt{127.0.0.1}/\texttt{localhost}）且
+        \textbf{未配置 TLS} → cloudcore \textbf{拒绝启动}（fail-fast），防止
+        控制面数据明文暴露在网络上；
+  \item \textbf{逃生门}：\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_ALLOW\_INSECURE=1}
+        可放行明文（启动期输出\textbf{大告警}）。仅限\textbf{可信内网}使用，
+        生产严禁开启。
+\end{itemize}
+
+\subsection{TLS 与 mTLS}
+
+\begin{itemize}
+  \item \texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_TLS\_CA} 非空即启用 TLS：
+        \textbf{全部端点必须为 \texttt{https://}}（任一 \texttt{http} 端点 →
+        启动失败）；
+  \item \texttt{ETCD\_TLS\_CERT} 与 \texttt{ETCD\_TLS\_KEY} \textbf{同设即 mTLS}
+        （双向认证）；只设其一 → \textbf{启动失败}（fail-fast）；
+  \item 最低 TLS 版本 \textbf{TLS 1.2}；
+  \item 启动时执行\textbf{连通性检查}（线性一致读 \texttt{schemaVersion} 键，
+        至多 3 次 × 5s + 1s 间隔，约 17s）：探活失败 / 鉴权被拒 / 明文被护栏
+        拦截 → 拒绝启动，日志区分 \texttt{Unavailable}（网络/集群不可达）
+        与 \texttt{PermissionDenied}（凭据/角色不足）两类文案。
+\end{itemize}
+
+\subsection{etcd 侧最小权限}
+
+\begin{itemize}
+  \item 为 cloudcore 创建\textbf{最小权限角色}：仅 \texttt{readwrite}
+        \texttt{/edgeflow/} 前缀键空间，不建议授予全库 root；
+  \item 生产建议 etcd 开启 \texttt{--client-cert-auth}（客户端证书认证）配合
+        mTLS 使用；
+  \item 版本限制：v0.5.0 起\textbf{不支持} etcd 鉴权参数透传（用户名/密码经
+        环境变量传入，见 KNOWN-ISSUES L1，规划后续版本），鉴权凭据通过
+        etcd 侧证书体系解决。
+\end{itemize}
+
 \section{审计台账}
 
 管理 API 的所有操作默认写入审计台账：
@@ -246,9 +299,11 @@ tail -f data/audit-ledger.jsonl
   \item 已实现：双向认证（云验边、边验云+主机名）、设备接入令牌认证
         （云端设 \texttt{EDGEFLOW\_CLOUDCORE\_NODE\_TOKEN} 后启用，见
         「设备接入令牌认证」小节）、私钥 0600、强制 TLS 1.2+、证书
-        损坏 fail-fast、Token 认证（默认关）、审计台账（默认开）、
-        证书吊销（CRL 离线 + OCSP 在线，见「证书轮换与吊销」与
-        「在线吊销查询（OCSP）」小节）；
+        损坏 fail-fast、Token 认证（默认关，v0.7.0 起模型 API 自动覆盖）、
+        审计台账（默认开）、证书吊销（CRL 离线 + OCSP 在线，见「证书轮换
+        与吊销」与「在线吊销查询（OCSP）」小节）、外部 etcd 明文护栏与
+        TLS/mTLS（v0.5.0，见「外部 etcd 安全」小节）；
   \item 已知限制：CSR 审批流未实现；证书 CN 与 nodeID 未绑定校验；
-        单令牌模型（无多角色授权）。
+        单令牌模型（无多角色授权）；外部 etcd 不支持鉴权参数透传
+        （凭据经证书体系解决）。
 \end{itemize}

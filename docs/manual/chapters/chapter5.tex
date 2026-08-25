@@ -41,6 +41,20 @@ bin/edgecore
   \item 云端扫描周期：\texttt{EDGEFLOW\_CLOUDCORE\_NODE\_SCAN\_INTERVAL}，默认 \texttt{30s}。
 \end{itemize}
 
+\textbf{判活机制差异（v0.6.0）}：外部 etcd 多副本模式下，云端
+\textbf{NodeController 停用}，不再参与判活；判活的唯一事实源改为 etcd
+\textbf{租约}视角的心跳键（\texttt{/edgeflow/registry/heartbeats/<nodeID>}）：
+每次心跳 Grant+Put 一个新租约，租约到期自动删除心跳键即判
+\texttt{Offline}（软离线）。该模式下：
+
+\begin{itemize}
+  \item 判活阈值：\texttt{EDGEFLOW\_CLOUDCORE\_NODE\_LEASE\_TTL}，默认 \texttt{300s}（低于 \texttt{90s} 打印告警，非法值启动即失败）；
+  \item \texttt{EDGEFLOW\_CLOUDCORE\_NODE\_TIMEOUT} 不再参与判活（显式设置仅告警忽略）；
+  \item \texttt{EDGEFLOW\_CLOUDCORE\_NODE\_SCAN\_INTERVAL} 迁用为心跳键重扫/GC 周期（默认 \texttt{30s}）。
+\end{itemize}
+
+嵌入式 etcd 与纯内存模式维持上文表述（NodeController 扫描 \texttt{30s}、超时 \texttt{180s} 判活）。
+
 \subsection{通道压缩}
 
 云边通道的 gzip 压缩\textbf{默认开启}：edgecore 在 Register 消息中声明压缩
@@ -126,6 +140,34 @@ Edged 在调谐时会比对\textbf{期望镜像}与\textbf{实际运行镜像}�
         自动逐副本完成替换。
 \end{itemize}
 
+\subsection{资源限制与漂移检测（v0.2.0）}
+
+云端下发 Pod 时可通过 \texttt{resources} 字段声明资源诉求（v0.2.0 起，
+K8s 风格，零值表示不限制）：
+
+\begin{lstlisting}
+"resources": {
+  "cpuRequest": "100m",
+  "cpuLimit": "250m",
+  "memoryRequest": "64Mi",
+  "memoryLimit": "128Mi"
+}
+\end{lstlisting}
+
+\begin{itemize}
+  \item \textbf{落地}：容器创建时映射为 docker \texttt{--cpus} /
+        \texttt{--memory} 参数；\texttt{--memory-swap} 被\textbf{禁用}，容器无法用
+        swap 规避内存限制；
+  \item \textbf{超卖准入}（\texttt{admitPodResources}）：边缘按节点容量
+        （自动探测，可用 \texttt{NODE\_CPU\_MILLI} / \texttt{NODE\_MEMORY\_BYTES}
+        覆盖）与超卖率（默认 \texttt{1.5}）准入；超卖拒绝时容器\textbf{不落盘、
+        不创建}，云端侧对应返回 \texttt{409 EDGEFLOW\_RESOURCE\_EXHAUSTED}；
+  \item \textbf{资源漂移检测}：与镜像漂移并列——若外部（如 docker CLI）修改了
+        运行中容器的资源限制，Edged 判定为\textbf{资源漂移}，自动
+        \texttt{stop}+重建；每轮最多重建 \textbf{1 个}漂移容器，逐轮滚动收敛，
+        重建不计入 \texttt{RestartCount}。
+\end{itemize}
+
 \section{断网自治}
 \label{sec:5-autonomy}
 
@@ -140,9 +182,12 @@ Edged 在调谐时会比对\textbf{期望镜像}与\textbf{实际运行镜像}�
         设备上报\textbf{自动同步}到云端，云端视图恢复一致。
 \end{enumerate}
 
-注意：云端状态为\textbf{内存态}，云端进程重启后节点需重新注册（见
-第~\ref{ch:9}~章）。边缘侧元数据由 MetaManager 持久化到本机 SQLite，断网
-期间不丢失。
+注意：云端状态为\textbf{分级持久化}（v0.4.0 起）：节点注册台账与设备
+Desired 跨重启保留，云端进程重启后节点\textbf{无需重新注册}——重启后节点
+短暂显示为 \texttt{Unknown}，边缘下一心跳周期内翻新为 \texttt{Ready}；
+Pod 状态与设备上报属性重启后短暂清空，\textbf{不超过 1 个上报周期}内由
+边缘周期上报自动补全自愈（非永久丢失）。边缘侧元数据由 MetaManager
+持久化到本机 SQLite，断网期间不丢失。
 
 \section{edgecore 配置（环境变量 + 配置文件）}
 
@@ -191,9 +236,18 @@ cloudcore 采用同构机制：配置文件 \texttt{config/cloudcore.json}（字
 \texttt{EDGEFLOW\_EDGECORE\_DEVICE\_REPORT\_INTERVAL} & \texttt{30s} & 设备状态上报周期 \\
 \texttt{EDGEFLOW\_EDGECORE\_MQTT\_CONNECT\_TIMEOUT} & \texttt{5s} & 单次 MQTT 建连超时 \\
 \texttt{EDGEFLOW\_EDGECORE\_TOKEN} & 空 & 接入令牌（keadm join 写入；仅环境变量，不入配置文件） \\
+\texttt{EDGEFLOW\_EDGECORE\_NODE\_CPU\_MILLI} & 自动探测 & 节点 CPU 容量（毫核），资源准入用（v0.2.0） \\
+\texttt{EDGEFLOW\_EDGECORE\_NODE\_MEMORY\_BYTES} & 自动探测 & 节点内存容量（字节，仅 Linux），资源准入用（v0.2.0） \\
+\texttt{EDGEFLOW\_EDGECORE\_OVERCOMMIT\_CPU\_RATE} & \texttt{1.5} & CPU 超卖率（v0.2.0） \\
+\texttt{EDGEFLOW\_EDGECORE\_OVERCOMMIT\_MEMORY\_RATE} & \texttt{1.5} & 内存超卖率（v0.2.0） \\
+\texttt{EDGEFLOW\_EDGECORE\_ENABLE\_MAPPER} & \texttt{true} & Mapper 装配开关；\texttt{false} 时为纯影子模式（v0.2.0，见第~\ref{ch:6}~章） \\
 \bottomrule
 \end{tabularx}
 \end{table}
+
+\textbf{周期类变量三态明示（v0.3.0）}：周期类环境变量（调谐/上报周期等）
+启动时打印状态日志，三态明示——取值合法（按值生效）、越界或非法（回落
+默认值并打印告警）、未设置（使用默认值）。
 
 生产环境建议使用 \texttt{keadm join} 生成 \texttt{edgecore.env} 与
 \texttt{edgecore.service}（systemd 单元），由安装脚本统一部署，避免手工

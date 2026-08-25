@@ -6,7 +6,7 @@
 \chapter{常见问题与故障排查}
 \label{ch:9}
 
-本章汇集 v0.1.0 实测与文档沉淀的常见问题。排障第一步永远是\textbf{看日志}，
+本章汇集 v0.7.0 实测与文档沉淀的常见问题。排障第一步永远是\textbf{看日志}，
 先定位故障在哪一层：云边通道、容器运行时、设备数据面，还是 API 层。
 
 \section{日志位置}
@@ -64,9 +64,28 @@ Edged 下轮调谐（默认 5s）自动拉起 \\
 容器反复重启 & 业务崩溃 / 退出型镜像 &
 观察 \texttt{RestartCount} 与 CrashLoopBackOff（3 次阈值/30s 退避/
 60s 稳定重置）；查看容器日志定位业务根因 \\
-云端重启后节点消失 & 云端状态为内存态 &
-边缘自动重连并\textbf{重新注册}；如长时间未恢复，重启 edgecore
-触发重连 \\
+云端重启后节点消失 & v0.4.0 起云端\textbf{分级持久化} &
+节点\textbf{台账保留}，重启后短暂 \texttt{Unknown}，边缘 \textbf{≤1 个
+心跳周期}自动翻新 \texttt{Ready}（无需重新注册）；Pod/设备上报数据
+重启后 ≤1 个上报周期自愈；长时间未恢复再查日志 \\
+全量软离线（外部多副本） & etcd 集群故障超过 \texttt{NODE\_LEASE\_TTL} &
+外部 etcd 多副本形态的\textbf{预期行为}：节点短时 \texttt{Offline}，
+etcd 恢复后 \textbf{≤1 个心跳周期自愈、零数据删除}；监控告警阈值按
+≈2×TTL 折算，避免误报 \\
+日志出现 \texttt{concurrent-write} & 多副本并发写同一设备 Desired &
+CAS 冲突重试（≤3 次）耗尽属\textbf{正常语义}：HTTP 仍 \texttt{200}，
+日志提示并发写冲突；重新下发指令收敛即可 \\
+模型发布返回 409/422 & 同模型在途发布 / 目标版本非 active /
+无 Ready 节点 / 白名单含未知节点 / 回滚被新版本接管 &
+409 = 冲突（读 error 文案，在途发布含 releaseID）；422 = 业务前置
+不满足（响应含 \texttt{unknownNodes} 等上下文）；修正后重试 \\
+外部模式启动失败 & 探活失败 / 鉴权被拒 / 明文护栏 &
+日志区分 \texttt{Unavailable}（集群不可达）与 \texttt{PermissionDenied}
+（凭据/角色不足）；非回环 + 无 TLS 被护栏拒绝时配置 TLS 或内网逃生门；
+处理见部署指南 §10.7.6 \\
+纯内存模式发布任务重启丢失 & 发布/部署影子为内存态（L22） &
+纯内存模式（\texttt{ETCD\_ENABLED=false}）下模型发布任务与部署影子
+重启丢失；生产建议使用 embed/外部 etcd 模式 \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -81,7 +100,9 @@ Edged 下轮调谐（默认 5s）自动拉起 \\
 curl http://127.0.0.1:8080/api/v1/nodes
 \end{lstlisting}
   \item 节点存在但状态 \texttt{Offline}：心跳停滞超过 180s（约 6 个
-        30s 心跳周期）。检查网络、云端进程；
+        30s 心跳周期；\textbf{外部多副本形态}判活为 etcd 租约，阈值取
+        \texttt{EDGEFLOW\_CLOUDCORE\_NODE\_LEASE\_TTL}（默认 300s），
+        见第 5 章）。检查网络、云端进程；
   \item 节点不存在（404）：从未注册或注册失败。看 edgecore 日志中
         Register/RegisterAck 是否成功；
   \item 启用 mTLS 后连不上：先确认两侧开关都开、证书目录正确、
@@ -133,5 +154,8 @@ curl http://127.0.0.1:8080/api/v1/nodes
         单边缘节点（2026-08-14 实测），多节点（10+）E2E 与压测未做；
   \item \textbf{镜像仓库}：镜像未推送远端仓库，跨机部署需自建 registry
         （\texttt{docker run -d -p 127.0.0.1:5001:5000 registry:2} +
-        buildx 双架构构建，见 docs/MULTIARCH.md）。
+        buildx 双架构构建，见 docs/MULTIARCH.md）；
+  \item \textbf{nodeID 字符约束}（v0.4.0 起）：节点 ID 必须匹配正则
+        \texttt{\textasciicircum{}[A-Za-z0-9.\_\-]+\$}，含 \texttt{/} 的
+        nodeID 拒绝写入云端台账。
 \end{itemize}

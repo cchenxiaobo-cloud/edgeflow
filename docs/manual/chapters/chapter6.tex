@@ -57,6 +57,16 @@ curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/device-command \
 设备模型。Mapper 注册到边缘的 \texttt{MapperRegistry}，按
 \texttt{deviceName} 路由设备消息。v0.1.0 内置两个 Mapper（\texttt{modbus} 需显式启用，见下）：
 
+\subsection{Mapper 装配开关（v0.2.0）}
+
+v0.2.0 起，Mapper 装配由开关 \texttt{EDGEFLOW\_EDGECORE\_ENABLE\_MAPPER}
+控制，默认 \texttt{true}（与旧版本行为一致）：
+
+\begin{itemize}
+  \item \texttt{true}（或 \texttt{1}/\texttt{on}/\texttt{yes}，大小写不敏感）：装配全部 Mapper，正常采集与指令执行；
+  \item \texttt{false}（或 \texttt{0}/\texttt{off}/\texttt{no}）：\textbf{不注册任何 Mapper}、不启动采集循环；云端下发的设备指令\textbf{仅更新影子 \texttt{Twin.Desired}，不下发到设备}——即\textbf{纯影子模式}。
+\end{itemize}
+
 \subsection{mock\_sensor：模拟传感器}
 
 内置模拟温湿度传感器，用于验证全链路，无需真实硬件：
@@ -87,6 +97,44 @@ Modbus TCP 设备：
 \texttt{EDGEFLOW\_MODBUS\_ADDR}（如 \texttt{127.0.0.1:15020} 指向本机模拟器，
 或 \texttt{<设备IP>:502} 指向真实 Modbus 设备）后启动 edgecore，该 Mapper
 才会注册；未设置时 \texttt{mb-sensor-01} 不存在。
+
+\subsection{设备命名空间（v0.2.0）}
+
+v0.2.0 起，设备按\textbf{命名空间}（namespace）分组，路由键为
+\texttt{namespace/deviceName}，同名设备可在不同命名空间共存：
+
+\begin{itemize}
+  \item \textbf{解析优先级}（三级）：Mapper 的 \texttt{WithNamespace} 选项 >
+        环境变量 \texttt{EDGEFLOW\_MODBUS\_NAMESPACE} > 默认 \texttt{default}；
+  \item \textbf{注册表隔离}：MapperRegistry 按命名空间隔离路由，同名设备
+        分属不同命名空间互不干扰；
+  \item \textbf{指令路由}：\texttt{device-command} 请求的 \texttt{namespace}
+        参与路由，命名空间不匹配任何 Mapper 时边缘拒绝 \texttt{502}；
+  \item \textbf{采集汇入}（v0.3.0 修复）：采集数据按\texttt{mapper 自身
+        命名空间}汇入影子，多命名空间部署不会出现 \texttt{default/} 双条目
+        错位。
+\end{itemize}
+
+\subsection{OPC-UA 接入状态（v0.3.0 起）}
+
+v0.3.0 交付\textbf{OPC-UA 第一阶段}：UA Binary 协议栈核心（\texttt{pkg/opcua}，
+零第三方依赖，纯标准库实现）。当前能力与边界如下，接入真实 OPC-UA 设备
+排后续版本：
+
+\begin{itemize}
+  \item \textbf{已交付}：UA Binary 编解码（NodeId 全编码形式、Variant、
+        DataValue、DateTime 等类型）与 \texttt{HEL}/\texttt{ACK} 握手
+        （\texttt{Dial}/\texttt{DialTimeout}/\texttt{ReadMessage}/
+        \texttt{WriteMessage}）；
+  \item \textbf{未实现}：设备读写服务（Read/Write/Subscribe）、
+        \texttt{SecureChannel}（当前为裸传输，ChannelId=0）、节点模型、
+        Discovery、Sign/SignAndEncrypt 安全策略——因此\textbf{尚无 OPC-UA
+        Mapper 接入}，设备接入链路未打通；
+  \item \textbf{安全边界}：仅支持 \texttt{SecurityPolicy None}（\textbf{明文}），
+        \textbf{严禁暴露到不可信网络}，仅限可信隔离网络使用；
+  \item \textbf{验证状态}：未与 open62541 / node-opcua 等第三方栈做过互
+        操作验证。
+\end{itemize}
 
 \subsection{Mapper 的两种工作模式}
 
@@ -154,6 +202,10 @@ curl http://127.0.0.1:8080/api/v1/nodes/{nodeID}/devices
   \item 开启 Token 认证时需携带 \texttt{Authorization: Bearer <token>}
         请求头（见第~\ref{ch:8}~章）。
 \end{itemize}
+
+\textbf{持久化注（v0.4.0 起）}：设备 \texttt{desired}（期望值）随云端
+etcd 写穿\textbf{持久化}，跨云端重启保留；上报属性（\texttt{properties}）
+在云端重启后短暂清空，由边缘\textbf{不超过 1 个上报周期}内自动补报自愈。
 
 \section{设备接入检查清单}
 

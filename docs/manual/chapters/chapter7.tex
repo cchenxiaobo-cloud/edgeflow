@@ -1,6 +1,7 @@
 % =====================================================================
 % EdgeFlow 用户手册 · 第 7 章 升级与回滚
-% 事实依据：docs/UPGRADE.md、docs/KEADM.md、docs/RELEASE-NOTES-v0.1.0.md、
+% 事实依据：docs/UPGRADE.md、docs/KEADM.md、docs/DEPLOYMENT.md、
+%           docs/RELEASE-NOTES-v0.1.0.md、RELEASE-NOTES-v040/v050/v060/v070.md、
 %           cmd/keadm/upgrade.go、rollback.go、opsledger.go
 % =====================================================================
 \chapter{升级与回滚}
@@ -10,7 +11,8 @@ EdgeFlow 的升级/回滚由安装管理 CLI \textbf{keadm} 提供，作用在
 \textbf{keadm 生成的产物文件}层面（\texttt{edgecore.env} /
 \texttt{edgecore.service} / \texttt{install.sh}），配合\textbf{操作台账}
 （ops-ledger）实现可审计、可恢复的升级流程。部署在 Kubernetes 上的云端
-组件则走 Helm 路径。两条路径互不替代，本章分别说明。
+组件则走 Helm 路径。两条路径互不替代，本章分别说明；此外，云端从
+v0.4.0 起具备独立的分级持久化与多副本升级语义（见第~\ref{sec:7-cloud}~节）。
 
 \section{机制总览}
 
@@ -52,17 +54,17 @@ export KEADM_OPERATOR=alice
 \section{升级：keadm upgrade}
 
 \begin{lstlisting}
-# 升级到 v0.2.0（先备份 → 更新版本标记 → 写台账）
-keadm upgrade --version=v0.2.0 --output-dir=./keadm-out
+# 升级到 v0.7.0（先备份 → 更新版本标记 → 写台账）
+keadm upgrade --version=v0.7.0 --output-dir=./keadm-out
 
 # 演练模式：备份后模拟失败（产物不会被修改），用于演练回滚流程
-keadm upgrade --version=v0.2.0 --simulate-failure --output-dir=./keadm-out
+keadm upgrade --version=v0.7.0 --simulate-failure --output-dir=./keadm-out
 \end{lstlisting}
 
 执行流程：
 
 \begin{enumerate}
-  \item \textbf{校验版本格式}：必须为 \texttt{vX.Y.Z}（如 \texttt{v0.2.0}），
+  \item \textbf{校验版本格式}：必须为 \texttt{vX.Y.Z}（如 \texttt{v0.7.0}），
         非法或与当前版本相同 → 退出码 2，不产生备份；
   \item \textbf{预检}：三个产物文件（env/service/install.sh）任一缺失 →
         退出码 1；
@@ -145,15 +147,150 @@ helm rollback edgeflow <rev>
 
 \textbf{版本标记约定}：\texttt{keadm join} 生成的 \texttt{edgecore.env}
 首行注释下含版本标记行，与 \texttt{keadm init} 默认镜像 tag
-（\texttt{edgeflow/cloudcore:v0.1.0}）对齐：
+（\texttt{edgeflow/cloudcore:v0.7.0}）对齐：
 
 \begin{lstlisting}
-# keadm 产物版本: v0.1.0
+# keadm 产物版本: v0.7.0
 \end{lstlisting}
 
 旧版 join 产物无此标记时，\texttt{upgrade} 视当前版本为 \texttt{unknown}，
 更新时自动追加标记行（兼容升级路径）。\texttt{rollback} 恢复后标记行
 随文件内容一并还原。
+
+\section{云端（cloudcore）升级与回滚（v0.4.0 起语义）}
+\label{sec:7-cloud}
+
+v0.4.0 起，云端引入\textbf{分级持久化}（嵌入式 etcd），v0.5.0 起支持\textbf{外部
+etcd 模式}，v0.6.0 起支持\textbf{真多活多副本}，v0.7.0 新增\textbf{模型仓库
+键空间}——云端升级/回滚因此具备独立语义。本节按版本逐项说明；完整迁移
+runbook 见部署文档 \texttt{DEPLOYMENT.md}（§10.7/§10.8/§10.9）。
+
+\subsection{v0.4.0：嵌入式 etcd 持久化升级}
+
+\begin{itemize}
+  \item \textbf{自动建库，无迁移脚本}：\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_ENABLED}
+        默认 \texttt{true}，升级后首次启动自动创建嵌入式 etcd 库并从前置
+        Range 全量 Load 既有数据；旧节点在保留期内（\texttt{NODE\_RETENTION}，
+        默认 24h）重新注册后立即可见，无需重新注册；
+  \item \textbf{Helm 升级必须确保 PVC}：Chart 默认挂载 1Gi PVC 到
+        \texttt{/data}；若以 \texttt{emptyDir} 运行，持久化\textbf{名存实亡}，
+        容器重启即清空；
+  \item \textbf{embed 模式 replicaCount 必须为 1}：多副本各自内嵌 etcd 会形成
+        脑裂，Chart 在渲染期以 \texttt{\{\{ fail \}\}} 守卫拒绝
+        \texttt{replicaCount>1}；
+  \item 监控告警阈值需容忍「Pod/上报数据重启后短暂清空（不超过 1 个上报周期
+        自愈）」窗口；cloudcore 资源占用上升（RSS 约 31--34MB），Helm 资源
+        建议 requests 256Mi / limits 1Gi。
+\end{itemize}
+
+\subsection{备份与恢复 runbook（简化版）}
+
+\textbf{在线快照}（推荐；嵌入式 etcd 运行中执行）：
+
+\begin{lstlisting}
+etcdutl snapshot save --endpoints=http://127.0.0.1:12379 snapshot.db
+\end{lstlisting}
+
+\textbf{离线拷贝}（需先停止 cloudcore 进程，保证数据目录一致）：
+
+\begin{lstlisting}
+# 停进程后执行
+cp -a data/etcd data/etcd.bak
+\end{lstlisting}
+
+\textbf{恢复}（将恢复出的数据目录替换到 \texttt{ETCD\_DATA\_DIR} 后启动
+cloudcore）：
+
+\begin{lstlisting}
+etcdutl snapshot restore snapshot.db --data-dir=<全新目录>
+\end{lstlisting}
+
+\textbf{注意}：\textbf{文件拷贝 $\neq$ 有效备份}——运行中直接复制数据目录会得到
+不一致状态，必须走 \texttt{etcdutl snapshot}（在线）或停进程后
+\texttt{cp -a}（离线）。外部 etcd 模式的备份恢复由外部集群侧负责（同为
+etcdutl 流程，endpoints 指向外部集群）。
+
+\subsection{v0.5.0：外部 etcd 模式切换}
+
+设置 \texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_ENDPOINTS}（非空）即切换为\textbf{外部
+直连共享 etcd 集群}模式（跳过 embed，不建目录不占端口；embed 相关变量
+设置仅告警忽略）。切换方式二选一：
+
+\begin{itemize}
+  \item \textbf{快照恢复迁移}：外部集群先 \texttt{etcdutl snapshot restore}
+        导入既有数据，再切换 endpoints；
+  \item \textbf{零迁移自愈}：不迁移历史数据，节点重新注册后台账与 Desired
+        重建，上报数据不超过 1 个周期自愈（适用于可接受重建的场景）。
+\end{itemize}
+
+\textbf{外部集群建议配置}：3 节点奇数/同地域；quota 256MiB；auto-compaction
+1h；etcd 侧最小权限角色（readwrite \texttt{/edgeflow/}）。明文护栏与
+TLS/mTLS 配置见第~\ref{ch:8}~章。
+
+\subsection{v0.6.0：外部模式多副本（真多活）}
+
+v0.6.0 起外部模式支持 \texttt{replicaCount>1} active-active 多副本。扩容
+前置条件（三项齐备）：
+
+\begin{itemize}
+  \item \textbf{同版本}：所有副本必须同一 cloudcore 版本（混合版本未验证，
+        且 v0.5.0×v0.6.0 混跑会被旧版 GC 误删活节点）；
+  \item \textbf{3 节点 quorum}：外部 etcd 集群至少 3 节点，容忍单点故障；
+  \item \textbf{共享 endpoints}：所有副本指向同一外部 etcd 集群。
+\end{itemize}
+
+扩容：
+
+\begin{lstlisting}
+kubectl scale deployment edgeflow-cloudcore --replicas=2
+\end{lstlisting}
+
+多副本形态下判活由 etcd \textbf{租约}承担（\texttt{NODE\_LEASE\_TTL}，默认
+300s），NodeController 停用；\texttt{MULTI\_REPLICA} 由 Chart 自动注入，
+\texttt{/healthz} 反映 etcd 连接状态（失联超过 TTL 返回 503，K8s liveness
+重启自愈）。
+
+\textbf{升级/回滚纪律}：无论升级还是回滚，一律\textbf{全停再全起}——先
+\texttt{kubectl scale --replicas=0}，确认全部副本退出后，再以新版本
+\texttt{scale --replicas=1}（或期望副本数）拉起。\textbf{禁止混合版本
+多副本混跑}（v0.5.0×v0.6.0 同连一集群会误删活节点；v0.6.0×v0.7.0 未验证，
+建议同版本全量切换）。回滚到 v0.5.0 后可选用 \texttt{etcdctl del
+/edgeflow/registry/heartbeats --prefix} 清理残留心跳键（可选，v0.5.0
+不读写该前缀）。
+
+\subsection{v0.7.0：模型仓库升级（零迁移）}
+
+v0.7.0 新增 \texttt{/edgeflow/models/} 键空间（模型/版本/发布/部署影子），
+与既有键空间完全隔离，\textbf{升级零迁移}：边缘节点零动作，旧版 edgecore
+直接可用；schemaVersion 不 bump。
+
+回滚到 v0.6.0 后，\texttt{/edgeflow/models/} 残留键无害（v0.6.0 不读写该
+前缀）；如需彻底清理（可选）：
+
+\begin{lstlisting}
+etcdctl del /edgeflow/models --prefix
+\end{lstlisting}
+
+\subsection{版本升级路径一览}
+
+\begin{table}[htbp]
+\centering
+\caption{云端版本升级路径（v0.1.0 → v0.7.0）}
+\label{tab:7-upgrade-path}
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{路径} & \textbf{说明} \\
+\midrule
+v0.1.0 → v0.1.1 & 直接升级，零破坏（安全加固） \\
+v0.1.1 → v0.2.0 & 零破坏：契约只增不改，新能力显式配置生效 \\
+v0.2.0 → v0.3.0 & 无破坏性变更 \\
+v0.3.0 → v0.4.0 & 默认启用嵌入式 etcd（自动建库、无迁移脚本）；Helm 必须带 PVC；embed replicaCount 必须 1 \\
+v0.4.0 → v0.5.0 & 默认行为不变；外部模式为显式选择（设置 ENDPOINTS 即切换） \\
+v0.5.0 → v0.6.0 & 零迁移动作（键空间兼容）；\textbf{禁止混合版本多副本混跑}，升级/回滚全停再全起 \\
+v0.6.0 → v0.7.0 & 零迁移（新前缀隔离）；建议同版本全量切换（混合版本未验证） \\
+\bottomrule
+\end{tabularx}
+\end{table}
 
 \section{端到端演练建议}
 
@@ -161,9 +298,9 @@ helm rollback edgeflow <rev>
 keadm init  --output-dir=$OUT
 keadm join  --cloudcore-ip=192.168.1.10 --token=abc123 \
             --node-id=edge-worker-01 --output-dir=$OUT
-keadm upgrade --version=v0.2.0 --simulate-failure --output-dir=$OUT   # 预期失败 exit=1
+keadm upgrade --version=v0.7.0 --simulate-failure --output-dir=$OUT   # 预期失败 exit=1
 keadm rollback --latest --output-dir=$OUT                             # 恢复
-keadm upgrade --version=v0.2.0 --output-dir=$OUT                      # 真实升级
+keadm upgrade --version=v0.7.0 --output-dir=$OUT                      # 真实升级
 keadm rollback --latest --output-dir=$OUT                             # 真实回滚
 sha256sum -c baseline.sha                                             # 产物一致
 keadm ops-ledger --output-dir=$OUT                                    # 台账 4 条
@@ -171,3 +308,8 @@ keadm ops-ledger --output-dir=$OUT                                    # 台账 4
 
 注意：重复升级每次都会产生新备份（只增不删），长期使用请定期人工归档
 \texttt{backups/} 目录。
+
+云端（cloudcore）侧的升级演练与 runbook 见部署文档
+\texttt{DEPLOYMENT.md} §10.7.5（外部模式迁移）、§10.8.5（多副本扩容）与
+§10.9.4（模型仓库升级）；云端走 Helm 路径升级/回滚时，同样遵循
+第~\ref{sec:7-cloud}~节的全停再全起纪律。

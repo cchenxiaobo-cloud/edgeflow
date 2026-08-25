@@ -1,7 +1,7 @@
 \chapter{环境要求与安装部署}
 \label{ch:2}
 
-本章内容：说明 EdgeFlow v0.1.0 的运行环境要求，并给出完整的安装部署步骤，包括获取软件、使用 \texttt{keadm} 初始化云端与接入边缘节点、Helm 部署，以及部署验证、卸载清理与升级回滚。
+本章内容：说明 EdgeFlow v0.7.0 的运行环境要求，并给出完整的安装部署步骤，包括获取软件、使用 \texttt{keadm} 初始化云端与接入边缘节点、Helm 部署，以及部署验证、卸载清理与升级回滚。
 
 \section{环境要求}
 
@@ -9,7 +9,7 @@
   \hline
   \textbf{部署角色} & \textbf{环境要求} \\
   \hline
-  云端（cloudcore） & 支持 \texttt{linux/amd64} 与 \texttt{linux/arm64}；建议 2 核 4 GB 以上；云端状态为内存态，无需持久化存储 \\
+  云端（cloudcore） & 支持 \texttt{linux/amd64} 与 \texttt{linux/arm64}；建议 2 核 4 GB 以上；建议配置持久化存储：embed 模式使用数据目录（Helm 默认 PVC 1Gi，emptyDir 会丢数据），外部 etcd 模式需共享 etcd 集群 \\
   \hline
   Kubernetes 集群 & 使用 \texttt{keadm} 产物或 Helm 部署时需准备集群；需要 \texttt{kubectl}（与集群版本兼容）与 Helm v3+ \\
   \hline
@@ -20,6 +20,8 @@
   源码构建 & Go 1.26+ 与 Make；构建容器镜像还需 Docker \\
   \hline
   可选依赖 & mosquitto（MQTT 数据面）；缺失时主链路不受影响 \\
+  \hline
+  外部 etcd 集群（可选） & 使用外部 etcd 模式（v0.5.0 起）时需准备：3 节点奇数、同地域、quota 256MiB、compaction 1h；生产建议启用 TLS/mTLS（非回环端点且无 TLS 时云端拒绝启动） \\
   \hline
 \end{tabularx}
 
@@ -37,15 +39,15 @@ make build
 
 \subsection{方式二：使用发布制品}
 
-发布目录 \texttt{release/v0.1.0/} 提供预编译二进制：\texttt{cloudcore}、\texttt{edgecore}、\texttt{keadm} 每组件均含 \texttt{linux-amd64}、\texttt{linux-arm64} 与 \texttt{darwin-arm64} 三个平台版本（共 9 个二进制），以及 Helm Chart 包 \texttt{edgeflow-0.1.0.tgz}。下载后可使用 \texttt{checksums.txt} 校验文件完整性，并将二进制放入 \texttt{PATH} 或仓库 \texttt{bin/} 目录后按需执行。
+发布目录 \texttt{release/v0.7.0/} 提供预编译二进制：\texttt{cloudcore}、\texttt{edgecore}、\texttt{keadm} 每组件均含 \texttt{linux-amd64}、\texttt{linux-arm64} 与 \texttt{darwin-arm64} 三个平台版本（共 9 个二进制），以及 Helm Chart 包 \texttt{edgeflow-0.7.0.tgz}（历史版本制品见 \texttt{release/} 对应子目录）。下载后可使用 \texttt{checksums.txt} 校验文件完整性，并将二进制放入 \texttt{PATH} 或仓库 \texttt{bin/} 目录后按需执行。
 
 \subsection{方式三：容器镜像}
 
-可自行构建镜像，或直接使用已发布的 \texttt{edgeflow/cloudcore:v0.1.0}、\texttt{edgeflow/edgecore:v0.1.0}。本地构建命令（仓库根目录执行）：
+可自行构建镜像，或直接使用已发布的 \texttt{edgeflow/cloudcore:v0.7.0}、\texttt{edgeflow/edgecore:v0.7.0}。本地构建命令（仓库根目录执行）：
 
 \begin{lstlisting}
-docker build -f build/docker/Dockerfile --target cloudcore -t edgeflow/cloudcore:v0.1.0 .
-docker build -f build/docker/Dockerfile --target edgecore -t edgeflow/edgecore:v0.1.0 .
+docker build -f build/docker/Dockerfile --target cloudcore -t edgeflow/cloudcore:v0.7.0 .
+docker build -f build/docker/Dockerfile --target edgecore -t edgeflow/edgecore:v0.7.0 .
 \end{lstlisting}
 
 \section{安装云端（cloudcore）}
@@ -58,7 +60,7 @@ docker build -f build/docker/Dockerfile --target edgecore -t edgeflow/edgecore:v
   \hline
   \textbf{参数} & \textbf{默认值} & \textbf{说明} \\
   \hline
-  \texttt{--cloudcore-image} & \texttt{edgeflow/cloudcore:v0.1.0} & cloudcore 容器镜像 \\
+  \texttt{--cloudcore-image} & \texttt{edgeflow/cloudcore:v0.7.0} & cloudcore 容器镜像 \\
   \hline
   \texttt{--tls} & 关 & 启用云边 mTLS，注入 TLS 相关环境变量 \\
   \hline
@@ -121,7 +123,19 @@ kubectl port-forward svc/edgeflow-cloudcore 8080:8080
 curl http://127.0.0.1:8080/healthz
 \end{lstlisting}
 
-关键配置项：\texttt{cloudcore.image.repository/tag}（镜像地址与版本，默认 \texttt{edgeflow/cloudcore:v0.1.0}）、\texttt{service.type}（默认 \texttt{ClusterIP}）、\texttt{service.hubEnabled}（默认 \texttt{false}，集群外边缘接入需开启并配合 NodePort/LoadBalancer）。
+关键配置项：\texttt{cloudcore.image.repository/tag}（镜像地址与版本，默认 \texttt{edgeflow/cloudcore:v0.7.0}）、\texttt{service.type}（默认 \texttt{ClusterIP}）、\texttt{service.hubEnabled}（默认 \texttt{false}，集群外边缘接入需开启并配合 NodePort/LoadBalancer）。
+
+\textbf{v0.4.0 起新增关键配置项}（云端持久化与高可用形态）：
+
+\begin{itemize}
+  \item \texttt{cloudcore.replicaCount}：默认 1。embed 模式必须为 1——多副本各自内嵌 etcd 会脑裂，Chart 渲染期 \texttt{\{\{ fail \}\}} 守卫直接报错；外部 etcd 模式（v0.6.0 起）可 \texttt{>1}，此时自动注入 \texttt{EDGEFLOW\_CLOUDCORE\_MULTI\_REPLICA=1}（真多活）；
+  \item \texttt{cloudcore.etcd.enabled}：默认 true（注入 \texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_ENABLED=true}）。设为 false 时强制纯内存模式并忽略 \texttt{external.*}（数据重启丢失，仅限测试）；
+  \item \texttt{etcd.persistence.enabled/size}：默认 true/1Gi，PVC 挂载 \texttt{/data}。改为 emptyDir 后 etcd 数据不落盘，持久化名存实亡，生产环境请保持默认；
+  \item \texttt{etcd.external.enabled/endpoints}：v0.5.0 起外部 etcd 模式——enabled 为 true 且 endpoints 非空时注入 \texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_ENDPOINTS}（逗号连接），跳过 embed、不创建 PVC；endpoints 为空时渲染失败；
+  \item \texttt{etcd.external.tls.\{ca,cert,key\}} 与 \texttt{etcd.external.allowInsecure}：v0.5.0 起——非回环端点且未配置 TLS 时云端拒绝启动（明文护栏），仅限可信内网可用 \texttt{allowInsecure=true} 逃生；
+  \item \texttt{etcd.external.nodeLeaseTTL}：v0.6.0——非空时注入 \texttt{EDGEFLOW\_CLOUDCORE\_NODE\_LEASE\_TTL}（默认 300s，外部模式判活阈值）；
+  \item \texttt{cloudcore.resources}：建议 requests 256Mi / limits 1Gi（v0.4.0 起二进制体积与常驻内存上升）。
+\end{itemize}
 
 \subsection{方式三：裸进程运行（单机联调）}
 
@@ -147,7 +161,7 @@ curl http://127.0.0.1:8080/healthz
   \hline
   \texttt{--token} & 必填 & 接入令牌：写入 \texttt{edgecore.env} 并由 edgecore 注册时携带；云端设 \texttt{EDGEFLOW\_CLOUDCORE\_NODE\_TOKEN} 后启用校验 \\
   \hline
-  \texttt{--node-id} & \texttt{edge-<主机名>} & 边缘节点 ID，仅允许字母、数字、连字符与下划线 \\
+  \texttt{--node-id} & \texttt{edge-<主机名>} & 边缘节点 ID，仅允许字母、数字、点、连字符与下划线（\texttt{\textasciicircum{}[A-Za-z0-9.\_-]+\$}） \\
   \hline
   \texttt{--tls} & 关 & 启用 mTLS，地址自动使用 \texttt{wss://} \\
   \hline
@@ -223,7 +237,7 @@ rm -f data/edgeflow.db
 \begin{lstlisting}
 # 升级产物到新版本（操作人经环境变量传入，写入操作台账）
 export KEADM_OPERATOR=alice
-keadm upgrade --version=v0.2.0 --output-dir=./keadm-out
+keadm upgrade --version=v0.7.0 --output-dir=./keadm-out
 
 # 回滚到最近一次备份
 keadm rollback --latest --output-dir=./keadm-out
@@ -232,7 +246,7 @@ keadm rollback --latest --output-dir=./keadm-out
 keadm ops-ledger --limit=10
 \end{lstlisting}
 
-升级或回滚后需重新应用产物（\texttt{kubectl apply} 或 \texttt{./install.sh}）。注意：cloudcore 为内存态，云端重启后查询数据清空，边缘节点重连后会自动重新注册并恢复上报。
+升级或回滚后需重新应用产物（\texttt{kubectl apply} 或 \texttt{./install.sh}）。注意：v0.4.0 起云端为分级持久化——注册台账与设备 Desired 跨重启保留，重启后节点短暂 Unknown，边缘节点下一次心跳（默认 30s）即翻新为 Ready；Pod 状态与上报数据重启后 $\le$1 个上报周期自愈。云端多副本（外部 etcd 模式）升级/回滚务必全停再全起，禁止混合版本混跑（详见第 7 章 \autoref{ch:7}）。
 
 \section{常见问题}
 
@@ -251,5 +265,11 @@ keadm ops-ledger --limit=10
   云边连接被拒（TLS） & 证书 SAN 未覆盖访问地址，云端以 \texttt{--tls-san=IP:<访问IP>} 重新 init 并 apply \\
   \hline
   Pod 容器未创建 & 确认 Docker daemon 运行（\texttt{docker info}）；镜像本地未缓存时首次拉取需要时间 \\
+  \hline
+  云端重启后节点仍可见但状态 Unknown & v0.4.0 起注册台账跨重启保留，属正常现象：等待边缘节点下一次心跳（默认 30s）后自动翻新为 Ready，无需重新注册；Pod 状态与上报数据同样 $\le$1 个上报周期自愈 \\
+  \hline
+  embed 模式部署多副本失败（渲染报错） & Chart 内置 \texttt{\{\{ fail \}\}} 守卫：embed 模式 \texttt{replicaCount} 必须为 1（多副本各自内嵌 etcd 会脑裂）；需要多副本请改用外部 etcd 模式（v0.6.0 起支持） \\
+  \hline
+  外部 etcd 模式启动失败 & 按启动日志区分三类原因：探活失败（Unavailable，地址/连通性错误）、鉴权被拒（PermissionDenied，证书或 etcd 权限角色问题）、明文护栏（非回环端点且未配置 TLS 被拒绝启动，需配置 TLS 或仅在可信内网用 \texttt{ETCD\_ALLOW\_INSECURE=1} 逃生）；详细排障见部署文档 §10.7.6 \\
   \hline
 \end{tabularx}

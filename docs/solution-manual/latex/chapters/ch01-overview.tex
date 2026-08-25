@@ -15,7 +15,7 @@ EdgeFlow 是使用 Go 语言实现的云边端协同物联网平台，覆盖设�
 \textbf{解决什么问题}
 
 \begin{enumerate}
-  \item \textbf{设备接入与数据汇聚的标准化}：支持 MQTT、Modbus TCP 两类主流协议接入，遥测数据以统一 JSON 格式进入边缘 MQTT 数据面，屏蔽设备异构性（OPC-UA 接入\warn）；
+  \item \textbf{设备接入与数据汇聚的标准化}：支持 MQTT、Modbus TCP 两类主流协议接入，遥测数据以统一 JSON 格式进入边缘 MQTT 数据面，屏蔽设备异构性（OPC-UA：底层协议栈已实现——UA Binary 编解码 + TCP 握手，v0.3.0，\textbf{仅限可信隔离网络（SecurityPolicy None 明文）}；设备读写服务与 Mapper 接入规划中）；
   \item \textbf{边缘应用自治与弱网韧性}：以声明式调谐（默认 5s 调谐周期）持续将容器应用收敛到期望状态，支持多副本、健康自愈、CrashLoopBackOff 退避与镜像漂移检测，云边断连期间边缘采集与控制业务不中断；
   \item \textbf{管理与运维的可追溯性}：审计台账、keadm 升级回滚台账、设备操作台账三类台账覆盖 API 操作、系统变更与设备指令全链路，支撑审计与合规追溯；
   \item \textbf{生产级安全与轻量交付}：mTLS 云边通道、接入 Token、审计台账（文件 0600/目录 0700），keadm/Helm 一键部署，多架构镜像（linux/amd64 + arm64）。
@@ -59,7 +59,7 @@ EdgeFlow 采用“设备层—边缘层—云层”三层架构，文字版说�
 \begin{itemize}
   \item \textbf{CloudHub}：边缘节点连接管理；
   \item \textbf{NodeController}：节点状态维护；
-  \item \textbf{DeviceStatus}：设备状态快照维护（内存态）；
+  \item \textbf{DeviceStatus}：设备状态快照维护（属性快照为内存态；v0.4.0 起注册台账与设备 Desired 已持久化，见“云端部署形态与高可用”节）；
   \item \textbf{模型仓库与灰度发布（v0.7.0）}：模型/版本台账 + 灰度发布控制器（17 个模型 API 端点，见第 4 章）；
   \item \textbf{REST API}：对外提供 31 个 HTTP 端点（28 个管理端点：设备、节点、命令、podsync/config-sync、模型 API 等；另含 healthz、metrics 与 /ocsp 协议端点）；
   \item \textbf{OCSP responder}：在线证书状态查询（POST /ocsp，RFC 6960；DER 编码请求/响应、免 Token——响应自带 CA 签名、16KiB 请求上限，状态码 200/400/429/500；per-IP 限流（默认 10 req/s、burst 20，超限 429，env 可调）+ 成功响应 Cache-Control: max-age=3600；与 CRL 同源 crl.json）；
@@ -75,13 +75,13 @@ EdgeFlow 采用“设备层—边缘层—云层”三层架构，文字版说�
 \toprule
 场景 & 特性组 & v0.1.0 已实现 & 规划中/即将上线\\
 \midrule
-数据采集 & F21--F30 & MQTT/Modbus 设备接入；Mapper 周期采集（Modbus 30s 上报循环 / mock\_sensor 2s）；EventBus MQTT 数据面（QoS1）；设备影子与属性快照；设备命令下行（可靠投递 F05）；DeviceReport 周期上报（30s，可配） & OPC-UA 协议接入；设备级身份认证（节点接入 Token 认证已实现）\\
+数据采集 & F21--F30 & MQTT/Modbus 设备接入；Mapper 周期采集（Modbus 30s 上报循环 / mock\_sensor 2s）；EventBus MQTT 数据面（QoS1）；设备影子与属性快照；设备命令下行（可靠投递 F05）；DeviceReport 周期上报（30s，可配）；\textbf{OPC-UA 协议栈核心（v0.3.0 已实现：UA Binary 编解码 + TCP 握手，纯标准库，明文仅限可信网络）} & OPC-UA 设备读写服务与 Mapper 接入（协议栈核心已实现，v0.3.0）；设备级身份认证（节点接入 Token 认证已实现）\\
 \addlinespace[3pt]
 弱网自治 & F11--F20 & WebSocket 云边通道（gzip 协商式压缩）与退避重连；声明式调谐（5s）；多副本；健康自愈；CrashLoopBackOff；镜像漂移检测；MetaManager SQLite（WAL）持久化 & Flannel 网络；Protobuf 编码（gzip 通道压缩已实现）\\
 \addlinespace[3pt]
 模型管理 & F36--F39、F41--F42 & 镜像/配置下发通道（podsync/config-sync）；生产部署与升级回滚机制；\textbf{模型仓库与版本管理（F41，v0.7.0 已实现）}；\textbf{模型灰度发布（F42，v0.7.0 已实现，按节点/按比例）} & 训练平台；模型文件托管（镜像实体仍在客户仓库）\\
 \addlinespace[3pt]
-模型应用 & F11--F19 & 容器应用部署与自治：多副本、健康自愈、CrashLoopBackOff、镜像漂移检测；模型灰度发布接收端（F42，v0.7.0 已实现：发布器自动下发推理容器声明与模型参数） & 调度/超卖\\
+模型应用 & F11--F19 & 容器应用部署与自治：多副本、健康自愈、CrashLoopBackOff、镜像漂移检测；\textbf{Pod 资源请求/限制与超卖准入（v0.2.0 已实现）}：podsync 支持 cpu/memory request/limit（K8s 风格，零值=不限制）、超卖拒绝 409 EDGEFLOW\_RESOURCE\_EXHAUSTED、容器落地 --cpus/--memory（swap 禁用）、资源漂移自动重建；模型灰度发布接收端（F42，v0.7.0 已实现：发布器自动下发推理容器声明与模型参数，见 4.4） & 节点级调度/亲和性增强（跨节点调度策略；资源请求/限制与超卖准入已实现，v0.2.0）\\
 \bottomrule
 \end{tabular}}
 
@@ -91,7 +91,7 @@ EdgeFlow 采用“设备层—边缘层—云层”三层架构，文字版说�
 
 \section{版本与发布信息}
 
-\textbf{版本信息}：EdgeFlow v0.1.0，发布日期 2026-08-14。
+\textbf{版本信息}：EdgeFlow v0.7.0（2026-08-25 发布）；事实基线自 v0.1.0（2026-08-14）演进，增量见修订记录。
 
 \textbf{制品清单（表 1-2）}
 
@@ -99,7 +99,7 @@ EdgeFlow 采用“设备层—边缘层—云层”三层架构，文字版说�
 \toprule
 类别 & 制品\\
 \midrule
-容器镜像 & edgeflow/cloudcore:v0.1.0、edgeflow/edgecore:v0.1.0（linux/amd64 + arm64 多架构）\\
+容器镜像 & edgeflow/cloudcore:v0.7.0、edgeflow/edgecore:v0.7.0（linux/amd64 + arm64 多架构；历史版本制品见 release/ 目录）\\
 部署工具 & keadm（init/join/cert(rotate|revoke)/upgrade/rollback/ops-ledger/batch/reset/version，共 9 个子命令）、Helm Chart（云端）、Docker（双端运行）\\
 接口能力 & REST API 31 端点（28 管理 + healthz + metrics + /ocsp，含 v0.7.0 模型 API 17 个）；运行指标 5 项；OpenAPI v3 schema（\seqsplit{\texttt{docs/openapi/edgeflow-openapi.yaml}}，\seqsplit{\texttt{hack/gen-openapi.sh}} 自动生成，勿手编）；API 兼容性契约测试（\seqsplit{\texttt{tests/contract}}，14 基线端点 + 模型 API 追加登记随 v0.7.0 轮）\\
 \bottomrule
@@ -107,8 +107,51 @@ EdgeFlow 采用“设备层—边缘层—云层”三层架构，文字版说�
 
 \textbf{v0.1.0 功能范围（已实现）}：WebSocket 云边通道（gzip 协商式压缩：Register 协商、v1.0 兼容、\seqsplit{\texttt{config/cloudcore.json}} 中 \texttt{compress:false} 可关）；边缘容器自治（声明式调谐 5s、多副本、健康自愈、CrashLoopBackOff、镜像漂移检测）；设备管理（MQTT/Modbus 接入、设备影子、设备命令）；节点接入认证（\env{EDGEFLOW\_EDGECORE\_TOKEN}，云端常数时间校验、空值向后兼容）；证书生命周期管理（keadm cert rotate/revoke，CRL 离线 + OCSP 在线应答）；配置管理（\seqsplit{\texttt{config/edgecore.json}}，环境变量 > 配置文件 > 默认值，SIGHUP + 60s 热重载）；升级回滚与灰度（\seqsplit{\texttt{keadm batch --op=upgrade}} + \texttt{--batch-size}/\texttt{--pause-between}）；生产加固（mTLS/Token/审计台账/keadm/Helm/多架构镜像）；发布流程级镜像安全扫描（构建期 Trivy，基线 0 漏洞）；接口工程（OpenAPI v3 schema + 契约测试）。
 
-\textbf{\warn}：训练平台与模型评测、完整 RBAC（当前为单 Token 鉴权）、设备级身份认证（节点接入认证已实现）、调度/超卖、Flannel 网络、OPC-UA 接入、Protobuf 编码（gzip 通道压缩已实现）、产品内置镜像安全扫描（发布流程构建期 Trivy 扫描已建立，基线 0 漏洞）。
+\textbf{\warn}：训练平台与模型评测、完整 RBAC（当前为单 Token 鉴权）、设备级身份认证（节点接入认证已实现）、节点级调度/亲和性增强（资源请求/限制与超卖准入已实现，v0.2.0）、Flannel 网络、OPC-UA 设备读写服务与 Mapper 接入（协议栈核心已实现，v0.3.0）、Protobuf 编码（gzip 通道压缩已实现）、产品内置镜像安全扫描（发布流程构建期 Trivy 扫描已建立，基线 0 漏洞）。
+
+\begin{quote}
+\textbf{v0.2.0--v0.6.0 增量（详见修订记录）}：资源调度与超卖准入、Mapper 装配开关、Modbus 设备命名空间（v0.2.0）；OPC-UA 协议栈核心（v0.3.0，明文仅限可信网络）；云端分级持久化——嵌入式 etcd（v0.4.0）/ 外部 etcd 模式（v0.5.0）/ 真多活多副本（v0.6.0），部署形态与高可用语义见下节。
+\end{quote}
 
 \begin{quote}
 \textbf{v1.1.0 状态翻转}：模型仓库与版本管理、模型灰度发布已由“规划中”落地为\textbf{已实现}（v0.7.0，见第 4 章与附录 C F41/F42，不再构成交付承诺例外）。
 \end{quote}
+
+\section{云端部署形态与高可用}
+
+覆盖 v0.4.0（嵌入式 etcd 持久化）/ v0.5.0（外部 etcd 模式）/ v0.6.0（真多活多副本）云端形态；本节为售前/技术决策口径，操作细节以部署文档（docs/DEPLOYMENT.md §10.7）为准。
+
+\textbf{三种存储/部署模式（表 1-3）}
+
+{\small\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}p{2.2cm}p{4.2cm}p{5.2cm}p{4.4cm}@{}}
+\toprule
+模式 & 配置 & 数据可靠性 & 说明\\
+\midrule
+纯内存 & \env{EDGEFLOW\_CLOUDCORE\_ETCD\_ENABLED}=false & 重启丢失（注册台账、Desired 与模型发布任务/部署影子均不保留，L22） & 仅适合演示/联调\\
+\addlinespace[3pt]
+嵌入式 etcd（默认） & 不设 \env{ETCD\_ENDPOINTS}（默认启用 embed，127.0.0.1:12379/12380，只绑回环） & 注册台账与设备 Desired 写穿落盘（data/etcd）；心跳/Status/Pod 状态/属性快照不落盘（重启 $\leq$1 上报周期自愈） & \textbf{单副本铁律}：replicaCount 必须 1（多副本各自 embed = 脑裂，Helm Chart 渲染期 \texttt{\{\{ fail \}\}} 守卫）；Helm 必须挂 PVC（默认 1Gi，emptyDir 名存实亡）\\
+\addlinespace[3pt]
+外部 etcd & \env{EDGEFLOW\_CLOUDCORE\_ETCD\_ENDPOINTS} 指向共享集群（clientv3 直连，跳过 embed） & 写穿外部集群（建议 3 节点奇数、同地域、quota 256MiB、compaction 1h、最小权限角色 readwrite /edgeflow/） & 需 TLS（推荐 mTLS）；非回环端点+无 TLS 拒绝启动（明文护栏，逃生门 \env{ETCD\_ALLOW\_INSECURE}=1 仅限可信内网）；v0.6.0 起支持多副本 active-active\\
+\bottomrule
+\end{tabular}}
+
+\textbf{单副本约束与真多活}：
+
+\begin{itemize}
+  \item embed/纯内存模式 replicaCount 必须 1（脑裂风险，Chart fail 守卫）；
+  \item 外部模式 v0.6.0 起 replicaCount 可 $>$1（active-active 真多活）：心跳以 etcd 租约落盘（\env{NODE\_LEASE\_TTL} 默认 300s，$<$90s Warn）、判活 = hb 键存在性、GuardedDelete 删除守卫（活租约拒绝删台账）、SetDesired CAS（并发写冲突重试 $\leq$3，HTTP 仍 200 + 日志 concurrent-write）、发布级领跑锁（崩溃 $\leq$TTL 接管续跑）；
+  \item \textbf{多副本前置}：同版本、外部集群 $\geq$3 节点 quorum、共享 endpoints；\textbf{升级/回滚必须全停再全起（scale 0$\rightarrow$1）}，禁止混合版本多副本混跑（v0.5.0×v0.6.0 会误删活节点，L15；v0.6.0×v0.7.0 未验证，L29）。
+\end{itemize}
+
+\textbf{判活语义差异}：
+
+\begin{itemize}
+  \item embed/纯内存形态：NodeController 180s 心跳超时（扫描 30s）双路径（见第 3 章 F07）；
+  \item 外部多副本形态：判活 = etcd 租约视角 hb 键存在性（台账在+hb 在=Ready；台账在+hb 不在=Offline；加载瞬时 Unknown），NodeController 停用、\env{NODE\_TIMEOUT} 不再参与判活、\env{NODE\_SCAN\_INTERVAL} 迁用为重扫/GC 周期；\textbf{etcd 故障 $>$TTL $\rightarrow$ 全量软离线}（有界，恢复 $\leq$1 心跳周期自愈，零数据删除）；监控告警阈值按 $\approx$2×TTL 折算；
+  \item /healthz：外部模式 + \env{MULTI\_REPLICA}=1 时反映 etcd 连接（失联 $>$TTL $\rightarrow$ 503，K8s liveness 重启自愈）；其余形态恒 200（进程存活语义）。
+\end{itemize}
+
+\textbf{备份与恢复}：在线 \texttt{etcdutl snapshot save --endpoints=http://127.0.0.1:12379}（外部模式指向外部端点）；离线停进程后 \texttt{cp -a data/etcd}；恢复 \texttt{etcdutl snapshot restore --data-dir=<全新目录>}。\textbf{文件拷贝 $\neq$ 有效备份}；坏库默认降级纯内存 + 大告警（\env{ETCD\_STRICT}=1 fail-fast）。
+
+\textbf{Helm 形态}：PVC 默认 1Gi（挂 /data）；资源 requests 256Mi / limits 1Gi；values 新增 etcd 段（enabled / persistence.\{enabled,size\} / external.\{enabled,endpoints,tls.*,allowInsecure,nodeLeaseTTL\}）；embed 模式多副本渲染期失败（\texttt{\{\{ fail \}\}} 守卫）。

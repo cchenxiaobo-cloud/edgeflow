@@ -21,7 +21,7 @@
 
 \section*{A4. 支持哪些设备协议？}
 
-v0.1.0 支持 MQTT（QoS1，遥测/指令主题）与 Modbus TCP（显式设置 \env{EDGEFLOW\_MODBUS\_ADDR} 启用，读写保持寄存器/线圈，写后回读验证）；另提供 mock\_sensor 模拟器用于演示联调。OPC-UA 接入\warn。
+v0.1.0 支持 MQTT（QoS1，遥测/指令主题）与 Modbus TCP（显式设置 \env{EDGEFLOW\_MODBUS\_ADDR} 启用，读写保持寄存器/线圈，写后回读验证）；另提供 mock\_sensor 模拟器用于演示联调。OPC-UA：v0.3.0 已交付底层协议栈核心（UA Binary 编解码 + TCP 握手，纯标准库），当前为 SecurityPolicy None 明文、\textbf{仅限可信隔离网络}；设备读写服务与 Mapper 接入规划中/即将上线。
 
 \section*{A5. 能管理多少边缘节点？}
 
@@ -46,7 +46,7 @@ v0.7.0 起模型部署走\textbf{平台化流程}：\textbf{模型仓库注册�
 
 \section*{A9. 边缘重启或云端重启会怎样？}
 
-边缘重启：期望状态（节点元数据/Pod/配置）已落盘 MetaManager SQLite（WAL），启动后自动恢复并按声明调谐。云端重启：云端状态为内存态，边缘感知断线（读超时约 90s）后退避重连并自动重新注册（首条消息为 Register），随后周期上报自动重建节点/设备/Pod 状态，无需人工介入（E2E 已实测）。
+边缘重启：期望状态（节点元数据/Pod/配置）已落盘 MetaManager SQLite（WAL），启动后自动恢复并按声明调谐。云端重启：v0.4.0 起云端分级持久化——节点注册台账与设备 Desired 跨重启保留（嵌入式 etcd 写穿，见第 1 章“云端部署形态与高可用”节），重启后节点短暂 Unknown、边缘 $\leq$1 心跳周期翻新 Ready（\textbf{无需重新注册才可见}）；Pod 状态与设备上报属性重启后短暂清空，$\leq$1 上报周期自愈；心跳/Status 不落盘，重启后待首心跳翻新。边缘感知断线（读超时约 90s）后退避重连并自动重新注册（首条消息为 Register），无需人工介入（E2E 已实测）。
 
 \section*{A10. 设备离线如何感知？}
 
@@ -118,7 +118,7 @@ F05 & 消息可靠投递（5s×3、幂等去重 1000 条、504） & $\bullet$ & 
 F06 & 多节点并发管理（10 节点实测 100\%） & $\bullet$ & $\circ$ & $\circ$ & $\circ$ & 附录 A5\\
 F07 & 在线/离线双路径判定（90s/180s） & $\circ$ & $\bullet$ & $\circ$ & $\circ$ & 3.3 / 3.6\\
 F08 & 节点状态语义（Ready/Unknown/Offline） & $\circ$ & $\bullet$ & $\circ$ & $\circ$ & 3.3\\
-F09 & 云端状态内存态+边缘持久（自动恢复） & $\circ$ & $\bullet$ & $\circ$ & $\circ$ & 3.3 / 3.6\\
+F09 & 云端分级持久化+边缘持久（自动恢复） & $\circ$ & $\bullet$ & $\circ$ & $\circ$ & 3.3 / 3.6\\
 F10 & 消息路由引擎（SendToNode/Broadcast/Deliver） & $\circ$ & $\circ$ & $\circ$ & $\circ$ & 附录 C（仅登记）\\
 F11 & Edged 声明式调谐（5s） & $\circ$ & $\bullet$ & $\bullet$ & $\bullet$ & 3.2 / 4.3 / 5.3\\
 F12 & 多副本 Pod 管理（补齐/收缩） & $\circ$ & $\bullet$ & $\bullet$ & $\bullet$ & 3.3 / 4.2 / 5.3\\
@@ -168,8 +168,8 @@ F49 & 证书吊销闭环（keadm cert revoke + CRL 消费端拒绝 + OCSP respon
 \midrule
 F43 & 完整 RBAC（多角色权限） & 规划中 & 当前为单 Token 鉴权\\
 F44 & 设备认证 & 部分实现 & 节点接入认证（Register Token）已实现：keadm join 写 \env{EDGEFLOW\_EDGECORE\_TOKEN}、edgecore 注册携带、云端 \env{EDGEFLOW\_CLOUDCORE\_NODE\_TOKEN} 常数时间校验、空值向后兼容；设备级身份认证（传感器/PLC 等）与设备级离线检测仍规划中\\
-F45 & 调度/超卖、Flannel 网络 & 规划中 & 集群化能力增强\\
-F46 & OPC-UA 协议接入 & 规划中 & 当前支持 MQTT/Modbus TCP\\
+F45 & 集群化网络与节点调度增强 & 部分实现 & \textbf{Pod 资源调度（cpu/memory request/limit + 超卖准入 + 漂移重建，v0.2.0，见 1.3/5.2）已实现}；Flannel 网络仍规划中\\
+F46 & OPC-UA 协议接入 & 部分实现 & UA Binary 协议栈核心（编解码 + HEL/ACK 握手，v0.3.0，纯标准库）已实现，\textbf{明文（SecurityPolicy None）仅限可信隔离网络}；设备读写服务/SecureChannel/安全策略/Mapper 接入/第三方互操作验证未实现\\
 F47 & 通道压缩/Protobuf 编码 & 部分实现 & gzip 压缩已实现（Register 协商式双向默认开，\seqsplit{\texttt{config/cloudcore.json}} 中 \texttt{compress:false} 可关）；Protobuf 编码仍规划中（当前 JSON 信封）\\
 F48 & 镜像安全扫描 & 部分实现 & 发布流程级已实现（构建期 Trivy 扫描，基线 0 漏洞）；产品内置/运行时扫描仍规划中（当前提供 sha256 完整性校验，升级备份）\\
 \bottomrule
@@ -184,6 +184,5 @@ F48 & 镜像安全扫描 & 部分实现 & 发布流程级已实现（构建期 T
   \item \textbf{评审留痕}：v1.0.0 由方案团队（主笔）+ 产品团队（事实基线提供）+ 独立技术复核（特性$\leftrightarrow$手册双向追溯、结构完整性、异常路径、术语一致性）完成，复核记录见《评审记录与交接说明.md》。
   \item \textbf{v1.0.1 勘误基线（2026-08-16）}：对照仓库 HEAD \texttt{10e2995}（基线 \texttt{899248d} 之后净新增 OCSP 在线吊销与 edgecore 配置文件）完成勘误——REST API 端点 13$\rightarrow$14（含 POST /ocsp，与契约测试/API-SPEC/API-COMPATIBILITY 三源一致）；表 C-1 新增证书吊销闭环登记（F49）；表 C-2 摘除已实现能力“规划中”标注（gzip 压缩、升级分批、节点接入认证、发布流程镜像扫描，见 F42/F44/F47/F48 拆分口径）；术语表 keadm 补全 9 子命令。勘误以仓库现状为事实基线，非新版本发布；正式修订记录见正文修订记录表。HTML/PDF/latex 衍生制品与 CSV 按流程同步重生成。
   \item \textbf{v1.0.2 修订基线（2026-08-18）}：对照仓库 HEAD \texttt{59dd396}（v0.1.1 生产发布准备轮，\texttt{bc8994d} 安全加固 + P2 遗留闭环）补充：/ocsp per-IP 限流（默认 10 req/s、burst 20，超限 429，env 可调）+ 成功响应 Cache-Control: max-age=3600；OCSP 客户端库新鲜度校验入口（\seqsplit{\texttt{ParseOCSPResponseWithFreshness}}/\seqsplit{\texttt{OCSPStatusAtWithPolicy}}，fail-closed、默认 5 分钟 skew，旧入口行为不变，生产路径接入时须用 WithPolicy 入口）；CRL 锁获取失败自动降级无锁校验并输出 5 分钟限频告警日志。特性清单无状态变化（F31/F49 口径不变）；正式修订记录见正文修订记录表。HTML/PDF/latex 衍生制品与 CSV 按流程同步重生成。
-\end{enumerate}
   \item \textbf{v1.1.0 修订基线（2026-08-25）}：对照仓库 HEAD（v0.7.0 开发轮）将 F41/F42 落地入册——第 4 章重写为正式能力（模型仓库注册 $\rightarrow$ 版本激活 $\rightarrow$ 灰度发布；过渡路径降级为“兼容路径”、keadm 升级分批保留为产品升级灰度）；附录 C 表 C-1 追加 F41/F42（已实现，$\bullet$ 模型管理场景）、表 C-2 摘除 F41/F42；端点口径 14$\rightarrow$31（模型 API 17 端点，契约见 API-SPEC §7）；FAQ A7、术语表（模型仓库/灰度发布/部署影子/领跑锁）、修订记录同步更新。正式修订记录见正文修订记录表。HTML/PDF/latex 衍生制品与 CSV 按流程同步重生成。
 \end{enumerate}

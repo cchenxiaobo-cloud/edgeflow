@@ -5,19 +5,21 @@
 
 \section{EdgeFlow 是什么}
 
-EdgeFlow 是一个面向“云—边—设备”三层架构的轻量级边缘计算平台，当前版本为 v0.1.0。它通过云端统一接口，让操作人员可以在云端完成边缘节点的接入与管理、容器应用的下发与运行、设备的接入与远程控制，并实时掌握边缘侧的运行状态。
+EdgeFlow 是一个面向“云—边—设备”三层架构的轻量级边缘计算平台，当前版本为 v0.7.0。它通过云端统一接口，让操作人员可以在云端完成边缘节点的接入与管理、容器应用的下发与运行、设备的接入与远程控制，并实时掌握边缘侧的运行状态。
 
 EdgeFlow 的典型工作方式：边缘节点上的 \texttt{edgecore} 主动连接云端 \texttt{cloudcore} 并保持长连接；操作人员通过云端 REST API（Representational State Transfer Application Programming Interface）下发期望（desired）配置；边缘节点执行后，将实际状态（reported）上报云端，形成“下发—执行—上报”的闭环。整个链路包括节点注册、容器调谐（Reconcile）、设备数字孪生（Digital Twin）与配置同步等能力。
 
+自 v0.1.0 发布以来，平台能力持续演进：v0.2.0 引入容器资源调度与超卖准入、Mapper 装配开关与 Modbus 设备命名空间；v0.3.0 交付 OPC-UA 协议栈核心；v0.4.0 起云端由纯内存态升级为分级持久化（嵌入式 etcd）；v0.5.0 支持外部 etcd 模式；v0.6.0 实现外部模式多副本真多活；v0.7.0 新增模型仓库、版本管理与灰度发布。
+
 \section{核心组件}
 
-EdgeFlow v0.1.0 由以下组件构成：
+EdgeFlow v0.7.0 由以下组件构成：
 
 \begin{tabularx}{\textwidth}{|l|l|X|}
   \hline
   \textbf{组件} & \textbf{角色} & \textbf{职责} \\
   \hline
-  \texttt{cloudcore} & 云端控制面 & 对外提供 REST API（默认端口 8080）；通过 CloudHub（WebSocket，默认端口 10000）与边缘节点保持长连接，处理节点注册、心跳、可靠下发与设备指令 \\
+  \texttt{cloudcore} & 云端控制面 & 对外提供 REST API（默认端口 8080）；通过 CloudHub（WebSocket，默认端口 10000）与边缘节点保持长连接，处理节点注册、心跳、可靠下发与设备指令；通过嵌入式（v0.4.0）或外部（v0.5.0）etcd 将注册台账与设备期望状态写穿持久化；内置模型仓库与灰度发布控制器（v0.7.0） \\
   \hline
   \texttt{edgecore} & 边缘运行时 & 部署在边缘节点上，由五个子模块协作完成云边通道、元数据管理、容器调谐、设备孪生与事件总线（详见下文） \\
   \hline
@@ -49,15 +51,15 @@ EdgeFlow v0.1.0 由以下组件构成：
   \item \textbf{配置下发}：将 ConfigMap/Secret 配置同步到边缘节点，供边缘应用使用。
 \end{itemize}
 
-\section{版本与发布（v0.1.0）}
+\section{版本与发布（v0.7.0）}
 
 \begin{itemize}
-  \item \textbf{版本}：v0.1.0（2026-08-14 发布）；
-  \item \textbf{手册修订}：v0.1.1（2026-08-16）——依据仓库代码审计修订（吊销闭环、OCSP、设备认证 token 消费、配置文件与热重载、gzip 压缩、keadm 命令修正等），产品版本基线不变（仍为 v0.1.0）；
-  \item \textbf{手册修订}：v0.1.2（2026-08-18）——v0.1.1 生产发布准备轮安全加固（\texttt{/ocsp} per-IP 限流与缓存、OCSP 客户端新鲜度校验、CRL 锁降级日志、P2 代码审查遗留闭环），产品版本基线 v0.1.1；
-  \item \textbf{容器镜像}：\texttt{edgeflow/cloudcore:v0.1.0}、\texttt{edgeflow/edgecore:v0.1.0}，支持 \texttt{linux/amd64} 与 \texttt{linux/arm64} 双架构；
-  \item \textbf{Helm Chart}：\texttt{build/charts/edgeflow}，用于在 Kubernetes 集群中部署云端；
-  \item \textbf{离线制品}：发布目录 \texttt{release/v0.1.0/}，包含云/边/管理工具在各平台的二进制、校验和（\texttt{checksums.txt}）、软件物料清单（SBOM）与 Helm Chart 包（\texttt{edgeflow-0.1.0.tgz}）。
+  \item \textbf{版本}：v0.7.0（2026-08-25 发布）；
+  \item \textbf{发布链}：v0.1.0（2026-08-14，MVP）→ v0.1.1（2026-08-18，安全加固）→ v0.2.0（2026-08-18，资源调度、Mapper 开关与 Modbus 命名空间）→ v0.3.0（2026-08-19，KNOWN-ISSUES 闭环与 OPC-UA 协议栈）→ v0.4.0（2026-08-24，云端嵌入式 etcd 持久化）→ v0.5.0（2026-08-24，外部 etcd 模式）→ v0.6.0（2026-08-25，外部模式多副本真多活）→ v0.7.0（2026-08-25，模型仓库、版本管理与灰度发布）；
+  \item \textbf{手册沿革}：v0.1.1（2026-08-16）为依据仓库代码审计的修订（吊销闭环、OCSP、设备认证 token 消费、配置文件与热重载、gzip 压缩、keadm 命令修正等），产品版本基线仍为 v0.1.0；v0.1.2（2026-08-18）为 v0.1.1 生产发布准备轮安全加固入册（\texttt{/ocsp} per-IP 限流与缓存、OCSP 客户端新鲜度校验、CRL 锁降级日志、P2 代码审查遗留闭环），产品版本基线 v0.1.1；本手册版本 v0.7.0，覆盖上述全部产品版本；
+  \item \textbf{容器镜像}：\texttt{edgeflow/cloudcore:v0.7.0}、\texttt{edgeflow/edgecore:v0.7.0}，支持 \texttt{linux/amd64} 与 \texttt{linux/arm64} 双架构；
+  \item \textbf{Helm Chart}：\texttt{build/charts/edgeflow}（Chart 包 \texttt{edgeflow-0.7.0.tgz}，version 0.7.0 / appVersion v0.7.0），用于在 Kubernetes 集群中部署云端；
+  \item \textbf{离线制品}：发布目录 \texttt{release/v0.7.0/}，包含云/边/管理工具（cloudcore/edgecore/keadm）在 \texttt{linux-amd64}、\texttt{linux-arm64}、\texttt{darwin-arm64} 三个平台的 9 个二进制、校验和（\texttt{checksums.txt}）、软件物料清单（SBOM）与 Helm Chart 包，共 12 个制品；历史版本制品见 \texttt{release/} 目录下对应版本子目录。
 \end{itemize}
 
 \section{术语约定}
@@ -66,7 +68,7 @@ EdgeFlow v0.1.0 由以下组件构成：
   \hline
   \textbf{术语} & \textbf{说明} \\
   \hline
-  \texttt{nodeID} & 边缘节点唯一标识。edgecore 注册时上报，默认格式为 \texttt{edge-<主机名>}，仅允许字母、数字、连字符与下划线 \\
+  \texttt{nodeID} & 边缘节点唯一标识。edgecore 注册时上报，默认格式为 \texttt{edge-<主机名>}，仅允许字母、数字、点、连字符与下划线（匹配 \texttt{\textasciicircum{}[A-Za-z0-9.\_-]+\$}，v0.4.0 起云端强制校验，含 \texttt{/} 的 ID 拒绝写入） \\
   \hline
   Pod & 云端下发的容器应用单元，包含名称（name）、命名空间（namespace）、镜像（image）与副本数（replicas）等描述 \\
   \hline
@@ -78,18 +80,37 @@ EdgeFlow v0.1.0 由以下组件构成：
   \hline
   调谐（Reconcile） & 边缘侧周期性比对期望状态与实际状态，并驱动实际状态收敛到期望状态的过程 \\
   \hline
+  嵌入式 etcd & 云端单成员 etcd 实例（v0.4.0 起默认启用，监听 127.0.0.1:12379/12380，仅绑回环），作为云端的持久化后端，以写穿方式保存注册台账与设备期望状态 \\
+  \hline
+  外部 etcd 模式 & 设置 \texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_ENDPOINTS} 后，云端直连共享的 etcd 集群（v0.5.0 起；v0.6.0 起支持多副本真多活），不再内嵌 etcd 实例 \\
+  \hline
+  写穿持久化（write-through） & 写路径先写入 etcd 成功、再更新内存缓存：\textquotedblleft 写成功即已持久化\textquotedblright ；读路径走内存缓存 \\
+  \hline
+  模型仓库 & 模型与版本两级台账（v0.7.0）：\textquotedblleft 镜像即模型、Tag 即版本\textquotedblright ，登记镜像引用与 sha256 摘要，供发布与追踪 \\
+  \hline
+  灰度发布 & 将模型版本按节点白名单或百分比分批下发到边缘（v0.7.0），支持批次节奏、fail-fast、取消与回滚 \\
+  \hline
+  部署影子 & 模型发布后云端写穿的\textquotedblleft 版本—节点—时间\textquotedblright 台账（v0.7.0），反映每台节点的期望部署版本 \\
+  \hline
+  领跑锁 & 外部多副本模式下灰度发布任务的租约锁（v0.7.0，TTL 默认 60s）：持有者崩溃后其余副本 $\le$TTL 内接管续跑 \\
+  \hline
+  命名空间（设备） & 设备注册与指令路由的隔离维度（v0.2.0 起，如 Modbus 设备命名空间）：同名设备可分命名空间共存，指令按命名空间路由，错误命名空间被边缘拒绝 \\
+  \hline
 \end{tabularx}
 
 \section{功能边界与已知限制}
 
-使用 EdgeFlow v0.1.0 前，请了解以下边界：
+使用 EdgeFlow v0.7.0 前，请了解以下边界：
 
 \begin{itemize}
-  \item \textbf{云端状态为内存态}：cloudcore 保存的节点、Pod、设备状态不落盘，重启后查询数据清空；边缘节点重连后会自动重新注册并恢复上报，边缘侧元数据由 SQLite 持久化，不受影响；
+  \item \textbf{云端分级持久化（v0.4.0 起）}：节点注册台账与设备 Desired 跨重启保留；心跳、Status、Pod 状态、设备 Properties 与 Offline 标记不落盘，云端重启后短暂清空，$\le$1 个上报周期自愈（非永久丢失）；纯内存模式（\texttt{ETCD\_ENABLED=false} 且未配置外部 etcd）下模型发布任务与部署影子重启丢失（L22）；
   \item \textbf{接入令牌已消费}：\texttt{keadm join} 的 \texttt{--token} 写入 \texttt{edgecore.env}，edgecore 注册时随 Register 消息携带；云端设置 \texttt{EDGEFLOW\_CLOUDCORE\_NODE\_TOKEN} 后启用校验，不匹配的注册会被拒绝（未设置时不校验，向后兼容）；
   \item \textbf{设备指令值类型}：\texttt{device-command} 的 \texttt{value} 为数值型（float64），字符串、布尔型属性暂不支持通过该端点下发；
   \item \textbf{Secret 明文存储}：\texttt{config-sync} 下发 Secret 时值为明文，生产环境需自行加密；
-  \item \textbf{无批量下发端点}：当前版本未提供面向多节点的批量（广播）下发接口。
+  \item \textbf{无批量下发端点}：当前版本未提供面向多节点的批量（广播）下发接口；
+  \item \textbf{混合版本多副本禁止}：v0.5.0 与 v0.6.0 的 cloudcore 副本同连一个外部集群会导致旧版本误删活节点（L15）；v0.6.0 与 v0.7.0 混跑未验证（L29）——升级/回滚必须全停再全起；
+  \item \textbf{OPC-UA 仅协议栈核心}：v0.3.0 起提供 UA Binary 协议栈（编解码与 TCP 握手），SecurityPolicy None 明文传输，仅限可信隔离网络，严禁暴露公网；设备读写服务与 Mapper 接入未实现；
+  \item \textbf{nodeID 字符约束}：仅允许字母、数字、点、连字符与下划线（\texttt{\textasciicircum{}[A-Za-z0-9.\_-]+\$}），含 \texttt{/} 的节点 ID 拒绝写入（v0.4.0 起）。
 \end{itemize}
 
 \section{手册内容导航}

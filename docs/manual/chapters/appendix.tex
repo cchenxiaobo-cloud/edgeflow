@@ -1,12 +1,13 @@
 % =====================================================================
 % EdgeFlow 用户手册 · 附录
-% 事实依据：docs/RELEASE-NOTES-v0.1.0.md、docs/API-SPEC.md、docs/ROADMAP.md、
-%           docs/SECURITY.md、docs/UPGRADE.md、hack/dev-up.sh、代码 grep 确认
+% 事实依据：docs/RELEASE-NOTES-v0.1.0.md~v0.7.0.md、docs/API-SPEC.md、docs/KNOWN-ISSUES.md、
+%           docs/ROADMAP.md、docs/SECURITY.md、docs/UPGRADE.md、hack/dev-up.sh、代码 grep 确认
 % =====================================================================
 \chapter{附录A 环境变量参考}
 \label{app:A}
 
-以下为 EdgeFlow v0.1.0 的主要环境变量（含组件装配与运维所需全部变量；\texttt{EDGEFLOW\_MODBUS\_ADDR} 见第 6 章）。设置方式：启动进程前 \texttt{export}，
+以下为 EdgeFlow v0.7.0 的主要环境变量（含组件装配与运维所需全部变量；
+Modbus 组独立成节见下）。设置方式：启动进程前 \texttt{export}，
 或由 \texttt{keadm join} 生成的 \texttt{edgecore.env} 统一注入。
 
 \section{cloudcore 组}
@@ -30,9 +31,40 @@
 \texttt{EDGEFLOW\_CLOUDCORE\_AUTH} & 关 & \texttt{on} 启用 Token 认证 \\
 \texttt{EDGEFLOW\_CLOUDCORE\_API\_TOKEN} & 空 & API 令牌；认证开启时必填，否则启动失败 \\
 \texttt{EDGEFLOW\_CLOUDCORE\_AUDIT\_PATH} & \texttt{data/audit-ledger.jsonl} & 审计台账路径（JSONL 追加写） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_OCSP\_RATE\_LIMIT} & \texttt{10} & /ocsp per-IP 令牌桶速率（req/s，burst = 2×rate）；非法回退默认（v0.1.1） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_ENABLED} & \texttt{true} & 启用嵌入式 etcd 持久化；\texttt{false} = 纯内存（数据重启丢失）（v0.4.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_DATA\_DIR} & \texttt{data/etcd} & 嵌入式 etcd 数据目录（v0.4.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_CLIENT\_URL} & \texttt{http://127.0.0.1:12379} & 嵌入式 etcd 客户端地址，仅绑回环（v0.4.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_PEER\_URL} & \texttt{http://127.0.0.1:12380} & 嵌入式 etcd 对等地址，仅绑回环（v0.4.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_QUOTA\_BACKEND\_BYTES} & \texttt{256MiB} & 后端存储配额（v0.4.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_AUTO\_COMPACTION\_MODE} & \texttt{periodic} & 自动压缩模式（v0.4.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_AUTO\_COMPACTION\_RETENTION} & \texttt{1h} & 自动压缩保留时长（v0.4.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_STRICT} & 空 & \texttt{1} = 坏库 fail-fast；空 = 降级纯内存 + 大告警（v0.4.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_NODE\_RETENTION} & \texttt{24h} & 节点注册台账保留期（GC 清理，v0.4.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_ENDPOINTS} & 空 & 空 = 嵌入式 etcd；非空 = 外部直连 etcd 集群（逗号分隔，v0.5.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_TLS\_CA} & 空 & 外部 etcd CA 证书路径；非空启用 TLS，全部端点必须 \texttt{https}（v0.5.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_TLS\_CERT} & 空 & 客户端证书路径；与 KEY 同设即 mTLS，只设其一 fail-fast（v0.5.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_TLS\_KEY} & 空 & 客户端私钥路径；与 CERT 同设/同缺（v0.5.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_ALLOW\_INSECURE} & 空 & 逃生门：\texttt{1} 放行非回环 + 无 TLS 明文连接（启动期大告警，仅可信内网，v0.5.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_NODE\_LEASE\_TTL} & \texttt{300s} & 外部多副本判活租约 TTL；<90s Warn、≤0/非法 fail-fast；仅外部模式消费（v0.6.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_MULTI\_REPLICA} & 空 & 外部多副本标记（\texttt{1}/\texttt{true} 生效）：/healthz 反映 etcd 连接（v0.6.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_RELEASE\_SCAN\_INTERVAL} & \texttt{5s} & 模型发布扫描周期；>0 否则 fail-fast（v0.7.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_RELEASE\_LOCK\_TTL} & \texttt{60s} & 发布领跑锁 TTL；≥15s 否则 fail-fast；仅外部模式消费（v0.7.0） \\
 \bottomrule
 \end{tabularx}
 \end{table}
+
+\textbf{附注}：
+\begin{itemize}
+  \item 外部模式（\texttt{ETCD\_ENDPOINTS} 非空）下，嵌入式 etcd 变量
+        （\texttt{ETCD\_DATA\_DIR}/\texttt{ETCD\_CLIENT\_URL}/
+        \texttt{ETCD\_PEER\_URL}/\texttt{ETCD\_QUOTA\_BACKEND\_BYTES}/
+        \texttt{ETCD\_AUTO\_COMPACTION\_*}）\textbf{不生效}，设置仅输出 Warn；
+  \item 外部模式下 \texttt{NODE\_TIMEOUT} 不再作为判活阈值、
+        \texttt{NODE\_SCAN\_INTERVAL} 迁用为重扫/GC 周期（见第 5 章）；
+  \item \texttt{NODE\_LEASE\_TTL}/\texttt{RELEASE\_LOCK\_TTL} 仅外部模式
+        消费，embed/纯内存显式设置仅 Warn 忽略。
+\end{itemize}
 
 \section{edgecore 组}
 
@@ -55,16 +87,41 @@
 \texttt{EDGEFLOW\_EDGECORE\_DEVICE\_REPORT\_INTERVAL} & \texttt{30s} & 设备状态上报周期 \\
 \texttt{EDGEFLOW\_EDGECORE\_MQTT\_CONNECT\_TIMEOUT} & \texttt{5s} & 单次 MQTT 建连超时 \\
 \texttt{EDGEFLOW\_EDGECORE\_TOKEN} & 空 & \textbf{已消费}：keadm join 写入（\texttt{--token}），edgecore 注册时携带；云端设 \texttt{EDGEFLOW\_CLOUDCORE\_NODE\_TOKEN} 后启用校验 \\
+\texttt{EDGEFLOW\_EDGECORE\_NODE\_CPU\_MILLI} & 自动探测值 & 节点 CPU 容量（毫核，超卖准入基线）；探测失败回退默认并告警（v0.2.0） \\
+\texttt{EDGEFLOW\_EDGECORE\_NODE\_MEMORY\_BYTES} & 自动探测值 & 节点内存容量（字节，仅 Linux）；探测失败回退默认并告警（v0.2.0） \\
+\texttt{EDGEFLOW\_EDGECORE\_OVERCOMMIT\_CPU\_RATE} & \texttt{1.5} & CPU 超卖率（150\%）；超卖准入按 容量×超卖率 计算（v0.2.0） \\
+\texttt{EDGEFLOW\_EDGECORE\_OVERCOMMIT\_MEMORY\_RATE} & \texttt{1.5} & 内存超卖率（150\%，v0.2.0） \\
+\texttt{EDGEFLOW\_EDGECORE\_ENABLE\_MAPPER} & \texttt{true} & Mapper 装配开关：\texttt{false}/0/off/no（大小写不敏感）关闭 → 不注册 Mapper、不采集，指令仅更新 Twin.Desired（纯影子模式，v0.2.0） \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Modbus 组}
+
+\begin{table}[htbp]
+\centering
+\caption{Modbus Mapper 环境变量}
+\label{tab:a-modbus}
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{变量} & \textbf{默认值} & \textbf{说明} \\
+\midrule
+\texttt{EDGEFLOW\_MODBUS\_ADDR} & 空 & Modbus TCP 从站地址（\texttt{host:port}）；空 = 不启用 Modbus Mapper \\
+\texttt{EDGEFLOW\_MODBUS\_NAMESPACE} & \texttt{default} & 设备命名空间：三级解析（WithNamespace 选项 > env > default）；注册表按 ns 隔离，同名设备分 ns 共存，指令按 ns 路由（错误 ns → 502）（v0.2.0） \\
+\texttt{EDGEFLOW\_MODBUS\_SIM\_PORT} & \texttt{15020} & 模拟从站监听端口（可选，仅开发/演示环境） \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
 时长类变量（调谐/上报周期等）合法范围 \textbf{1s 至 10m}，超出或非法回退
-默认值并告警。
+默认值并告警；v0.3.0 起启动日志对周期类 env \textbf{三态明示}（合法/
+越界回落/未设置）。
 
-\texttt{EDGEFLOW\_*} 环境变量共 \textbf{24 个}：cloudcore 组 11 个 +
-edgecore 组 11 个 + \texttt{EDGEFLOW\_MODBUS\_ADDR}（见第 6 章）+
-测试专用 \texttt{EDGEFLOW\_TEST\_DUR}（仅测试代码使用，不影响部署）。
+\texttt{EDGEFLOW\_*} 环境变量共 \textbf{49 个}：cloudcore 组 30 个 +
+edgecore 组 16 个 + Modbus 组 2 个 + 测试专用
+\texttt{EDGEFLOW\_TEST\_DUR} 1 个（仅测试代码使用，不影响部署）；
+另有可选模拟器变量 \texttt{EDGEFLOW\_MODBUS\_SIM\_PORT}（不计入总数）
+与 keadm/开发组 5 个（见下节）。
 
 \section{keadm / 开发脚本组}
 
@@ -103,6 +160,10 @@ edgecore 组 11 个 + \texttt{EDGEFLOW\_MODBUS\_ADDR}（见第 6 章）+
 \midrule
 \texttt{200} & 成功；下发类接口表示\textbf{边缘已确认}（Ack ok），
 响应 \texttt{\{"status":"ok","acked":true\}} & — \\
+\texttt{202} & 已受理，异步执行：模型发布创建/回滚置位，结果以
+\texttt{release} 对象回读为准（v0.7.0） & 轮询
+\texttt{GET /api/v1/models/\{modelName\}/releases/\{releaseID\}}
+跟踪状态 \\
 \texttt{400} & 请求非法：JSON 解析失败 / 缺必填字段 / operation 或
 kind 不在白名单 & 修正请求体 \\
 \texttt{401} & 未授权：Token 认证开启且请求未携带/携带错误令牌
@@ -110,6 +171,16 @@ kind 不在白名单 & 修正请求体 \\
 \texttt{Authorization: Bearer <token>} \\
 \texttt{404} & 节点未注册或离线（\texttt{ErrNodeOffline}）；单资源查询
 不存在 & \textbf{无需重试}，先修云边通道 \\
+\texttt{409} & 冲突：podsync 资源超卖拒绝 \texttt{EDGEFLOW\_RESOURCE\_EXHAUSTED}
+（不落盘不建容器，v0.2.0）；模型 API 冲突族——已存在/状态机非法/在途
+发布/CAS 耗尽/回滚被接管（v0.7.0） & 读 error 文案（在途发布含
+releaseID），修正后重试 \\
+\texttt{422} & 业务前置不满足：发布目标版本非 active / 无 Ready 节点 /
+白名单含未知节点 / 无 PrevActive（v0.7.0） & 按响应
+\texttt{unknownNodes} 等上下文修正请求 \\
+\texttt{429} & 限流：/ocsp per-IP 令牌桶超限（默认 10 req/s、burst 20，
+v0.1.1） & 降低请求频率或调高
+\texttt{EDGEFLOW\_CLOUDCORE\_OCSP\_RATE\_LIMIT} \\
 \texttt{500} & 内部错误：消息构建失败、发送通道异常等兜底 & 查看
 cloudcore 日志，反馈问题 \\
 \texttt{502} & 边缘明确拒绝（回 error Ack）：消息已送达但处理失败 &
@@ -120,7 +191,8 @@ cloudcore 日志，反馈问题 \\
 \end{tabularx}
 \end{table}
 
-\textbf{记忆要点}：404 = 没送达；502 = 送达但被拒；504 = 可能送达但未确认。
+\textbf{记忆要点}：404 = 没送达；502 = 送达但被拒；504 = 可能送达但未确认；
+409 = 送达但超卖/冲突拒绝；202 = 已受理异步执行；429 = 限流。
 错误响应统一为 JSON：\texttt{\{"error":"<机器可读原因>",\ldots\}}。
 
 \chapter{附录C 术语表}
@@ -128,7 +200,9 @@ cloudcore 日志，反馈问题 \\
 
 \begin{description}
   \item[CloudCore（云端核心）] 云端主进程，含 CloudHub（云边通道服务端）、
-        NodeController（节点健康扫描）、设备状态存储与 REST API。
+        NodeController（节点健康扫描）、etcdstore（v0.4.0 嵌入式 /
+        v0.5.0 外部直连持久化存储）、modelrepo/modelrelease（v0.7.0 模型
+        仓库与灰度发布控制器）与 REST API。
   \item[EdgeCore（边缘核心）] 边缘节点常驻进程，含 EdgeHub（云边通道
         客户端）、Edged、MetaManager、DeviceTwin、Mapper 框架与 EventBus。
   \item[Edged] 边缘容器运行时管理模块：声明式调谐（默认 5s 周期）、
@@ -143,9 +217,34 @@ cloudcore 日志，反馈问题 \\
   \item[ConfigSync] 云端向边缘可靠下发 ConfigMap/Secret 配置的链路。
   \item[NodeJob] 云端任务管理（任务分发 CRD）：\textbf{已决策关闭}
         （v0.1.0 范围外，协议占位标注）。
+  \item[嵌入式 etcd] 云端默认持久化形态（v0.4.0）：cloudcore 内嵌单成员
+        etcd（127.0.0.1:12379/12380，仅绑回环），写穿持久化节点注册台账
+        与设备 Desired；Pod 状态与上报属性不落盘（重启短暂清空自愈）。
+  \item[外部 etcd 模式] 设置 \texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_ENDPOINTS}
+        后直连共享 etcd 集群（v0.5.0），支持 TLS/mTLS、明文护栏，v0.6.0 起
+        支持多副本真多活。
+  \item[写穿（write-through）] 写入先落 etcd 成功再更新内存缓存；
+        “写成功 = 已持久化”（v0.4.0 起）。
+  \item[真多活 / 租约判活] 外部多副本形态（v0.6.0）：心跳落盘为 etcd
+        租约（\texttt{NODE\_LEASE\_TTL} 默认 300s），判活 = 心跳键存在性
+        （Ready/Offline/不存在 + 瞬时 Unknown），配 GuardedDelete 删除守卫
+        与 CAS 写。
+  \item[模型仓库] 云端模型与版本台账（v0.7.0）：Model（name 唯一）+
+        ModelVersion（镜像即模型、Tag 即版本，状态机
+        draft→active→archived）。
+  \item[灰度发布] 模型版本按白名单/百分比分批下发（v0.7.0）：创建返回
+        202 异步受理，批内串行、批间可暂停，支持取消与回滚；领跑锁保证
+        多副本单执行者。
+  \item[部署影子] 模型发布在节点上的落点记录
+        \texttt{/edgeflow/models/deployments/<model>/<nodeID>}（v0.7.0，
+        podsync + config-sync 双 acked 后写穿）。
+  \item[领跑锁] 发布执行权锁（grant-per-claim，TTL 60s 可续）：多副本
+        外部模式下保证同一发布仅一个执行者，崩溃 ≤TTL 接管续跑。
   \item[mTLS] 双向 TLS：云端验证边缘证书、边缘验证云端证书与主机名，
         云边通道默认实现。
-  \item[影子设备] 云端视角的设备逻辑实体，由边缘影子周期上报汇聚而成。
+  \item[影子设备] 云端视角的设备逻辑实体，由边缘影子周期上报汇聚而成；
+        v0.4.0 起 Desired 云端持久化（写穿 etcd），properties 仍为内存态
+        （重启 ≤1 上报周期自愈）。
   \item[EventBus] 边缘内部 MQTT 设备通信总线（数据面），broker 不可用时
         Mapper 降级纯本地模式。
   \item[op-ledger] Modbus Mapper 的读写操作台账（SQLite），记录设备 ID、
@@ -179,6 +278,121 @@ cloudcore 日志，反馈问题 \\
         （linux/amd64 + arm64）。
 \end{itemize}
 
+\section{v0.1.1（2026-08-18，安全加固）}
+
+\begin{itemize}
+  \item /ocsp per-IP 限流（默认 10 req/s、burst 20，超限 429）+ 成功响应
+        \texttt{Cache-Control: max-age=3600}；
+  \item OCSP 客户端库新增新鲜度校验入口（fail-closed，默认 5min skew；
+        生产握手路径未接线，mTLS 仍走 CRL）；
+  \item CRL 锁降级无锁校验 + 5min 限频 Warn；P2 收尾（WriteTimeout、
+        Route 注册带 namespace、LastReportedAt 单调保护等）；
+  \item 新增 \texttt{EDGEFLOW\_CLOUDCORE\_OCSP\_RATE\_LIMIT}；错误码表增
+        \texttt{429}；v0.1.0 → v0.1.1 直接升级，零破坏。
+\end{itemize}
+
+\section{v0.2.0（2026-08-18，资源调度 + Mapper 开关 + Modbus 命名空间）}
+
+\begin{itemize}
+  \item podsync 支持 K8s 风格 \texttt{resources}（cpu/memory request/limit，
+        零值 = 不限制）：格式非法/request>limit → 400，超卖拒绝 →
+        \textbf{409 \texttt{EDGEFLOW\_RESOURCE\_EXHAUSTED}}（不落盘不建
+        容器）；容器落地 \texttt{--cpus/--memory}（swap 禁用）；
+        \textbf{资源漂移检测}（外部改 limit → 自动 stop+重建，每轮最多
+        1 个）；节点容量自动探测 + env 覆盖，超卖率默认 150\%；
+  \item Mapper 装配开关 \texttt{EDGEFLOW\_EDGECORE\_ENABLE\_MAPPER}
+        （默认 true；关闭 = 纯影子模式，不注册 Mapper、不采集）；
+  \item Modbus 设备命名空间（\texttt{EDGEFLOW\_MODBUS\_NAMESPACE}，
+        默认 default）：注册表按 ns 隔离，同名设备分 ns 共存，指令按
+        ns 路由（错误 ns → 502）；
+  \item edgecore 组新增 5 个 env；错误码表增 409；云边契约只增不改，
+        升级零破坏。
+\end{itemize}
+
+\section{v0.3.0（2026-08-19，KNOWN-ISSUES 闭环 + OPC-UA 协议栈）}
+
+\begin{itemize}
+  \item 四条已知问题闭环：采集汇入影子按 mapper 自身 ns、测试注入点、
+        podsync 400 分支 JSON 结构化、周期 env 启动日志三态明示；
+  \item \textbf{OPC-UA 第一阶段}：\texttt{pkg/opcua} UA Binary 协议栈核心
+        （NodeId/Variant/DataValue 编解码 + HEL/ACK 握手，纯标准库零依赖）；
+        \textbf{未实现}设备读写服务、SecureChannel、Discovery——仅
+        SecurityPolicy None \textbf{明文}，严禁暴露到不可信网络，未与
+        第三方栈互操作验证；
+  \item 无新增 env、无破坏性变更。
+\end{itemize}
+
+\section{v0.4.0（2026-08-24，云端持久化：嵌入式 etcd）}
+
+\begin{itemize}
+  \item 云端三存储（registry/podstatus/devicestatus）由纯内存改为
+        \textbf{嵌入式单成员 etcd}（127.0.0.1:12379/12380，只绑回环）
+        \textbf{写穿持久化}：落盘 = 节点注册元数据 + 设备 Desired；不落盘 =
+        心跳/Status/Pod 状态/设备 Properties（重启 ≤1 上报周期自愈）；
+  \item 坏库默认降级纯内存 + 大告警，\texttt{ETCD\_STRICT=1} fail-fast；
+        GC 级联（节点删除 DeleteRange 设备子树，CleanupLoop 1h）；
+  \item \textbf{升级注意}：默认启用（无迁移脚本）；Helm 必须带 PVC
+        （默认 1Gi）；\textbf{embed 模式 replicaCount 必须 = 1}（多副本
+        脑裂，Chart \texttt{\{\{ fail \}\}} 守卫）；备份恢复走
+        \texttt{etcdutl snapshot}，文件拷贝 ≠ 有效备份；资源 requests
+        256Mi/limits 1Gi；
+  \item nodeID 字符约束 \texttt{\textasciicircum{}[A-Za-z0-9.\_\-]+\$}；
+        cloudcore 组新增 9 个 env。
+\end{itemize}
+
+\section{v0.5.0（2026-08-24，外部 etcd 模式）}
+
+\begin{itemize}
+  \item \texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_ENDPOINTS} 非空 = 外部直连共享
+        etcd 集群（clientv3，跳过 embed，不建目录不占端口）；业务层零改动；
+  \item \textbf{明文护栏}：非回环 + 无 TLS → 拒绝启动；逃生门
+        \texttt{ETCD\_ALLOW\_INSECURE=1}（仅可信内网）；\texttt{TLS\_CA} 启用
+        TLS1.2+，CERT/KEY 同设即 mTLS；启动连通性检查（≈17s）失败拒绝
+        启动，区分 Unavailable/PermissionDenied 文案；
+  \item 单写者形态铁律：两种模式 replicaCount 均必须 1（Chart
+        \texttt{\{\{ fail \}\}} 守卫）；
+  \item 默认行为不变（不设 ENDPOINTS = embed 逐位不变）；切换走部署指南
+        §10.7.5 迁移 runbook；建议外部集群 3 节点奇数/同地域/quota
+        256MiB/compaction 1h/最小权限角色（readwrite /edgeflow/）。
+\end{itemize}
+
+\section{v0.6.0（2026-08-25，真多活）}
+
+\begin{itemize}
+  \item 外部模式 \textbf{replicaCount > 1 active-active 放开}：心跳落盘为
+        etcd 租约（grant-per-heartbeat，\texttt{NODE\_LEASE\_TTL} 默认
+        300s）；判活三态（不存在/Ready/Offline + 瞬时 Unknown），事件源
+        三路互兜（watch 增量/周期重扫/CloudHub 断开事件）；
+  \item \textbf{GuardedDelete 守卫}（活租约拒绝删除）、watch 缓存同步、
+        \textbf{SetDesired CAS}（冲突重试 ≤3，HTTP 仍 200 + 日志
+        \texttt{concurrent-write}）；外部模式 NodeController 停用；
+  \item /healthz 多副本绑定 etcd 连接（失联 >TTL → 503，liveness 重启
+        自愈）；
+  \item \textbf{etcd 故障 >TTL → 全量软离线}（有界，恢复 ≤1 心跳周期自愈、
+        零数据删除），与 v0.5.0“判活不受存储故障影响”不同；
+  \item \textbf{升级必须全停再全起（scale 0→1）}，禁止 v0.5.0 × v0.6.0
+        混跑（旧版 GC 误删活节点，L15）。
+\end{itemize}
+
+\section{v0.7.0（2026-08-25，模型仓库/版本管理/灰度发布）}
+
+\begin{itemize}
+  \item 云端新增 \texttt{modelrepo} + \texttt{modelrelease}：模型台账
+        Model、版本台账 ModelVersion（draft→active→archived）、部署影子
+        DeploymentState、灰度发布 ModelRelease（白名单/百分比二选一，
+        创建返回 \textbf{202}，批内串行、支持取消/回滚，领跑锁保证单
+        执行者）；
+  \item \textbf{API 端点 14 → 31}（新增 17 个模型 API，全部挂既有 apiMux，
+        AUTH=on 自动要求 Bearer Token）；错误码表增 \textbf{202/422}，409
+        家族扩展；
+  \item 下发链路边缘零改动（podsync + config-sync，命名
+        \texttt{edgeflow-model-<sanitized>}，namespace \texttt{edgeflow}，
+        replicas=1）；
+  \item 三模式兼容（纯内存 L22 重启丢失 / embed / 外部 CAS+guard+watch+
+        领跑锁）；升级零迁移（新前缀 \texttt{/edgeflow/models/}），建议
+        同版本全量切换（L29）。
+\end{itemize}
+
 \section{已实现 vs 即将上线 / 范围外}
 
 \begin{table}[htbp]
@@ -196,10 +410,15 @@ rollback/ops-ledger/batch/reset/version）、批量与灰度（\texttt{keadm
 batch}）、Helm Chart、多架构镜像、/metrics 可观测性、API 兼容矩阵
 （\texttt{docs/API-COMPATIBILITY.md} + \texttt{tests/contract}）、
 镜像安全扫描（Trivy 构建期 0 漏洞，发布流程级，见
-\texttt{docs/SECURITY-SCAN.md}） \\
+\texttt{docs/SECURITY-SCAN.md}）、资源调度与超卖准入（v0.2.0，K8s 风格
+resources + 409 超卖拒绝 + 漂移重建）、Mapper 装配开关与设备命名空间
+（v0.2.0）、OPC-UA 协议栈核心（v0.3.0，明文、仅限可信网络）、云端分级
+持久化（v0.4.0 嵌入式 etcd 写穿）、外部 etcd 模式与明文护栏（v0.5.0）、
+真多活多副本（v0.6.0，租约判活 + CAS + 删除守卫）、模型仓库/版本管理/
+灰度发布（v0.7.0，17 个模型 API，端点 14→31） \\
 即将上线 / 范围外 & NodeJob 任务分发（已关闭）、完整 RBAC 角色模型
-（仅 Token 单令牌）、Flannel、边缘调度/资源超卖、OPC-UA 适配器、
-Protobuf 编码 \\
+（仅 Token 单令牌）、Flannel、OPC-UA 设备读写服务与 Mapper 接入
+（协议栈核心已实现，v0.3.0）、Protobuf 编码、训练平台/模型评测 \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -208,8 +427,10 @@ Protobuf 编码 \\
 \label{app:E}
 
 \begin{enumerate}
-  \item \textbf{云端状态为内存态}：云端进程重启后节点状态清空，边缘需
-        重新注册（自动重连触发）；在途未确认消息可能丢失，由上层控制器
+  \item \textbf{云端分级持久化（v0.4.0 起）}：注册台账与设备 Desired
+        跨重启保留（写穿 etcd）；Pod 状态与上报属性重启后短暂清空
+        （\textbf{≤1 上报周期自愈，非永久丢失}）；心跳/Status 不落盘
+        （重启待首心跳翻新）；在途未确认消息可能丢失，由上层控制器
         恢复后重新下发。
   \item \textbf{镜像未推送远端仓库}：镜像仅本地/自建 registry 可用，
         GitHub 远端 CI（lint+test+release）未在真实远端运行。
@@ -232,4 +453,29 @@ Protobuf 编码 \\
   \item \textbf{手册更新方式}：本手册 LaTeX 工程纳入 Git 仓库；修改
         \texttt{docs/manual/} 下章节文件后，用 \texttt{xelatex} 编译主文件
         生成 PDF（ctexbook 文档类）。
+  \item \textbf{nodeID 字符约束}（v0.4.0）：节点 ID 必须匹配正则
+        \texttt{\textasciicircum{}[A-Za-z0-9.\_\-]+\$}，含 \texttt{/} 的
+        nodeID 拒绝写入云端台账。
+  \item \textbf{外部模式判活依赖 etcd 可用性}（L12）：外部多副本形态下
+        etcd 故障超过 \texttt{NODE\_LEASE\_TTL} → 全量软离线（有界，恢复
+        ≤1 心跳周期自愈、零数据删除），监控告警阈值按 ≈2×TTL 折算。
+  \item \textbf{混合版本多副本禁止}（L15/L29）：升级/回滚一律全停再全起
+        （scale 0→1）；v0.5.0 × v0.6.0 混跑会误删活节点（旧版 GC 无 hb
+        视角），v0.6.0 × v0.7.0 混跑未验证，建议同版本全量切换。
+  \item \textbf{纯内存模式模型发布重启丢失}（L22）：
+        \texttt{ETCD\_ENABLED=false} 时模型发布任务与部署影子为内存态，
+        重启丢失；生产建议 embed/外部 etcd 模式。
+  \item \textbf{半部署状态}（L23）：podsync 成功而 config-sync 失败的
+        发布批次计 \texttt{failed}，重试/回滚时按实际部署影子判定。
+  \item \textbf{回滚部分失败仍置 rolled\_back}（L24）：回滚过程中节点失败
+        不回滚中止，状态机仍收敛为 \texttt{rolled\_back}，需按部署影子
+        核对残留节点。
+  \item \textbf{OPC-UA 协议栈明文}（KNOWN-ISSUES §3）：v0.3.0 协议栈仅
+        SecurityPolicy None（明文），未与第三方栈互操作验证；严禁暴露到
+        不可信网络，仅限可信隔离网络。
+  \item \textbf{终态 release 键永久保留}（L31）：发布终态（succeeded/
+        failed/canceled/rolled\_back）键保留作审计痕迹，不自动清理；可选
+        \texttt{etcdctl del /edgeflow/models --prefix} 手工清理。
+  \item \textbf{无分页}（L28）：列表类 API（模型/版本/发布/部署影子）暂不
+        支持分页，数据量大时响应体增长，请按需控制台账规模。
 \end{enumerate}

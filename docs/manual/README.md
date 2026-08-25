@@ -1,6 +1,6 @@
 # EdgeFlow 用户手册（LaTeX 工程）
 
-本目录是《EdgeFlow 用户手册 v0.1.0》的 LaTeX 源码工程，纳入 Git 版本管理，
+本目录是《EdgeFlow 用户手册 v0.7.0》的 LaTeX 源码工程，纳入 Git 版本管理，
 随产品迭代更新。
 
 ## 目录结构
@@ -34,7 +34,7 @@ xelatex main.tex        # 第 2 遍（生成目录/交叉引用）
 latexmk -xelatex main.tex
 ```
 
-产物：`main.pdf`（重命名为 `EdgeFlow-用户手册-v0.1.0.pdf` 发布）。
+产物：`main.pdf`（重命名为 `EdgeFlow-用户手册-v0.7.0.pdf` 发布）。
 
 ## 更新方式
 
@@ -45,6 +45,6 @@ latexmk -xelatex main.tex
 
 ## 内容口径（重要）
 
-- 只描述 v0.1.0 已实现功能；未实现功能一律标注"即将上线"或列入附录 E；
+- 只描述 v0.7.0 已实现功能；未实现功能一律标注"即将上线"或列入附录 E；
 - 命令、参数、环境变量均与代码实现一致（见 docs/API-SPEC.md、docs/KEADM.md）；
 - 修改后请用 `xelatex` 编译验证无致命错误再提交。

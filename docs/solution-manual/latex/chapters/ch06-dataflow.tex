@@ -22,7 +22,7 @@
 3 & Mapper $\rightarrow$ 设备影子 & 属性快照 & DeviceTwin 内存态写入 & 影子仅维护最新快照\\
 4 & 影子 $\rightarrow$ 边缘存储 & 节点元数据、Pod 期望状态、配置 & MetaManager SQLite（WAL） & 影子本身不落盘\\
 5 & 影子 $\rightarrow$ 云端 DeviceReport & 设备状态报告 & WebSocket JSON，无 Ack 单向流式 & 30s 周期；\env{EDGEFLOW\_EDGECORE\_DEVICE\_REPORT\_INTERVAL} 可配（1s--10min）；启动即报一轮\\
-6 & 云端接收 $\rightarrow$ 存储 & DeviceStatus 快照 & CloudCore 内存态 & nodeID $\rightarrow$ namespace/deviceName $\rightarrow$ 状态\\
+6 & 云端接收 $\rightarrow$ 存储 & DeviceStatus 快照 & CloudCore 内存态（v0.4.0 起注册台账与设备 Desired 已持久化，属性快照仍内存态，见第 1 章“云端部署形态与高可用”节） & nodeID $\rightarrow$ namespace/deviceName $\rightarrow$ 状态\\
 7 & 云端存储 $\rightarrow$ API & 设备状态查询 & REST API & \seqsplit{\texttt{GET /api/v1/devices}}；\seqsplit{\texttt{GET /api/v1/nodes/\{nodeID\}/devices}}\\
 \bottomrule
 \end{tabular}}
@@ -35,7 +35,7 @@ EdgeFlow v0.1.0 的弱网数据语义为\textbf{“最新状态快照周期补�
 
 \begin{itemize}
   \item \textbf{上行采集不依赖云边通道}：设备 $\rightarrow$ Mapper $\rightarrow$ EventBus $\rightarrow$ 设备影子的链路完全在边缘本地完成，云边通道中断不影响边缘采集与影子更新；
-  \item \textbf{云端视角}：云端 DeviceStatus 为最新状态快照（内存态）。云边断连期间，云端展示的是最后一次成功收到的 DeviceReport；连接恢复后，边缘按 30s 周期（可配 1s--10min）补报最新快照，且每次边缘启动即上报一轮；
+  \item \textbf{云端视角}：云端 DeviceStatus 为最新状态快照（属性快照为内存态；v0.4.0 起节点注册台账与设备 Desired 已持久化，云端重启后台账保留、节点短暂 Unknown，见第 1 章“云端部署形态与高可用”节）。云边断连期间，云端展示的是最后一次成功收到的 DeviceReport；连接恢复后，边缘按 30s 周期（可配 1s--10min）补报最新快照，且每次边缘启动即上报一轮；
   \item \textbf{不做历史回补}：平台不提供历史数据断点续传与回补（断网期间样本不落盘，仅做状态级补报）。若业务需要历史遥测留存，需在 EventBus 侧或应用侧自行订阅持久化（v0.1.0 未内置遥测历史存储）；
   \item \textbf{下行指令弱网保障}：依赖可靠投递机制（5s 超时、最多 3 次尝试、同 ID 重发、边缘幂等去重 1000 条，F05），通道恢复后重发指令仍可正确投递且不重复执行，降低弱网下指令丢失/重复的风险。
 \end{itemize}

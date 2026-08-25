@@ -387,10 +387,14 @@ func (s *EtcdModelStore) ActivateVersion(ctx context.Context, model, version str
 				continue // ①冲突：他写者已动 → 刷新重试
 			}
 		}
-		// ② 目标 draft → active
+		// ② 目标 draft → active（PrevActive 记被降级版本，回滚目标；
+		// 无旧 active 时保持原值——首次激活无回滚目标）
 		active := target
 		active.Status = VersionStatusActive
 		active.UpdatedAt = now
+		if oldRev > 0 && oldActive.Version != version {
+			active.PrevActive = oldActive.Version
+		}
 		actData, err := json.Marshal(&active)
 		if err != nil {
 			return err

@@ -568,6 +568,48 @@ func TestModelAPIConcurrentCreateRace(t *testing.T) {
 	}
 }
 
+// TestModelAPIPrevActiveChain 验证回滚链：激活 v2（v1→archived，v2 记录
+// prevActive=v1）→ 发布 v2 → 响应 prevActive=v1.0.0 → rollback 202（而非 422
+// 无 PrevActive）。E2E 暴露的回归锚点：先激活后发布下 prevActive 不得为空。
+func TestModelAPIPrevActiveChain(t *testing.T) {
+	srv, _, _ := newContractEnv(t, "node-a")
+	mustCreateModelVersion(t, srv, "mnist", "v1.0.0")
+	// 创建 v2 + 激活（v1 → archived；v2.PrevActive=v1.0.0）
+	doJSON(t, http.MethodPost, srv.URL+"/api/v1/models/mnist/versions", map[string]any{
+		"version": "v2.0.0", "mirror": "reg/x:v2", "sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	})
+	code, body := doJSON(t, http.MethodPost, srv.URL+"/api/v1/models/mnist/versions/v2.0.0/activate", nil)
+	if code != http.StatusOK {
+		t.Fatalf("激活 v2 = %d, want 200", code)
+	}
+	if pv, _ := body["prevActive"].(string); pv != "v1.0.0" {
+		t.Fatalf("v2.prevActive = %q, want v1.0.0（激活时记录被降级版本）", pv)
+	}
+	// 发布 v2（此时 ActiveVersion==v2==目标）→ prevActive 必须为 v1.0.0
+	code, body = doJSON(t, http.MethodPost, srv.URL+"/api/v1/models/mnist/releases", map[string]any{
+		"target":  map[string]any{"type": "percentage", "percentage": 100},
+		"version": "v2.0.0", "batchSize": 1,
+	})
+	if code != http.StatusAccepted {
+		t.Fatalf("发布 v2 = %d, want 202（body=%v）", code, body)
+	}
+	if pv, _ := body["prevActive"].(string); pv != "v1.0.0" {
+		t.Errorf("发布 v2 prevActive = %q, want v1.0.0（回滚链不得断）", pv)
+	}
+	r2, _ := body["id"].(string)
+	// cancel 后 rollback（pending 不可回滚；canceled 终态可回滚）→ 202
+	if code, _ := doJSON(t, http.MethodPost, srv.URL+"/api/v1/models/mnist/releases/"+r2+"/cancel", nil); code != http.StatusOK {
+		t.Fatalf("取消 r2 = %d, want 200", code)
+	}
+	code, body = doJSON(t, http.MethodPost, srv.URL+"/api/v1/models/mnist/releases/"+r2+"/rollback", nil)
+	if code != http.StatusAccepted {
+		t.Fatalf("回滚 r2 = %d %v, want 202（有 PrevActive=v1.0.0）", code, body)
+	}
+	if rb, _ := body["rollbackRequested"].(bool); !rb {
+		t.Errorf("回滚响应 rollbackRequested = %v, want true", rb)
+	}
+}
+
 // TestModelAPIErrorSentinelParity 编译期断言：错误哨兵可被 errors.Is 命中
 // （契约测试引用存储层哨兵，防止接口换实现后错误码漂移）。
 func TestModelAPIErrorSentinelParity(t *testing.T) {

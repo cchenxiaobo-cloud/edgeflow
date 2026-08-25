@@ -171,16 +171,21 @@ type Model struct {
 
 // ModelVersion 是模型下的版本对象（"Tag 即版本"的正式台账化；发布对准入 active）。
 type ModelVersion struct {
-	Model     string            `json:"model"`     // 所属模型名
-	Version   string            `json:"version"`   // 版本 tag；同一模型内唯一
-	Mirror    string            `json:"mirror"`    // 模型镜像 ref（镜像即模型）；必填；校验见设计 §8.1
-	Sha256    string            `json:"sha256"`    // 镜像摘要，^sha256:[0-9a-f]{64}$；必填；存储统一小写
-	SizeBytes int64             `json:"sizeBytes"` // 镜像大小字节；>=0
-	Archs     []string          `json:"archs"`     // 支持架构子集：amd64/arm64（白名单）；空 = 不限制
-	Status    VersionStatus     `json:"status"`    // draft|active|archived
-	CreatedAt int64             `json:"createdAt"`
-	UpdatedAt int64             `json:"updatedAt"` // 状态变更时刷新
-	Metadata  map[string]string `json:"metadata"`  // 模型参数/阈值等键值；发布时平铺进 config-sync
+	Model     string        `json:"model"`     // 所属模型名
+	Version   string        `json:"version"`   // 版本 tag；同一模型内唯一
+	Mirror    string        `json:"mirror"`    // 模型镜像 ref（镜像即模型）；必填；校验见设计 §8.1
+	Sha256    string        `json:"sha256"`    // 镜像摘要，^sha256:[0-9a-f]{64}$；必填；存储统一小写
+	SizeBytes int64         `json:"sizeBytes"` // 镜像大小字节；>=0
+	Archs     []string      `json:"archs"`     // 支持架构子集：amd64/arm64（白名单）；空 = 不限制
+	Status    VersionStatus `json:"status"`    // draft|active|archived
+	// PrevActive 是本版本激活时被降级的旧 active 版本（回滚目标；"" = 无）。
+	// 由 ActivateVersion 写入（激活 v2 时记录被归档的 v1），发布创建时
+	// 读取并落入 ModelRelease.PrevActive——保证 API 链路"先激活后发布"
+	// 下回滚链不断（E2E 发现：激活后 ActiveVersion==目标，旧公式恒空）。
+	PrevActive string            `json:"prevActive,omitempty"`
+	CreatedAt  int64             `json:"createdAt"`
+	UpdatedAt  int64             `json:"updatedAt"` // 状态变更时刷新
+	Metadata   map[string]string `json:"metadata"`  // 模型参数/阈值等键值；发布时平铺进 config-sync
 }
 
 // ReleaseTarget 是发布目标选择：白名单 或 按比例（二选一）。

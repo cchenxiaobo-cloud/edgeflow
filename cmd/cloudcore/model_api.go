@@ -672,10 +672,15 @@ func (a *modelAPI) createRelease(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "%v", err)
 		return
 	}
-	// 5) PrevActive = 当前 active 版本（≠ 目标版本时记录；无则 ""）
-	prevActive := ""
-	if cur, err := a.store.ActiveVersion(r.Context(), modelName); err == nil && cur != nil && cur.Version != req.Version {
-		prevActive = cur.Version
+	// 5) PrevActive = 目标版本激活时被降级的版本（ActivateVersion 写入的
+	//    version.PrevActive，API 链路"先激活后发布"下回滚链正确的来源）；
+	//    为空（旧数据/直接 store 调用）回退旧公式：当前 active ≠ 目标时用
+	//    active 版本。
+	prevActive := version.PrevActive
+	if prevActive == "" {
+		if cur, err := a.store.ActiveVersion(r.Context(), modelName); err == nil && cur != nil && cur.Version != req.Version {
+			prevActive = cur.Version
+		}
 	}
 	// 6) guard + release 头键 + perNode pending 预写（存储层；202 返回）
 	release := &modelrepo.ModelRelease{

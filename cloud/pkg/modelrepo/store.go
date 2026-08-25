@@ -396,18 +396,22 @@ func (s *MemoryModelStore) ActivateVersion(_ context.Context, model, version str
 		return fmt.Errorf("%w: %s/%s (status=%s)", ErrVersionNotDraft, model, version, target.Status)
 	}
 	now := s.nowMs()
-	// 旧 active → archived（内存模式锁内原子，无补偿需求）
+	// 旧 active → archived（内存模式锁内原子，无补偿需求）；被降级版本记入
+	// target.PrevActive（回滚目标，API 链路 prevActive 来源）
+	var prevActive string
 	for v, vv := range s.version[model] {
-		if vv.Status == VersionStatusActive {
+		if vv.Status == VersionStatusActive && v != version {
 			cp := copyVersion(vv)
 			cp.Status = VersionStatusArchived
 			cp.UpdatedAt = now
 			s.version[model][v] = cp
+			prevActive = v
 		}
 	}
 	cp := copyVersion(target)
 	cp.Status = VersionStatusActive
 	cp.UpdatedAt = now
+	cp.PrevActive = prevActive
 	s.version[model][version] = cp
 	return nil
 }

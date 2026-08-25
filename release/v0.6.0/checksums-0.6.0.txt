@@ -1,0 +1,13 @@
+cff9597ac4d8c8a0d1695df8e30a3dbc03da4d88b398872febc371527a33f58f  release/v0.6.0/cloudcore-darwin-amd64
+4dd0181a038c88a6e1d890708799bad84c660c5de203dafd2ec6e5f43ae3d93e  release/v0.6.0/cloudcore-darwin-arm64
+b33416152fa70474ae77083cd3f6a3ca4a3d6e45e7546667ce87cb1b23b3c5bf  release/v0.6.0/cloudcore-linux-amd64
+cabbaadec233dde61159d607471f14ec8f3b3ffa598f0405c5c02ed7219725c3  release/v0.6.0/cloudcore-linux-arm64
+b156b4992c838762cbe22469c7f5a44b81bc3468b7c35387157434eb6a4cd2bb  release/v0.6.0/edgecore-darwin-amd64
+86d9a162a27251c9f11235548fc7a09a22d11376a11f9c211a90876318c3cd7e  release/v0.6.0/edgecore-darwin-arm64
+4782b1c7ca0ebcdbadcbf0b08d25f043b84e429343733d59403fae4874fbef1e  release/v0.6.0/edgecore-linux-amd64
+a3de21999070fcd2d27e6beebd1cce86ad38e5a25f060917a91823fc75bf22b2  release/v0.6.0/edgecore-linux-arm64
+a0da042e5adf47f24bb04d5ceb9d51b88f0abf44804184c1bf4ab88a723532d8  release/v0.6.0/keadm-darwin-amd64
+fffe71a4e59d841b4d1142aa446866cbca5e7c73b7fc9024dc910efdfc96adb9  release/v0.6.0/keadm-darwin-arm64
+c02907d93acf42d6570b387b6250462e295cf9e9bc27507223c4aa500a685dcd  release/v0.6.0/keadm-linux-amd64
+03bdeba29aba40ca4d3b517fd1fef536576afd8bc49d8fcdf17747607128332a  release/v0.6.0/keadm-linux-arm64
+56a513407634a57599a5bb1367f60061ac8f82ff406af4f7748971c6b45bd29d  release/v0.6.0/edgeflow-0.6.0.tgz

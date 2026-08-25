@@ -67,7 +67,7 @@
   \label{fig:model-app}
 \end{figure}
 
-\textbf{（1）推理服务声明}（YAML 风格，字段示意；完整声明格式以产品文档为准）：
+\textbf{（1）推理服务声明}（YAML 风格，字段示意；完整声明格式以产品文档为准。v0.7.0 起推理容器声明由灰度发布器自动下发（镜像 = 版本 mirror，见 4.4.1），也可沿用 podsync 手工声明）：
 
 \begin{lstlisting}
 # 推理服务声明（示意）

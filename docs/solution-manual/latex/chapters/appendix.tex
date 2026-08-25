@@ -3,7 +3,7 @@
 \chapter{常见客户问题 FAQ}
 
 \begin{quote}
-以下问答全部基于 EdgeFlow v0.1.0（2026-08-14 发布）已核验实现作答；涉及规划中能力均明确标注。
+以下问答全部基于 EdgeFlow 已核验实现作答（基线 v0.1.0 2026-08-14 发布，v0.7.0 增量见 A7 等处）；涉及规划中能力均明确标注。
 \end{quote}
 
 \section*{A1. 云边断网期间，采集到的数据会丢吗？}
@@ -36,8 +36,9 @@ v0.1.0 支持 MQTT（QoS1，遥测/指令主题）与 Modbus TCP（显式设置 
 镜像扫描口径：发布流程级已实现（构建期 Trivy 扫描，基线 0 漏洞）；完整 RBAC（当前为单 Token 鉴权）、cosign 签名、产品内置/运行时扫描仍\warn。
 
 \section*{A7. 模型如何部署到边缘？}
+\addcontentsline{toc}{section}{A7. 模型如何部署到边缘？}
 
-v0.1.0 以“容器镜像 + 配置”为载体：模型与推理运行时打包为版本化镜像 $\rightarrow$ podsync 下发 Pod 声明（image + replicas）$\rightarrow$ 边缘 Edged 拉取运行并持续自治（多副本/健康自愈/防漂移）；推理参数经 config-sync 下发并落盘。模型仓库/版本管理与模型灰度发布平台\warn（升级场景的灰度分批已工具化，见附录 C F42），当前以镜像 Tag + 配置参数化作为过渡路径。
+v0.7.0 起模型部署走\textbf{平台化流程}：\textbf{模型仓库注册（镜像即模型）$\rightarrow$ 版本登记与激活（Tag 即版本，draft$\rightarrow$active）$\rightarrow$ 灰度发布（按节点白名单/按比例、分批、fail-fast、可取消可回滚）}。发布器自动向目标节点下发 podsync（推理容器镜像 Pod）与 config-sync（模型版本标识 + 参数元数据，ConfigMap），边缘 Edged 声明式收敛、MetaManager SQLite 落盘（重启不丢，边缘\textbf{零代码改动}）；云端提供部署影子台账（版本—节点—时间）与逐节点结果查询（perNode summary）。v0.1.0 时代的“手工镜像 Tag + podsync/config-sync”过渡路径仍可用（兼容路径，见第 4 章 4.4.3）；keadm 产品升级分批灰度（节点软件升级）与模型灰度发布\textbf{双轨并行}。
 
 \section*{A8. 升级和回滚有保障吗？}
 
@@ -80,6 +81,10 @@ CrashLoopBackOff & 连续重启 3 次进入 30s 退避窗口，稳定运行 60s 
 DeviceReport & 设备状态周期上报消息（30s，可配），无 Ack 单向流式\\
 podsync & 云端向边缘下发 Pod 声明（image/replicas）的 API\\
 config-sync & 云端向边缘下发配置并持久化的 API\\
+模型仓库 & EdgeFlow 云端模型管理台账（v0.7.0）：模型 + 版本两级对象 + 部署影子，etcd 持久化（/edgeflow/models/ 键空间，纯内存/embed/外部三模式）\\
+灰度发布 & 受控发布流程：按节点白名单/按比例选择目标、分批推进、fail-fast、可取消/回滚（v0.7.0 模型发布；keadm 升级分批为产品升级灰度，双轨并行）\\
+部署影子 & 云端“版本—节点—时间”台账（GET /api/v1/models/{model}/deployments），记录各节点当前应跑模型版本（podsync+config-sync 双 acked 后写穿）\\
+领跑锁 & 灰度发布执行权的租约互斥（etcd lease，grant-per-claim，TTL 默认 60s）：多副本间同一发布同一时刻仅一个执行者，崩溃后 $\leq$TTL 接管续跑\\
 节点离线 & 云端判定：CloudHub 90s 断开或 NodeController 180s 心跳停滞\\
 设备离线 & 设备级离线检测（\warn）；当前仅 op-ledger 记录采集错误\\
 台账 & 追加式审计/操作记录（审计台账/ops-ledger/op-ledger 三类）\\
@@ -95,7 +100,7 @@ op-ledger & 设备操作台账（SQLite 追加流水，30 天保留；代码/SQL
 
 \chapter{产品特性-场景映射表}
 
-\textbf{表 C-1：F01--F40、F49 已实现特性 × 四场景归属（双向追溯）}
+\textbf{表 C-1：F01--F42、F49 已实现特性 × 四场景归属（双向追溯）}
 
 {\setlength{\tabcolsep}{3pt}
 \begin{longtable}{p{1.0cm}p{4.6cm}ccccp{3.2cm}}
@@ -145,6 +150,8 @@ F37 & Helm Chart 部署 & $\circ$ & $\circ$ & $\bullet$ & $\circ$ & 4.3\\
 F38 & 多架构镜像（amd64+arm64） & $\circ$ & $\circ$ & $\bullet$ & $\circ$ & 4.3\\
 F39 & 升级回滚机制（备份/演练/审计/留痕） & $\circ$ & $\circ$ & $\bullet$ & $\circ$ & 4.3 / 4.4\\
 F40 & 性能基线（10 节点 201.3ms） & $\circ$ & $\circ$ & $\circ$ & $\circ$ & 附录 A5\\
+F41 & 模型仓库与版本管理（模型/版本/部署影子台账，v0.7.0） & $\circ$ & $\circ$ & $\bullet$ & $\circ$ & 4.2 / 4.3 / 附录 C\\
+F42 & 模型灰度发布（白名单/按比例、分批、fail-fast、取消、回滚，v0.7.0；keadm 升级分批为产品升级灰度） & $\circ$ & $\circ$ & $\bullet$ & $\circ$ & 4.2 / 4.3 / 附录 C\\
 F49 & 证书吊销闭环（keadm cert revoke + CRL 消费端拒绝 + OCSP responder） & $\circ$ & $\circ$ & $\circ$ & $\circ$ & 附录 A6 / 3.3\\
 \end{longtable}}
 
@@ -152,15 +159,13 @@ F49 & 证书吊销闭环（keadm cert revoke + CRL 消费端拒绝 + OCSP respon
 图例：$\bullet$ 主要支撑场景；$\circ$ 次要/间接支撑场景。手册引用章节为 v1.0.0 定稿节号。
 \end{quote}
 
-\textbf{表 C-2：规划中/部分实现特性清单（F41--F48）}
+\textbf{表 C-2：规划中/部分实现特性清单（F43--F48）}
 
 {\small\setlength{\tabcolsep}{3pt}
 \begin{tabular}{@{}p{1.0cm}p{3.4cm}p{2.6cm}p{7.6cm}@{}}
 \toprule
 编号 & 规划项 & 状态 & 说明\\
 \midrule
-F41 & 模型仓库与版本管理平台 & \warn & 当前以镜像 Tag + 配置参数化过渡（第 4 章）\\
-F42 & 灰度发布 & 部分实现 & 升级分批已工具化（\seqsplit{\texttt{keadm upgrade --batch-size/--pause-between}} + \seqsplit{\texttt{keadm batch --op=upgrade}}，fail-fast）；模型/按比例灰度仍规划中（4.2）\\
 F43 & 完整 RBAC（多角色权限） & 规划中 & 当前为单 Token 鉴权\\
 F44 & 设备认证 & 部分实现 & 节点接入认证（Register Token）已实现：keadm join 写 \env{EDGEFLOW\_EDGECORE\_TOKEN}、edgecore 注册携带、云端 \env{EDGEFLOW\_CLOUDCORE\_NODE\_TOKEN} 常数时间校验、空值向后兼容；设备级身份认证（传感器/PLC 等）与设备级离线检测仍规划中\\
 F45 & 调度/超卖、Flannel 网络 & 规划中 & 集群化能力增强\\
@@ -179,4 +184,6 @@ F48 & 镜像安全扫描 & 部分实现 & 发布流程级已实现（构建期 T
   \item \textbf{评审留痕}：v1.0.0 由方案团队（主笔）+ 产品团队（事实基线提供）+ 独立技术复核（特性$\leftrightarrow$手册双向追溯、结构完整性、异常路径、术语一致性）完成，复核记录见《评审记录与交接说明.md》。
   \item \textbf{v1.0.1 勘误基线（2026-08-16）}：对照仓库 HEAD \texttt{10e2995}（基线 \texttt{899248d} 之后净新增 OCSP 在线吊销与 edgecore 配置文件）完成勘误——REST API 端点 13$\rightarrow$14（含 POST /ocsp，与契约测试/API-SPEC/API-COMPATIBILITY 三源一致）；表 C-1 新增证书吊销闭环登记（F49）；表 C-2 摘除已实现能力“规划中”标注（gzip 压缩、升级分批、节点接入认证、发布流程镜像扫描，见 F42/F44/F47/F48 拆分口径）；术语表 keadm 补全 9 子命令。勘误以仓库现状为事实基线，非新版本发布；正式修订记录见正文修订记录表。HTML/PDF/latex 衍生制品与 CSV 按流程同步重生成。
   \item \textbf{v1.0.2 修订基线（2026-08-18）}：对照仓库 HEAD \texttt{59dd396}（v0.1.1 生产发布准备轮，\texttt{bc8994d} 安全加固 + P2 遗留闭环）补充：/ocsp per-IP 限流（默认 10 req/s、burst 20，超限 429，env 可调）+ 成功响应 Cache-Control: max-age=3600；OCSP 客户端库新鲜度校验入口（\seqsplit{\texttt{ParseOCSPResponseWithFreshness}}/\seqsplit{\texttt{OCSPStatusAtWithPolicy}}，fail-closed、默认 5 分钟 skew，旧入口行为不变，生产路径接入时须用 WithPolicy 入口）；CRL 锁获取失败自动降级无锁校验并输出 5 分钟限频告警日志。特性清单无状态变化（F31/F49 口径不变）；正式修订记录见正文修订记录表。HTML/PDF/latex 衍生制品与 CSV 按流程同步重生成。
+\end{enumerate}
+  \item \textbf{v1.1.0 修订基线（2026-08-25）}：对照仓库 HEAD（v0.7.0 开发轮）将 F41/F42 落地入册——第 4 章重写为正式能力（模型仓库注册 $\rightarrow$ 版本激活 $\rightarrow$ 灰度发布；过渡路径降级为“兼容路径”、keadm 升级分批保留为产品升级灰度）；附录 C 表 C-1 追加 F41/F42（已实现，$\bullet$ 模型管理场景）、表 C-2 摘除 F41/F42；端点口径 14$\rightarrow$31（模型 API 17 端点，契约见 API-SPEC §7）；FAQ A7、术语表（模型仓库/灰度发布/部署影子/领跑锁）、修订记录同步更新。正式修订记录见正文修订记录表。HTML/PDF/latex 衍生制品与 CSV 按流程同步重生成。
 \end{enumerate}

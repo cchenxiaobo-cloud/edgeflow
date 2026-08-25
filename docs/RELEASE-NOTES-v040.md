@@ -9,7 +9,7 @@
 
 ## 一、主题概述
 
-1. **云端状态持久化（本版本核心价值）**：以 `go.etcd.io/etcd/v3` embed（嵌入式单成员 etcd）替换云端三存储（registry / podstatus / devicestatus）的纯内存态，**注册台账与设备期望态（Desired）跨重启保留**；Pod 状态与上报属性（reported/properties）仍为内存态，重启后**短暂清空（≤1 上报周期，边缘重连自愈，非永久丢失）**——API-SPEC §8 首条已知限制"重启清空"随之闭环为分级持久化语义。
+1. **云端状态持久化（本版本核心价值）**：以 `go.etcd.io/etcd/v3` embed（嵌入式单成员 etcd）替换云端三存储（registry / podstatus / devicestatus）的纯内存态，**注册台账与设备期望态（Desired）跨重启保留**；Pod 状态与上报属性（reported/properties）仍为内存态，重启后**短暂清空（≤1 上报周期，边缘重连自愈，非永久丢失）**——API-SPEC §9 首条已知限制"重启清空"随之闭环为分级持久化语义。
 2. **写穿架构**：所有需要持久化的写（Register / SetDesired / GC 删除）**先 etcd 成功、再更新内存缓存**，"写成功 = 已持久化"；读路径全部走内存缓存（HTTP 热路径毫秒级响应，永不读 etcd）。心跳/Status/Pod/上报等瞬态不落盘（无写放大、无陈旧脏状态）。
 3. **运维契约升级（与代码同 PR 的硬性变更）**：Helm Chart 新增 PVC（默认启用）+ 资源上调（requests 256Mi / limits 1Gi）+ etcd env 透传；**replicaCount 必须 = 1**（多副本各自 embed 会脑裂，显式禁止）；备份恢复走 `etcdutl snapshot`（文件拷贝 ≠ 有效备份）。
 

@@ -1,9 +1,9 @@
 # EdgeFlow API 规范（v0.1.0 定稿）
 
 > - 对应 ROADMAP WBS 9.2「API 文档」，覆盖两部分：**REST API 参考**（cloudcore 对外 HTTP 接口）与 **CRD 类型定义**（`apis/edge/v1alpha1/`）。
-> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.2.0 开发轮已更新**（2026-08-18：podsync 资源字段与 409 语义、device-command namespace 路由、资源调度环境变量），**v0.3.0 开发轮已更新**（2026-08-19：syncPod 400 响应 JSON 安全加固说明 + 第四部分共享库/协议包 API 边界），**v0.4.0 开发轮已更新**（2026-08-24：§1 并发语义、§8 已知限制首条改为分级持久化、nodeID 字符约束登记）。评审记录见 `docs/REVIEWS.md`（9.2 评审归档）。
+> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.2.0 开发轮已更新**（2026-08-18：podsync 资源字段与 409 语义、device-command namespace 路由、资源调度环境变量），**v0.3.0 开发轮已更新**（2026-08-19：syncPod 400 响应 JSON 安全加固说明 + 第四部分共享库/协议包 API 边界），**v0.4.0 开发轮已更新**（2026-08-24：§1 并发语义、§9 已知限制首条改为分级持久化、nodeID 字符约束登记），**v0.7.0 开发轮已更新**（2026-08-25：模型仓库/版本管理/灰度发布 17 个新端点（**14→31**）、新增 202/422 错误语义、新章节 §7 模型 API）。评审记录见 `docs/REVIEWS.md`（9.2 评审归档）。
 > - 代码位置：cloudcore 路由装配 `cmd/cloudcore/main.go`、设备 API `cmd/cloudcore/device_api.go`、CRD 类型 `apis/edge/v1alpha1/`。
-> - 版本策略：v0.1.0 为 MVP 定稿版；后续接入 Kubernetes 后由 OpenAPI schema / CRD 校验取代，见 §7。
+> - 版本策略：v0.1.0 为 MVP 定稿版；后续接入 Kubernetes 后由 OpenAPI schema / CRD 校验取代，见 §8。
 
 ---
 
@@ -17,7 +17,7 @@
 | 数据格式 | JSON；请求 `Content-Type: application/json`；响应同样为 JSON |
 | 时间戳 | Unix 毫秒（心跳/上报/注册时间）；CRD 对象内的时间字段为 RFC3339 字符串 |
 | List 风格 | 查询类端点采用 K8s List 风格（`kind`/`apiVersion`/`items`），空数据编码为 `[]` 而非 `null` |
-| 路径参数 | `{nodeID}` 为边缘节点 ID（edgecore 注册时上报，默认 `edge-<hostname>`）。**v0.4.0 硬约束**：nodeID 必须匹配 `^[A-Za-z0-9._-]+$`，含 `/` 的 nodeID 写入（注册/设备指令/删除）被拒绝并告警（见 §8） |
+| 路径参数 | `{nodeID}` 为边缘节点 ID（edgecore 注册时上报，默认 `edge-<hostname>`）。**v0.4.0 硬约束**：nodeID 必须匹配 `^[A-Za-z0-9._-]+$`，含 `/` 的 nodeID 写入（注册/设备指令/删除）被拒绝并告警（见 §9） |
 | 并发语义 | **v0.4.0 起分级持久化**：云端注册元数据与设备 Desired 跨重启保留（嵌入式 etcd 写穿）；Pod 状态与上报属性（properties）为内存态，重启后短暂清空（≤1 上报周期，边缘重连自愈）；边缘侧 MetaManager（SQLite）持久化 |
 
 ### 1.1 端点总览
@@ -39,14 +39,38 @@
 | POST | `/api/v1/nodes/{nodeID}/device-command` | 下发设备指令（期望值） | 200 / 400 / 404 / 502 / 504 |
 | POST | `/ocsp` | OCSP 在线吊销查询（RFC 6960；请求/响应均为 DER 编码，Content-Type: application/ocsp-request / application/ocsp-response）。免认证（唯一例外，详见 §1.3）；per-IP 限流（默认 10 req/s，burst 20，超限 429）；成功响应带 `Cache-Control: max-age=3600` | 200 / 400 / 429 / 500 |
 
+> **v0.7.0 模型 API（17 个新端点，总端点 14→31）**：以下 17 行为新增，注册于既有 apiMux（自动覆盖 auth+audit）；既有 14 行端点零改动。契约详见 §7 模型 API。
+
+| 方法 | 路径 | 说明 | 主要状态码 |
+|------|------|------|-----------|
+| GET | `/api/v1/models` | 模型列表（K8s List 风格，按 name 排序） | 200 |
+| POST | `/api/v1/models` | 创建模型 | 200 / 400 / 409 |
+| GET | `/api/v1/models/{modelName}` | 模型详情 | 200 / 404 |
+| PUT | `/api/v1/models/{modelName}` | 更新模型（description/type/metadata） | 200 / 400 / 404 / 409 |
+| DELETE | `/api/v1/models/{modelName}` | 删除模型（无 active 版本、无在途发布；级联 draft/archived 版本+部署影子） | 200 / 404 / 409 |
+| GET | `/api/v1/models/{modelName}/versions` | 版本列表（按 tag 排序）；模型不存在 → 404 | 200 / 404 |
+| POST | `/api/v1/models/{modelName}/versions` | 创建版本（初始 draft） | 200 / 400 / 404 / 409 |
+| GET | `/api/v1/models/{modelName}/versions/{version}` | 版本详情 | 200 / 404 |
+| DELETE | `/api/v1/models/{modelName}/versions/{version}` | 删除版本（仅 draft/archived） | 200 / 404 / 409 |
+| POST | `/api/v1/models/{modelName}/versions/{version}/activate` | 激活（draft→active，自动降级旧 active） | 200 / 400 / 404 / 409 |
+| POST | `/api/v1/models/{modelName}/versions/{version}/archive` | 归档（active→archived） | 200 / 404 / 409 |
+| POST | `/api/v1/models/{modelName}/releases` | **创建灰度发布（异步执行）** | **202** / 400 / 404 / 409 / 422 |
+| GET | `/api/v1/models/{modelName}/releases` | 发布列表（按 createdAt 升序） | 200 / 404 |
+| GET | `/api/v1/models/{modelName}/releases/{releaseID}` | 发布详情（含 perNode 汇总） | 200 / 404 |
+| POST | `/api/v1/models/{modelName}/releases/{releaseID}/cancel` | 取消（pending/running） | 200 / 404 / 409 |
+| POST | `/api/v1/models/{modelName}/releases/{releaseID}/rollback` | **回滚（异步执行，逆序批量）** | **202** / 404 / 409 / 422 |
+| GET | `/api/v1/models/{modelName}/deployments` | 部署影子（版本—节点—时间追踪，F41 台账） | 200 / 404 |
+
 ### 1.2 错误码表（统一约定）
 
 | HTTP 状态码 | 语义 | 典型场景 |
 |------------|------|---------|
 | `200` | 成功；下发类接口表示**边缘已确认**（Ack ok），响应 `{"status":"ok","acked":true}` | 正常 |
+| `202` | **已受理（异步执行，v0.7.0 新增）**：灰度发布创建 / 回滚置位——任务已登记并开始执行，结果以 release 对象回读（状态机推进）为准 | 灰度任务开始执行 |
 | `400` | 请求非法：JSON 解析失败 / 缺必填字段 / operation 或 kind 不在白名单 / 资源格式非法或 request>limit（仅 podsync，文案含具体超标字段，如 `CPU request (500m) 不能超过 CPU limit (250m)`） | 参数错误 |
-| `404` | 节点未注册或离线（`ErrNodeOffline`）；单资源查询不存在 | 节点不存在 |
-| `409` | 冲突：节点资源超卖，边缘准入拒绝（仅 podsync，WBS 6.5）——响应 `{"error":"EDGEFLOW_RESOURCE_EXHAUSTED: ..."}`，拒绝不落盘 | 已部署 request 求和 + 新请求超出节点容量 × 超卖率 |
+| `404` | 节点未注册或离线（`ErrNodeOffline`）；单资源查询不存在；模型不存在时其子资源一律 404 | 节点/资源不存在 |
+| `409` | 冲突：节点资源超卖，边缘准入拒绝（仅 podsync，WBS 6.5）——响应 `{"error":"EDGEFLOW_RESOURCE_EXHAUSTED: ..."}`，拒绝不落盘；模型 API 冲突族（v0.7.0）：模型/版本已存在、删除 active 版本、归档/激活状态机非法、同模型在途发布（含在途 releaseID）、CAS 冲突耗尽、cancel/rollback 目标态不合法 | 已部署 request 求和 + 新请求超出节点容量 × 超卖率 / 状态冲突 |
+| `422` | **语义不可执行（v0.7.0 新增）**：发布目标版本非 active / 无 Ready 节点 / 白名单含未知节点 / 无 PrevActive 可回滚 | 业务前置不满足 |
 | `429` | 限流：per-IP 请求速率超限（当前仅 `/ocsp` 端点，默认 10 req/s，burst 20；`EDGEFLOW_CLOUDCORE_OCSP_RATE_LIMIT` 可调） | 客户端请求过频 |
 | `500` | 内部错误（消息构建失败、发送通道异常等兜底） | 服务端异常 |
 | `502` | 边缘明确拒绝（回 error Ack）：消息已送达但处理失败 | 边缘侧校验失败 |
@@ -381,6 +405,170 @@ curl -X POST http://127.0.0.1:8080/api/v1/nodes/edge-node-1/config-sync \
 
 ---
 
+## 7. 模型 API（v0.7.0：模型仓库 / 版本管理 / 灰度发布）
+
+> v0.7.0 新增 17 个端点（**端点总览 14→31**）：模型 5 + 版本 6（CRUD4+activate+archive）+ 发布 5（创建/列表/详情/取消/回滚）+ 部署影子 1。全部注册于既有 `apiMux`（`cmd/cloudcore/main.go` 装配点），自动挂 `auth.Middleware`（Bearer Token，默认 off 向后兼容）+ `ledger.Middleware`（审计台账）——鉴权/审计零新代码；**既有 14 端点一行不改**。数据模型与状态机设计见 ARCHITECTURE.md 决策 R16；实现包 `cloud/pkg/modelrepo`（台账/校验/存储）+ `cloud/pkg/modelrelease`（灰度控制器/算法/部署执行器）。
+> 云边协议**无新消息类型**（复用 PodSync/ConfigSync，载荷约定见 §7.4）；**边缘零代码改动**。
+
+### 7.1 对象模型与键空间
+
+| 对象 | 语义 | 关键字段 |
+|------|------|---------|
+| Model | 模型台账（一级对象，模型名唯一） | name（`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`，禁 `/`）、description（≤256）、type（≤64，开放字符串）、metadata（键≤64/值≤1024）、createdAt/updatedAt（Unix 毫秒） |
+| ModelVersion | 版本台账（"Tag 即版本"） | version（字符集同 name，模型内唯一）、mirror（镜像 ref **必带 tag**）、sha256（`^sha256:[0-9a-f]{64}$`，存储统一小写）、sizeBytes（≥0）、archs（白名单 amd64/arm64，空=不限制）、status（draft/active/archived）、metadata（模型参数/阈值，发布时平铺进 config-sync） |
+| ModelRelease | 灰度发布任务（异步执行） | id（UUID）、model/version（目标版本，创建时须 active）、target（nodeIDs 白名单 \| percentage 1..100）、targetNodes（**创建时物化的有序节点快照**，运行期不重算）、batchSize（≥1，默认 1）、pauseBetween（≥0ms，默认 0）、failFast（默认 true）、prevActive（回滚目标；无则 ""）、status（pending/running/succeeded/failed/canceled/rolled_back）、nextBatchAt/createdAt/startedAt/finishedAt、rollbackRequested |
+| NodeReleaseResult | 逐节点执行结果（release 键下独立键） | nodeID、status（pending/deployed/failed/skipped）、version（该节点被部署到的版本）、reason（failed 原因）、batch（批次序号，1 起）、startedAt/finishedAt |
+| DeploymentState | 部署影子（跨发布全局视图） | model、version、mirror、releaseID、updatedAt |
+
+**键空间**（新增前缀 `/edgeflow/models/`，与既有键完全隔离）：`meta/<model>`、`versions/<model>/<version>`、`guards/<model>`（在途发布守卫，值=releaseID）、`releases/<releaseID>`（head，状态机 CAS 键）、`releases/<releaseID>/nodes/<nodeID>`（perNode）、`releases/<releaseID>/lock`（领跑锁租约键，TTL 默认 60s）、`deployments/<model>/<nodeID>`（部署影子）。`/edgeflow/_meta/schemaVersion` **不 bump**。
+
+**版本状态机**（Activate/Archive API 驱动）：
+
+```
+draft ──activate──▶ active ──archive──▶ archived
+  │                   ▲                    │
+  └──delete──▶(删)    │ (激活时自动降级旧 active)   └──delete──▶(删)
+```
+
+- activate：仅 draft→active；**自动把当前 active 版本置为 archived**（两键 CAS 序列 + 失败补偿，ARCHITECTURE R16）；archived 不可再激活。
+- archive：仅 active→archived；存在指向该版本的 pending/running 发布 → 409。
+- delete 版本：仅 draft/archived（active → 409，先归档或删模型）。
+- **发布/回滚不改变版本状态**：发布要求目标 active（只读校验）；回滚可部署 archived 的 prevActive（台账状态不变，由调用方按需显式 activate）。
+
+**发布任务状态机**（控制器 + API 协作，head 键 CAS）：
+
+```
+pending ─▶ running ─┬─ 全部 deployed ──────────▶ succeeded
+                    ├─ fail-fast 中止/存在失败(且跑完) ─▶ failed
+                    ├─ cancel（批次边界生效）──────────▶ canceled
+                    └─ rollback 置位 → 逆序执行 ───────▶ rolled_back
+（成功/失败/取消 均可再 rollback；终态后可再次发布——guard 已释放）
+```
+
+### 7.2 端点明细与字段表
+
+**POST /api/v1/models**（其余写端点的可选字段语义一致，不重复列表）：
+
+```json
+{"name": "defect-detector", "description": "缺陷检测模型", "type": "detection", "metadata": {"owner": "qa-team"}}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | ✅ | `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`；重复 → 409 |
+| description | string | 否 | ≤256 字符 |
+| type | string | 否 | 开放字符串 ≤64（推荐 classification/detection/segmentation/llm/other） |
+| metadata | map[string]string | 否 | 键 ≤64、值 ≤1024；键匹配 `^[A-Za-z0-9._-]+$` |
+
+响应 200：完整 Model 对象（含 createdAt/updatedAt）。PUT 允许改 description/type/metadata（metadata 整表替换）；name/createdAt 不可变。DELETE 前置：无 active 版本、无在途发布（否则 409），级联删除 draft/archived 版本 + 部署影子（非事务，L26）。
+
+**POST /api/v1/models/{modelName}/versions**：
+
+```json
+{"version": "v1.2.0", "mirror": "registry.example.com/edgeflow/models/defect-detector:v1.2.0", "sha256": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "sizeBytes": 482344960, "archs": ["amd64", "arm64"], "metadata": {"threshold": "0.8", "batchSize": "32"}}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| version | string | ✅ | 字符集同 name；同模型重复 → 409 |
+| mirror | string | ✅ | 镜像 ref，**必须带 tag**；整体匹配 `^[a-z0-9]+((\.|_|-)[a-z0-9]+)*(\:[0-9]{1,5})?(\/[a-z0-9._-]+)+(\:[A-Za-z0-9._-]+)$`（禁 `..`/连续 `/`/空白；tag 由最后一个 `:` 界定） |
+| sha256 | string | ✅ | `^sha256:[0-9a-f]{64}$`（大小写不敏感接受，存储统一小写） |
+| sizeBytes | int64 | 否 | >=0；缺省 0 |
+| archs | []string | 否 | 元素 ∈ {amd64, arm64} 白名单，去重；空 = 不限制（F38 多架构语义） |
+| metadata | map[string]string | 否 | 模型参数/阈值；发布时平铺进 config-sync（§7.4） |
+
+响应 200：完整 ModelVersion（status=draft）。（POST 不激活——激活是显式动作。）
+
+**POST /api/v1/models/{modelName}/releases**（创建灰度发布，异步执行）：
+
+```json
+{"version": "v1.2.0", "target": {"type": "percentage", "percentage": 25}, "batchSize": 2, "pauseBetween": 30000, "failFast": true}
+```
+
+```json
+{"version": "v1.2.0", "target": {"type": "nodeIDs", "nodeIDs": ["edge-node-1", "edge-node-2"]}, "batchSize": 1, "pauseBetween": 0, "failFast": true}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| version | string | ✅ | 目标版本；**须为 active**（否则 422） |
+| target.type | string | ✅ | `nodeIDs` / `percentage` 二选一 |
+| target.nodeIDs | []string | 条件必填 | 白名单；元素须匹配 `^[A-Za-z0-9._-]+$` 且**全部已注册**（否则 422，响应 `"unknownNodes":[...]`）；允许离线节点入列（运行时按离线处理） |
+| target.percentage | int | 条件必填 | 1..100（越界 400）；分母 = 创建时刻 Ready 节点（0 台 Ready → 422） |
+| batchSize | int | 否 | >=1，默认 1 |
+| pauseBetween | int64 | 否 | 批间暂停毫秒，>=0，默认 0 |
+| failFast | bool | 否 | 默认 true |
+
+创建前置校验（依序）：模型/版本存在（404）→ 目标 active（422）→ target 格式（400）→ 白名单节点已注册 / percentage 合法（422/400）→ 物化 TargetNodes → 确定 prevActive → guard CAS + release 键 CAS（同模型在途 → 409 含在途 releaseID；**孤儿 guard 自愈**见 R16）→ perNode 全部 pending 预写。
+
+响应 **202**：完整 ModelRelease 对象（status=pending，targetNodes 已物化，perNode 汇总：pending=N）。
+
+**按比例分母口径与舍入**（创建时刻快照）：
+
+| readyCount | 规则 | 例 |
+|---|---|---|
+| 0 | **422 拒绝创建**（`no ready nodes`） | — |
+| 1 | n = 1（任何 pct 均落该节点） | 1 台 → 1 |
+| ≥2 | **n = ceil(readyCount × pct / 100)**，且 1 ≤ n ≤ readyCount | 23×10%→3；3×50%→2；100×1%→1；10×100%→10 |
+
+- 节点选择确定性：Ready 名单按 NodeID 字典序取前 n（跨副本可复现）；archs 非空时先按 node.arch ∈ version.archs 过滤再取前 n（过滤后 0 台 → 422，文案含 `no ready nodes for archs [...]`）；白名单模式不做 arch 过滤。
+- **目标集合以创建时快照为准**：运行期节点掉线/新节点加入不重算；不同模式/迁移后的百分比目标集合不跨模式可比（以创建时快照为准，L29 侧注）。
+
+**POST .../releases/{releaseID}/cancel**：响应 200 + release（status=canceled；未执行节点 ≤1 扫描周期补齐 skipped，L27）。终态 release cancel → **409**（`{"error":"release already <status>"}`）。
+
+**POST .../releases/{releaseID}/rollback**（异步，逆序批量）：
+- 前置校验：status ∈ {running, succeeded, failed, canceled}（pending/rolled_back → 409）；`prevActive != ""` 且版本存在（否则 **422** `no previous active version`）；**`release.version == 模型当前 active 版本`**（已被更新版本接管 → **409**，文案引导显式 activate 目标旧版本或发起新发布，L27）。
+- 通过 → 202 + release（rollbackRequested=true）；控制器逆序逐批执行（批间 pause=0），失败不回滚中止（能回多少回多少，perNode 明细可查，L24）；完成 → rolled_back。
+- **执行期复查**（主线 D2/D4）：控制器 runRollback 起始重读版本表——若执行前已被新版本接管或 prevActive 被删 → 中止：head=failed（reason 明确）+ 清除 rollbackRequested（防活锁）+ 未执行节点标 skipped；API 端 202 照旧，结果以 head 终态回读为准。
+
+**GET 列表响应形态**：K8s List 风格（`{"kind":"ModelList","apiVersion":"v1","items":[...]}`；空为 `[]`），对齐 podStatusList/deviceStatusList。**发布详情**额外返回派生汇总：`{"summary":{"total":N,"deployed":N,"failed":N,"pending":N,"skipped":N}}`（现算，非冗余存储）。
+
+### 7.3 错误语义（202/422 为 v0.7.0 新增，其余沿用既有约定）
+
+| 状态码 | 语义 | 场景 |
+|--------|------|------|
+| 200 | 成功（写类端点返回完整对象或 `{"status":"ok"}` 形态） | — |
+| **202** | **已受理（异步执行）**：发布创建 / 回滚置位 | 灰度任务开始执行 |
+| 400 | 请求非法：JSON 解析失败 / 缺必填 / 字符集或枚举越界 / percentage 越界 / batchSize<1 / 请求体超 1MiB（`request body too large`） | 参数错误 |
+| 404 | 模型/版本/发布/部署影子不存在；**模型不存在时其子资源一律 404** | 资源不存在 |
+| 409 | 冲突：模型/版本已存在；删除 active 版本；归档/激活状态机非法；同模型在途发布（含在途 releaseID）；CAS 冲突耗尽；cancel/rollback 目标态不合法；在途发布指向的版本被 archive；回滚被新版本接管 | 状态冲突 |
+| 422 | **语义不可执行**：发布目标版本非 active / 无 Ready 节点 / 白名单含未知节点 / 无 PrevActive | 业务前置不满足 |
+| 500 | 内部错误兜底（存储/序列化异常） | 服务端异常 |
+
+响应体统一 `{"error":"<机器可读原因>", ...上下文字段}`（409 发布冲突带 `"releaseID"`，422 白名单带 `"unknownNodes":[...]`）。鉴权/审计链与既有端点完全一致（401/审计自动覆盖）。
+
+### 7.4 config-sync 载荷约定（边缘模型版本感知，零边缘代码）
+
+发布器对每目标节点自动执行：① podsync add（Pod 名 `edgeflow-model-<sanitized>`，`sanitize(name)` = 小写 + `.`→`-`；namespace 固定 `edgeflow`；image = 版本镜像；replicas=1——模型实例多副本由用户后续自行 podsync 编排，发布语义 = "该版本上机"）；② config-sync add（ConfigMap，同命名约定，Kind=ConfigMap）。两步均 acked → 部署影子写穿（§7.5）。
+
+**ConfigMap 载荷约定**（`configs/edgeflow/edgeflow-model-<sanitized>`，保留键由发布器保证）：
+
+```json
+{
+  "model":      "defect-detector",
+  "version":    "v1.2.0",
+  "mirror":     "registry.example.com/edgeflow/models/defect-detector:v1.2.0",
+  "sha256":     "sha256:9f86...",
+  "type":       "detection",
+  "releasedAt": "1787000000000"
+}
+```
+
+- `version.metadata` 全部键值**平铺追加**进 data（模型参数随版本走）；与保留键冲突 → 保留键优先 + 控制器日志 Warn。
+- 推理容器挂载/读取该 ConfigMap 即得"当前模型版本与参数"；版本切换 = 下一次 config-sync 覆盖（EdgeHub 幂等去重 + MetaManager SQLite 落盘保证重启后仍是新版本元数据）。
+- 发布**回滚**同样经此通道把 version 字段改回 prevActive——边缘无状态机依赖，纯声明式收敛。
+- 错误映射（perNode.Reason 文案）：`node offline or not registered` / `ack timeout after retries` / `edge rejected ack` / `send failed: <err>`。
+
+### 7.5 部署影子（云端写穿）
+
+- 键：`/edgeflow/models/deployments/<modelName>/<nodeID>`；值 `{"model":...,"version":...,"mirror":...,"releaseID":...,"updatedAt":...}`。
+- 写入时机：podsync + config-sync **均 acked 后**；写穿失败 → 日志 Warn（下发已生效，仅影子视图缺该记录，release/perNode 已持久化不受影响）。
+- 语义：云端期望态（对标设备 Desired）；`GET /api/v1/models/{name}/deployments` 提供"版本—节点—时间"追踪（F41 台账）；与边缘实际运行版本（PodStatus 上报）分离；重启后从 etcd 恢复（embed/外部），纯内存模式重启丢失（L22）。
+- **影子 = 派生台账整值覆盖，无 CAS 需求**——与 Desired（权威期望态，modRevision CAS）的差异为**有意设计**（同 (model,node) 键写者被 guard + release 锁 + 终态释放次序串行化；P9/审稿线索 3 口径，见 ARCHITECTURE R16）。
+- 模型删除 → `DeleteRange(/edgeflow/models/deployments/<model>/)` 级联。
+
+---
+
 # 第二部分 CRD 类型定义（apis/edge/v1alpha1）
 
 > 代码位置：`apis/edge/v1alpha1/`（Group `edgeflow.io`，Version `v1alpha1`）。
@@ -585,7 +773,7 @@ status:
 
 # 第三部分 已知缺口与后续（v0.1.0 归档说明）
 
-## 7. 后续接入 Kubernetes 需要做的事
+## 8. 后续接入 Kubernetes 需要做的事
 
 1. **引入 k8s.io/apimachinery**，为三个资源实现 `runtime.Object` 接口（`DeepCopyObject()`），并将手写 DeepCopy 替换为 controller-gen 生成版本
 2. **添加 kubebuilder marker**（`// +kubebuilder:object:root=true`、`// +kubebuilder:subresource:status`、字段校验 marker），生成 CRD YAML 与 OpenAPI schema（ROADMAP 1.4 完成标准：CRD 可 `kubectl apply`）
@@ -593,7 +781,10 @@ status:
 4. **校验落地**：必填字段、属性名须存在于型号、协议名一致性等，通过 CRD schema validation 或 admission webhook 强制
 5. **默认值迁移**：SetDefaults 逻辑迁移为 CRD schema `default` 或 mutating webhook
 
-## 8. 已知限制（v0.1.0 定稿时确认）
+## 9. 已知限制（v0.1.0 定稿时确认）
+
+> v0.7.0 追加：模型 API 相关已知限制登记见下表新增 3 行（编号以 KNOWN-ISSUES.md §7 为准）。
+
 
 | 限制 | 影响 | 计划 |
 |------|------|------|
@@ -603,8 +794,11 @@ status:
 | device-command 的 value 为 float64 | 非数值属性（string/boolean）暂无法通过本端点下发 | Mapper 扩展时评估 |
 | config-sync 的 Secret value 明文传输存储 | 生产环境需加密 | PROGRESS.md 待办 |
 | 广播/组播下发（Target="*"）路由层已支持，API 层未暴露 | 无批量下发端点 | 后续版本 |
+| （v0.7.0）纯内存模式 release 任务与部署影子**重启丢失**（embed/外部 etcd 持久恢复） | 纯内存（`ETCD_ENABLED=false`）下发布任务/影子为内存态，重启清空明示 | KNOWN-ISSUES L22；生产建议 embed/外部模式 |
+| （v0.7.0）半部署状态：podsync 成功、config-sync 失败 → 节点已切镜像未切参数，计 failed | 边缘声明式调谐最终一致；重试发布或回滚收敛 | KNOWN-ISSUES L23；perNode reason 可查 |
+| （v0.7.0）回滚部分失败仍置 rolled_back（尽可能回滚，不中止） | 失败节点 perNode 明细 + Warn 日志；人工复核 | KNOWN-ISSUES L24 |
 
-## 9. 归档信息
+## 10. 归档信息
 
 - 定稿版本：v0.1.0（2026-08-14）
 - 评审记录：`docs/REVIEWS.md` §9.2（评审人、已知问题、归档状态）
@@ -616,7 +810,7 @@ status:
 
 > 本节登记 v0.3.0 新增/变更的库级 API 与 `pkg/opcua` 包边界，供 Mapper/上层模块消费方与测试方引用。代码即契约，本节为摘要。
 
-## 10. pkg/log.SetOutput（v0.3.0）
+## 11. pkg/log.SetOutput（v0.3.0）
 
 | 签名 | 说明 |
 |------|------|
@@ -624,7 +818,7 @@ status:
 
 - 新增于 commit `714d5ba`；与既有 `SetLevel`/`GetLevel`/`Debugf`（v0.2.0）无交互约束。
 
-## 11. edge/pkg/edgehub Options.BackoffSleepFunc（v0.3.0）
+## 12. edge/pkg/edgehub Options.BackoffSleepFunc（v0.3.0）
 
 | 字段 | 类型 | 默认 | 说明 |
 |------|------|------|------|
@@ -632,7 +826,7 @@ status:
 
 - 新增于 commit `714d5ba`（KNOWN-ISSUES §1 ② 闭环）；`bool` 返回值与客户端 `shuttingDown` 中止语义对齐。
 
-## 12. pkg/opcua 包边界（v0.3.0 M1，UA Binary 协议栈核心）
+## 13. pkg/opcua 包边界（v0.3.0 M1，UA Binary 协议栈核心）
 
 > 零第三方依赖（纯标准库），OPC UA Part 6（UA Binary）。SecurityPolicy **None 明文**：无认证/完整性，仅限可信隔离网络（封闭 OT 网段/本机模拟），禁止暴露到不可信网络。
 

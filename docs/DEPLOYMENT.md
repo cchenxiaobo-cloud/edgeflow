@@ -618,6 +618,71 @@ etcdctl get /edgeflow/_meta/schemaVersion          # = "1"（快照自带则保�
 | 运行中写失败（节点注册失败、设备指令落点报错），读 API 正常 | 外部集群故障窗口：读路径纯内存不受影响（最后一致状态）；clientv3 自动重连，恢复后下一笔写自动成功，**无需重启 cloudcore**；/healthz 恒 200（不反映 etcd，避免 K8s 批量重启放大故障——v0.5.0 有意为之）；监控建议走外部集群自身的 `etcdctl endpoint health` 与备份告警 |
 | 多副本误配 | **v0.6.0 起仅 embed 模式被 `{{ fail }}` 拦截**（embed 多副本 = 脑裂）；外部模式合法（见 §10.8，需满足前置要求）；手工裸跑二进制时，embed/纯内存请保持单副本，外部模式多副本请按 §10.8 检查同版本/quorum/共享 endpoints |
 
+---
+
+### 10.9 模型仓库与灰度发布（v0.7.0）
+
+> 核心能力：云端内置**模型仓库**（模型 + 版本两级台账 + 部署影子）与**灰度发布**（按节点白名单/按比例、分批、fail-fast、取消、回滚）——手册 F41/F42 落地为正式功能。设计见 ARCHITECTURE.md 决策 **R16**；API 契约见 **API-SPEC.md §7**；限制登记见 KNOWN-ISSUES.md §7（L21-L31）。**边缘零代码改动**：发布器复用既有 podsync（镜像 Pod）+ config-sync（模型版本/参数 ConfigMap）经可靠投递下发，旧版 edgecore 直接可用。
+
+#### 10.9.1 三模式行为矩阵
+
+| 能力 | 纯内存（ETCD_ENABLED=false 且无 ENDPOINTS） | embed etcd（默认） | 外部 etcd（多副本） |
+|---|---|---|---|
+| 模型/版本/发布 CRUD | ✅ 内存（mutex 串行） | ✅ 写穿持久化 | ✅ 写穿 + CAS + watch |
+| release 任务执行 | ✅ 正常工作 | ✅ | ✅（领跑锁 + 接管） |
+| release/部署影子重启恢复 | ❌ 重启丢失（**L22 登记**，明示） | ✅ etcd 恢复 | ✅ etcd 恢复 |
+| 发布领跑锁 | 单实例恒成功（逻辑空转） | 同左 | 租约锁 + 接管（≤TTL 60s） |
+| 并发安全 | 单进程 | 单副本 CAS 恒成功（D4 口径） | CAS + guard + 锁 |
+| 部署影子恢复 | 重启清空 | 恢复 | 恢复 |
+
+> **模式差异补注**：不同模式/迁移后百分比发布的目标集合**不跨模式可比**——百分比分母 = 创建时刻 Ready 节点（embed/外部模式的 Ready 判定口径不同），且目标集合在创建时物化为快照；以创建时快照为准，跨模式迁移后重新发起发布（审稿线索 4 口径）。
+
+#### 10.9.2 配置（新增 env，全部可选）
+
+| 环境变量 | 默认 | 说明 |
+|----------|------|------|
+| `EDGEFLOW_CLOUDCORE_RELEASE_SCAN_INTERVAL` | `5s` | 发布控制器扫描周期（>0，非法 fail-fast，对齐既有 duration env 风格） |
+| `EDGEFLOW_CLOUDCORE_RELEASE_LOCK_TTL` | `60s` | 发布领跑锁租约 TTL（**>=15s**，非法 fail-fast）；刷新周期与 TTL 绑定 = `max(5s, TTL/3)`（主线裁决 D5）；**仅外部模式消费**，embed/纯内存显式设置 → Warn 忽略（并入 warnEmbedFieldsIgnored 族） |
+
+K8s 部署（Helm）：两者均可经 `cloudcore.env` 透传（values.yaml 已留注释行示例）；Chart 无新增 values 必填项。
+
+#### 10.9.3 使用流程（灰度运营）
+
+```bash
+# ① 注册模型（模型名唯一；镜像实体在客户镜像仓库，平台登记镜像 ref + sha256 摘要）
+curl -X POST http://<cloudcore>:8080/api/v1/models \
+  -d '{"name":"defect-detector","description":"缺陷检测模型","type":"detection"}'
+# ② 登记版本（"Tag 即版本"；status=draft；sha256 必填防篡改登记）
+curl -X POST http://<cloudcore>:8080/api/v1/models/defect-detector/versions \
+  -d '{"version":"v1.2.0","mirror":"registry.example.com/edgeflow/models/defect-detector:v1.2.0","sha256":"sha256:9f86...","sizeBytes":482344960,"archs":["amd64","arm64"],"metadata":{"threshold":"0.8"}}'
+# ③ 激活版本（draft→active，自动降级旧 active；发布目标必须 active）
+curl -X POST http://<cloudcore>:8080/api/v1/models/defect-detector/versions/v1.2.0/activate
+# ④ 灰度发布（202 受理）：先 1 台试点（白名单）→ 小批（batchSize+pauseBetween）→ 全量（percentage=100）
+curl -X POST http://<cloudcore>:8080/api/v1/models/defect-detector/releases \
+  -d '{"version":"v1.2.0","target":{"type":"percentage","percentage":25},"batchSize":2,"pauseBetween":30000,"failFast":true}'
+# → 202 + release（status=pending，targetNodes 已物化）
+# ⑤ 跟踪/取消/回滚
+curl http://<cloudcore>:8080/api/v1/models/defect-detector/releases/<releaseID>   # perNode 汇总
+curl -X POST http://<cloudcore>:8080/api/v1/models/defect-detector/releases/<releaseID>/cancel
+curl -X POST http://<cloudcore>:8080/api/v1/models/defect-detector/releases/<releaseID>/rollback   # 202，逆序回滚
+curl http://<cloudcore>:8080/api/v1/models/defect-detector/deployments            # 版本—节点—时间台账
+```
+
+**灰度运营建议**：
+
+1. **节奏：先 1 台试点 → 小批 → 全量**。试点用白名单（`target.type=nodeIDs`，1 台）验证镜像可用与推理结果；小批用 `batchSize=1~2 + pauseBetween ≥30s` 留观察窗口；验证通过后放大比例或白名单；确认无误后 100%。
+2. **fail-fast 保持默认开（true）**：单节点失败立即中止并标记剩余节点 skipped，避免坏版本扩散；需要"看完全部节点失败情况"时再显式关。
+3. **回滚前置条件 = "该发布版本仍是模型当前 active 版本"**（未被新版本接管）；已被接管 → 409，先显式 activate 目标旧版本（或发起新发布）再回滚。回滚为逆序批量执行、失败不回滚中止（能回多少回多少，perNode 明细可查）。
+4. **发布成功 ≠ 镜像可用**：平台下发的是声明（mirror ref），拉取发生在边缘；镜像仓库不可达/镜像损坏会在边缘 PodStatus 暴露（CrashLoop 等），发布任务本身仍可能 succeeded——发布前建议在试点节点确认 Pod Running。
+5. **耗时口径**：批内逐节点**串行**（每节点 2 次可靠下发，最坏 ~10s+/节点超时）；batchSize 控制批粒度/暂停节奏，**不是并发度**；大 fleet 全量耗时 = Σ(单节点部署耗时)+Σ(pause)（D6 口径）。
+6. **模型实例多副本**：发布语义 = "该版本上机"（replicas=1）；多副本由用户后续自行 podsync 编排。
+
+#### 10.9.4 升级 / 回滚（v0.6.0 ↔ v0.7.0）
+
+- **升级（v0.6.0 → v0.7.0）**：全停再全起（惯例，`kubectl scale deploy <rel>-cloudcore --replicas=0` → 换 v0.7.0 镜像 → 起 1 副本验证 → 外部模式再扩容）。零迁移动作：v0.7.0 只新增 `/edgeflow/models/` 前缀，既有键/JSON 逐字不变（schemaVersion 不 bump）；既有 14 端点行为逐字节不变（回归锚点）。
+- **回滚（v0.7.0 → v0.6.0）**：全停 → 部署 v0.6.0（replicas=1）。残留 `/edgeflow/models/` 键**无害**（v0.6.0 不读不写该前缀）；可选显式清理：`etcdctl del /edgeflow/models --prefix`（外部模式同法；embed 模式客户端端口 127.0.0.1:12379）。
+- **混合版本多副本未验证（L29）**：v0.6.0 与 v0.7.0 副本同连一集群未验证；理论无冲突（新前缀隔离、旧版不读新键）仍**建议同版本全量切换**。
+
 #### 10.7.7 Helm 部署（外部模式）
 
 ```yaml

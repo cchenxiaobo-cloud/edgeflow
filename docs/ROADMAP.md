@@ -112,7 +112,7 @@
 | 9.4 | 开发者指南 | 贡献指南、代码规范 | 2 | 1.x | ✅ 完成（HANDOFF.md，REVIEWS.md R9.4 已处理） |
 | 9.5 | 示例与教程 | 设备接入、应用部署示例 | 4 | 5.x、6.x（⚠️） | ✅ 完成（examples/demo.sh DEMO PASS×3，REVIEWS.md §5） |
 | 10.1 | 可观测性基建 | 监控(Prometheus)、日志(Fluent Bit)、告警 | 10 | 2.9、3.8（⚠️ 职责需与 2.9/3.8 对齐） | ✅ 完成（/metrics 端点：nodes/pods/devices_total、http_requests_total、active_connections，Prometheus 文本格式，metrics 覆盖 96.6%，commit `4c5b9c6`；日志/告警为 P2） |
-| 10.2 | 边缘节点升级与回滚 | OTA 升级、灰度发布 | 6 | 8.6（⚠️） | ✅ 完成（备份模型 + ops-ledger + simulate-failure + 事务化 restore + 白名单；**灰度发布已实现** 2026-08-15：upgrade --batch-size/--pause-between，commit `2c877d4`） |
+| 10.2 | 边缘节点升级与回滚 | OTA 升级、灰度发布 | 6 | 8.6（⚠️） | ✅ 完成（备份模型 + ops-ledger + simulate-failure + 事务化 restore + 白名单；**灰度发布已实现** 2026-08-15：upgrade --batch-size/--pause-between，commit `2c877d4`；**服务端模型灰度（v0.7.0）落地**——模型灰度发布与产品升级灰度双轨，见 §12 处置登记） |
 | 10.3 | API 兼容性测试 | K8s API 版本兼容矩阵 | 4 | 2.x（⚠️） | ✅ 已完成：兼容矩阵文档（API-COMPATIBILITY.md，2026-08-15）+ 自动化契约测试（tests/contract：13 REST 端点 + 10 消息类型双向断言 + 文档一致性 + 运行时反向探测，2026-08-16） |
 | 10.4 | 安全扫描与修复 | 镜像扫描、依赖漏洞 | 4 | 8.5（⚠️） | 🟨 部分：SBOM ✅（33 组件）+ 镜像漏洞扫描 ✅（2026-08-15 Trivy 0 漏洞）；cosign 签名延后（audit-m35 G10） |
 
@@ -392,3 +392,19 @@
 | ④ 周期环境变量生效值明示 | WBS 3.x | ✅ 本次完成 | `edgeCoreIntervalFromEnv` 三态启动日志（合法/越界回落 Warn/未设置），启动日志明示生效值（commit `714d5ba`） |
 | pkg/log SetOutput | WBS 1.5 | ✅ 本次完成 | `SetOutput(io.Writer)` 新增（nil 恢复 stderr，兼容 stdlib 约定），供测试捕获输出（commit `714d5ba`） |
 | OPC-UA 独立立项 M1 | WBS 5.2 | 🟨 第一阶段交付，项目进行中 | 2026-08-19 启动第一阶段：UA Binary 协议栈核心（pkg/opcua，零第三方依赖，41 顶层测试）已交付——内置类型系统（NodeId 全形式/Variant/DataValue/ExtensionObject/Guid/ByteString/DateTime）、UA Binary 大端 codec、MessageHeader/Hello/Ack/Error、Dial TCP→HEL→ACK 三态协商（SecurityPolicy None 明文，仅限可信隔离网络）；下一里程碑：SecureChannel/Read/Write/互操作 cross-check（commit `93458d6`） |
+
+---
+
+## 12. v0.7.0 开发轮处置登记（2026-08-25）
+
+> 依据：.cluster/edgeflow-v070/plan.md + 设计定稿 subagent_01.md + 审稿复核 subagent_02.md + 主线裁决 decision.md（D1-D11）。状态：✅ 本文档轮已完成 / ⏳ 实施与验证在途。
+
+| 项 | 对应 WBS/手册 | 处置 | 结论/理由 |
+|----|----------|------|----------|
+| 模型仓库与版本管理（F41） | 手册 F41（原规划中） | ✅ v0.7.0 已实现（文档轮登记；实施在途） | 云模型台账 + 版本状态机 + 部署影子：17 个新端点之一部（模型 5 + 版本 6）；键空间 `/edgeflow/models/`，guard + CAS；版本状态 draft/active/archived（两键 CAS + 补偿）。契约见 API-SPEC §7；架构决策 ARCHITECTURE R16；发布说明 RELEASE-NOTES-v070 |
+| 模型灰度发布（F42） | 手册 F42（原部分实现：仅 keadm 升级分批） | ✅ v0.7.0 已实现（文档轮登记；实施在途） | 服务端灰度执行器：白名单/按比例（创建时快照）、分批、fail-fast、取消、逆序回滚；领跑锁 + 崩溃接管（外部多副本）；下发复用 podsync/config-sync（边缘零改动）。keadm 升级分批保留为**产品升级灰度**（双轨并行） |
+| 端点口径 | API-SPEC/API-COMPATIBILITY | ✅ 全稿统一 **17 新端点 / 14→31** | 主线裁决 D1（F-1 🔴 修正）；P10 三处一致抽查随实施验证执行 |
+| 已知限制 | KNOWN-ISSUES §7 | ✅ 本文档轮登记完成 | L21-L31（设计 §13.1 + 主线 D2/D3/D4/D9/P9 补项；§6 原 L21 更名 L20b 消除编号冲突） |
+| 解决方案手册 | 手册 F41/F42 状态翻转 | ✅ 本文档轮完成 | 手册升 v1.1.0：第 4 章重写为正式能力（过渡路径降级为兼容路径）；附录 C 表 C-1 追加 F41/F42、表 C-2 摘除；FAQ A7/术语表/附录 D 同步 |
+| Chart | build/charts/edgeflow | ✅ 本文档轮完成 | version/appVersion → 0.7.0；无新增 values 必填项；helm lint 0 failed + 多场景渲染验证 |
+| 代码实现与 E2E | WBS 1-10（实施清单） | ⏳ 实施 Agent 并行在途 | 单测/E2E/三处一致抽查结果回填 RELEASE-NOTES-v070 §七.7.2 |

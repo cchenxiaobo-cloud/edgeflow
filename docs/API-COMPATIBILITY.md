@@ -24,6 +24,30 @@
 | 13 | POST | `/api/v1/nodes/{nodeID}/device-command` | ✅ 稳定 | Bearer Token | 下发设备指令 |
 | 14 | POST | `/ocsp` | ✅ 新增（7.1） | 免认证（协议端点，响应自带 CA 签名） | OCSP 在线吊销查询（RFC 6960，DER 请求/响应） |
 
+> **v0.7.0 追加（17 个模型 API 端点，均为新增 = 向后兼容；既有 14 行逐字节不变）**：
+
+| # | 方法 | 路径 | v0.7.0 状态 | 认证要求（A4） | 说明 |
+|---|------|------|------------|---------------|------|
+| 15 | GET | `/api/v1/models` | ✅ 新增（v0.7.0） | Bearer Token | 模型列表（K8s List 风格，按 name 排序） |
+| 16 | POST | `/api/v1/models` | ✅ 新增（v0.7.0） | Bearer Token | 创建模型 |
+| 17 | GET | `/api/v1/models/{modelName}` | ✅ 新增（v0.7.0） | Bearer Token | 模型详情 |
+| 18 | PUT | `/api/v1/models/{modelName}` | ✅ 新增（v0.7.0） | Bearer Token | 更新模型（description/type/metadata） |
+| 19 | DELETE | `/api/v1/models/{modelName}` | ✅ 新增（v0.7.0） | Bearer Token | 删除模型（无 active 版本、无在途发布；级联） |
+| 20 | GET | `/api/v1/models/{modelName}/versions` | ✅ 新增（v0.7.0） | Bearer Token | 版本列表（按 tag 排序） |
+| 21 | POST | `/api/v1/models/{modelName}/versions` | ✅ 新增（v0.7.0） | Bearer Token | 创建版本（初始 draft） |
+| 22 | GET | `/api/v1/models/{modelName}/versions/{version}` | ✅ 新增（v0.7.0） | Bearer Token | 版本详情 |
+| 23 | DELETE | `/api/v1/models/{modelName}/versions/{version}` | ✅ 新增（v0.7.0） | Bearer Token | 删除版本（仅 draft/archived） |
+| 24 | POST | `/api/v1/models/{modelName}/versions/{version}/activate` | ✅ 新增（v0.7.0） | Bearer Token | 激活（draft→active，自动降级旧 active） |
+| 25 | POST | `/api/v1/models/{modelName}/versions/{version}/archive` | ✅ 新增（v0.7.0） | Bearer Token | 归档（active→archived） |
+| 26 | POST | `/api/v1/models/{modelName}/releases` | ✅ 新增（v0.7.0） | Bearer Token | **创建灰度发布（异步，202）** |
+| 27 | GET | `/api/v1/models/{modelName}/releases` | ✅ 新增（v0.7.0） | Bearer Token | 发布列表（按 createdAt 升序） |
+| 28 | GET | `/api/v1/models/{modelName}/releases/{releaseID}` | ✅ 新增（v0.7.0） | Bearer Token | 发布详情（含 perNode 汇总） |
+| 29 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/cancel` | ✅ 新增（v0.7.0） | Bearer Token | 取消（pending/running） |
+| 30 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/rollback` | ✅ 新增（v0.7.0） | Bearer Token | **回滚（异步，逆序批量，202）** |
+| 31 | GET | `/api/v1/models/{modelName}/deployments` | ✅ 新增（v0.7.0） | Bearer Token | 部署影子（版本—节点—时间台账） |
+
+> 契约详情见 API-SPEC.md §7（v0.7.0）。
+
 > 认证：`EDGEFLOW_CLOUDCORE_API_TOKEN` 设置为 `on` 时全部管理端点（除 healthz/metrics）要求
 > `Authorization: Bearer <token>`（WBS 7.2）；未设置保持匿名（向后兼容，仅限受信网络）。
 > `/ocsp` 为协议端点（非管理端点），始终免 Token 认证：响应由 CA 私钥签名，客户端验签防伪造。
@@ -46,6 +70,7 @@
 兼容规则：
 - 云边消息字段**只增不删**；新增字段必须可选（`omitempty`），老版本对端忽略未知字段（JSON 解码容忍）。
 - 协议 `Version=v1` 为云边兼容锚点；CloudCore/EdgeCore 建议同版本部署。
+- **v0.7.0 无新消息类型**：模型发布/回滚完全复用既有 `PodSync`（镜像 Pod）与 `ConfigSync`（模型版本/参数 ConfigMap，载荷约定见 API-SPEC §7.4）——云边协议零改动，旧版 edgecore 无需任何升级（**边缘零改动**）。
 
 ## 3. CRD 类型矩阵（edgeflow.io/v1alpha1）
 

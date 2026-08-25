@@ -4,17 +4,18 @@
 
 | 项 | 内容 |
 |---|---|
-| 产品版本基线 | EdgeFlow v0.1.0（2026-08-14 发布） |
-| 手册版本 | v1.0.2 |
+| 产品版本基线 | EdgeFlow v0.7.0（2026-08-25 发布；事实基线自 v0.1.0 演进，增量见修订记录） |
+| 手册版本 | v1.1.0 |
 | 密级 | 公开（售前/客户技术交流） |
 | 适用范围 | 售前方案设计、客户技术决策、PoC 部署参考 |
 
-> **声明**：本手册所有能力、参数与数字均以 EdgeFlow v0.1.0（2026-08-14 发布；v1.0.1 勘误补充 2026-08-16 收尾补强能力入册，v1.0.2 补充 2026-08-18 v0.1.1 发布轮安全加固入册，详见修订记录）已核验实现为准；规划中/尚未实现的能力一律明确标注"规划中/即将上线"，不构成交付承诺。文中命令与字段均为示意用法，具体语法以产品文档为准。
+> **声明**：本手册所有能力、参数与数字均以 EdgeFlow v0.1.0（2026-08-14 发布；v1.0.1 勘误补充 2026-08-16 收尾补强能力入册，v1.0.2 补充 2026-08-18 v0.1.1 发布轮安全加固入册，v1.1.0 纳入 2026-08-25 v0.7.0 模型仓库/版本管理/灰度发布正式能力，详见修订记录）已核验实现为准；规划中/尚未实现的能力一律明确标注"规划中/即将上线"，不构成交付承诺。文中命令与字段均为示意用法，具体语法以产品文档为准。
 
 ## 修订记录
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v1.1.0 | 2026-08-25 | 技术团队 | v0.7.0 模型仓库（F41）与模型灰度发布（F42）落地入册：第 4 章重写为正式能力（过渡路径降级为"兼容路径"，keadm 升级分批保留为产品升级灰度）；附录 C 表 C-1 追加 F41/F42（已实现，● 模型管理场景）、表 C-2 摘除；FAQ A7 更新为平台化流程；术语表新增模型仓库/灰度发布/部署影子/领跑锁；端点口径 14→31（模型 API 17 端点，见第 4 章与 API-SPEC §7） |
 | v1.0.2 | 2026-08-18 | 技术团队 | v0.1.1 发布轮安全加固入册：/ocsp per-IP 限流（默认 10 req/s、超限 429）+ Cache-Control、OCSP 客户端新鲜度校验 API（fail-closed）、CRL 锁降级日志；P2 代码审查遗留闭环 |
 | v1.0.1 | 2026-08-16 | 技术团队 | 补强入册：证书吊销闭环（CRL+OCSP）、配置热重载与 edgecore 配置文件、gzip 通道压缩、keadm cert/batch、端点 13→14、OpenAPI/契约测试；口径修正（F42/F44/F47/F48 拆分） |
 | v1.0.0 | 2026-08-14 | 方案与产品团队 | 首版定稿：四场景 × 五部分结构、数据链路与台账口径、特性-场景映射表 |
@@ -68,20 +69,21 @@ EdgeFlow 采用"设备层—边缘层—云层"三层架构，文字版说明如
 - **CloudHub**：边缘节点连接管理；
 - **NodeController**：节点状态维护；
 - **DeviceStatus**：设备状态快照维护（内存态）；
-- **REST API**：对外提供 14 个 HTTP 端点（11 个管理端点 + healthz + metrics + /ocsp 协议端点；管理端点：设备、节点、命令、podsync/config-sync 等）；
+- **模型仓库与灰度发布（v0.7.0）**：模型/版本台账 + 灰度发布控制器（17 个模型 API 端点，见第 4 章）；
+- **REST API**：对外提供 31 个 HTTP 端点（28 个管理端点 + healthz + metrics + /ocsp 协议端点；管理端点：设备、节点、命令、podsync/config-sync、模型 API 等）；
 - **OCSP responder**：在线证书状态查询（POST /ocsp，RFC 6960；DER 编码请求/响应、免 Token——响应自带 CA 签名、16KiB 请求上限，状态码 200/400/429/500；per-IP 限流（默认 10 req/s、burst 20，超限 429，env 可调）+ 成功响应 Cache-Control: max-age=3600；与 CRL 同源 crl.json）；
 - **审计与指标**：JSONL 审计台账 + 5 项运行指标。
 
 ## 1.3 核心能力地图
 
-**表 1-1：四场景 × 特性组能力对照（v0.1.0 已实现 vs 规划中）**
+**表 1-1：四场景 × 特性组能力对照（已实现 vs 规划中；基线 v0.1.0，v0.7.0 增量已标注）**
 
 | 场景 | 特性组 | v0.1.0 已实现 | 规划中/即将上线 |
 |---|---|---|---|
 | 数据采集 | F21–F30 | MQTT/Modbus 设备接入；Mapper 周期采集（Modbus 30s 上报循环 / mock_sensor 2s）；EventBus MQTT 数据面（QoS1）；设备影子与属性快照；设备命令下行（可靠投递 F05）；DeviceReport 周期上报（30s，可配） | OPC-UA 协议接入；设备级身份认证（节点接入 Token 认证已实现） |
 | 弱网自治 | F11–F20 | WebSocket 云边通道（gzip 协商式压缩）与退避重连；声明式调谐（5s）；多副本；健康自愈；CrashLoopBackOff；镜像漂移检测；MetaManager SQLite（WAL）持久化 | Flannel 网络；Protobuf 编码（gzip 通道压缩已实现） |
-| 模型管理 | F36–F39 | 镜像/配置下发通道（podsync/config-sync）；生产部署与升级回滚机制（升级分批灰度已工具化，见 4.2/4.4） | 模型仓库与版本管理；模型灰度发布（按节点/按比例） |
-| 模型应用 | F11–F19 | 容器应用部署与自治：多副本、健康自愈、CrashLoopBackOff、镜像漂移检测 | 模型灰度发布；调度/超卖 |
+| 模型管理 | F36–F39、F41–F42 | 镜像/配置下发通道（podsync/config-sync）；生产部署与升级回滚机制；**模型仓库与版本管理（F41，v0.7.0 ✅ 已实现）**；**模型灰度发布（F42，v0.7.0 ✅ 已实现，按节点/按比例）** | 训练平台；模型文件托管（镜像实体仍在客户仓库） |
+| 模型应用 | F11–F19 | 容器应用部署与自治：多副本、健康自愈、CrashLoopBackOff、镜像漂移检测；模型灰度发布接收端（F42，v0.7.0 ✅：发布器自动下发推理容器声明与模型参数，见 4.4） | 调度/超卖 |
 
 > 注：特性编号沿用产品特性基线；同一编号区间在不同场景视图下以该场景语义为准。
 
@@ -95,11 +97,13 @@ EdgeFlow 采用"设备层—边缘层—云层"三层架构，文字版说明如
 |---|---|
 | 容器镜像 | edgeflow/cloudcore:v0.1.0、edgeflow/edgecore:v0.1.0（linux/amd64 + arm64 多架构） |
 | 部署工具 | keadm（init/join/cert(rotate|revoke)/upgrade/rollback/ops-ledger/batch/reset/version，共 9 个子命令）、Helm Chart（云端）、Docker（双端运行） |
-| 接口能力 | REST API 14 端点（11 管理 + healthz + metrics + /ocsp）；运行指标 5 项；OpenAPI v3 schema（docs/openapi/edgeflow-openapi.yaml，hack/gen-openapi.sh 自动生成，勿手编）；API 兼容性契约测试（tests/contract，14 端点） |
+| 接口能力 | REST API 31 端点（28 管理 + healthz + metrics + /ocsp，含 v0.7.0 模型 API 17 个）；运行指标 5 项；OpenAPI v3 schema（docs/openapi/edgeflow-openapi.yaml，hack/gen-openapi.sh 自动生成，勿手编）；API 兼容性契约测试（tests/contract，14 基线端点 + 模型 API 追加登记随 v0.7.0 轮） |
 
 **v0.1.0 功能范围（已实现）**：WebSocket 云边通道（Register 协商式 gzip 通道压缩，v1.0 兼容，config/cloudcore.json compress:false 可关）；边缘容器自治（声明式调谐 5s、多副本、健康自愈、CrashLoopBackOff、镜像漂移检测）；设备管理（MQTT/Modbus 接入、设备影子、设备命令）；节点接入认证（Register Token：keadm join 写入 EDGEFLOW_EDGECORE_TOKEN，云端常数时间校验、空值向后兼容）；生产加固（mTLS 云边通道按 CRL 拒绝吊销证书、证书生命周期管理（keadm cert rotate 轮换 / cert revoke 吊销，CRL 离线吊销 + OCSP 在线应答）、审计台账/keadm/Helm/多架构镜像）；配置管理（edgecore 配置文件 config/edgecore.json，优先级 env > 文件 > 默认；SIGHUP + 60s 轮询热重载）；升级回滚与灰度（keadm upgrade/rollback、升级分批灰度 keadm batch --op=upgrade + --batch-size/--pause-between）；接口工程（OpenAPI v3 schema、API 兼容性契约测试）。
 
-**规划中/即将上线**：模型仓库与版本管理、模型灰度发布（升级分批灰度已工具化）、完整 RBAC（当前为单 Token 鉴权）、设备级身份认证（节点接入认证已实现）、调度/超卖、Flannel 网络、OPC-UA 接入、Protobuf 编码（gzip 通道压缩已实现）、产品内置镜像安全扫描（发布流程构建期 Trivy 扫描已建立，基线 0 漏洞）。
+**规划中/即将上线**：训练平台与模型评测、完整 RBAC（当前为单 Token 鉴权）、设备级身份认证（节点接入认证已实现）、调度/超卖、Flannel 网络、OPC-UA 接入、Protobuf 编码（gzip 通道压缩已实现）、产品内置镜像安全扫描（发布流程构建期 Trivy 扫描已建立，基线 0 漏洞）。
+
+> **v1.1.0 状态翻转**：模型仓库与版本管理、模型灰度发布已由"规划中"落地为**已实现**（v0.7.0，见第 4 章与附录 C F41/F42，不再构成交付承诺例外）。
 
 ---
 
@@ -273,7 +277,7 @@ EdgeFlow 采用"**边缘就近采集、数据面与管理面分离、影子汇�
 
 # 第 4 章 模型管理场景
 
-> **本章范围声明**：EdgeFlow v0.1.0 当前**未内置**模型仓库（模型注册/存储）、模型版本管理、模型灰度发布与训练平台，模型以"容器镜像 + 配置"为载体分发。上述平台化能力处于**规划中/即将上线**（产品 ROADMAP 已规划灰度发布等能力）。本章方案为基于现有能力的**过渡路径**，全部引用能力均来自事实基线，平台能力上线后可平滑演进，不虚构任何未实现能力。
+> **本章范围声明**：EdgeFlow **v0.7.0（2026-08-25 发布）起内置模型仓库与灰度发布平台**——模型仓库 = 模型 + 版本两级台账 + 部署影子；灰度发布 = 按节点白名单/按比例、分批、fail-fast、取消、回滚（手册 F41/F42 **已实现**）。模型以"镜像即模型、Tag 即版本"方式纳入平台化台账管理；**镜像实体仍在客户既有镜像仓库**（平台登记镜像 ref + sha256 摘要，不做镜像上传/分发）；训练平台不在产品范围内。本章 4.2-4.4 为正式能力，4.5 保留 v0.1.0 时代的过渡路径为"兼容路径"小节（仍可用；平台化能力落地后建议切换）。
 
 ## 4.1 业务痛点
 
@@ -282,99 +286,111 @@ EdgeFlow 采用"**边缘就近采集、数据面与管理面分离、影子汇�
 - **边缘更新难**：边缘节点分布广、网络条件不一，逐个节点升级模型成本高、耗时长，更新窗口难以控制。
 - **回滚无保障**：升级失败后缺少可靠的版本回退手段，业务长时间中断风险高，运维人员不敢轻易升级。
 
-## 4.2 方案设计
+## 4.2 方案设计（平台化正式能力，v0.7.0）
 
-**设计定位**：在模型管理平台（注册、版本、灰度）**规划中/即将上线**的前提下，利用 EdgeFlow 现成的"边缘容器管理 + 云端下发通道 + 配置同步 + 生产级升级回滚"能力，构建一套可落地的模型分发、升级、回滚与追踪链路。
+**设计定位**：EdgeFlow 云端内置模型仓库与灰度发布能力（F41/F42 已实现，API 契约见 API-SPEC §7）——模型管理由"镜像 Tag + 手工台账"升级为**平台化两级台账 + 受控发布流程**；发布/回滚经既有 podsync/config-sync 幂等下发链路到达边缘，**边缘零代码改动**（旧版 edgecore 直接可用）。
 
-**模型分发链路（过渡方案，8 步）**：
+**模型仓库与版本管理（F41）**：
 
-1. **模型打包**：模型文件与推理运行时（推理框架由用户镜像自带）打包为推理镜像，以**镜像 Tag 承载模型版本**（如 `model-x:v1.2.0`），实现"镜像即模型、Tag 即版本"。
-2. **镜像推送**：将版本化镜像推送到镜像仓库（客户既有仓库或自建仓库），镜像仓库承担模型存储职责。
-3. **声明下发**：云端通过 `POST /api/v1/nodes/{nodeID}/podsync` 下发 Pod 声明，指定镜像版本与副本数（F31）；下发链路具备可靠投递保障（F05）。
-4. **边缘执行**：边缘节点拉取指定版本镜像运行；Edged 声明式调谐（F11，5s 周期）确保实际运行版本与声明一致，多副本补齐/收缩（F12）保证实例数量符合声明。
-5. **参数化配置**：模型参数、阈值等通过 `POST /api/v1/nodes/{nodeID}/config-sync` 下发（F31），由边缘 MetaManager SQLite 持久化期望态（F17），节点重启后配置不丢失，实现"模型与参数解耦、参数可调"。
-6. **版本升级**：新版本镜像（新 Tag）构建推送后，更新 Pod 声明中的镜像版本，**多副本分批滚动**替换（F12），减少业务中断。
-7. **版本回滚**：将 Pod 声明恢复为旧版本 Tag 重新下发，边缘自动收敛回旧版本（应用级回滚）；同时可配合 keadm upgrade/rollback 的产品级回滚（F39）恢复节点软件状态。
-8. **版本追踪**：以镜像 Tag + ops-ledger 操作留痕 + 审计台账（F39）形成"版本—节点—时间"全链路记录。
+- **模型台账（Model）**：模型名唯一（字符集白名单，禁 `/`），描述/类型/扩展元数据；`DELETE` 前置（无 active 版本、无在途发布），级联删除 draft/archived 版本与部署影子。
+- **版本台账（ModelVersion）**："Tag 即版本"——镜像 ref（**必带 tag**）+ sha256 摘要登记（防篡改，与 F39/F15 镜像完整性语义衔接）+ 架构白名单（amd64/arm64，F38）+ 参数元数据（发布时随版本平铺下发）；版本状态机 `draft → active → archived`（activate 自动降级旧 active；archived 可删除、不可再激活；发布/回滚不改变版本状态）。
+- **部署影子（F41 台账）**：`GET /api/v1/models/{model}/deployments` 提供"版本—节点—时间"追踪；podsync+config-sync 双 acked 后写穿（云端期望态，与边缘实际运行版本分离；重启后 etcd 恢复）。
 
-**灰度发布规划路径**：
+**模型灰度发布（F42）**：
 
-- **升级分批灰度（已工具化）**：节点软件升级支持分批灰度——`keadm upgrade --batch-size/--pause-between` 控制每批节点数与批间暂停，或 `keadm batch --op=upgrade` 按节点清单逐批执行（任一节点失败立即中止，fail-fast），实现"试点节点（1 台）→ 小批节点 → 全量"的等效灰度（命令详见 4.4）。
-- **模型/按比例灰度（规划中/即将上线）**：产品 ROADMAP 已规划模型灰度发布能力，届时支持按节点/按比例的正式灰度能力；当前模型升级以镜像 Tag 切换 + 多副本分批下发方式推进，平台能力上线后可无缝切换。
+- **目标选择**：按节点白名单（全部须已注册，422 列出未知节点）/ 按比例（**分母 = 创建时刻 Ready 节点**，n = ceil(分母 × 百分比 / 100) 上取整，字典序取前 n；0 台 Ready → 422）；目标集合**创建时物化快照**，运行期不重算；不同模式/迁移后的百分比目标集合不跨模式可比（以创建时快照为准）。
+- **分批推进**：`batchSize`（每批节点数，批内逐节点串行——控制批粒度/暂停节奏，非并发度）+ `pauseBetween` 批间暂停 + `failFast`（默认开，单节点失败立即中止，剩余节点标 skipped）。
+- **取消与回滚**：取消在批次边界生效（剩余节点 ≤1 扫描周期补 skipped）；回滚 = **逆序批量**执行到 prevActive（批间不暂停），失败不回滚中止（能回多少回多少，perNode 明细可查）；回滚前置守卫：无 prevActive → 422；**已被更新版本接管 → 409**（先显式 activate 目标旧版本或发起新发布）。
+- **可靠性**：模型/版本/发布等全部 etcd 持久化（写穿 + CAS；纯内存模式任务重启丢失，明示）；同模型在途发布互斥（guard）；外部多副本下 release 级**领跑锁**与崩溃接管（≤TTL 续跑）。
+
+**下发链路（边缘零改动）**：发布 = 逐节点 podsync（镜像 Pod，命名 `edgeflow-model-<sanitized>`，namespace `edgeflow`）+ config-sync（ConfigMap：保留键 model/version/mirror/sha256/type/releasedAt + 版本参数平铺）→ 双 acked 后写穿部署影子 → 边缘 MetaManager SQLite 落盘、Edged 声明式收敛、推理容器挂载 ConfigMap 即得"当前模型版本与参数"。回滚同通道把 version 改回 prevActive。
 
 ## 4.3 产品特性引用
 
 | 环节 | F 编号 | 产品能力 | 说明 |
 |---|---|---|---|
-| 声明下发 | F31 | 云端 API 下发通道 | `POST /api/v1/nodes/{nodeID}/podsync` 下发 Pod 声明（镜像版本+副本数）、`POST /api/v1/nodes/{nodeID}/config-sync` 下发模型参数/阈值；为云端 14 个 HTTP 端点之一 |
-| 可靠投递 | F05 | 下发通道可靠投递 | 保证 Pod 声明与配置下发不丢失，支撑升级/回滚指令可靠到达 |
-| 期望态持久化 | F17 | 边缘 MetaManager SQLite 持久化 | 期望态（含模型参数配置）落盘，节点重启后仍按声明收敛 |
+| 模型台账 | F41 | 模型仓库与版本管理（**v0.7.0 ✅ 已实现**） | 云端模型/版本/发布/部署影子台账：17 个新 REST 端点（模型 5 + 版本 6 + 发布 5 + 部署影子 1，**总端点 14→31**）；etcd 持久化（纯内存/embed/外部 三模式） |
+| 灰度发布 | F42 | 模型灰度发布（**v0.7.0 ✅ 已实现**） | 白名单/按比例、分批、fail-fast、取消、逆序回滚；服务端调度 + 逐节点结果台账化；命令与节奏建议见 4.4 |
+| 声明下发 | F31 | 云端 API 下发通道 | 发布器自动调用 `POST /api/v1/nodes/{nodeID}/podsync`（镜像 Pod）与 `POST /api/v1/nodes/{nodeID}/config-sync`（模型参数/版本元数据）；为云端 31 个 HTTP 端点之一 |
+| 可靠投递 | F05 | 下发通道可靠投递 | 保证 Pod 声明与配置下发不丢失（5s×3 重试 + 幂等去重），支撑升级/回滚指令可靠到达 |
+| 期望态持久化 | F17 | 边缘 MetaManager SQLite 持久化 | 模型版本标识与参数随 config-sync 落盘，节点重启后仍按声明收敛 |
 | 声明式调谐 | F11 | 声明式调谐（5s 周期） | 模型版本、副本数变更后边缘自动收敛至期望状态 |
-| 多副本管理 | F12 | 多副本补齐/收缩 | 模型服务多副本部署，升级分批滚动、异常自动补齐 |
+| 多副本管理 | F12 | 多副本补齐/收缩 | 模型服务多副本部署，异常自动补齐（发布语义 = "该版本上机"，replicas=1；多副本由用户自行 podsync 编排） |
 | 健康自愈 | F13 | 健康自愈自动重启 | 模型实例异常自动重启恢复，减少人工介入 |
 | 异常退避 | F14 | CrashLoopBackOff（3 次/30s 退避/60s 稳定重置） | 模型加载失败等场景下避免无限重启、保护节点 |
 | 镜像漂移防护 | F15 | 镜像漂移检测自动重建 | 模型镜像被篡改/漂移时自动重建，保障模型完整性与可信 |
 | 生产部署 | F36 / F37 | keadm 部署 / Helm 部署 | 边缘节点批量部署与集群化安装，支撑模型服务规模化落地 |
-| 多架构支持 | F38 | amd64 + arm64 多架构镜像 | 同一模型镜像覆盖异构边缘设备 |
-| 升级回滚 | F39 | 产品级升级回滚机制 | 备份 manifest.json+sha256、`--simulate-failure` 演练、KEADM_OPERATOR 审计、staging 原子替换、ops-ledger 留痕 |
-| 模型仓库/版本管理/模型灰度 | — | 模型管理平台（注册、版本、模型灰度） | **规划中/即将上线**，v0.1.0 不提供；本章以"镜像 Tag + config-sync + ops-ledger 台账"为过渡替代路径 |
-
-> ⚠️ **明确标注**：模型仓库（模型注册/存储）、模型版本管理、模型灰度发布、训练平台——**规划中/即将上线**，当前版本不提供。4.2 方案为基于现有能力的过渡路径，相关平台能力上线后可直接演进，不构成对未发布功能的承诺。
+| 多架构支持 | F38 | amd64 + arm64 多架构镜像 | 版本登记支持 archs 白名单（空 = 不限制）；按比例发布按架构过滤 |
+| 升级回滚 | F39 | 产品级升级回滚机制 | 备份 manifest.json+sha256、`--simulate-failure` 演练、KEADM_OPERATOR 审计、staging 原子替换、ops-ledger 留痕（**产品升级灰度通道，双轨保留**，见 4.4） |
 
 ## 4.4 部署方式
 
 ![图 4-1 模型管理场景：镜像化模型分发链路](diagrams/scenario-model-mgmt.png)
 
-**（1）构建并推送模型镜像**（示意命令，通用行业实践）：
+### 4.4.1 正式流程（v0.7.0，推荐）
+
+**模型部署 = 仓库注册 → 版本激活 → 灰度发布**（等效升级/回滚 = 新版本注册激活后再次发布 / rollback）：
 
 ```bash
-docker build -t registry.example.com/edgeflow/models/defect-detector:v1.2.0 .
-docker push registry.example.com/edgeflow/models/defect-detector:v1.2.0
+# ① 注册模型（模型名唯一；镜像实体在客户镜像仓库，平台登记 ref + sha256）
+curl -X POST http://<cloudcore>:8080/api/v1/models   -H 'Content-Type: application/json'   -d '{"name":"defect-detector","description":"缺陷检测模型","type":"detection","metadata":{"owner":"qa-team"}}'
+
+# ② 登记版本（"Tag 即版本"；初始 draft；sha256 必填）
+curl -X POST http://<cloudcore>:8080/api/v1/models/defect-detector/versions   -d '{"version":"v1.2.0","mirror":"registry.example.com/edgeflow/models/defect-detector:v1.2.0","sha256":"sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","sizeBytes":482344960,"archs":["amd64","arm64"],"metadata":{"threshold":"0.8"}}'
+
+# ③ 激活版本（draft→active，自动降级旧 active；发布目标必须 active）
+curl -X POST http://<cloudcore>:8080/api/v1/models/defect-detector/versions/v1.2.0/activate
+
+# ④ 灰度发布（202 受理；先 1 台试点→小批→全量）
+curl -X POST http://<cloudcore>:8080/api/v1/models/defect-detector/releases   -d '{"version":"v1.2.0","target":{"type":"percentage","percentage":25},"batchSize":2,"pauseBetween":30000,"failFast":true}'
+# 白名单试点：{"version":"v1.2.0","target":{"type":"nodeIDs","nodeIDs":["edge-node-1"]},"batchSize":1,"pauseBetween":0,"failFast":true}
+
+# ⑤ 跟踪 / 取消 / 回滚 / 台账
+curl http://<cloudcore>:8080/api/v1/models/defect-detector/releases/<releaseID>    # perNode 汇总（summary 现算）
+curl -X POST http://<cloudcore>:8080/api/v1/models/defect-detector/releases/<releaseID>/cancel
+curl -X POST http://<cloudcore>:8080/api/v1/models/defect-detector/releases/<releaseID>/rollback   # 202 逆序回滚
+curl http://<cloudcore>:8080/api/v1/models/defect-detector/deployments             # 版本—节点—时间台账
 ```
 
-**（2）下发模型服务声明**（podsync，字段示意；完整声明格式以产品文档为准）：
+> 上述命令与字段均为示意用法，具体语法以产品文档（docs/API-SPEC.md §7）为准。
 
-```
-POST /api/v1/nodes/{nodeID}/podsync
-  image:   registry.example.com/edgeflow/models/defect-detector:v1.2.0
-  replicas: 2
-```
+**灰度运营建议**：
 
-**（3）下发模型参数配置**（config-sync，字段示意）：
+- **节奏：先 1 台试点 → 小批 → 全量**。试点用白名单（1 台）验证镜像可用与推理结果；小批用 `batchSize=1~2 + pauseBetween ≥30s` 留观察窗口；验证通过后放大比例（25% → 50% → 100%）或扩充白名单。
+- **fail-fast 保持默认开（true）**：单节点失败立即中止，避免坏版本扩散；需要"收集全部节点失败情况"时再显式关闭。
+- **回滚前置条件 = "该发布版本仍是模型当前 active 版本"**（未被新版本接管，否则 409）；回滚逆序批量执行、失败不回滚中止（能回多少回多少，perNode 明细可查）。
+- **发布成功 ≠ 镜像可用**：平台下发的是声明（mirror ref），拉取发生在边缘；镜像仓库不可达/镜像损坏在边缘 PodStatus 暴露（CrashLoop 等）——发布前建议在试点节点确认 Pod Running。
+- **耗时口径**：批内逐节点串行（每节点 2 次可靠下发，最坏 ~10s+/节点超时）；batchSize 控制批粒度/暂停节奏，**不是并发度**；大 fleet 全量耗时 ≈ Σ(单节点耗时) + Σ(pause)。
 
-```
-POST /api/v1/nodes/{nodeID}/config-sync
-  # 模型阈值/参数（如告警阈值、推理超参），由边缘 SQLite 持久化（F17）
-```
+### 4.4.2 产品升级灰度（keadm，双轨保留）
 
-**（4）部署验证**：查询节点状态与副本就绪情况；声明下发后 Edged 在 5s 调谐周期内收敛（F11）。
-
-**（5）升级（版本更新）**：构建并推送新版本镜像（如 `v1.3.0`）→ 更新 Pod 声明镜像 Tag → 多副本分批滚动替换（F12）；产品级升级通过 keadm 执行，升级前可用 `--simulate-failure` 演练验证（F39）；多节点升级支持灰度分批（`--batch-size` 每批节点数 + `--pause-between` 批间暂停）与按清单批量执行（`keadm batch --op=upgrade`，任一节点失败立即中止，fail-fast）：
+keadm 升级分批（节点**软件**升级，与模型版本发布双轨并行）——`keadm upgrade --batch-size/--pause-between` 控制每批节点数与批间暂停，或 `keadm batch --op=upgrade` 按节点清单逐批执行（任一节点失败立即中止，fail-fast），实现"试点节点（1 台）→ 小批节点 → 全量"的等效灰度：
 
 ```bash
-# 示意命令，以产品文档为准
 keadm upgrade --version <目标版本> --simulate-failure                        # 升级演练
 keadm upgrade --version <目标版本>                                           # 正式升级
 keadm upgrade --version <目标版本> --batch-size 5 --pause-between 30s        # 灰度分批：每批 5 台、批间暂停 30s
 keadm batch --op=upgrade --file nodes.txt --version <目标版本> --batch-size 5 --pause-between 30s  # 按清单逐批升级（fail-fast）
 ```
 
-**（6）回滚**：
+### 4.4.3 兼容路径（v0.1.0 时代过渡方案，仍可用）
 
-- **应用级回滚**：将 Pod 声明镜像 Tag 恢复为旧版本（如 `v1.2.0`）重新下发，边缘自动收敛回旧版本；
-- **产品级回滚**：`keadm rollback` 恢复至升级前状态（备份 manifest.json+sha256、staging 原子替换，F39）；
-- 升级/回滚建议在 KEADM_OPERATOR 审计模式下执行，ops-ledger 自动留痕（F39）。
+平台化能力（F41/F42）落地前，模型以"镜像 Tag + 手工声明"分发（能力上线后建议切换正式流程）：
 
-> 以上命令与字段均为示意用法，具体语法以产品文档为准。
+1. **模型打包**：模型文件与推理运行时打包为推理镜像，以镜像 Tag 承载模型版本（"镜像即模型、Tag 即版本"）；
+2. **镜像推送**：推送到客户既有镜像仓库（仓库承担模型存储职责）；
+3. **声明下发**：`podsync` 下发 Pod 声明（镜像版本 + 副本数）+ `config-sync` 下发模型参数（F31/F05）；
+4. **边缘执行**：Edged 声明式调谐拉取指定版本运行（F11/F12）；
+5. **版本升级**：新 Tag 构建推送后更新 Pod 声明，多副本分批滚动替换（F12）；
+6. **版本回滚**：Pod 声明恢复旧 Tag 重新下发，边缘自动收敛（应用级回滚）；产品级回滚走 `keadm rollback`（F39）；
+7. **版本追踪**：镜像 Tag + ops-ledger + 审计台账形成"版本—节点—时间"记录（正式流程下由部署影子 + perNode 台账取代）。
 
 ## 4.5 客户价值
 
-- **版本可追踪**：镜像 Tag + ops-ledger + 审计台账构成完整版本记录，任一节点当前模型版本与变更历史可查，问题可追溯（结果性描述）。
-- **更新可控**：云端声明式下发、边缘自动收敛，多副本分批滚动降低更新对业务的影响，更新窗口可管理。
-- **回滚有保障**：旧版本 Tag 重下发（应用级）与 keadm rollback（产品级）双通道回退，升级失败可快速恢复，敢升级、能回退。
-- **升级留痕**：`--simulate-failure` 演练 + KEADM_OPERATOR 审计 + ops-ledger 留痕，升级过程全程可审计，满足运维与合规追溯要求。
-
----
+- **版本可追踪**：模型仓库 + 部署影子 + 逐节点结果台账构成完整版本记录，任一节点当前模型版本与变更历史可查，问题可追溯（结果性描述）。
+- **更新可控**：灰度发布按批推进、可暂停观察、可取消、可回滚，更新窗口与影响面受控，坏版本不扩散（fail-fast）。
+- **回滚有保障**：逆序批量回滚到 prevActive（应用态），keadm rollback 覆盖产品态（双轨）；升级失败可快速恢复，敢升级、能回退。
+- **边缘零改动**：发布/回滚复用既有 podsync/config-sync 链路，旧版 edgecore 直接可用，平台能力落地无边缘升级成本。
 
 # 第 5 章 模型应用场景
 
@@ -389,7 +405,7 @@ keadm batch --op=upgrade --file nodes.txt --version <目标版本> --batch-size 
 
 ## 5.2 方案设计
 
-**总体思路**：将推理服务以容器化形式部署于边缘节点，与数据源同侧运行（**近数据侧推理**），构建"数据供给 → 推理消费 → 结果闭环"的本地推理链路；模型由第 4 章模型管理流程（镜像 + 配置）分发。
+**总体思路**：将推理服务以容器化形式部署于边缘节点，与数据源同侧运行（**近数据侧推理**），构建"数据供给 → 推理消费 → 结果闭环"的本地推理链路；模型由第 4 章模型管理流程分发——v0.7.0 起即**模型仓库注册 → 版本激活 → 灰度发布**（发布器自动下发推理容器声明与模型参数），v0.1.0 时代的"镜像 + 配置"手工通道仍可用（兼容路径，见 4.4.3）。
 
 **组件与数据流**：
 
@@ -424,7 +440,7 @@ keadm batch --op=upgrade --file nodes.txt --version <目标版本> --batch-size 
 
 ![图 5-1 模型应用场景：边缘推理部署拓扑](diagrams/scenario-model-app.png)
 
-**（1）推理服务声明**（YAML 风格，字段示意；完整声明格式以产品文档为准）：
+**（1）推理服务声明**（YAML 风格，字段示意；完整声明格式以产品文档为准。v0.7.0 起推理容器声明由灰度发布器自动下发（镜像 = 版本 mirror，见 4.4.1），也可沿用 podsync 手工声明）：
 
 ```yaml
 # 推理服务声明（示意）
@@ -519,7 +535,7 @@ EdgeFlow v0.1.0 的弱网数据语义为**"最新状态快照周期补报"**，�
 
 # 附录 A 常见客户问题 FAQ
 
-> 以下问答全部基于 EdgeFlow v0.1.0（2026-08-14 发布）已核验实现作答；涉及规划中能力均明确标注。
+> 以下问答全部基于 EdgeFlow 已核验实现作答（基线 v0.1.0 2026-08-14 发布，v0.7.0 增量见 A7 等处）；涉及规划中能力均明确标注。
 
 **A1. 云边断网期间，采集到的数据会丢吗？**
 
@@ -547,7 +563,7 @@ v0.1.0 支持 MQTT（QoS1，遥测/指令主题）与 Modbus TCP（显式设置 
 
 **A7. 模型如何部署到边缘？**
 
-v0.1.0 以"容器镜像 + 配置"为载体：模型与推理运行时打包为版本化镜像 → podsync 下发 Pod 声明（image + replicas）→ 边缘 Edged 拉取运行并持续自治（多副本/健康自愈/防漂移）；推理参数经 config-sync 下发并落盘。模型仓库/版本管理与模型灰度发布平台规划中/即将上线（升级场景的灰度分批已工具化，见附录 C F42），当前以镜像 Tag + 配置参数化作为过渡路径。
+v0.7.0 起模型部署走**平台化流程**：**模型仓库注册（镜像即模型）→ 版本登记与激活（Tag 即版本，draft→active）→ 灰度发布（按节点白名单/按比例、分批、fail-fast、可取消可回滚）**。发布器自动向目标节点下发 podsync（推理容器镜像 Pod）与 config-sync（模型版本标识 + 参数元数据，ConfigMap），边缘 Edged 声明式收敛、MetaManager SQLite 落盘（重启不丢，边缘**零代码改动**）；云端提供部署影子台账（版本—节点—时间）与逐节点结果查询（perNode summary）。v0.1.0 时代的"手工镜像 Tag + podsync/config-sync"过渡路径仍可用（兼容路径，见第 4 章 4.4.3）；keadm 产品升级分批灰度（节点软件升级）与模型灰度发布**双轨并行**。
 
 **A8. 升级和回滚有保障吗？**
 
@@ -586,6 +602,10 @@ v0.1.0 提供**节点级**离线判定（CloudHub 90s 无消息断开 + NodeCont
 | DeviceReport | 设备状态周期上报消息（30s，可配），无 Ack 单向流式 |
 | podsync | 云端向边缘下发 Pod 声明（image/replicas）的 API |
 | config-sync | 云端向边缘下发配置并持久化的 API |
+| 模型仓库 | EdgeFlow 云端模型管理台账（v0.7.0）：模型 + 版本两级对象 + 部署影子，etcd 持久化（`/edgeflow/models/` 键空间，纯内存/embed/外部三模式） |
+| 灰度发布 | 受控发布流程：按节点白名单/按比例选择目标、分批推进、fail-fast、可取消/回滚（v0.7.0 模型发布；keadm 升级分批为产品升级灰度，双轨并行） |
+| 部署影子 | 云端"版本—节点—时间"台账（`GET /api/v1/models/{model}/deployments`），记录各节点当前应跑模型版本（podsync+config-sync 双 acked 后写穿） |
+| 领跑锁 | 灰度发布执行权的租约互斥（etcd lease，grant-per-claim，TTL 默认 60s）：多副本间同一发布同一时刻仅一个执行者，崩溃后 ≤TTL 接管续跑 |
 | 节点离线 | 云端判定：CloudHub 90s 断开或 NodeController 180s 心跳停滞 |
 | 设备离线 | 设备级离线检测（规划中/即将上线）；当前仅 op-ledger 记录采集错误 |
 | 台账 | 追加式审计/操作记录（审计台账/ops-ledger/op-ledger 三类） |
@@ -602,7 +622,7 @@ v0.1.0 提供**节点级**离线判定（CloudHub 90s 无消息断开 + NodeCont
 
 # 附录 C 产品特性-场景映射表
 
-**表 C-1：F01–F40、F49 已实现特性 × 四场景归属（双向追溯）**
+**表 C-1：F01–F42、F49 已实现特性 × 四场景归属（双向追溯）**
 
 | F 编号 | 特性名称 | 数据采集 | 弱网自治 | 模型管理 | 模型应用 | 手册引用章节 |
 |---|---|---|---|---|---|---|
@@ -646,16 +666,16 @@ v0.1.0 提供**节点级**离线判定（CloudHub 90s 无消息断开 + NodeCont
 | F38 | 多架构镜像（amd64+arm64） | ○ | ○ | ● | ○ | 4.3 |
 | F39 | 升级回滚机制（备份/演练/审计/留痕） | ○ | ○ | ● | ○ | 4.3 / 4.4 |
 | F40 | 性能基线（10 节点 201.3ms） | ○ | ○ | ○ | ○ | 附录 A5 |
+| F41 | 模型仓库与版本管理（模型/版本/部署影子台账，v0.7.0） | ○ | ○ | ● | ○ | 4.2 / 4.3 / 附录 C |
+| F42 | 模型灰度发布（白名单/按比例、分批、fail-fast、取消、回滚，v0.7.0；keadm 升级分批为产品升级灰度） | ○ | ○ | ● | ○ | 4.2 / 4.3 / 附录 C |
 | F49 | 证书吊销闭环（keadm cert revoke + CRL 消费端拒绝 + OCSP responder） | ○ | ○ | ○ | ○ | 附录 A6 / 3.3 |
 
 > 图例：● 主要支撑场景；○ 次要/间接支撑场景。手册引用章节为 v1.0.0 定稿节号。
 
-**表 C-2：规划中/部分实现特性清单（F41–F48）**
+**表 C-2：规划中/部分实现特性清单（F43–F48）**
 
 | 编号 | 规划项 | 状态 | 说明 |
 |---|---|---|---|
-| F41 | 模型仓库与版本管理平台 | 规划中/即将上线 | 当前以镜像 Tag + 配置参数化过渡（第 4 章） |
-| F42 | 灰度发布 | 部分实现 | 升级分批已工具化（keadm upgrade --batch-size/--pause-between + keadm batch --op=upgrade，fail-fast）；模型/按比例灰度仍规划中（4.2） |
 | F43 | 完整 RBAC（多角色权限） | 规划中 | 当前为单 Token 鉴权 |
 | F44 | 设备认证 | 部分实现 | 节点接入认证（Register Token）已实现；设备级身份认证（传感器/PLC 等）与设备级离线检测仍规划中 |
 | F45 | 调度/超卖、Flannel 网络 | 规划中 | 集群化能力增强 |
@@ -673,3 +693,4 @@ v0.1.0 提供**节点级**离线判定（CloudHub 90s 无消息断开 + NodeCont
 4. **评审留痕**：v1.0.0 由方案团队（主笔）+ 产品团队（事实基线提供）+ 独立技术复核（特性↔手册双向追溯、结构完整性、异常路径、术语一致性）完成，复核记录见《评审记录与交接说明.md》。
 5. **v1.0.1 勘误基线（2026-08-16）**：对照仓库 HEAD `10e2995`（基线 `899248d` 之后净新增 OCSP 在线吊销与 edgecore 配置文件）完成附录勘误——REST API 端点 13→14（含 POST /ocsp，与契约测试/API-SPEC/API-COMPATIBILITY 三源一致）；表 C-1 新增证书吊销闭环登记（F49）；表 C-2 摘除已实现能力"规划中"标注（gzip 压缩、升级分批、节点接入认证、发布流程镜像扫描，见 F42/F44/F47/F48 拆分口径）；术语表 keadm 补全 9 子命令。勘误以仓库现状为事实基线，非新版本发布；正式修订记录见正文修订记录表。HTML/PDF/latex 衍生制品与 CSV 按流程同步重生成。
 6. **v1.0.2 修订基线（2026-08-18）**：对照仓库 HEAD `59dd396`（v0.1.1 生产发布准备轮，`bc8994d` 安全加固 + P2 遗留闭环）补充：/ocsp per-IP 限流（默认 10 req/s、burst 20，超限 429，env 可调）+ 成功响应 Cache-Control: max-age=3600；OCSP 客户端库新鲜度校验入口（`ParseOCSPResponseWithFreshness`/`OCSPStatusAtWithPolicy`，fail-closed、默认 5 分钟 skew，旧入口行为不变，生产路径接入时须用 WithPolicy 入口）；CRL 锁获取失败自动降级无锁校验并输出 5 分钟限频告警日志。特性清单无状态变化（F31/F49 口径不变）；正式修订记录见正文修订记录表。HTML/PDF/latex 衍生制品与 CSV 按流程同步重生成。
+7. **v1.1.0 修订基线（2026-08-25）**：对照仓库 HEAD（v0.7.0 开发轮）将 F41/F42 落地入册——第 4 章重写为正式能力（模型仓库注册 → 版本激活 → 灰度发布；过渡路径降级为"兼容路径"、keadm 升级分批保留为产品升级灰度）；附录 C 表 C-1 追加 F41/F42（已实现，● 模型管理场景）、表 C-2 摘除 F41/F42；端点口径 14→31（模型 API 17 端点，契约见 API-SPEC §7）；FAQ A7、术语表（模型仓库/灰度发布/部署影子/领跑锁）、修订记录同步更新。正式修订记录见正文修订记录表。HTML/PDF/latex 衍生制品与 CSV 按流程同步重生成。

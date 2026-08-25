@@ -81,9 +81,15 @@ cloudcore:
   #   EDGEFLOW_CLOUDCORE_PORT / EDGEFLOW_CLOUDCORE_HUB_PORT 是 cloudcore 的最高优先级配置来源，
   #   mTLS 启用：EDGEFLOW_CLOUDCORE_TLS=on + EDGEFLOW_CLOUDCORE_CERT_DIR=/data/certs
   #   （/data 挂载自持久卷 PVC（v0.4.0 起）；生产建议 Secret 预置证书，见 docs/DEPLOYMENT.md）
+  #   模型灰度发布控制器（v0.7.0，可选透传；取消注释即注入，缺省 = 应用默认不注入）：
+  #     EDGEFLOW_CLOUDCORE_RELEASE_SCAN_INTERVAL —— 发布控制器扫描周期（默认 5s；>0，非法 fail-fast）
+  #     EDGEFLOW_CLOUDCORE_RELEASE_LOCK_TTL —— 发布领跑锁租约 TTL（默认 60s；>=15s 非法 fail-fast；
+  #       刷新周期 = max(5s, TTL/3)；仅外部模式消费，embed/纯内存显式设置 → Warn 忽略）
   env:
     EDGEFLOW_CLOUDCORE_PORT: "8080"
     EDGEFLOW_CLOUDCORE_HUB_PORT: "10000"
+    # EDGEFLOW_CLOUDCORE_RELEASE_SCAN_INTERVAL: "5s"
+    # EDGEFLOW_CLOUDCORE_RELEASE_LOCK_TTL: "60s"
 
   # 嵌入式 etcd（v0.4.0：云端状态持久化，写穿 write-through）：
   # 注册元数据 + 设备 Desired 跨重启保留；Pod 状态/上报属性不落盘（重启短暂清空自愈）。

@@ -5,6 +5,7 @@
 > **v0.4.0 开发轮增量**（2026-08-24）：云端存储语义回写——嵌入式 etcd 写穿持久化（决策记录 R13），涉及 §1.2/§2.1/§2.2/§2.3/§5.3/§9/§10
 > **v0.5.0 开发轮增量**（2026-08-24）：外部 etcd 模式（方案④）决策记录 R14——`EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS` 非空即外部直连、TLS 支持、单写者铁律、非回环+明文拒绝启动护栏；仅新增 §9 R14 与 §10 部署形态行（业务层零改动）
 > **v0.6.0 开发轮增量**（2026-08-25）：真多活（etcd Lease 心跳）决策记录 R15——心跳落盘为租约、判活 = etcd 视角 hb 键存在性、GuardedDelete 守卫、watch 缓存同步、SetDesired/Register 条件写（CAS）；外部模式支持多副本，兑现 R14 的 v0.6+ 愿景；仅新增 §9 R15 与 §10 部署形态行（新行为全部 External() 门控；embed/纯内存路径除 L7 一行 bugfix 外逐位不变）
+> **v0.7.0 开发轮增量**（2026-08-25）：模型仓库/版本管理/灰度发布决策记录 R16——云端新增 `/edgeflow/models/` 键空间（模型/版本台账 + 在途发布守卫 guard + release 头/逐节点结果 CAS + 领跑锁租约 + 部署影子），config-sync 版本感知载荷约定（边缘零代码改动），三模式兼容矩阵；仅新增 §2.1/§2.2/§9 R16 与 §10 部署形态行（既有 14 端点与云边协议零改动，**端点数 14→31**）
 > **状态说明**：本文档描述 EdgeFlow **v0.1.0 实际实现的架构**（不再使用"目标架构/待开发"框架），并保留少量已显式决策的延后项（见 §12）。实现进度核对至 2026-08-15（仓库 head `8f1bc80`），逐节与代码、docs/API-SPEC.md（v0.1.0 定稿）、docs/ROADMAP.md（§1.2 状态列）交叉核验。
 > **阅读对象**：零基础用户（本人）与专业评审。每个章节先给"一句话版本"，再给细节；陌生术语附通俗解释。
 
@@ -69,10 +70,14 @@ EdgeFlow 借鉴 KubeEdge 的整体架构（CloudHub/EdgeHub 云边通信、Edged
 ┌───────────────────────────────────────────────────────────────────────────────┐
 │                               云层 Cloud Side                                  │
 │   kubectl/curl ──► CloudCore（单进程）                                          │
-│     ├─ HTTP :8080：/healthz · /metrics · 11 个 /api/v1/* 端点                   │
+│     ├─ HTTP :8080：/healthz · /metrics · /ocsp · 28 个 /api/v1/* 端点            │
+│     │     （v0.7.0：+17 模型 API，总 31 个 HTTP 端点）                           │
 │     │     （Token 认证中间件，env 开关默认 off；审计中间件审计台账）                │
 │     ├─ registry（v0.4.0：内存读缓存 + 嵌入式 etcd 写穿持久化）──► EdgeNode 视图 │
 │     ├─ NodeController（心跳超时扫描：30s 周期 / 180s 阈值）                      │
+│     ├─ modelrepo / modelrelease（v0.7.0：模型仓库台账 + 灰度发布控制器——          │
+│     │     模型/版本/发布/部署影子，/edgeflow/models/ 键空间 + guard/CAS +         │
+│     │     release 租约锁，经 podsync/config-sync 复用既有通道下发，边缘零改动）   │
 │     ├─ podstatus / devicestatus（内存态状态存储：Pod 状态重启短暂清空自愈；      │
 │     │     设备 Desired 写穿 etcd 持久化）                                        │
 │     ├─ CloudHub（WebSocket 服务端 :10000，路径 /v1/edge）                       │
@@ -109,7 +114,7 @@ EdgeFlow 借鉴 KubeEdge 的整体架构（CloudHub/EdgeHub 云边通信、Edged
 
 **读图要点（新手向）**：
 
-- **云侧一个进程**：CloudCore 同时承载 HTTP 管理 API 与 CloudHub（WS 服务端）。不直连外部 etcd/apiserver：v0.4.0 起内嵌单成员 etcd（写穿持久化注册元数据与设备 Desired，决策 R13）；Pod 状态与上报属性为内存态（重启短暂清空，边缘重连后 ≤1 上报周期自愈）。
+- **云侧一个进程**：CloudCore 同时承载 HTTP 管理 API 与 CloudHub（WS 服务端）。不直连外部 etcd/apiserver：v0.4.0 起内嵌单成员 etcd（写穿持久化注册元数据与设备 Desired，决策 R13）；Pod 状态与上报属性为内存态（重启短暂清空，边缘重连后 ≤1 上报周期自愈）。**v0.7.0 起模型仓库/灰度发布控制器（modelrepo/modelrelease）亦在该进程内**（R16）。
 - **边侧一个进程**：EdgeCore 内部多模块（EdgeHub/MetaManager/Edged/DeviceTwin/EventBus/Mapper）。所有"对外通信"分两条：**云边管理面**（EdgeHub ↔ CloudHub 的 WebSocket）与**设备数据面**（EventBus ↔ mosquitto，不出边缘）。
 - **设备层**：真实设备通过 MQTT（遥测/指令主题）或 Modbus（mapper 适配）接入，Mapper 是协议适配的插件位。
 
@@ -125,8 +130,10 @@ EdgeFlow 借鉴 KubeEdge 的整体架构（CloudHub/EdgeHub 云边通信、Edged
 | **CloudHub** | 云 | WebSocket **服务端**（:10000/v1/edge）：会话管理（同 nodeID 踢旧连接）、注册、心跳失活判定（90s）、可靠投递 ReliableSend、mTLS Option、Register.token 校验 | 2.1、4.2、4.6、4.5、7.3 | ✅ M1 基础 + M4 TLS + 2026-08-15 token 校验 |
 | **EdgeController**（registry + EdgeNode 映射） | 云 | 边缘节点**注册**（NodeInfo 注册表 + EdgeNode CRD 对象映射，`GET /api/v1/edgenodes`） | 2.3、2.6 | ✅ M1（REST 化适配，commit `3c7b99d`/`641863e`） |
 | **NodeController** | 云 | 心跳监控、节点上线/下线判定（扫描 30s / 超时 180s，SIGSTOP 冻结→Offline→Ready 状态机闭环） | 2.4 | ✅ M4 ⚠️（commit `f71684e`，原计划 M1） |
+| **ModelRepo（模型仓库）** | 云 | 模型 + 版本两级台账（v0.7.0）：模型 CRUD、版本状态机（draft/active/archived）、部署影子（版本—节点—时间）；`/edgeflow/models/` 键空间，guard + CAS 并发控制（写穿 etcd、读走内存，三模式兼容） | —（v0.7.0 新增） | ✅ 已实现（v0.7.0） |
+| **ModelRelease（灰度发布）** | 云 | 灰度发布控制器（v0.7.0）：白名单/按比例目标物化快照、分批调度（batchSize/pauseBetween）、fail-fast、取消、逆序回滚；release 级领跑锁（grant-per-claim）与崩溃接管；经 podsync/config-sync 幂等下发，**边缘零改动** | —（v0.7.0 新增） | ✅ 已实现（v0.7.0） |
 | 云端元数据层 | 云 | **内存读缓存 + 嵌入式 etcd 写穿持久化 + REST API**（v0.4.0；无 apiserver/外部 etcd，决策 R13） | 2.6 | ✅ M1（适配）+ v0.4.0（持久化） |
-| CloudCore API 层 | 云 | 面向管理员的 RESTful API（**11 个端点** + /healthz + /metrics，见 docs/API-SPEC.md）；Token 认证中间件 | 2.5、7.2 | ✅ M1 端点 + ✅ M4 认证中间件（默认 off，commit `4c5b9c6`） |
+| CloudCore API 层 | 云 | 面向管理员的 RESTful API（**28 个 /api/v1/* 端点** + /healthz + /metrics + /ocsp，共 31 个 HTTP 端点，见 docs/API-SPEC.md；v0.7.0 新增 17 个模型 API）；Token 认证中间件 | 2.5、7.2 | ✅ M1 端点 + ✅ M4 认证中间件（默认 off，commit `4c5b9c6`）+ v0.7.0 模型端点（自动覆盖 auth+audit） |
 | DeviceController（云端设备状态） | 云 | 设备影子云端视图 + 查询/指令 API（v0.4.0 起 Desired 写穿 etcd 持久化；Properties 仍内存态，字段级合并保 desired） | 2.2 | ✅ M3（commit `744afaa`）+ v0.4.0（Desired 持久化；无 K8s 控制器，见 5.3） |
 | NodeJob 任务管理 | 云 | 任务 CRD、任务分发与结果回收 | 2.8 | 🔒 **已关闭**（v0.1.0 范围外产品决策，协议占位标注"已关闭"，commit `4c5b9c6`） |
 | 可观测性（云） | 云 | /metrics Prometheus 五指标（nodes/pods/devices_total、http_requests_total、active_connections） | 2.9、10.1 | ✅ M4（commit `4c5b9c6`，与 3.8/10.1 合并） |
@@ -150,7 +157,7 @@ EdgeFlow 借鉴 KubeEdge 的整体架构（CloudHub/EdgeHub 云边通信、Edged
 
 | 设施 | 选型 | 位置 | 说明 |
 |------|------|------|------|
-| 云端元数据存储 | **嵌入式 etcd（写穿持久化）+ 内存读缓存**（v0.4.0；无外部 etcd/apiserver） | 云 | 注册元数据与设备 Desired 跨重启保留；Pod 状态/上报属性重启短暂清空（≤1 上报周期自愈）；对接 K8s apiserver 列入后续版本（API-SPEC §7） |
+| 云端元数据存储 | **嵌入式 etcd（写穿持久化）+ 内存读缓存**（v0.4.0；无外部 etcd/apiserver） | 云 | 注册元数据与设备 Desired 跨重启保留；Pod 状态/上报属性重启短暂清空（≤1 上报周期自愈）；对接 K8s apiserver 列入后续版本（API-SPEC §8） |
 | 设备消息总线 | **MQTT：mosquitto（broker，可选）+ paho（客户端）** | 边 | 仅设备数据面，不出边缘；broker 缺席时设备链路降级本地模式（决策记录 R4） |
 | 边缘本地存储 | SQLite（modernc 纯 Go 驱动，WAL） | 边 | MetaManager 持久化（KV/Pod/配置/op_ledger）；免 CGO，交叉编译友好 |
 | 边缘容器运行时 | **Docker（方案 A 定案）** | 边 | DockerRuntime + Mock 双实现；containerd CRI 为 P2 延后（决策记录 R3） |
@@ -405,7 +412,7 @@ M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，�
 
 | 端口 | 用途 | 暴露边界 |
 |------|------|----------|
-| 8080 | HTTP 管理（healthz/metrics/11 REST 端点（共 13 个 HTTP 端点）） | 仅绑定 127.0.0.1 或内网；生产经 Helm values 控制；建议启用 Token 认证 |
+| 8080 | HTTP 管理（healthz/metrics/28 REST 端点（共 31 个 HTTP 端点，v0.7.0 起含 17 个模型 API）） | 仅绑定 127.0.0.1 或内网；生产经 Helm values 控制；建议启用 Token 认证 |
 | 10000 | 云边 WebSocket | 仅对边缘节点网段开放；M4 起可启用 mTLS（env 开关） |
 | 1883 | MQTT broker（可选） | 边缘本机/内网；仅设备数据面，不出边缘 |
 | 15020 | Modbus 模拟器（MODBUS_SIM_PORT 可覆盖） | 开发/测试用（`pkg/modbussim`，unit ID 1-247、连接数上限 8，均按规范校验） |
@@ -476,7 +483,7 @@ M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，�
 ### 8.4 CRD 与 Mapper 扩展
 
 - CRD 族（WBS 1.4，`apis/edge/v1alpha1`，Group `edgeflow.io`）：`EdgeNode`、`DeviceModel`、`Device` 三种类型（含 DeepCopy + 11 测试）；manifest 在 `config/crd/`（2026-08-14，kind 集群已 apply 验证）。**NodeJob 已关闭**（v0.1.0 范围外）。
-- 新增能力 = 新增 CRD 类型 + 对应控制器，不侵入现有模块；接入真实 Kubernetes 后由 OpenAPI schema/校验取代（API-SPEC §7）。
+- 新增能力 = 新增 CRD 类型 + 对应控制器，不侵入现有模块；接入真实 Kubernetes 后由 OpenAPI schema/校验取代（API-SPEC §8）。
 - Mapper 框架（WBS 5.1）：设备接入以 Mapper 插件形式实现（DeviceMapper 接口 + MapperRegistry），mock_sensor（内置演示）、modbus（goburrow）各是独立 Mapper；OPC-UA 未做。
 
 ---
@@ -487,10 +494,11 @@ M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，�
 
 | # | 决策/偏差 | 内容 | 依据 |
 |---|----------|------|------|
-| R1 | **REST 适配替代 K8s apiserver** | 云端节点/Pod/设备状态为内存 registry + REST API；M0 验收"CRD 可 kubectl apply"、M1/M2 验收"kubectl get nodes / kubectl apply"未字面达成，以 REST 端点适配（`/api/v1/edgenodes`、`podsync`、`config-sync`）。**v0.4.0 演进**：存储层升级为嵌入式 etcd 写穿持久化（见 R13），REST 适配形态不变 | audit-m02 §1.1 #10/#27/#39；API-SPEC §8 |
+| R1 | **REST 适配替代 K8s apiserver** | 云端节点/Pod/设备状态为内存 registry + REST API；M0 验收"CRD 可 kubectl apply"、M1/M2 验收"kubectl get nodes / kubectl apply"未字面达成，以 REST 端点适配（`/api/v1/edgenodes`、`podsync`、`config-sync`）。**v0.4.0 演进**：存储层升级为嵌入式 etcd 写穿持久化（见 R13），REST 适配形态不变 | audit-m02 §1.1 #10/#27/#39；API-SPEC §9 |
 | R13 | **嵌入式 etcd 持久化（方案③）替代云端纯内存存储** | v0.4.0 起：① 注册元数据（NodeRecord）与设备 Desired（DeviceShadowRecord）以嵌入式单成员 etcd（`go.etcd.io/etcd/v3` embed）**同步写穿**持久化——先 etcd Put/Delete 成功、再更新内存缓存，"写成功 = 已持久化"；② 读路径全部走内存缓存（HTTP 热路径，永不读 etcd）；③ 心跳/Status/LastHeartbeatAt/Pod 状态整表/设备 Properties/LastReportedAt **不落盘**（重启后短暂清空，边缘重连 ≤1 上报周期自愈）；④ **replicaCount=1 为硬约束**（多副本各自 embed 单成员会脑裂，显式禁止）；⑤ 默认启用（`EDGEFLOW_CLOUDCORE_ETCD_ENABLED=true`），关闭时完全退回 v0.3.x 纯内存；坏库默认降级内存+告警，`EDGEFLOW_CLOUDCORE_ETCD_STRICT=1` fail-fast；⑥ v0.5+ 提供 embed→外部 etcd 配置级迁移（`EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS`，业务代码零改动） | 设计 subagent_02；风险审查 subagent_03（前置条件 4/7）；实测 subagent_04-06 |
 | R14 | **外部 etcd 模式（方案④，v0.5.0 兑现 R13 ⑥）** | `EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS`（逗号分隔 http(s) URL）**非空 = 外部模式**：直连共享 etcd 集群，**跳过 embed**（不建数据目录、不占 12379/12380 端口、忽略 DATA_DIR/CLIENT_URL/PEER_URL/QUOTA/COMPACTION/STRICT——显式设置这些 embed 字段时启动期 `Warn`"仅 embed 生效"，不阻断）；TLS 经 `EDGEFLOW_CLOUDCORE_ETCD_TLS_CA`（非空即启用，服务端证书校验）+ `_TLS_CERT/_TLS_KEY`（同设即 mTLS；只设其一 fail-fast）；业务层（registry/devicestatus/HTTP API）**零改动**（v0.4.0 已冻结的 KVStore 接口即替换面）；三存储包装、读路径内存缓存、键空间 `/edgeflow/`、心跳不落盘等既有语义不变。**单写者形态铁律**：v0.5.0 **不支持**多 cloudcore 副本 active-active——心跳/Offline 判活是各副本**内存瞬态**（不落盘），副本 A 会把连在副本 B 上的活节点按 180s+保留期判死，并从共享键空间**删键 + 级联删设备 Desired**（活节点数据丢失，且无信号）；真多活划 v0.6+（etcd lease 心跳方案）。**护栏**：外部模式存在**非回环端点 ∧ 未启用 TLS → 拒绝启动**（逃生门 `EDGEFLOW_CLOUDCORE_ETCD_ALLOW_INSECURE=1` 显式 opt-in，开启时启动期大告警）；TLS 启用 ⇔ 全部端点必须 https（混合 scheme fail-fast）。**故障语义**：连接失败/启动检查（线性一致读元键，至多 3 次尝试、最坏 ≈17s（预算 ≤20s））不过 = **无条件拒绝启动**（clientv3 是懒连接，fail-fast 靠显式探活落实；恒 fail-fast，外部模式无视 STRICT）；运行中断连由 clientv3 **自动指数退避重连**（应用层零重试、零处理）；/healthz **不反映 etcd 连接状态**（有意为之：避免 K8s 批量重启放大故障）。**v0.6.0 修订**：单写者铁律仅限 v0.5.0——R15 已按本条预留方向放开外部模式多副本（etcd lease 心跳）| 设计定稿 subagent_01 §1-§8；风险审稿 subagent_03（前置条件 1-3）；迁移/拓扑/鉴权建议见 DEPLOYMENT.md §10.7；限制 L1/L3/L5/L7 登记见 KNOWN-ISSUES.md §5 |
 | R15 | **真多活：etcd Lease 心跳判活 + watch 缓存同步 + 条件写（v0.6.0，兑现 R14 的 v0.6+ 愿景）** | 外部模式（`External()`=ENDPOINTS 非空）多副本 active-active 放开；embed/纯内存路径除 L7 一行 bugfix（§4.1 变更面）外逐位不变。**① 心跳落盘为租约（grant-per-heartbeat）**：每次心跳 = `Grant(ttl)+Put` 两条 RPC 重绑**新租约**（不 KeepAlive 流/不做租约 ID 持久化——覆盖写天然收敛，无"续约旧租约"bug 族、零恢复逻辑）；心跳键独立前缀 `/edgeflow/registry/heartbeats/<nodeID>`（新增唯一键空间，值 `{"lastSeen":<UnixMs>}`，单调 ts），**只绑租约**——租约到期 etcd 自动删键 = **软离线事件**；台账键（`/edgeflow/registry/nodes/`）与 Desired **绝不绑租约**（保留 24h 保留期语义）。**② 判活 = etcd 视角三态**（hb 键存在性，所有副本同一事实源）：无台账+无 hb = 不存在（API 404，与离线显式区分）；台账在+hb 在 = Ready（lastHeartbeatAt = hb 键值）；台账在+hb 不在 = Offline（租约到期，offlineSince 起算保留期）；加载时 hb 未知 = Unknown（瞬时，≤1 扫描周期收敛）。事件源三路互兜：watch 增量（主路径，亚秒级）/ 周期 etcd 重扫（兜底，`NODE_SCAN_INTERVAL` 默认 30s）/ CloudHub 断开事件（立即，本副本 API 即时反映；**不主动 Revoke 租约**，防撤销竞态）；**外部模式停用 NodeController 内存扫描**（LastHeartbeatAt 内存判定是 v0.5.0 多副本不安全根因，装配 `if !externalMode { nc.Start() }`）。**③ 删除守卫 GuardedDelete**：GC 删除 = txn `Compare(lease(hbKey)==0) → Delete(台账键)`，hb 键有活租约 → 拒绝删除并**撤销删除恢复节点 Ready**（防误删活节点的根本保证：要误删活节点必须"hb 键不存在但节点活着"=心跳没落盘=与构造矛盾）；GC 改两阶段（内存 pending 集合 → etcd 确认删除，失败重入队幂等，**修 L7**）。**④ watch 缓存同步**：启动 `ListByPrefixRev` 锚定 revision → `Watch(prefix, rev+1)` 增量 → 断线/ErrCompacted 全量重放；应用器**只写内存、永不发 etcd 写**（防回写环），按 rev/ts **单调应用**，hb 删除事件先查"本副本是否在服务该节点"（是则忽略 + 修复性重写，防幽灵节点）；降级 = 周期重扫判活 + 告警（watch 是加速器不是正确性依赖）。**⑤ 条件写（CAS）**：SetDesired 改 etcd **modRevision CAS**（读基准从内存改为 etcd，冲突读刷新重试 ≤3 次，重试耗尽返回 error——HTTP 仍 200 + 日志 `concurrent-write` 标记，v0.5.0 API 语义不翻转；**修 L5** 整记录覆盖）；Register 改 CAS upsert（保留首见 RegisteredAt，仅外部模式；embed 保持裸 Put）；embed 与外部 SetDesired 共用同一 CAS 实现（单副本无并发 = CAS 恒成功，行为等价）。**⑥ 配置**：新 env `EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL`（默认 **300s** = 10× 心跳周期 30s；<90s Warn；≤0/非法 fail-fast；仅外部模式消费，embed/纯内存显式设置 → Warn 忽略）与 `EDGEFLOW_CLOUDCORE_MULTI_REPLICA`（"1"/"true" 生效，Chart 在 external.enabled ∧ replicaCount>1 时自动注入）；`NODE_SCAN_INTERVAL` 在外部模式**语义迁用**为重扫/GC 周期（`NODE_TIMEOUT` 不再作为外部模式判活阈值——NodeController 停用，判活阈值由 `NODE_LEASE_TTL` 独立决定，主线裁决 D2 与 NODE_TIMEOUT 解耦）。**⑦ healthz 多副本绑定（D3）**：`External() ∧ MULTI_REPLICA` 时 /healthz 反映 etcd 连接（周期探活/续约成功率，失联 >TTL → 503 → K8s liveness 重启自愈）；其余形态（embed、单副本外部）保持 v0.5.0 进程存活语义不变。**⑧ Chart**：仅 embed 模式 replicaCount>1 渲染 `{{ fail }}`（脑裂）；外部模式放行多副本。**⑨ 混合版本多副本不支持**（V9）：v0.5.0 与 v0.6.0 副本同连一集群 = 旧版无 hb 视角会 GC 误删活节点，升级/回滚必须全停再全起（scale 0→1）。**明示语义变化（相对 v0.5.0 R14）**：v0.5.0「etcd 故障期间判活/心跳完全不受影响（内存瞬态）」→ v0.6.0「判活依赖 etcd 可用性：故障 >TTL 时**全量软离线**（有界 ≤TTL+重试窗口），恢复后 ≤1 心跳周期**数分钟自愈**，**零数据删除**（软离线 + 24h 保留期 + 删除守卫）——这是"判活唯一源=etcd"的固有代价，有界 + 自愈 | 设计定稿 subagent_01（§1-§10）；风险审稿 subagent_02（8 条前置条件）；主线裁决 D1-D4（TTL=300s 解耦、grant-per-heartbeat、healthz 多副本绑定、CAS/守卫范围）；部署见 DEPLOYMENT.md §10.8；限制 L12-L20 登记见 KNOWN-ISSUES.md §6 |
+| R16 | **模型仓库 / 版本管理 / 灰度发布（v0.7.0，手册 F41+F42 落地）** | 云端新增模型仓库与灰度发布正式能力，边缘零代码改动：① **数据模型**——`Model`（模型台账）/ `ModelVersion`（版本台账，状态机 draft→active→archived，activate 自动降级旧 active；"镜像即模型、Tag 即版本"）/ `ModelRelease`（灰度任务：白名单或按比例目标，`TargetNodes` 创建时物化快照、运行期不重算）/ 部署影子（版本—节点—时间台账）。② **键空间**——新增独立前缀 `/edgeflow/models/`（meta/versions/guards/releases/nodes/lock/deployments，共 7 类键），与 registry/devicestatus 完全隔离；`/edgeflow/_meta/schemaVersion` **不 bump**；modelName/version 字符集禁 `/`（etcd 键安全）。③ **并发**——全部业务写走 `AtomicKV` CAS（多副本）；同模型并发发布由 guard 键互斥（create-if-absent → 409 带在途 releaseID）；版本激活 = 两键 CAS 序列 + 失败补偿（瞬态 <1s 收敛）；**孤儿 guard 自愈（主线 D3）**——CreateRelease 冲突后读 guard 指向的 release 键，不存在/已终态 → 按值 CAS 删 guard 后重试一次（废弃"lock 过期"判据；控制器不承担兜底），同批复查模型 meta 存在（D7，防删除×创建竞态）。④ **发布执行**——控制器周期默认 5s（`EDGEFLOW_CLOUDCORE_RELEASE_SCAN_INTERVAL`）；release 级**领跑锁** `grant-per-claim`（TTL 默认 60s = `EDGEFLOW_CLOUDCORE_RELEASE_LOCK_TTL`，刷新周期 = max(5s, TTL/3)，D5），崩溃后他副本 ≤TTL **接管续跑**（perNode 已 deployed 跳过、`NextBatchAt` 持久化保节奏，L21）；批内逐节点**串行**（batchSize 控制批粒度/暂停节奏，非并发度，D6）；fail-fast 默认开（单节点失败立即中止，剩余 skipped）；回滚 = 逆序批量、失败不回滚中止（能回多少回多少，L24）；**回滚执行期复查（D2/D4）**——runRollback 起始重读版本表：`release.Version ≠ 当前 active`（被新发布接管）或 PrevActive 已删 → 中止 head=failed + 清 RollbackRequested + 未执行节点标 skipped；succeeded 转换前防御性不变式（全部 TargetNodes perNode 终态 deployed 且无 failed，D8）。⑤ **下发链路**——复用 podsync（镜像 Pod，命名 `edgeflow-model-<sanitized>`，namespace `edgeflow`）+ config-sync（ConfigMap：保留键 model/version/mirror/sha256/type/releasedAt + 版本 Metadata 平铺，冲突保留键优先）经既有 ReliableSend 下发；边缘幂等（SavePod/SaveConfig 同键覆盖 + EdgeHub ID 去重），MetaManager SQLite 落盘，推理容器挂载 ConfigMap 即得版本与参数；部署影子在双 acked 后**写穿**（/edgeflow/models/deployments/<model>/<nodeID>）；**影子 = 派生台账整值覆盖，无 CAS 需求，与 Desired（权威期望态，CAS）的差异为有意设计（P9/审稿线索 3 口径）**。⑥ **三模式**——纯内存（mutex 串行，release/影子重启丢失，L22）/ embed（写穿持久化，单副本 CAS 恒成功，D4 口径）/ 外部多副本（CAS + guard + watch 缓存同步 + 领跑锁接管）；对外部模式 watch 应用器只写内存（防回写环）。⑦ **API**——17 个新端点（**14→31**）：模型 5 + 版本 6（CRUD4+activate+archive）+ 发布 5（创建/列表/详情/取消/回滚）+ 部署影子 1；新增 **202**（异步受理）/ **422**（业务前置不满足）错误语义；注册在既有 apiMux，auth+audit 自动覆盖；**既有 14 端点零改动，云边协议零新增消息类型（复用 PodSync/ConfigSync）**。⑧ **数据卫生**——**终态 release 键永久保留作审计痕迹（D9/N-1）**，etcdctl 可手动清理；终态 release 常驻内存无 GC（D9/N-4，与 L29 同族）；级联删除非事务（崩溃留孤儿键不可见，L26）。⑨ **配置**——仅新增 2 个可选 env（见 ⑦ 括号），embed/纯内存显式设置 LOCK_TTL → Warn 忽略（并入 warnEmbedFieldsIgnored 族） | 设计定稿 subagent_01（§1-§13）；审稿复核 subagent_02（2🔴/7⚠️/10 前置条件：F-1 端点 17、F-2 回滚并发、F-3 孤儿 guard、F-5 锁刷新绑定）；主线裁决 D1-D11；API 契约见 API-SPEC §7；部署与三模式见 DEPLOYMENT.md §10.9；限制 L21-L31 登记见 KNOWN-ISSUES.md §7 |
 | R2 | **Docker bridge 替代 CNI/Flannel** | ROADMAP 缺口 6 关闭：边缘容器网络走 Docker bridge，无 CNI | audit-m02 §1.3 #44 |
 | R3 | **Edged 方案 A 定案** | P0 决策：DockerRuntime + Mock 双实现 + 声明式 reconcile；containerd CRI 为 P2 延后 | EDGED-POC.md；ROADMAP §3.2 状态 |
 | R4 | **NATS 放弃 → mosquitto + paho** | 3.6 实现时未执行"NATS MQTT 兼容性 POC"，直接选型 mosquitto（broker）+ paho（客户端）；云端无消息总线 | commit `2a0d0a3`；audit-m02 S12 |
@@ -501,7 +509,7 @@ M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，�
 | R9 | **序列化仅 JSON，压缩/Protobuf 显式延后** | gzip 于 2026-08-15 落地（协商式兼容，见 §4.6）；Protobuf 仍延后 | audit-m02 §4；commit（gzip 实现） |
 | R10 | **自治验收时长口径** | 30min 断网自治以 tests/e2e 60s 短时窗口模拟验证（判定逻辑与 30min 一致）；真实长跑待环境 | tests/e2e/autonomy_test.go |
 | R11 | **可观测性合并** | 2.9/3.8 与 10.1 合并为云端 /metrics 五指标，边缘不独立暴露 | commit `4c5b9c6`；ROADMAP §1.1 |
-| R12 | **双视图 API 并存** | `/api/v1/nodes`（运行视角 NodeInfo）与 `/api/v1/edgenodes`（CRD 对象视角）并存，属设计取舍 | API-SPEC §3/§8 |
+| R12 | **双视图 API 并存** | `/api/v1/nodes`（运行视角 NodeInfo）与 `/api/v1/edgenodes`（CRD 对象视角）并存，属设计取舍 | API-SPEC §3/§9 |
 
 ---
 
@@ -511,7 +519,7 @@ M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，�
 |------|------|------|
 | 快速开始 | `bash examples/demo.sh` 一键端到端（构建→注册→Pod 下发→设备链路→MQTT 数据面→清理，DEMO PASS×3） | docs/DEPLOYMENT.md §0、examples/README.md |
 | keadm | 离线产物生成：`init`（cloudcore.yaml+NOTES）/`join`（edgecore.env+service+install.sh）/`reset`/`version`；`upgrade`/`rollback`（备份模型 backups/<ts>/ + ops-ledger.jsonl + --simulate-failure 演练 + 事务化 restore + manifest 白名单）；**batch**（2026-08-15：join/upgrade/rollback 清单逐节点） | docs/KEADM.md、docs/UPGRADE.md |
-| Helm | `helm install edgeflow build/charts/edgeflow`（cloudcore Deployment + Service；values：镜像/端口/探针/资源/env；`service.hubEnabled` 支持集群外边缘节点接入；helm lint 0 failed）。**v0.5.0**：新增 `cloudcore.etcd.external.{enabled,endpoints,tls.{ca,cert,key},allowInsecure}` 外部 etcd 段；两种 etcd 模式下 `replicaCount>1` 均渲染期 `{{ fail }}`（embed=脑裂，external=单写者铁律，见 R14）；external.enabled=true 时注入 ENDPOINTS/TLS env 且不创建 PVC；etcd.enabled=false 强制注入 `EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false` 并忽略 external.*。**v0.6.0**：`{{ fail }}` 守卫收窄——**仅 embed 模式禁止 `replicaCount>1`**（脑裂文案不变）；外部模式放行多副本（真多活，见 R15），`external.enabled=true ∧ replicaCount>1` 时自动注入 `EDGEFLOW_CLOUDCORE_MULTI_REPLICA=1`（healthz 绑定 etcd）；新增可选 `cloudcore.etcd.external.nodeLeaseTTL`（非空注入 `EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL`，默认 300s）；helm 验证：lint 0 failed、四场景模板渲染通过（§10.8） | docs/DEPLOYMENT.md §2/§10 |
+| Helm | `helm install edgeflow build/charts/edgeflow`（cloudcore Deployment + Service；values：镜像/端口/探针/资源/env；`service.hubEnabled` 支持集群外边缘节点接入；helm lint 0 failed）。**v0.5.0**：新增 `cloudcore.etcd.external.{enabled,endpoints,tls.{ca,cert,key},allowInsecure}` 外部 etcd 段；两种 etcd 模式下 `replicaCount>1` 均渲染期 `{{ fail }}`（embed=脑裂，external=单写者铁律，见 R14）；external.enabled=true 时注入 ENDPOINTS/TLS env 且不创建 PVC；etcd.enabled=false 强制注入 `EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false` 并忽略 external.*。**v0.6.0**：`{{ fail }}` 守卫收窄——**仅 embed 模式禁止 `replicaCount>1`**（脑裂文案不变）；外部模式放行多副本（真多活，见 R15），`external.enabled=true ∧ replicaCount>1` 时自动注入 `EDGEFLOW_CLOUDCORE_MULTI_REPLICA=1`（healthz 绑定 etcd）；新增可选 `cloudcore.etcd.external.nodeLeaseTTL`（非空注入 `EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL`，默认 300s）；helm 验证：lint 0 failed、四场景模板渲染通过（§10.8）。**v0.7.0**：Chart version/appVersion → 0.7.0；无新增 values 必填项（可选透传发布控制器 env 注释行：`EDGEFLOW_CLOUDCORE_RELEASE_SCAN_INTERVAL` / `EDGEFLOW_CLOUDCORE_RELEASE_LOCK_TTL`，见 DEPLOYMENT.md §10.9）；helm 验证：lint 0 failed、多场景模板渲染通过 | docs/DEPLOYMENT.md §2/§10 |
 | 镜像 | 多阶段 distroless（`gcr.io/distroless/static-debian12:nonroot`）：cloudcore / edgecore，nonroot(65532)；**amd64+arm64 双架构 manifest**（本地 registry 闭环，QEMU 交叉运行版本一致）；**Trivy 扫描 0 漏洞**（2026-08-15，修复 golang.org/x/net 后复扫）。**v0.4.0 体积变化**：cloudcore 单二进制 ~10MB（三平台实测 9.6-10MB，嵌入式 etcd 增量约 +5~8MB），distroless 镜像体积相应增长（属预期，见 RELEASE-NOTES-v040）；运行期 RSS 实测 31-34MB，**Helm 资源建议 requests 256Mi / limits 1Gi**（v0.4.0 起 Chart 默认值） | docs/MULTIARCH.md、docs/SECURITY-SCAN.md、docs/RELEASE-NOTES-v040.md |
 | 发布制品 | `release/v0.1.0/`：cloudcore/edgecore/keadm × darwin-arm64/linux-amd64/**linux-arm64**（2026-08-15 补齐）共 9 二进制 + Chart 包 + checksums + SBOM（33 组件）+ images.json | docs/RELEASE-NOTES-v0.1.0.md |
 
@@ -550,7 +558,7 @@ M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，�
 | G-9 | 3.4 自治 30min 真实长跑未验证（E2E 为 60s 短时模拟） | 需真实环境长跑 | audit-m02 #40；PERFORMANCE-BASELINE.md |
 | G-10 | 云端重启丢失在途未确认消息（离线缓冲未实现） | 由上层重新下发兜底（边缘幂等去重） | §4.5 说明 |
 | G-11 | 边缘内存上报仅 Linux 采集（/proc/meminfo），非 Linux 环境为 0（CPU 已采集：runtime.NumCPU） | 平台差异 | DEPLOYMENT.md §9 |
-| G-12 | config-sync 的 Secret value 明文传输存储 | 生产需加密 | API-SPEC §8 |
+| G-12 | config-sync 的 Secret value 明文传输存储 | 生产需加密 | API-SPEC §9 |
 | G-13 | CI 从未在 GitHub 运行（远程仓库未关联） | M0 验收"CI PR 反馈 ≤10min"未实证 | PROGRESS §5 P1（需用户操作） |
 | G-14 | 生产多节点/多主机部署路径（证书分发、网络差异） | kind 单节点真实集群已跑通；多节点待生产演练 | DRILL-SCHEDULE.md（窗口【需确认】） |
 

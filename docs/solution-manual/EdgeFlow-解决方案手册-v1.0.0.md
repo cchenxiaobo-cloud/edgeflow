@@ -99,7 +99,7 @@ EdgeFlow 采用"设备层-边缘层-云层"三层架构,文字版说明如下:
 | 类别 | 制品 |
 |---|---|
 | 容器镜像 | edgeflow/cloudcore:v0.7.0、edgeflow/edgecore:v0.7.0(linux/amd64 + arm64 多架构;历史版本制品见 release/ 目录) |
-| 部署工具 | keadm(init/join/cert(rotate|revoke)/upgrade/rollback/ops-ledger/batch/reset/version,共 9 个子命令)、Helm Chart(云端)、Docker(双端运行) |
+| 部署工具 | keadm(init/join/cert(rotate\|revoke)/upgrade/rollback/ops-ledger/batch/reset/version,共 9 个子命令)、Helm Chart(云端)、Docker(双端运行) |
 | 接口能力 | REST API 31 端点(28 管理 + healthz + metrics + /ocsp,含 v0.7.0 模型 API 17 个);运行指标 5 项;OpenAPI v3 schema(docs/openapi/edgeflow-openapi.yaml,hack/gen-openapi.sh 自动生成,勿手编);API 兼容性契约测试(tests/contract,14 基线端点 + 模型 API 追加登记随 v0.7.0 轮) |
 
 **v0.1.0 功能范围(已实现)**:WebSocket 云边通道(Register 协商式 gzip 通道压缩,v1.0 兼容,config/cloudcore.json compress:false 可关);边缘容器自治(声明式调谐 5s、多副本、健康自愈、CrashLoopBackOff、镜像漂移检测);设备管理(MQTT/Modbus 接入、设备影子、设备命令);节点接入认证(Register Token:keadm join 写入 EDGEFLOW_EDGECORE_TOKEN,云端常数时间校验、空值向后兼容);生产加固(mTLS 云边通道按 CRL 拒绝吊销证书、证书生命周期管理(keadm cert rotate 轮换 / cert revoke 吊销,CRL 离线吊销 + OCSP 在线应答)、审计台账/keadm/Helm/多架构镜像);配置管理(edgecore 配置文件 config/edgecore.json,优先级 env > 文件 > 默认;SIGHUP + 60s 轮询热重载);升级回滚与灰度(keadm upgrade/rollback、升级分批灰度 keadm batch --op=upgrade + --batch-size/--pause-between);接口工程(OpenAPI v3 schema、API 兼容性契约测试)。
@@ -522,7 +522,7 @@ resources: {cpuRequest: "100m", cpuLimit: "250m", memoryRequest: "64Mi", memoryL
 | 跳次 | 环节 | 数据内容 | 通道/协议 | 关键参数 |
 |---|---|---|---|---|
 | 1 | 设备 → Mapper | 原始遥测 | Modbus TCP(读保持寄存器)/ mock_sensor 内存波动 | Modbus 由 30s 上报循环驱动;mock_sensor 2s 波动 |
-| 2 | Mapper → EventBus | JSON 遥测 {temperature, humidity, ts(毫秒)} | MQTT QoS1;主题 devices/<namespace>/<device>/telemetry,指令订阅 .../command | QoS1 至少一次投递 |
+| 2 | Mapper → EventBus | JSON 遥测 {temperature, humidity, ts(毫秒)} | MQTT QoS1;主题 `devices/<namespace>/<device>/telemetry`,指令订阅 .../command | QoS1 至少一次投递 |
 | 3 | Mapper → 设备影子 | 属性快照 | DeviceTwin 内存态写入 | 影子仅维护最新快照 |
 | 4 | 影子 → 边缘存储 | 节点元数据、Pod 期望状态、配置 | MetaManager SQLite(WAL) | 影子本身不落盘 |
 | 5 | 影子 → 云端 DeviceReport | 设备状态报告 | WebSocket JSON,无 Ack 单向流式 | 30s 周期;EDGEFLOW_EDGECORE_DEVICE_REPORT_INTERVAL 可配(1s-10min);启动即报一轮 |
@@ -555,7 +555,7 @@ EdgeFlow v0.1.0 的弱网数据语义为**"最新状态快照周期补报"**,如
 | 口径项 | 约定 |
 |---|---|
 | 时间戳 | 审计台账与 op-ledger 采用毫秒;ops-ledger 采用 RFC3339 |
-| 节点标识 | nodeID,默认 edge-<主机名> |
+| 节点标识 | nodeID,默认 `edge-<主机名>` |
 | 设备标识 | deviceName(如 sensor-01、mb-sensor-01) |
 | 命名空间 | namespace,默认 default |
 

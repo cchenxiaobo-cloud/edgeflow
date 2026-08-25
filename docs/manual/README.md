@@ -36,6 +36,14 @@ latexmk -xelatex main.tex
 
 产物：`main.pdf`（重命名为 `EdgeFlow-用户手册-v0.7.0.pdf` 发布）。
 
+## GitHub 在线查看说明（重要）
+
+GitHub 网页对 `.tex` 文件使用 MathJax 渲染，本手册采用 ctexbook 文档类（中文书籍排版），**GitHub 无法在线渲染源码**（页面会显示 "Unable to render" 提示）。这是 GitHub 平台限制，源码与 PDF 本身均正常。
+
+- **阅读请直接下载 PDF**：`EdgeFlow-用户手册-v0.7.0.pdf`（本目录内，91 页）；
+- 解决方案手册对应 PDF 见 `../solution-manual/latex/EdgeFlow-解决方案手册-v1.0.0.pdf`；
+- 如需在线浏览 Markdown 版本，可参阅方案手册主源 `../solution-manual/EdgeFlow-解决方案手册-v1.0.0.md`（GitHub 正常渲染）。
+
 ## 更新方式
 
 1. 修改对应章节 `chapters/*.tex`（保持 ctexbook 章节结构）；

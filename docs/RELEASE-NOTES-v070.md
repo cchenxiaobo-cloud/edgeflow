@@ -1,6 +1,6 @@
 # EdgeFlow v0.7.0 Release Notes
 
-> 状态：🚧 **v0.7.0 开发轮**（2026-08-25；本文档编写时实施/集成验证在途，验证摘要 §七 待回填；发布后状态翻转为已发布并回填实测数据——对齐 v0.6.0 流程）
+> 状态：✅ 已发布（v0.7.0，2026-08-25，Releases 12/12 制品：https://github.com/cchenxiaobo-cloud/edgeflow/releases/tag/v0.7.0）
 > 版本决策：新功能（手册 F41 模型仓库与版本管理 + F42 模型灰度发布落地为正式能力）→ minor（v0.7.0）。
 > 核心主题：**模型仓库 / 版本管理 / 灰度发布**——云端模型 + 版本两级台账（"镜像即模型、Tag 即版本"）、版本状态机（draft/active/archived）、灰度发布执行器（按节点白名单/按比例、分批、fail-fast、取消、回滚），全部经既有 REST 鉴权+审计链暴露；**边缘零代码改动**（复用 podsync + config-sync 幂等下发）。
 > 配套：docs/ARCHITECTURE.md（决策 R16）、docs/API-SPEC.md §7（模型 API 契约）、docs/DEPLOYMENT.md §10.9（模型仓库与灰度发布）、docs/KNOWN-ISSUES.md §7（L21-L31）。
@@ -101,16 +101,15 @@
 | external.enabled=true + endpoints 空 | ✅ 渲染**失败**：endpoints 不能为空（守卫保留） |
 | `helm lint build/charts/edgeflow` | ✅ 1 chart linted, 0 failed |
 
-### 7.2 代码/集成验证（回填）
-
-> ⏳ **占位：待实施完成后回填**（实施 Agent 与本文档并行工作；回填项：单测/race 全绿、E2E E1-E9、三处一致抽查 P10（§4.1 表 17 行 ↔ API-SPEC §7 ↔ 路由注册数）、交叉编译、制品校验）。
+### 7.2 代码/集成验证（已回填：2026-08-25 主线集成轮实测）
 
 | 项目 | 结果 |
 |------|------|
-| 全仓单测 `go test ./...`（含既有回归锚点）+ `-race` | ⏳ 待回填 |
-| 进程级 E2E E1-E9（注册→版本→发布（白名单/比例）→逐节点结果→取消→回滚→重启恢复→双副本接管→纯内存语义→14 端点回归） | ⏳ 待回填 |
-| P10 三处一致抽查（§4.1 表 17 行 ↔ API-SPEC §7 契约 ↔ 路由注册数） | ⏳ 待回填 |
-| 交叉编译 / 制品 / helm | ⏳ 待回填 |
+| 全仓单测 `go test ./...`（含既有回归锚点）+ `-race` | ✅ **33 包全绿**（含 tests/contract 31 端点运行时契约、tests/e2e）；vet 干净；gofmt 干净 |
+| 进程级 E2E（注册→版本→发布→逐节点→回滚→重启恢复） | ✅ **全链路过**：3 节点 Ready；发布 v1 percentage=100 → succeeded（3 deployed）；激活 v2（v1→archived，v2.prevActive=v1.0.0）→ 发布 v2 → succeeded（prevActive=v1.0.0）→ rollback 202 → rolled_back → 部署影子回退 v1.0.0（3 节点）；embed 重启后模型/发布（rolled_back+prevActive）/部署影子全部恢复 |
+| P10 三处一致抽查（§4.1 表 17 行 ↔ API-SPEC §7 契约 ↔ 路由注册数） | ✅ **31 = 14 既有 + 17 新**；tests/contract 运行时契约逐条探测通过（405/404 非 JSON 判别）；契约表 17 条与 model_api.go Register 清单逐一比对一致 |
+| 交叉编译 / 制品 / helm | ✅ 12 二进制（darwin/linux × amd64/arm64 × 3 cmd，CGO=0/trimpath/ldflags）通过；helm lint 0 failed + template 8 场景（7.1 表）；tgz+sbom+checksums 随发布构建 |
+| E2E 发现的缺陷与修复 | ✅ **回滚链修复（cf23ee7）**：API 链路先激活后发布下 prevActive 恒空（handler 前置与旧公式互斥）→ ActivateVersion 双实现记录被降级版本到 target.PrevActive；新增回归 TestModelAPIPrevActiveChain |
 
 ## 八、后续里程碑（Roadmap）
 

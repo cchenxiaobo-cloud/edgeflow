@@ -74,7 +74,7 @@
 | L13b | 离线检出时延 | 离线检出时延上界 ≈ **2×TTL**（租约到期 + 续约重试窗口） | 断开事件丢失场景下 Offline 判定最多滞后 ≈2×TTL（默认 ≈10m）；正常断开仍由 CloudHub 90s 事件快路径判定，不受影响 | TTL 可配（调参权衡表见 DEPLOYMENT §10.8.4）；监控告警阈值按此折算 |
 | L14 | hb 键值 lastSeen（跨副本展示精度） | lastHeartbeatAt 精度 = hb 键值 lastSeen（副本时钟写入）；**判活不看时间戳只看键存在性** → 时钟漂移绝不影响判活，仅影响展示精度 | 副本时钟偏差大时跨副本 lastHeartbeatAt 展示有偏差（不影响 Ready/Offline 判定） | 如需高精度可后续加时钟同步约束（etcd NTP 要求见 §10.7.4）；登记 |
 | L15 | 混合版本多副本（升级/回滚窗口） | **混合版本多副本不支持**：v0.5.0 与 v0.6.0 cloudcore 副本同连一集群 = 旧版本无 hb 键视角/守卫，其 GC 会**误删活节点**（数据丢失） | 升级/回滚窗口内若新旧副本并存（如 K8s 滚动更新习惯）→ 数据丢失风险 | 升级/回滚必须**全停再全起**（scale 0 → 1，DEPLOYMENT §10.8.5/§10.8.6 runbook）；Chart 注释 + values 警示；不做运行时版本互斥（应用层无法可靠识别旧版本，文档级约束） |
-| L16 | offlineSince（保留期时钟） | **重启重置 offlineSince**：保留期从重启时刻起算（v0.5.0 同款）；多副本下滚动重启会延长孤儿台账保留 | 孤儿台账多保留一个滚动窗口（≤2×TTL 量级）；GC 安全性不受影响（删除守卫在） | 如需精确：台账 DTO 加 offlineAt 字段（改 JSON → 与 v0.5.0 兼容性受影响），本轮不做，登记候选 |
+| L16 | offlineSince（保留期时钟） | **重启重置 offlineSince**：保留期从重启时刻起算（v0.5.0 同款）；多副本下滚动重启会延长孤儿台账保留 | 孤儿台账多保留一个滚动窗口（≤2×TTL 量级）；GC 安全性不受影响（删除守卫在） | ✅ **v0.13.0 已闭环 DTO 部分**（L16 残余）：`NodeInfo.offlineAt`(ms) + `EdgeNode status.lastOfflineTime`(RFC3339) 双视图外露，JSON 宽容论证推翻原"改 JSON 影响兼容性"担忧（瞬态内存数据、不落盘）；offlineSince 重启重置语义不变。精确"最后在线"需持久化 → 后续候选 |
 | L17 | hb 键值解析（防御规则） | **hb 键值解析失败仍判活**（键在即活，只丢 lastSeen 精度）——绝不 fail-closed 判死 | 坏值仅 Warn + 保留键；判活正确性不受坏值影响 | 防御规则已入实现契约（§1.1）；登记 |
 | L18 | 心跳写放大（续约路径） | **每节点每心跳 2 次 RPC**（Grant + Put）；千节点 × 30s 心跳 ≈ 67 写/s/副本 + ~60 RPC/s 读（重扫/Get） | etcd 负载较 v0.5.0 增（纯读）明显；3 节点承载余量充足（万级写/s 基线）；quota 256MiB/compaction 1h 下修订增长 ≈12MB/h，远低于配额 | 异步合并队列有背压（队列满丢弃 + Warn，下次心跳自然重入队）；etcd 侧容量基线沿用 DEPLOYMENT §10.7.4 |
 | L19 | GC 级联（gcCascadeLoop 顺序） | **GC 级联 at-most-once**：副本在「删台账成功 → 级联删设备子树」之间崩溃且他副本未同步到 → 设备 Desired 孤儿残留（按节点过滤不可见，低危） | 陈年孤儿 Desired 占据键空间（MB 量级可忽略）；节点重注册后旧 Desired 不再可见（查询按节点过滤） | 节点重注册覆盖；根除需 txn 级联删除（etcd 无跨前缀事务，需自实现），后续候选 |
@@ -93,13 +93,13 @@
 | L22 | 纯内存模式（ETCD_ENABLED=false）模型存储 | **release 任务与部署影子重启丢失**（embed/外部 etcd 持久恢复）；模型/版本/发布台账在内存中，重启后需重新注册/创建 | 纯内存形态下发布任务不可跨重启追踪 | 三模式表文档明示（DEPLOYMENT §10.9.1）；生产建议 embed/外部模式 |
 | L23 | 下发执行链路（DeployVersion 两步） | **半部署状态**：podsync 成功、config-sync 失败 → 节点已切镜像未切参数，perNode 计 failed（reason 可查） | 节点短暂处于"新镜像旧参数"状态；边缘声明式调谐保证最终一致 | 重试发布或回滚收敛；perNode reason 人类可读（node offline / ack timeout / edge rejected ack） |
 | L24 | 回滚执行（rollback 逆序批量） | **回滚部分失败仍置 rolled_back**（尽可能回滚，不回滚中止）：失败节点 perNode.Status=failed + reason；head 置 rolled_back + 日志 Warn | 回滚后机群可能新旧版本混杂（明细 perNode 可查） | 人工复核 perNode 明细；必要时再次发起发布收敛 |
-| L25 | 模型删除级联（非事务） | **级联删除非事务**：删除版本前缀/部署影子前缀/meta 中途崩溃 → 孤儿版本/部署键残留（按 meta 过滤不可见，占空间） | 启动加载只认 meta 存在的前缀（孤儿不加载）；残留键不可见 | 删除前清 guard；可选 `etcdctl del /edgeflow/models --prefix` 手动清理 |
+| L25 | 模型删除级联（非事务） | **级联删除非事务**：删除版本前缀/部署影子前缀/meta 中途崩溃 → 孤儿版本/部署键残留（按 meta 过滤不可见，占空间） | 启动加载只认 meta 存在的前缀（孤儿不加载）；残留键不可见。**v0.13.0 收官**（B）：guard 已清（v0.12.0 前）；元数据最后删已消除不可见孤儿窗口；GC 显式开启（RELEASE_GC_ENABLED=1）时 DeleteModel 级联清理该模型全部终态发布（头/逐节点/lock+内存） | 默认 GC-off 时残留键仍可 `etcdctl del /edgeflow/models --prefix` 手动清理；非事务级联崩溃窗口登记（原子化需 etcd 跨前缀 txn，后续候选） |
 | L26 | 回滚守卫（RollbackRelease 前置） | **回滚被新版本接管 → 拒绝**：`release.version ≠ 模型当前 active 版本` → 409（文案引导显式 activate 或新发布）；API 校验通过后、控制器执行前被接管/被删 → 执行期复查中止（head=failed + 清 rollbackRequested + 未执行节点 skipped，D2/D4） | "回滚开倒车覆盖新部署"被架构性封堵；执行期复查后极端窗口收敛为明确终态 | 文档明示（API-SPEC §7.2/§7.3）；C3 用例覆盖 |
 | L27 | 取消收敛（cancel 后 perNode 补齐） | cancel 置位后，未执行节点标 skipped 有 **≤1 扫描周期（默认 5s）补齐窗口**；pending→canceled 的 guard 释放同样 ≤1 扫描周期 | 查询方在窗口内可能看到 pending 残留 | 查询方容忍；文档明示（API-SPEC §7.2） |
 | L28 | release/模型列表（List 端点） | **无分页（全量返回）**；N-4 同族：终态 release 常驻内存缓存无 GC | 数据量 = 任务/模型规模（当前可接受）；长运行内存线性增长 | 后续版本分页/GC（与 L28 同族登记） |
 | L29 | 混合版本多副本（升级/回滚窗口） | **v0.6.0 与 v0.7.0 副本同连一集群未验证**：v0.7.0 只新增 `/edgeflow/models/` 前缀（旧版不读不写，理论无害）仍**建议同版本全量切换**；残留键可 `etcdctl del /edgeflow/models --prefix` 清理 | 升级/回滚窗口行为未实证 | 升级/回滚全停再全起（DEPLOYMENT §10.9.4） |
 | L30 | 孤儿 guard 自愈（CreateRelease 存储层，D3） | **孤儿 guard 自愈语义登记**：guard CAS 成功、release 键写入前崩溃 → 孤儿 guard；创建重试时自愈——guard 冲突 → 读 guard 指向的 release 键，不存在（或已终态）→ **按值 CAS 删 guard**（CompareAndDelete expectRev，防误删新 guard）→ 重试一次；仍冲突 → 409。废弃"lock 过期"陈旧判据（孤儿场景 lock 键从未创建）；控制器不承担兜底（只扫内存 release） | 无自愈则该模型永久 409（仅剩手动 etcdctl）；自愈后单次重试即恢复 | 文档登记（ARCHITECTURE R16/API-SPEC §7.2）；S4 补"guard 写后崩溃→重试创建自愈"用例 |
-| L31 | 终态 release 键保留策略（D9/N-1） | **终态 release 头与 perNode 键永久保留作审计痕迹**（不随模型删除级联清理；键路径带 releaseID 不随模型名走）；不可见、无功能影响 | 长期运行键空间累积（MB 量级可忽略；与 L25/L28 同族） | 登记为有意策略；`etcdctl del /edgeflow/models/releases --prefix` 可手动清理（按审计保留期自行权衡） |
+| L31 | 终态 release 键保留策略（D9/N-1） | **终态 release 头与 perNode 键永久保留作审计痕迹**（不随模型删除级联清理；键路径带 releaseID 不随模型名走）；不可见、无功能影响 | 长期运行键空间累积（MB 量级可忽略；与 L25/L28 同族） | 登记为有意策略；`etcdctl del /edgeflow/models/releases --prefix` 可手动清理（按审计保留期自行权衡）。**v0.13.0 口径扩展**：GC 显式开启时模型删除级联全清该模型终态发布（审计痕迹随之清除，运维以 ops 台账/文档为凭）；默认关闭保持永久保留 |
 
 ## 8. v0.8.0 开发轮闭环登记（2026-08-26，运维与安全增强：etcd 鉴权/续约监控/模型运营性）
 
@@ -109,7 +109,7 @@
 |---|---|---|---|
 | L1 | 外部 etcd 无鉴权参数透传 | ✅ **v0.8.0 闭环**：`EDGEFLOW_CLOUDCORE_ETCD_USERNAME/PASSWORD` 成对透传（只设其一 fail-fast；与 TLS/mTLS 正交；embed/纯内存忽略不串扰）；PermissionDenied 探活文案更新（引导 RBAC 配置 + mTLS CN 映射）。CN→角色映射仍由 etcd 侧 `--client-cert-auth` 配置（非透传项，文档指引） | 密码经 env 注入（K8s 建议挂 Secret 转 env）；无 URL 内凭证支持（有意，防日志泄露） |
 | L12 | 续约失败无可观测性 | ✅ **v0.8.0 闭环**：`/metrics` 新增 `edgeflow_cloudcore_lease_renewal_failures_total`（counter，仅外部模式注入；0 值也输出便于面板基线）；建议告警：持续增长（如 5min 内 >N）→ etcd 侧异常/网络分区 | 无独立"hb 键重建"计数（自愈可观测性可后续加）；告警阈值需按判活 TTL 折算 |
-| L28 | release/模型列表无分页 + 终态无 GC | ✅ **v0.8.0 闭环**：① 分页——GET models/versions/releases 支持 `limit`(1-1000)/`offset`(≥0)，响应头 `X-Total-Count`，缺省全量（零破坏）；② GC——`GCReleases` 按 CreatedAt 保留最近 keep 条终态（默认 **关闭**，`EDGEFLOW_CLOUDCORE_RELEASE_GC_ENABLED=1` + `RELEASE_GC_KEEP` 默认 100 开启），删除旧终态头+逐节点结果，非终态/在途绝不删 | GC 开启后 L31 口径变更：终态键不再永久保留（按 keep 截断），审计痕迹以 ops 台账/文档为准；默认关闭保持原口径 |
+| L28 | release/模型列表无分页 + 终态无 GC | ✅ **v0.8.0 闭环**：① 分页——GET models/versions/releases 支持 `limit`(1-1000)/`offset`(≥0)，响应头 `X-Total-Count`，缺省全量（零破坏）；**v0.13.0 补 deployments 同族分页（A′，listDeployments 漏网项）**；② GC——`GCReleases` 按 CreatedAt 保留最近 keep 条终态（默认 **关闭**，`EDGEFLOW_CLOUDCORE_RELEASE_GC_ENABLED=1` + `RELEASE_GC_KEEP` 默认 100 开启），删除旧终态头+逐节点结果，非终态/在途绝不删 | GC 开启后 L31 口径变更：终态键不再永久保留（按 keep 截断），审计痕迹以 ops 台账/文档为准；默认关闭保持原口径 |
 | N-4 | （L28 同族）终态 release 常驻内存无 GC | ✅ 随 L28 GC 闭环（三模式统一；纯内存模式也受益——防长运行内存线性增长） | — |
 
 
@@ -154,3 +154,14 @@
 | R-1++ | 真实 edgecore 运行时 digest 采集（§11 R-1+ 残余①） | ✅ **v0.12.0 闭环**：`ContainerRuntime` 新增 `ImageDigest(pod, index)`（Docker RepoDigests 查询，与云端 Docker-Content-Digest 同源；MockRuntime 注入点 SetImageDigest）；`digestOfImageRef` 声明式解析纯函数（期望镜像 ref 含 `@sha256:` 即 pin 上报，零运行时依赖）；`BuildStatusPayload` 双通道合并——**声明式优先、运行时兜底、仅 StateRunning 上报、失败降级空串不阻塞**；无缓存（30s 上报周期天然限频）、零新增 env；单测 6 组覆盖 | ① Docker daemon 本机不可用 → Tier2 真实拉取场景未本机执行（查询逻辑已 fakeRunner 单测 5 场景覆盖；环境缺口登记）；② pin 引用依赖发布方写 `@sha256:` 或运行时已拉取镜像有 RepoDigests（本地构建镜像无 RepoDigests → 空 → 跳过） |
 | D-1 | 终态后晚到 mismatch 运维对比自动化（§11 R-1+ 残余②） | ✅ **v0.12.0 闭环**：新增 `GET /api/v1/models/{modelName}/releases/{releaseID}/digest`（只增不改，端点 31→32）——发布 mirrorDigest + 逐节点 currentImageDigest/releaseStatus/consistency（skipped=发布级未启用 / consistent / inconsistent / unknown=节点侧缺失）+ head 聚合；任意状态可查（非终态=进行中视图）；`nodeDigestOf` 提升为 `podstatus.NodeDigestOf`（控制器 DigestLookup 与端点共用同一闭包，口径一致）；E2E 实测 consistent/inconsistent/unknown/skipped 全矩阵 | 处置仍为人工回滚/重发（审计稳定不回写不变）；复核端点给出当前快照，晚到 mismatch 由运维经端点发现 |
 | F-1 | finish ③ 终态复核读库失效（v0.11.0 latent bug，设计验证发现） | ✅ **v0.12.0 修复**：release.go 终态复核后 `results = results`（shadow 自赋值）改为 `results = latest`——终态判定不再用陈旧快照；若 ③ 是首个 catch mismatch 的接入点，head 不再错误 succeeded（此前 perNode 已 failed 而 head succeeded 状态分裂）；`go vet` 报 self-assignment 同步消除；专属单测 `TestReleaseDigestMismatchCaughtOnlyAtFinish`（batchSize=2 单批无推进期窗口 + lookup 调用计数，修复前 head=succeeded 暴露缺陷） | 无 |
+
+
+## 13. v0.13.0 开发轮闭环登记（2026-08-26，模型生命周期与运维收尾）
+
+> 提交：32b1a34（A′ / B / C）。设计 Agent 定稿 design.md（347 行六节；实测推翻 S1 候选 A——releases 分页 v0.8.0 已闭环，发现同族漏网项 A′）。
+
+| 编号 | 问题面 | 闭环说明 | 残余与建议 |
+|---|---|---|---|
+| A′ | 部署影子列表（ListDeployments 端点）无分页（L28 同族、v0.8.0 漏网） | ✅ **v0.13.0 闭环**：`GET .../deployments` 增加 `limit`(1-1000)/`offset`(≥0) 与响应头 `X-Total-Count`，缺省全量（零破坏），与 releases/versions/models 既有分页完全同构；分页在 API 层完成（存储层 ListDeployments 已按 NodeID 排序）；单测 8 边界 + E2E S1 实测（total=2/limit 切片/4 非法参数 400） | 无 |
+| B | 模型删除级联收官（L25）：已删模型的终态发布在 GC 开启下永不可回收（控制器 gcIfEnabled 只对活模型触发） | ✅ **v0.13.0 闭环**：`WithReleaseGC` store 选项（variadic 向后兼容）+ DeleteModel 在 GC 显式开启时级联清理该模型全部终态发布（头键 + releases/<id>/ 前缀含 nodes/lock + 内存缓存；etcd deleteModelReleases best-effort 失败仅 Warn）；GC-off 默认 = L31 审计口径零变化；**零新增 env**（复用 RELEASE_GC_*）；单测 5 例 + E2E S3（GC-on 删模型后重建同名模型 releases 空）/S4（GC-off 回归） | 非事务级联崩溃窗口仍存在（原子化需 etcd 跨前缀 txn，登记后续候选）；GC-on 下审计痕迹随删除清除（运维以 ops 台账为凭，文档明示） |
+| C | 节点台账无 offlineAt（L16 残余 DTO 部分） | ✅ **v0.13.0 闭环**：`NodeInfo.offlineAt`(毫秒,omitempty) + `EdgeNode status.lastOfflineTime`(RFC3339,omitempty) 双视图外露；Get/List/ListEdgeNodes 三入口一致填充（ListEdgeNodes 先填内部 0 值再映射）；三模式统一（wrapper 均委托内存 Registry）；在线/未知 = 字段省略；重复 MarkOffline 不刷新（首离时刻）；JSON 宽容论证推翻原登记担忧（瞬态内存不落盘）；单测 4 例 + E2E S2 实测三态（在线无字段/断开出现/恢复消失） | 精确"最后在线"需持久化（后续候选）；Seed 播种后 Unknown 节点 offlineAt=启动时刻（如实反映重启重置） |

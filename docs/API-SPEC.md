@@ -1,7 +1,7 @@
 # EdgeFlow API 规范（v0.1.0 定稿）
 
 > - 对应 ROADMAP WBS 9.2「API 文档」，覆盖两部分：**REST API 参考**（cloudcore 对外 HTTP 接口）与 **CRD 类型定义**（`apis/edge/v1alpha1/`）。
-> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.2.0 开发轮已更新**（2026-08-18：podsync 资源字段与 409 语义、device-command namespace 路由、资源调度环境变量），**v0.3.0 开发轮已更新**（2026-08-19：syncPod 400 响应 JSON 安全加固说明 + 第四部分共享库/协议包 API 边界），**v0.4.0 开发轮已更新**（2026-08-24：§1 并发语义、§9 已知限制首条改为分级持久化、nodeID 字符约束登记），**v0.7.0 开发轮已更新**（2026-08-25：模型仓库/版本管理/灰度发布 17 个新端点（**14→31**）、新增 202/422 错误语义、新章节 §7 模型 API），**v0.8.0 开发轮已更新**（2026-08-26：列表分页 limit/offset + X-Total-Count（§7.2）、外部 etcd RBAC 鉴权透传与终态发布 GC 配置（见 DEPLOYMENT §10.7）、指标 5→7 项（§1.2）），**v0.9.0 开发轮已更新**（2026-08-26：发布创建镜像存在性探活（R-1，默认 off，见 §7.2/§7.3）、Pod 状态写穿持久化（重启后 Pod 列表直接可见，§9 行为变化）），**v0.10.0 开发轮已更新**（2026-08-26：设备属性写穿持久化（重启后属性立即可见）、发布批内并发（EDGEFLOW_CLOUDCORE_RELEASE_BATCH_PARALLEL，默认 1=串行，见 §7.2）），**v0.11.0 开发轮已更新**（2026-08-26：镜像 digest 级校验（探活固化 mirrorDigest + 边缘 imageDigest 比对，见 §7.2/§7.3）、/metrics 指标 7→8 项（hb_rebuilds_total，仅外部模式，见 §1.2））。评审记录见 `docs/REVIEWS.md`（9.2 评审归档）。
+> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.2.0 开发轮已更新**（2026-08-18：podsync 资源字段与 409 语义、device-command namespace 路由、资源调度环境变量），**v0.3.0 开发轮已更新**（2026-08-19：syncPod 400 响应 JSON 安全加固说明 + 第四部分共享库/协议包 API 边界），**v0.4.0 开发轮已更新**（2026-08-24：§1 并发语义、§9 已知限制首条改为分级持久化、nodeID 字符约束登记），**v0.7.0 开发轮已更新**（2026-08-25：模型仓库/版本管理/灰度发布 17 个新端点（**14→31**）、新增 202/422 错误语义、新章节 §7 模型 API），**v0.8.0 开发轮已更新**（2026-08-26：列表分页 limit/offset + X-Total-Count（§7.2）、外部 etcd RBAC 鉴权透传与终态发布 GC 配置（见 DEPLOYMENT §10.7）、指标 5→7 项（§1.2）），**v0.9.0 开发轮已更新**（2026-08-26：发布创建镜像存在性探活（R-1，默认 off，见 §7.2/§7.3）、Pod 状态写穿持久化（重启后 Pod 列表直接可见，§9 行为变化）），**v0.10.0 开发轮已更新**（2026-08-26：设备属性写穿持久化（重启后属性立即可见）、发布批内并发（EDGEFLOW_CLOUDCORE_RELEASE_BATCH_PARALLEL，默认 1=串行，见 §7.2）），**v0.11.0 开发轮已更新**（2026-08-26：镜像 digest 级校验（探活固化 mirrorDigest + 边缘 imageDigest 比对，见 §7.2/§7.3）、/metrics 指标 7→8 项（hb_rebuilds_total，仅外部模式，见 §1.2）），**v0.12.0 开发轮已更新**（2026-08-26：digest 校验端到端落地（真实边缘采集 + 发布复核端点，只增不改，端点 31→32，见 §7.2/§7.3）），**v0.13.0 开发轮已更新**（2026-08-26：deployments 列表分页（A′）、节点 DTO offlineAt/lastOfflineTime（C）、模型删除 GC-on 级联（B）；零新增端点，总数维持 32）。评审记录见 `docs/REVIEWS.md`（9.2 评审归档）。
 > - 代码位置：cloudcore 路由装配 `cmd/cloudcore/main.go`、设备 API `cmd/cloudcore/device_api.go`、CRD 类型 `apis/edge/v1alpha1/`。
 > - 版本策略：v0.1.0 为 MVP 定稿版；后续接入 Kubernetes 后由 OpenAPI schema / CRD 校验取代，见 §8。
 
@@ -60,7 +60,7 @@
 | GET | `/api/v1/models/{modelName}/releases/{releaseID}/digest` | **发布 digest 复核（v0.12.0，D-1：发布 mirrorDigest vs 各节点当前 imageDigest 一致结论，含 consistency）** | 200 / 404 |
 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/cancel` | 取消（pending/running） | 200 / 404 / 409 |
 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/rollback` | **回滚（异步执行，逆序批量）** | **202** / 404 / 409 / 422 |
-| GET | `/api/v1/models/{modelName}/deployments` | 部署影子（版本—节点—时间追踪，F41 台账） | 200 / 404 |
+| GET | `/api/v1/models/{modelName}/deployments` | 部署影子（版本—节点—时间追踪，F41 台账）；**v0.13.0 支持 `limit`(1-1000)/`offset`(≥0) 分页 + `X-Total-Count` 头，缺省全量** | 200 / 404 |
 
 ### 1.2 错误码表（统一约定）
 
@@ -854,3 +854,28 @@ status:
 ### 12.3 互操作状态
 
 - 本轮仅自研 mock 对端回环验证（transport_test 真实 TCP 握手）；**未**与第三方 UA 栈（open62541/node-opcua）互操作验证——下一里程碑安排 cross-check。
+
+
+## 7.7 v0.13.0 增量：deployments 分页与节点 DTO 字段
+
+### deployments 列表分页（A′）
+
+`GET /api/v1/models/{modelName}/deployments` 新增 query 参数（与 releases/versions/models 同构）：
+
+| 参数 | 类型 | 语义 | 非法值 |
+|---|---|---|---|
+| `limit` | int | 返回条数上限，∈[1,1000]；缺省 = 全量 | 400 |
+| `offset` | int | 跳过的条数，≥0；缺省 0；超界 → 空数组（200） | 400 |
+
+响应头 `X-Total-Count` 恒写（分页前全量条数）。缺省（无参数）= 与旧行为逐字节一致。
+
+### 节点 DTO 字段（C，L16）
+
+- `GET /api/v1/nodes` / `GET /api/v1/nodes/{nodeID}`：`NodeInfo` 新增可选字段 `offlineAt`（最近标记离线时刻，毫秒时间戳；在线/未知 = 省略）。
+- `GET /api/v1/edgenodes` / `GET /api/v1/edgenodes/{nodeID}`：`status.lastOfflineTime`（RFC3339；在线 = 省略）。
+- 瞬态内存数据不落盘；重启后离线/Unknown 节点显示为重启时刻（L16 重启重置语义如实外露）。
+- 三模式（纯内存/embed/外部）统一。
+
+### DeleteModel GC-on 级联（B）
+
+`DELETE /api/v1/models/{modelName}` 在 `EDGEFLOW_CLOUDCORE_RELEASE_GC_ENABLED=1` 时级联清理该模型全部终态发布（头键 + 逐节点/lock + 内存缓存）；默认关闭 = L31 审计口径不变。端点语义不变（200/404/409 前置守卫不变）。

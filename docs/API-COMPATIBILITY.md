@@ -96,3 +96,12 @@
 
 - 每次增删端点/字段，同步更新本矩阵 + API-SPEC.md + 解决方案手册附录 A。
 - 版本兼容检查纳入发布清单（RELEASE-CHECKLIST.md）：发版前对照 §1-§3 全表核对。
+
+
+## v0.13.0 兼容性增量（2026-08-26）
+
+| 变更 | 兼容性 |
+|---|---|
+| `GET .../deployments` 新增 `limit`/`offset` query 参数 + `X-Total-Count` 响应头 | 零破坏：缺省全量（旧行为逐字节一致）；非法参数才 400（旧客户端不传）；列表形态不变 |
+| `/api/v1/nodes`（`offlineAt`）、`/api/v1/edgenodes`（`status.lastOfflineTime`）新增可选响应字段 | 零破坏：JSON 宽容（老客户端忽略未知字段；新客户端读旧数据缺省省略）；瞬态内存数据不落盘 |
+| `DeleteModel` 在 GC 显式开启时级联清理该模型全部终态发布 | 默认关闭（GC-off）= L31 审计口径零变化；仅运维已开启 GC 时行为扩展（既有 GC 开启后口径变更的既定分支） |

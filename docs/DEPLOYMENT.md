@@ -840,3 +840,10 @@ curl http://<cloudcore>:8080/api/v1/models/mnist/releases/<releaseID>/digest
 ```
 
 响应 `consistency`（head + 逐节点）：`skipped`=发布级未启用（mirrorDigest 空）/ `consistent`=一致 / `inconsistent`=两边非空且不等 / `unknown`=节点侧缺失（未上报/无 Pod/无运行时采集）。head 聚合：任一节点 inconsistent → inconsistent；否则任一 unknown → unknown；否则 consistent。
+
+
+## 13. v0.13.0 删除级联 GC 语义（B）
+
+- `EDGEFLOW_CLOUDCORE_RELEASE_GC_ENABLED=1`（显式开启）时，`DeleteModel` 级联清理该模型的全部终态发布（头键 + 逐节点/lock 前缀 + 内存缓存）——审计痕迹随之清除，运维以 ops 台账/文档为凭；
+- 默认（GC-off）= 删除模型保留其终态发布（L31 审计口径不变）；
+- 零新增 env；deployments 列表分页与节点 offlineAt 字段见 API-SPEC。

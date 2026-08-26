@@ -6,7 +6,7 @@ EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备�
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.12.0**（2026-08-26，digest 校验端到端落地：真实边缘采集闭环 + 发布复核可观测性）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**云端分级持久化（v0.4.0 嵌入式 etcd / v0.5.0 外部 etcd 模式 / v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**、**外部 etcd RBAC 鉴权透传与终态发布 GC（v0.8.0：L1/L28 闭环）+ 续约失败监控指标**。
+> 当前版本：**v0.13.0**（2026-08-26，模型生命周期与运维收尾：deployments 分页 + 删除级联 + offlineAt 展示）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**云端分级持久化（v0.4.0 嵌入式 etcd / v0.5.0 外部 etcd 模式 / v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**、**外部 etcd RBAC 鉴权透传与终态发布 GC（v0.8.0：L1/L28 闭环）+ 续约失败监控指标**。
 
 ## 目录结构
 
@@ -96,6 +96,7 @@ helm install edgeflow build/charts/edgeflow/
 
 ## 版本历史
 
+- **v0.13.0**（2026-08-26）：模型生命周期与运维收尾——deployments 列表分页（A′，L28 同族收官）+ 删除级联收官（B，GC 开启下删模型级联清终态发布）+ offlineAt 精确展示（C，L16 残余）；零新增 env、零新增端点（详见 [RELEASE-NOTES-v0113.md](docs/RELEASE-NOTES-v0113.md)）
 - **v0.12.0**（2026-08-26）：digest 校验端到端落地——真实边缘双通道 digest 采集（声明式 `@sha256:` pin + docker RepoDigests 运行时兜底，仅 Running 上报）+ 发布 digest 复核端点（`GET .../releases/{id}/digest`，一致结论一键对比）+ finish③ 读库 shadow 自赋值修复（F-1，消除 v0.11.0 latent bug；详见 [RELEASE-NOTES-v0112.md](docs/RELEASE-NOTES-v0112.md)）
 - **v0.11.0**（2026-08-26）：镜像 digest 级校验（探活固化 mirrorDigest+边缘上报比对，mismatch→failed）+ hb 键重建计数（/metrics 第 8 项）+ Windows 制品入发布矩阵（12→18）+ ValidateMirror scheme 对齐（详见 [RELEASE-NOTES-v0110.md](docs/RELEASE-NOTES-v0110.md)）
 - **v0.10.0**（2026-08-26）：设备属性写穿持久化（③ 收官，重启后属性立即可见）+ 发布批内并发（`RELEASE_BATCH_PARALLEL`，默认 1=串行）+ Windows 交叉编译修复（L20b）（详见 [RELEASE-NOTES-v0100.md](docs/RELEASE-NOTES-v0100.md)）

@@ -5,7 +5,7 @@
 | 项 | 内容 |
 |---|---|
 | 产品版本基线 | EdgeFlow v0.7.0(2026-08-25 发布;事实基线自 v0.1.0 演进,增量见修订记录) |
-| 手册版本 | v1.6.0 |
+| 手册版本 | v1.7.0 |
 | 密级 | 公开(售前/客户技术交流) |
 | 适用范围 | 售前方案设计、客户技术决策、PoC 部署参考 |
 
@@ -15,6 +15,7 @@
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v1.7.0 | 2026-08-26 | 技术团队 | v0.13.0 入册:模型生命周期与运维收尾——deployments 列表分页(A′:limit/offset/X-Total-Count,缺省全量零破坏)+ 删除级联收官(B:GC 开启下删模型级联清终态发布)+ offlineAt 精确展示(C:节点 DTO offlineAt/lastOfflineTime,JSON 宽容);KNOWN-ISSUES §13 登记 |
 | v1.6.0 | 2026-08-26 | 技术团队 | v0.12.0 入册:digest 校验端到端落地——真实边缘双通道采集(R-1++:声明式 @sha256: pin+运行时 RepoDigests 兜底,仅 Running 上报)+ 发布 digest 复核端点(D-1:GET .../releases/{id}/digest,一致结论一键对比)+ finish③ 读库修复(F-1);KNOWN-ISSUES §12 登记 |
 | v1.5.0 | 2026-08-26 | 技术团队 | v0.11.0 入册:镜像 digest 级校验(R-1+ 发布镜像可信化:探活固化 mirrorDigest+边缘 imageDigest 三接入点比对,见 4.2)、hb 键重建计数(/metrics 第 8 项,见 8 可观测性)、Windows 制品入发布矩阵(12→18);KNOWN-ISSUES §11 登记 |
 | v1.4.0 | 2026-08-26 | 技术团队 | v0.10.0 收官入册:设备 reported 写穿持久化(③ 全闭环——重启后设备属性立即可见,见 1.5/6.2)、发布批内并发(RELEASE_BATCH_PARALLEL 默认 1=串行,见 4.2)、Windows 交叉编译修复(L20b);KNOWN-ISSUES §10 登记 |

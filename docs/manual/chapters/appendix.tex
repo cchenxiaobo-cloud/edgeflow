@@ -50,6 +50,9 @@ Modbus 组独立成节见下）。设置方式：启动进程前 \texttt{export}
 \texttt{EDGEFLOW\_CLOUDCORE\_MULTI\_REPLICA} & 空 & 外部多副本标记（\texttt{1}/\texttt{true} 生效）：/healthz 反映 etcd 连接（v0.6.0） \\
 \texttt{EDGEFLOW\_CLOUDCORE\_RELEASE\_SCAN\_INTERVAL} & \texttt{5s} & 模型发布扫描周期；>0 否则 fail-fast（v0.7.0） \\
 \texttt{EDGEFLOW\_CLOUDCORE\_RELEASE\_LOCK\_TTL} & \texttt{60s} & 发布领跑锁 TTL；≥15s 否则 fail-fast；仅外部模式消费（v0.7.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_USERNAME} / \texttt{ETCD\_PASSWORD} & 空 & 外部 etcd RBAC 用户名密码鉴权；必须成对设置（只设其一 fail-fast）；与 TLS/mTLS 正交；仅外部模式消费（v0.8.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_RELEASE\_GC\_ENABLED} & 空 & 终态发布 GC 开关（\texttt{1}/\texttt{true} 开启）；默认关闭（终态 release 键永久保留，v0.8.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_RELEASE\_GC\_KEEP} & \texttt{100} & 终态发布保留条数；≥1 否则 fail-fast；仅 GC 开启时消费（v0.8.0） \\
 \bottomrule
 \end{tabularx}
 \end{table}

@@ -1,7 +1,7 @@
 # EdgeFlow API 规范（v0.1.0 定稿）
 
 > - 对应 ROADMAP WBS 9.2「API 文档」，覆盖两部分：**REST API 参考**（cloudcore 对外 HTTP 接口）与 **CRD 类型定义**（`apis/edge/v1alpha1/`）。
-> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.2.0 开发轮已更新**（2026-08-18：podsync 资源字段与 409 语义、device-command namespace 路由、资源调度环境变量），**v0.3.0 开发轮已更新**（2026-08-19：syncPod 400 响应 JSON 安全加固说明 + 第四部分共享库/协议包 API 边界），**v0.4.0 开发轮已更新**（2026-08-24：§1 并发语义、§9 已知限制首条改为分级持久化、nodeID 字符约束登记），**v0.7.0 开发轮已更新**（2026-08-25：模型仓库/版本管理/灰度发布 17 个新端点（**14→31**）、新增 202/422 错误语义、新章节 §7 模型 API）。评审记录见 `docs/REVIEWS.md`（9.2 评审归档）。
+> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.2.0 开发轮已更新**（2026-08-18：podsync 资源字段与 409 语义、device-command namespace 路由、资源调度环境变量），**v0.3.0 开发轮已更新**（2026-08-19：syncPod 400 响应 JSON 安全加固说明 + 第四部分共享库/协议包 API 边界），**v0.4.0 开发轮已更新**（2026-08-24：§1 并发语义、§9 已知限制首条改为分级持久化、nodeID 字符约束登记），**v0.7.0 开发轮已更新**（2026-08-25：模型仓库/版本管理/灰度发布 17 个新端点（**14→31**）、新增 202/422 错误语义、新章节 §7 模型 API），**v0.8.0 开发轮已更新**（2026-08-26：列表分页 limit/offset + X-Total-Count（§7.2）、外部 etcd RBAC 鉴权透传与终态发布 GC 配置（见 DEPLOYMENT §10.7）、列表分页 limit/offset（§1.1/§7.2）、指标 5→7 项（§1.2））。评审记录见 `docs/REVIEWS.md`（9.2 评审归档）。
 > - 代码位置：cloudcore 路由装配 `cmd/cloudcore/main.go`、设备 API `cmd/cloudcore/device_api.go`、CRD 类型 `apis/edge/v1alpha1/`。
 > - 版本策略：v0.1.0 为 MVP 定稿版；后续接入 Kubernetes 后由 OpenAPI schema / CRD 校验取代，见 §8。
 
@@ -25,7 +25,7 @@
 | 方法 | 路径 | 说明 | 主要状态码 |
 |------|------|------|-----------|
 | GET | `/healthz` | 健康检查（探针用） | 200 |
-| GET | `/metrics` | Prometheus 指标（五指标，WBS 10.1） | 200 |
+| GET | `/metrics` | Prometheus 指标（七指标，WBS 10.1；v0.8.0 增续约失败计数） | 200 |
 | GET | `/api/v1/nodes` | 全部节点（运行视角 NodeInfo 列表） | 200 |
 | GET | `/api/v1/nodes/{nodeID}` | 单节点详情 | 200 / 404 |
 | GET | `/api/v1/edgenodes` | 全部节点（CRD 对象视角，K8s List 风格） | 200 |
@@ -43,19 +43,19 @@
 
 | 方法 | 路径 | 说明 | 主要状态码 |
 |------|------|------|-----------|
-| GET | `/api/v1/models` | 模型列表（K8s List 风格，按 name 排序） | 200 |
+| GET | `/api/v1/models` | 模型列表（K8s List 风格，按 name 排序；v0.8.0 起支持 `limit`(1-1000)/`offset`(≥0) 分页，缺省全量，响应头 `X-Total-Count`） | 200 / 400 |
 | POST | `/api/v1/models` | 创建模型 | 200 / 400 / 409 |
 | GET | `/api/v1/models/{modelName}` | 模型详情 | 200 / 404 |
 | PUT | `/api/v1/models/{modelName}` | 更新模型（description/type/metadata） | 200 / 400 / 404 / 409 |
 | DELETE | `/api/v1/models/{modelName}` | 删除模型（无 active 版本、无在途发布；级联 draft/archived 版本+部署影子） | 200 / 404 / 409 |
-| GET | `/api/v1/models/{modelName}/versions` | 版本列表（按 tag 排序）；模型不存在 → 404 | 200 / 404 |
+| GET | `/api/v1/models/{modelName}/versions` | 版本列表（按 tag 排序；v0.8.0 起支持分页，同上）；模型不存在 → 404 | 200 / 400 / 404 |
 | POST | `/api/v1/models/{modelName}/versions` | 创建版本（初始 draft） | 200 / 400 / 404 / 409 |
 | GET | `/api/v1/models/{modelName}/versions/{version}` | 版本详情 | 200 / 404 |
 | DELETE | `/api/v1/models/{modelName}/versions/{version}` | 删除版本（仅 draft/archived） | 200 / 404 / 409 |
 | POST | `/api/v1/models/{modelName}/versions/{version}/activate` | 激活（draft→active，自动降级旧 active） | 200 / 400 / 404 / 409 |
 | POST | `/api/v1/models/{modelName}/versions/{version}/archive` | 归档（active→archived） | 200 / 404 / 409 |
 | POST | `/api/v1/models/{modelName}/releases` | **创建灰度发布（异步执行）** | **202** / 400 / 404 / 409 / 422 |
-| GET | `/api/v1/models/{modelName}/releases` | 发布列表（按 createdAt 升序） | 200 / 404 |
+| GET | `/api/v1/models/{modelName}/releases` | 发布列表（按 createdAt 升序；v0.8.0 起支持分页，同上） | 200 / 400 / 404 |
 | GET | `/api/v1/models/{modelName}/releases/{releaseID}` | 发布详情（含 perNode 汇总） | 200 / 404 |
 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/cancel` | 取消（pending/running） | 200 / 404 / 409 |
 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/rollback` | **回滚（异步执行，逆序批量）** | **202** / 404 / 409 / 422 |

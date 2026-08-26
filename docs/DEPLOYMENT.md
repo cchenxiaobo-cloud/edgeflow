@@ -643,6 +643,9 @@ etcdctl get /edgeflow/_meta/schemaVersion          # = "1"（快照自带则保�
 |----------|------|------|
 | `EDGEFLOW_CLOUDCORE_RELEASE_SCAN_INTERVAL` | `5s` | 发布控制器扫描周期（>0，非法 fail-fast，对齐既有 duration env 风格） |
 | `EDGEFLOW_CLOUDCORE_RELEASE_LOCK_TTL` | `60s` | 发布领跑锁租约 TTL（**>=15s**，非法 fail-fast）；刷新周期与 TTL 绑定 = `max(5s, TTL/3)`（主线裁决 D5）；**仅外部模式消费**，embed/纯内存显式设置 → Warn 忽略（并入 warnEmbedFieldsIgnored 族） |
+| `EDGEFLOW_CLOUDCORE_ETCD_USERNAME` / `EDGEFLOW_CLOUDCORE_ETCD_PASSWORD` | 空 | 外部 etcd RBAC 用户名密码鉴权（v0.8.0，L1）：必须成对设置（只设其一 fail-fast）；与 TLS/mTLS 正交；仅外部模式消费，embed/纯内存显式设置 → Warn 忽略 |
+| `EDGEFLOW_CLOUDCORE_RELEASE_GC_ENABLED` | 空 | 终态发布 GC 开关（v0.8.0，L28）：`1`/`true` 开启；默认关闭（L31 审计口径——终态 release 键永久保留） |
+| `EDGEFLOW_CLOUDCORE_RELEASE_GC_KEEP` | `100` | 终态发布保留条数（v0.8.0，L28）：≥1，非法 fail-fast；仅 GC 开启时消费 |
 
 K8s 部署（Helm）：两者均可经 `cloudcore.env` 透传（values.yaml 已留注释行示例）；Chart 无新增 values 必填项。
 

@@ -5,16 +5,17 @@
 | 项 | 内容 |
 |---|---|
 | 产品版本基线 | EdgeFlow v0.7.0(2026-08-25 发布;事实基线自 v0.1.0 演进,增量见修订记录) |
-| 手册版本 | v1.1.0 |
+| 手册版本 | v1.2.0 |
 | 密级 | 公开(售前/客户技术交流) |
 | 适用范围 | 售前方案设计、客户技术决策、PoC 部署参考 |
 
-> **声明**:本手册所有能力、参数与数字均以 EdgeFlow v0.1.0(2026-08-14 发布;v1.0.1 勘误补充 2026-08-16 收尾补强能力入册,v1.0.2 补充 2026-08-18 v0.1.1 发布轮安全加固入册,v1.1.0 纳入 2026-08-25 v0.7.0 模型仓库/版本管理/灰度发布正式能力,详见修订记录)已核验实现为准;规划中/尚未实现的能力一律明确标注"规划中/即将上线",不构成交付承诺。文中命令与字段均为示意用法,具体语法以产品文档为准。
+> **声明**:本手册所有能力、参数与数字均以 EdgeFlow v0.1.0(2026-08-14 发布;v1.0.1 勘误补充 2026-08-16 收尾补强能力入册,v1.0.2 补充 2026-08-18 v0.1.1 发布轮安全加固入册,v1.1.0 纳入 2026-08-25 v0.7.0 模型仓库/版本管理/灰度发布正式能力,v1.2.0 补充 2026-08-26 v0.8.0 运维与安全增强(etcd 鉴权/续约监控/分页与 GC),详见修订记录)已核验实现为准;规划中/尚未实现的能力一律明确标注"规划中/即将上线",不构成交付承诺。文中命令与字段均为示意用法,具体语法以产品文档为准。
 
 ## 修订记录
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v1.2.0 | 2026-08-26 | 技术团队 | v0.8.0 运维与安全增强入册:外部 etcd RBAC 鉴权透传(ETCD_USERNAME/PASSWORD,与 TLS/mTLS 正交,见 1.5/附录 B)、/metrics 续约失败计数(7 指标)、模型列表分页(limit/offset + X-Total-Count)与终态发布 GC(默认关,L31 审计口径保留,见 4.2);表 C-1 F31 口径补充;KNOWN-ISSUES L1/L12/L28 闭环 |
 | v1.1.0 | 2026-08-25 | 技术团队 | v0.7.0 模型仓库(F41)与模型灰度发布(F42)落地入册:第 4 章重写为正式能力(过渡路径降级为"兼容路径",keadm 升级分批保留为产品升级灰度);附录 C 表 C-1 追加 F41/F42(已实现,● 模型管理场景)、表 C-2 摘除;FAQ A7 更新为平台化流程;术语表新增模型仓库/灰度发布/部署影子/领跑锁;端点口径 14→31(模型 API 17 端点,见第 4 章与 API-SPEC §7);同步补齐 v0.2.0–v0.6.0 覆盖(资源调度/超卖、Mapper 装配开关、Modbus 命名空间、OPC-UA 协议栈状态、云端分级持久化与部署形态/高可用,见 1.3/1.5/2.2/附录 B/C) |
 | v1.0.2 | 2026-08-18 | 技术团队 | v0.1.1 发布轮安全加固入册:/ocsp per-IP 限流(默认 10 req/s、超限 429)+ Cache-Control、OCSP 客户端新鲜度校验 API(fail-closed)、CRL 锁降级日志;P2 代码审查遗留闭环 |
 | v1.0.1 | 2026-08-16 | 技术团队 | 补强入册:证书吊销闭环(CRL+OCSP)、配置热重载与 edgecore 配置文件、gzip 通道压缩、keadm cert/batch、端点 13→14、OpenAPI/契约测试;口径修正(F42/F44/F47/F48 拆分) |
@@ -120,7 +121,7 @@ EdgeFlow 采用"设备层-边缘层-云层"三层架构,文字版说明如下:
 |---|---|---|---|
 | 纯内存 | EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false | 重启丢失(注册台账、Desired 与模型发布任务/部署影子均不保留,L22) | 仅适合演示/联调 |
 | 嵌入式 etcd(默认) | 不设 ETCD_ENDPOINTS(默认启用 embed,127.0.0.1:12379/12380,只绑回环) | 注册台账与设备 Desired 写穿落盘(data/etcd);心跳/Status/Pod 状态/属性快照不落盘(重启 ≤1 上报周期自愈) | **单副本铁律**:replicaCount 必须 1(多副本各自 embed = 脑裂,Helm Chart 渲染期 {{ fail }} 守卫);Helm 必须挂 PVC(默认 1Gi,emptyDir 名存实亡) |
-| 外部 etcd | EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS 指向共享集群(clientv3 直连,跳过 embed) | 写穿外部集群(建议 3 节点奇数、同地域、quota 256MiB、compaction 1h、最小权限角色 readwrite /edgeflow/) | 需 TLS(推荐 mTLS);非回环端点+无 TLS 拒绝启动(明文护栏,逃生门 ETCD_ALLOW_INSECURE=1 仅限可信内网);v0.6.0 起支持多副本 active-active |
+| 外部 etcd | EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS 指向共享集群(clientv3 直连,跳过 embed) | 写穿外部集群(建议 3 节点奇数、同地域、quota 256MiB、compaction 1h、最小权限角色 readwrite /edgeflow/) | 需 TLS(推荐 mTLS);非回环端点+无 TLS 拒绝启动(明文护栏,逃生门 ETCD_ALLOW_INSECURE=1 仅限可信内网);v0.6.0 起支持多副本 active-active;v0.8.0 起支持 RBAC 用户名密码鉴权(ETCD_USERNAME/PASSWORD 成对透传,与 TLS/mTLS 正交) |
 
 **单副本约束与真多活**:
 
@@ -135,6 +136,11 @@ EdgeFlow 采用"设备层-边缘层-云层"三层架构,文字版说明如下:
 - /healthz:外部模式 + `MULTI_REPLICA=1` 时反映 etcd 连接(失联 >TTL → 503,K8s liveness 重启自愈);其余形态恒 200(进程存活语义)。
 
 **备份与恢复**:在线 `etcdutl snapshot save --endpoints=http://127.0.0.1:12379`(外部模式指向外部端点);离线停进程后 `cp -a data/etcd`;恢复 `etcdutl snapshot restore --data-dir=<全新目录>`。**文件拷贝 ≠ 有效备份**;坏库默认降级纯内存 + 大告警(`ETCD_STRICT=1` fail-fast)。
+
+**外部 etcd 鉴权(v0.8.0)**:ETCD_USERNAME/PASSWORD 成对透传 clientv3(RBAC 用户名密码鉴权),只设其一启动 fail-fast;
+与 TLS/mTLS 正交(可单独使用,可叠加 mTLS——证书 CN→角色映射由 etcd 侧 --client-cert-auth 配置);
+连接用户需 etcd 侧最小权限角色(readwrite /edgeflow/);PermissionDenied 探活文案含鉴权引导;
+生产建议密码经 K8s Secret 注入(Chart values cloudcore.etcd.external.auth.{username,password})。
 
 **Helm 形态**:PVC 默认 1Gi(挂 /data);资源 requests 256Mi / limits 1Gi;values 新增 etcd 段(enabled / persistence.{enabled,size} / external.{enabled,endpoints,tls.*,allowInsecure,nodeLeaseTTL});embed 模式多副本渲染期失败({{ fail }} 守卫)。
 

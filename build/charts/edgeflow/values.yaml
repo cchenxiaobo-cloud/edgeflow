@@ -85,6 +85,9 @@ cloudcore:
   #     EDGEFLOW_CLOUDCORE_RELEASE_SCAN_INTERVAL —— 发布控制器扫描周期（默认 5s；>0，非法 fail-fast）
   #     EDGEFLOW_CLOUDCORE_RELEASE_LOCK_TTL —— 发布领跑锁租约 TTL（默认 60s；>=15s 非法 fail-fast；
   #       刷新周期 = max(5s, TTL/3)；仅外部模式消费，embed/纯内存显式设置 → Warn 忽略）
+  #     EDGEFLOW_CLOUDCORE_RELEASE_GC_ENABLED —— 终态发布 GC 开关（v0.8.0；'1' 开启，默认关闭——
+  #       关闭保持 L31 审计口径：终态 release 键永久保留）
+  #     EDGEFLOW_CLOUDCORE_RELEASE_GC_KEEP —— 终态发布保留条数（默认 100；>=1，非法 fail-fast）
   env:
     EDGEFLOW_CLOUDCORE_PORT: "8080"
     EDGEFLOW_CLOUDCORE_HUB_PORT: "10000"
@@ -126,6 +129,13 @@ cloudcore:
       # 逃生门：true = 允许「非回环端点 + 无 TLS」启动（默认拒绝，仅限可信内网/开发）；
       # 开启后注入 EDGEFLOW_CLOUDCORE_ETCD_ALLOW_INSECURE=1（应用启动期打大告警）
       allowInsecure: false
+      # RBAC 用户名密码鉴权（v0.8.0 新增，L1）：非空注入 EDGEFLOW_CLOUDCORE_ETCD_USERNAME/PASSWORD
+      # （必须成对设置，只设其一 → 应用启动 fail-fast）；与 TLS/mTLS 正交（可叠加）。
+      # ⚠ 生产建议挂 K8s Secret 后经 envFrom/secretKeyRef 注入，勿明文写 values；
+      # 明文写 values 时请同时开启 etcd 侧最小权限角色（readwrite /edgeflow/）。
+      auth:
+        username: ""   # 例：edgeflow
+        password: ""   # 例：<secret>
       # 心跳租约 TTL（v0.6.0 新增，仅外部模式消费）：非空注入 EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL；
       # 空 = 不注入，应用默认 300s（5m，= 10× 边缘心跳周期 30s）。
       # 调参权衡（故障免疫 vs 检测延迟）与校验（<90s Warn；≤0/非法 fail-fast）见 docs/DEPLOYMENT.md §10.8。

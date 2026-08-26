@@ -101,6 +101,13 @@ spec:
             - name: EDGEFLOW_CLOUDCORE_ETCD_ALLOW_INSECURE
               value: "1"
               {{- end }}
+              {{- if and .Values.cloudcore.etcd.external.auth.username .Values.cloudcore.etcd.external.auth.password }}
+            # RBAC 用户名密码鉴权（v0.8.0，L1）：与 TLS/mTLS 正交；只设其一 → 应用启动 fail-fast
+            - name: EDGEFLOW_CLOUDCORE_ETCD_USERNAME
+              value: {{ .Values.cloudcore.etcd.external.auth.username | quote }}
+            - name: EDGEFLOW_CLOUDCORE_ETCD_PASSWORD
+              value: {{ .Values.cloudcore.etcd.external.auth.password | quote }}
+              {{- end }}
               {{- if gt (int .Values.cloudcore.replicaCount) 1 }}
             # 多副本真多活（v0.6.0）：注入多副本标识——/healthz 绑定 etcd 连接状态（失联 >TTL
             # → 503 → liveness 重启自愈）；单副本（replicaCount=1）保持 v0.5.0 healthz 进程存活语义

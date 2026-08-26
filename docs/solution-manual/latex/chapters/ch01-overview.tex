@@ -132,7 +132,7 @@ EdgeFlow 采用“设备层—边缘层—云层”三层架构，文字版说�
 \addlinespace[3pt]
 嵌入式 etcd（默认） & 不设 \env{ETCD\_ENDPOINTS}（默认启用 embed，127.0.0.1:12379/12380，只绑回环） & 注册台账与设备 Desired 写穿落盘（data/etcd）；心跳/Status/Pod 状态/属性快照不落盘（重启 $\leq$1 上报周期自愈） & \textbf{单副本铁律}：replicaCount 必须 1（多副本各自 embed = 脑裂，Helm Chart 渲染期 \texttt{\{\{ fail \}\}} 守卫）；Helm 必须挂 PVC（默认 1Gi，emptyDir 名存实亡）\\
 \addlinespace[3pt]
-外部 etcd & \env{EDGEFLOW\_CLOUDCORE\_ETCD\_ENDPOINTS} 指向共享集群（clientv3 直连，跳过 embed） & 写穿外部集群（建议 3 节点奇数、同地域、quota 256MiB、compaction 1h、最小权限角色 readwrite /edgeflow/） & 需 TLS（推荐 mTLS）；非回环端点+无 TLS 拒绝启动（明文护栏，逃生门 \env{ETCD\_ALLOW\_INSECURE}=1 仅限可信内网）；v0.6.0 起支持多副本 active-active\\
+外部 etcd & \env{EDGEFLOW\_CLOUDCORE\_ETCD\_ENDPOINTS} 指向共享集群（clientv3 直连，跳过 embed） & 写穿外部集群（建议 3 节点奇数、同地域、quota 256MiB、compaction 1h、最小权限角色 readwrite /edgeflow/） & 需 TLS（推荐 mTLS）；非回环端点+无 TLS 拒绝启动（明文护栏，逃生门 \env{ETCD\_ALLOW\_INSECURE}=1 仅限可信内网）；v0.6.0 起支持多副本 active-active；v0.8.0 起支持 RBAC 用户名密码鉴权（\env{ETCD\_USERNAME}/\env{ETCD\_PASSWORD} 成对透传，与 TLS/mTLS 正交）\\
 \bottomrule
 \end{tabular}}
 
@@ -153,5 +153,10 @@ EdgeFlow 采用“设备层—边缘层—云层”三层架构，文字版说�
 \end{itemize}
 
 \textbf{备份与恢复}：在线 \texttt{etcdutl snapshot save --endpoints=http://127.0.0.1:12379}（外部模式指向外部端点）；离线停进程后 \texttt{cp -a data/etcd}；恢复 \texttt{etcdutl snapshot restore --data-dir=<全新目录>}。\textbf{文件拷贝 $\neq$ 有效备份}；坏库默认降级纯内存 + 大告警（\env{ETCD\_STRICT}=1 fail-fast）。
+
+\textbf{外部 etcd 鉴权（v0.8.0）}：\env{ETCD\_USERNAME}/\env{ETCD\_PASSWORD} 成对透传 clientv3（RBAC 用户名密码鉴权），只设其一启动 fail-fast；
+与 TLS/mTLS 正交（可单独使用，可叠加 mTLS——证书 CN$\rightarrow$角色映射由 etcd 侧 \texttt{--client-cert-auth} 配置）；
+连接用户需 etcd 侧最小权限角色（readwrite /edgeflow/）；PermissionDenied 探活文案含鉴权引导；
+生产建议密码经 K8s Secret 注入（Chart values cloudcore.etcd.external.auth.\{username,password\}）。
 
 \textbf{Helm 形态}：PVC 默认 1Gi（挂 /data）；资源 requests 256Mi / limits 1Gi；values 新增 etcd 段（enabled / persistence.\{enabled,size\} / external.\{enabled,endpoints,tls.*,allowInsecure,nodeLeaseTTL\}）；embed 模式多副本渲染期失败（\texttt{\{\{ fail \}\}} 守卫）。

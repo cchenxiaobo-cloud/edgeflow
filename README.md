@@ -6,7 +6,7 @@ EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备�
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.7.0**（2026-08-25）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**云端分级持久化（v0.4.0 嵌入式 etcd 写穿：注册台账与设备 Desired 跨重启保留；v0.5.0 外部 etcd 模式；v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**。
+> 当前版本：**v0.8.0**（2026-08-26，运维与安全增强）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**云端分级持久化（v0.4.0 嵌入式 etcd / v0.5.0 外部 etcd 模式 / v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**、**外部 etcd RBAC 鉴权透传与终态发布 GC（v0.8.0：L1/L28 闭环）+ 续约失败监控指标**。
 
 ## 目录结构
 
@@ -46,7 +46,7 @@ make build
 # 3. 验证健康检查
 curl http://127.0.0.1:8080/healthz
 # 期望返回 HTTP 200 和 JSON，例如：
-# {"status":"ok","version":{"version":"v0.7.0","gitCommit":"...","buildTime":"...","goVersion":"go1.26.2"}}
+# {"status":"ok","version":{"version":"v0.8.0","gitCommit":"...","buildTime":"...","goVersion":"go1.26.2"}}
 
 # 4. 运行单元测试（含竞态检测与覆盖率）
 make test
@@ -90,12 +90,13 @@ helm install edgeflow build/charts/edgeflow/
 | [docs/SECURITY.md](docs/SECURITY.md) | 安全机制（mTLS/Token/CRL/OCSP） |
 | [docs/MAPPER-GUIDE.md](docs/MAPPER-GUIDE.md) | Mapper 开发指南 |
 | [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) | 已知问题台账 |
-| [docs/manual/](docs/manual/) | 用户手册 v0.7.0（[Markdown（GitHub 在线可读）](docs/manual/EdgeFlow-用户手册-v0.7.0.md) · [PDF（91 页）](docs/manual/EdgeFlow-用户手册-v0.7.0.pdf) · [LaTeX 工程](docs/manual/main.tex)） |
+| [docs/manual/](docs/manual/) | 用户手册 v0.8.0（[Markdown（GitHub 在线可读）](docs/manual/EdgeFlow-用户手册-v0.8.0.md) · [PDF](docs/manual/EdgeFlow-用户手册-v0.8.0.pdf) · [LaTeX 工程](docs/manual/main.tex)） |
 | [docs/solution-manual/](docs/solution-manual/) | 解决方案手册 v1.1.0（[Markdown（GitHub 在线可读）](docs/solution-manual/EdgeFlow-解决方案手册-v1.0.0.md) · [PDF（36 页）](docs/solution-manual/latex/EdgeFlow-解决方案手册-v1.0.0.pdf) · [LaTeX 工程](docs/solution-manual/latex/)） |
-| [docs/RELEASE-NOTES-v070.md](docs/RELEASE-NOTES-v070.md) | v0.7.0 发布说明（模型仓库/版本管理/灰度发布） |
+| [docs/RELEASE-NOTES-v080.md](docs/RELEASE-NOTES-v080.md) | v0.8.0 发布说明（etcd 鉴权/续约监控/分页与 GC） |
 
 ## 版本历史
 
+- **v0.8.0**（2026-08-26）：运维与安全增强——外部 etcd RBAC 鉴权透传（ETCD_USERNAME/PASSWORD，L1）、续约失败监控指标（L12）、模型列表分页（limit/offset + X-Total-Count）与终态发布 GC（L28，默认关）（详见 [RELEASE-NOTES-v080.md](docs/RELEASE-NOTES-v080.md)）
 - **v0.7.0**（2026-08-25）：模型仓库/版本管理/灰度发布——云端模型台账（F41）+ 服务端灰度执行器（F42：白名单/按比例、分批、fail-fast、取消、逆序回滚），模型 API 17 端点（总 HTTP 端点 14→31），边缘零改动（详见 [RELEASE-NOTES-v070.md](docs/RELEASE-NOTES-v070.md)）
 - **v0.6.0**（2026-08-25）：真多活——外部 etcd 模式多副本 active-active（租约判活/GuardedDelete/CAS/领跑锁），/healthz 多副本语义（详见 [RELEASE-NOTES-v060.md](docs/RELEASE-NOTES-v060.md)）
 - **v0.5.0**（2026-08-24）：外部 etcd 模式——`EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS` 直连共享集群，TLS/mTLS 与明文护栏，启动探活（详见 [RELEASE-NOTES-v050.md](docs/RELEASE-NOTES-v050.md)）

@@ -50,7 +50,7 @@ v0.7.0 新增模型 API（17 个，全部 \texttt{/api/v1/*}，详见 \S\ref{sec
   \toprule
   \textbf{方法} & \textbf{路径} & \textbf{说明} & \textbf{主要状态码} \\
   \midrule
-  GET & \texttt{/api/v1/models} & 模型列表（K8s List 风格，按 name 排序） & 200 \\
+  GET & \texttt{/api/v1/models} & 模型列表（K8s List 风格，按 name 排序；v0.8.0 起支持 \texttt{limit}(1-1000)/\texttt{offset}(≥0) 分页，缺省全量，响应头 \texttt{X-Total-Count}） & 200 / 400 \\
   POST & \texttt{/api/v1/models} & 创建模型 & 200 / 400 / 409 \\
   GET & \texttt{/api/v1/models/\{modelName\}} & 模型详情 & 200 / 404 \\
   PUT & \texttt{/api/v1/models/\{modelName\}} & 更新模型（description/type/metadata） & 200 / 400 / 404 / 409 \\
@@ -430,10 +430,11 @@ curl http://127.0.0.1:8080/metrics
   \texttt{edgeflow\_cloudcore\_devices\_total} & gauge & 云端设备状态记录总数 \\
   \texttt{edgeflow\_cloudcore\_http\_requests\_total} & counter & 云端 HTTP 请求累计数（按路由模式与状态码分桶） \\
   \texttt{edgeflow\_cloudcore\_active\_connections} & gauge & CloudHub 活跃连接数 \\
+  \texttt{edgeflow\_cloudcore\_lease\_renewal\_failures\_total} & counter & 外部 etcd 心跳租约续约失败累计数（v0.8.0；持续增长 = etcd 侧异常/网络分区，告警阈值按判活 TTL 折算；仅外部模式输出） \\
   \bottomrule
 \end{tabularx}
 
-注：v0.7.0 起模型 API 调用同样计入 \texttt{edgeflow\_cloudcore\_http\_requests\_total} 分桶（按路由模式与状态码）；外部多副本形态下建议关注 etcd 租约续期失败（当前无独立指标，见 KNOWN-ISSUES L12，后续版本规划）。
+注：v0.7.0 起模型 API 调用同样计入 \texttt{edgeflow\_cloudcore\_http\_requests\_total} 分桶（按路由模式与状态码）；v0.8.0 起指标 5$\rightarrow$7 项（新增续约失败计数，0 值也输出便于面板基线）。
 
 \section{OCSP 在线吊销查询（RFC 6960）}
 

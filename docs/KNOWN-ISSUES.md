@@ -100,3 +100,14 @@
 | L29 | 混合版本多副本（升级/回滚窗口） | **v0.6.0 与 v0.7.0 副本同连一集群未验证**：v0.7.0 只新增 `/edgeflow/models/` 前缀（旧版不读不写，理论无害）仍**建议同版本全量切换**；残留键可 `etcdctl del /edgeflow/models --prefix` 清理 | 升级/回滚窗口行为未实证 | 升级/回滚全停再全起（DEPLOYMENT §10.9.4） |
 | L30 | 孤儿 guard 自愈（CreateRelease 存储层，D3） | **孤儿 guard 自愈语义登记**：guard CAS 成功、release 键写入前崩溃 → 孤儿 guard；创建重试时自愈——guard 冲突 → 读 guard 指向的 release 键，不存在（或已终态）→ **按值 CAS 删 guard**（CompareAndDelete expectRev，防误删新 guard）→ 重试一次；仍冲突 → 409。废弃"lock 过期"陈旧判据（孤儿场景 lock 键从未创建）；控制器不承担兜底（只扫内存 release） | 无自愈则该模型永久 409（仅剩手动 etcdctl）；自愈后单次重试即恢复 | 文档登记（ARCHITECTURE R16/API-SPEC §7.2）；S4 补"guard 写后崩溃→重试创建自愈"用例 |
 | L31 | 终态 release 键保留策略（D9/N-1） | **终态 release 头与 perNode 键永久保留作审计痕迹**（不随模型删除级联清理；键路径带 releaseID 不随模型名走）；不可见、无功能影响 | 长期运行键空间累积（MB 量级可忽略；与 L25/L28 同族） | 登记为有意策略；`etcdctl del /edgeflow/models/releases --prefix` 可手动清理（按审计保留期自行权衡） |
+
+## 8. v0.8.0 开发轮闭环登记（2026-08-26，运维与安全增强：etcd 鉴权/续约监控/模型运营性）
+
+> 本开发轮闭环三个跨轮排期项（L1/L12/L28），并登记 GC 开启后的 L31 口径变更。提交：88b3765（L1）/ dc0df54（L12）/ 7a1941a（L28）。
+
+| 编号 | 问题面 | 闭环说明 | 残余与建议 |
+|---|---|---|---|
+| L1 | 外部 etcd 无鉴权参数透传 | ✅ **v0.8.0 闭环**：`EDGEFLOW_CLOUDCORE_ETCD_USERNAME/PASSWORD` 成对透传（只设其一 fail-fast；与 TLS/mTLS 正交；embed/纯内存忽略不串扰）；PermissionDenied 探活文案更新（引导 RBAC 配置 + mTLS CN 映射）。CN→角色映射仍由 etcd 侧 `--client-cert-auth` 配置（非透传项，文档指引） | 密码经 env 注入（K8s 建议挂 Secret 转 env）；无 URL 内凭证支持（有意，防日志泄露） |
+| L12 | 续约失败无可观测性 | ✅ **v0.8.0 闭环**：`/metrics` 新增 `edgeflow_cloudcore_lease_renewal_failures_total`（counter，仅外部模式注入；0 值也输出便于面板基线）；建议告警：持续增长（如 5min 内 >N）→ etcd 侧异常/网络分区 | 无独立"hb 键重建"计数（自愈可观测性可后续加）；告警阈值需按判活 TTL 折算 |
+| L28 | release/模型列表无分页 + 终态无 GC | ✅ **v0.8.0 闭环**：① 分页——GET models/versions/releases 支持 `limit`(1-1000)/`offset`(≥0)，响应头 `X-Total-Count`，缺省全量（零破坏）；② GC——`GCReleases` 按 CreatedAt 保留最近 keep 条终态（默认 **关闭**，`EDGEFLOW_CLOUDCORE_RELEASE_GC_ENABLED=1` + `RELEASE_GC_KEEP` 默认 100 开启），删除旧终态头+逐节点结果，非终态/在途绝不删 | GC 开启后 L31 口径变更：终态键不再永久保留（按 keep 截断），审计痕迹以 ops 台账/文档为准；默认关闭保持原口径 |
+| N-4 | （L28 同族）终态 release 常驻内存无 GC | ✅ 随 L28 GC 闭环（三模式统一；纯内存模式也受益——防长运行内存线性增长） | — |

@@ -1068,9 +1068,16 @@ func (a *modelAPI) rollbackRelease(w http.ResponseWriter, r *http.Request) {
 
 // listDeployments 处理 GET /api/v1/models/{modelName}/deployments
 // （版本—节点—时间追踪台账；模型不存在 → 404）。
+// v0.13.0（A′）：分页与 releases/versions/models 同构——limit(1-1000)/
+// offset(≥0) query 参数 + X-Total-Count 头；缺省全量（零破坏）。
 func (a *modelAPI) listDeployments(w http.ResponseWriter, r *http.Request) {
 	modelName := r.PathValue("modelName")
 	if err := modelrepo.ValidateModelName(modelName); err != nil {
+		badRequest(w, "%v", err)
+		return
+	}
+	pp, err := parsePageParams(r)
+	if err != nil {
 		badRequest(w, "%v", err)
 		return
 	}
@@ -1079,7 +1086,9 @@ func (a *modelAPI) listDeployments(w http.ResponseWriter, r *http.Request) {
 		modelError(w, err)
 		return
 	}
-	items := make([]modelrepo.DeploymentState, 0, len(deployments))
-	items = append(items, deployments...)
+	page, total := slicePage(deployments, pp)
+	writePageHeaders(w, total)
+	items := make([]modelrepo.DeploymentState, 0, len(page))
+	items = append(items, page...)
 	writeJSON(w, http.StatusOK, deploymentList{Kind: "DeploymentList", APIVersion: "v1", Items: items})
 }

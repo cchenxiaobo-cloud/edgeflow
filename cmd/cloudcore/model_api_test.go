@@ -841,3 +841,95 @@ func TestGetReleaseDigest(t *testing.T) {
 		}
 	})
 }
+
+// ── v0.13.0（A′）：部署影子列表分页 ─────────────────────────────────────
+
+// TestModelAPIListDeploymentsPagination deployments 列表分页：缺省全量 /
+// limit/offset 切片 / X-Total-Count 恒写 / 非法值 400 / 模型缺失 404。
+func TestModelAPIListDeploymentsPagination(t *testing.T) {
+	srv, store, _ := newContractEnv(t)
+	mustCreateModelVersion(t, srv, "mnist", "v1.0.0")
+	ctx := context.Background()
+	for i, node := range []string{"n1", "n2", "n3"} {
+		if err := store.SetDeployment(ctx, "mnist", node, modelrepo.DeploymentState{
+			Model: "mnist", NodeID: node, Version: "v1.0.0",
+		}); err != nil {
+			t.Fatalf("造部署影子 %d 失败: %v", i, err)
+		}
+	}
+
+	// 缺省 = 全量 3 条
+	code, body := doJSON(t, http.MethodGet, srv.URL+"/api/v1/models/mnist/deployments", nil)
+	if code != http.StatusOK || len(body["items"].([]any)) != 3 {
+		t.Fatalf("缺省应全量 3 条，got code=%d items=%d", code, len(body["items"].([]any)))
+	}
+
+	// limit=1&offset=0 → 1 条 + X-Total-Count: 3
+	code, body, total := doJSONWithHeaders(t, http.MethodGet, srv.URL+"/api/v1/models/mnist/deployments?limit=1&offset=0", nil)
+	if code != http.StatusOK || len(body["items"].([]any)) != 1 || total != "3" {
+		t.Fatalf("limit=1 应 1 条 + X-Total-Count=3，got code=%d items=%d total=%q", code, len(body["items"].([]any)), total)
+	}
+
+	// offset=3（超界）→ 空数组 + X-Total-Count: 3
+	code, body, total = doJSONWithHeaders(t, http.MethodGet, srv.URL+"/api/v1/models/mnist/deployments?offset=3", nil)
+	if code != http.StatusOK || len(body["items"].([]any)) != 0 || total != "3" {
+		t.Fatalf("offset 超界应空数组 + total=3，got code=%d items=%d total=%q", code, len(body["items"].([]any)), total)
+	}
+
+	// 非法 limit=0 → 400
+	if code, _ := doJSON(t, http.MethodGet, srv.URL+"/api/v1/models/mnist/deployments?limit=0", nil); code != http.StatusBadRequest {
+		t.Errorf("limit=0 应 400，got %d", code)
+	}
+	// 非法 limit=1001 → 400
+	if code, _ := doJSON(t, http.MethodGet, srv.URL+"/api/v1/models/mnist/deployments?limit=1001", nil); code != http.StatusBadRequest {
+		t.Errorf("limit=1001 应 400，got %d", code)
+	}
+	// 非法 offset=-1 → 400
+	if code, _ := doJSON(t, http.MethodGet, srv.URL+"/api/v1/models/mnist/deployments?offset=-1", nil); code != http.StatusBadRequest {
+		t.Errorf("offset=-1 应 400，got %d", code)
+	}
+	// 非数 limit → 400
+	if code, _ := doJSON(t, http.MethodGet, srv.URL+"/api/v1/models/mnist/deployments?limit=0x", nil); code != http.StatusBadRequest {
+		t.Errorf("limit=0x 应 400，got %d", code)
+	}
+	// 模型不存在 → 404
+	if code, _ := doJSON(t, http.MethodGet, srv.URL+"/api/v1/models/ghost/deployments", nil); code != http.StatusNotFound {
+		t.Errorf("模型缺失应 404，got %d", code)
+	}
+	// 分页不影响 releases 列表（回归：releases 仍 200）
+	if code, _ := doJSON(t, http.MethodGet, srv.URL+"/api/v1/models/mnist/releases?limit=1", nil); code != http.StatusOK {
+		t.Errorf("releases 分页回归应 200，got %d", code)
+	}
+}
+
+// doJSONWithHeaders 同 doJSON，额外返回响应头 X-Total-Count。
+func doJSONWithHeaders(t *testing.T, method, url string, body any) (int, map[string]any, string) {
+	t.Helper()
+	var rd *bytes.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("编码请求体失败: %v", err)
+		}
+		rd = bytes.NewReader(b)
+	} else {
+		rd = bytes.NewReader(nil)
+	}
+	req, err := http.NewRequest(method, url, rd)
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("请求失败: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil && resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("解析响应失败 (%d): %v", resp.StatusCode, err)
+	}
+	return resp.StatusCode, out, resp.Header.Get("X-Total-Count")
+}

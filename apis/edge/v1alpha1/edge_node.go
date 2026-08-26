@@ -60,6 +60,9 @@ type EdgeNodeStatus struct {
 	HeartbeatTime string `json:"heartbeatTime,omitempty"`
 	// LastSeenTime 是云端最后一次观测到节点的时间（RFC3339）。
 	LastSeenTime string `json:"lastSeenTime,omitempty"`
+	// LastOfflineTime 是最近一次标记离线时刻（RFC3339，v0.13.0，L16）；
+	// 在线/未知 = 空串省略（omitempty）。瞬态内存数据不落盘。
+	LastOfflineTime string `json:"lastOfflineTime,omitempty"`
 	// Conditions 是节点的健康条件列表（如 Ready）。
 	Conditions []NodeCondition `json:"conditions,omitempty"`
 	// Version 是 edgecore 版本号，便于云端识别旧版本节点。

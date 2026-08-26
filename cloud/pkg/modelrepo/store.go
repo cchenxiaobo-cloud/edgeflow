@@ -160,20 +160,51 @@ type MemoryModelStore struct {
 	nodes   map[string]map[string]*NodeReleaseResult // releaseID → nodeID → 结果
 	deploys map[string]map[string]DeploymentState    // model → nodeID → 影子
 	now     func() time.Time
+
+	// v0.13.0（B）：GC 显式开启时，DeleteModel 级联清理该模型全部终态发布
+	// （默认关闭 = L31 审计口径零变化）。
+	gcEnabled bool
+	gcKeep    int // 本实现不消费（已删模型全清），保留语义对齐；默认 100
+}
+
+// storeConfig 是 store 构造选项的承载（variadic，向后兼容既有调用）。
+type storeConfig struct {
+	releaseGCEnabled bool
+	releaseGCKeep    int
+}
+
+// StoreOption 是 store 构造选项（variadic；缺省 = 全部关闭，零行为变化）。
+type StoreOption func(*storeConfig)
+
+// WithReleaseGC 设置终态发布 GC 配置（v0.13.0，B）：enabled=true 时
+// DeleteModel 会级联清理该模型的全部终态发布（已删模型在 GC 开启下全清，
+// 不保留 keep 条——模型已不存在，保留孤儿终态无审计上下文）。keep 仅
+// 语义占位（对齐 GCReleases 对活模型的 keep 截断口径），本层不消费。
+func WithReleaseGC(enabled bool, keep int) StoreOption {
+	return func(c *storeConfig) {
+		c.releaseGCEnabled = enabled
+		c.releaseGCKeep = keep
+	}
 }
 
 // 编译期断言：内存实现满足 ModelStore 接口。
 var _ ModelStore = (*MemoryModelStore)(nil)
 
 // NewMemoryModelStore 创建空的内存模型存储（默认时钟 time.Now）。
-func NewMemoryModelStore() *MemoryModelStore {
+func NewMemoryModelStore(opts ...StoreOption) *MemoryModelStore {
+	cfg := storeConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
 	return &MemoryModelStore{
-		models:  make(map[string]*Model),
-		version: make(map[string]map[string]*ModelVersion),
-		release: make(map[string]*ModelRelease),
-		nodes:   make(map[string]map[string]*NodeReleaseResult),
-		deploys: make(map[string]map[string]DeploymentState),
-		now:     time.Now,
+		models:    make(map[string]*Model),
+		version:   make(map[string]map[string]*ModelVersion),
+		release:   make(map[string]*ModelRelease),
+		nodes:     make(map[string]map[string]*NodeReleaseResult),
+		deploys:   make(map[string]map[string]DeploymentState),
+		now:       time.Now,
+		gcEnabled: cfg.releaseGCEnabled,
+		gcKeep:    cfg.releaseGCKeep,
 	}
 }
 
@@ -300,6 +331,17 @@ func (s *MemoryModelStore) DeleteModel(_ context.Context, name string) error {
 	}
 	if id := s.inFlightReleaseLocked(name); id != "" {
 		return &ReleaseConflictError{InFlight: id}
+	}
+	if s.gcEnabled {
+		// v0.13.0（B）：GC 显式开启时级联清理该模型全部终态发布（在途校验
+		// 已保证全部为终态；写锁内无新发布可插入）。默认关闭 = L31 审计口径
+		// 零变化。
+		for id, r := range s.release {
+			if r.Model == name {
+				delete(s.release, id)
+				delete(s.nodes, id)
+			}
+		}
 	}
 	delete(s.version, name)
 	delete(s.deploys, name)

@@ -53,6 +53,11 @@ type EtcdModelStore struct {
 	nodes      map[string]map[string]*NodeReleaseResult
 	deploys    map[string]map[string]DeploymentState
 	watchRev   atomic.Int64
+
+	// v0.13.0（B）：GC 显式开启时，DeleteModel 级联清理该模型全部终态发布
+	// （默认关闭 = L31 审计口径零变化）。
+	gcEnabled bool
+	gcKeep    int // 语义占位（对齐 WithReleaseGC）；本层全清不消费 keep
 	lastReload time.Time
 
 	closeCh chan struct{}
@@ -66,7 +71,7 @@ var _ ModelStore = (*EtcdModelStore)(nil)
 // NewEtcdModelStore 创建模型仓库 etcd 写穿包装。kv 必须满足 AtomicKV
 // （embed kvStore 与外部 clientv3 均满足；不满足 → fail-fast，对齐
 // NewEtcdRegistry 的 nil 校验风格）。watch 面可选（外部模式装配使用）。
-func NewEtcdModelStore(kv etcdstore.KVStore) (*EtcdModelStore, error) {
+func NewEtcdModelStore(kv etcdstore.KVStore, opts ...StoreOption) (*EtcdModelStore, error) {
 	if kv == nil {
 		return nil, fmt.Errorf("modelrepo: NewEtcdModelStore 需要非 nil 的 KVStore")
 	}
@@ -75,17 +80,23 @@ func NewEtcdModelStore(kv etcdstore.KVStore) (*EtcdModelStore, error) {
 		return nil, fmt.Errorf("modelrepo: NewEtcdModelStore 需要 AtomicKV（当前 KV 不满足 CAS 扩展面）")
 	}
 	wk, _ := kv.(etcdstore.WatchKV)
+	cfg := storeConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
 	return &EtcdModelStore{
-		kv:      kv,
-		atomic:  ak,
-		ext:     wk,
-		models:  make(map[string]*Model),
-		version: make(map[string]map[string]*ModelVersion),
-		release: make(map[string]*ModelRelease),
-		nodes:   make(map[string]map[string]*NodeReleaseResult),
-		deploys: make(map[string]map[string]DeploymentState),
-		closeCh: make(chan struct{}),
-		now:     time.Now,
+		kv:        kv,
+		atomic:    ak,
+		ext:       wk,
+		models:    make(map[string]*Model),
+		version:   make(map[string]map[string]*ModelVersion),
+		release:   make(map[string]*ModelRelease),
+		nodes:     make(map[string]map[string]*NodeReleaseResult),
+		deploys:   make(map[string]map[string]DeploymentState),
+		closeCh:   make(chan struct{}),
+		now:       time.Now,
+		gcEnabled: cfg.releaseGCEnabled,
+		gcKeep:    cfg.releaseGCKeep,
 	}, nil
 }
 
@@ -234,11 +245,47 @@ func (s *EtcdModelStore) DeleteModel(ctx context.Context, name string) error {
 	if err := s.kv.Delete(ctx, modelKey(name)); err != nil {
 		return fmt.Errorf("modelrepo: DeleteModel 删 meta 失败: %w", err)
 	}
+	if s.gcEnabled {
+		// v0.13.0（B）：GC 显式开启时级联清理该模型全部终态发布（默认关闭 =
+		// L31 审计口径零变化）。best-effort：失败仅 Warn，不阻断删除——模型已
+		// 删，残留终态键不可见、无功能影响，etcdctl 可手动清理兜底。
+		if err := s.deleteModelReleases(ctx, name); err != nil {
+			log.Warnf("[modelrepo] DeleteModel 清理已删模型 %s 的终态发布失败（best-effort，etcdctl 可手动清理）: %v", name, err)
+		}
+	}
 	s.mu.Lock()
 	delete(s.version, name)
 	delete(s.deploys, name)
 	delete(s.models, name)
 	s.mu.Unlock()
+	return nil
+}
+
+// deleteModelReleases 清理已删模型的全部发布键（v0.13.0，B；GC-on 分支调用）：
+// 头键 + releases/<id>/ 前缀（含 nodes/、lock/ 子键）+ 内存缓存。
+// 快照收集 → 网络删除 → 锁内清缓存（对齐 GCReleases 风格）；失败返回 error，
+// 已删部分不回滚（调用方 Warn 不阻断）。
+func (s *EtcdModelStore) deleteModelReleases(ctx context.Context, model string) error {
+	s.mu.RLock()
+	var ids []string
+	for id, r := range s.release {
+		if r.Model == model {
+			ids = append(ids, id)
+		}
+	}
+	s.mu.RUnlock()
+	for _, id := range ids {
+		if err := s.kv.Delete(ctx, releaseKey(id)); err != nil {
+			return fmt.Errorf("modelrepo: deleteModelReleases 删除 %s 头失败: %w", id, err)
+		}
+		if err := s.kv.DeleteRange(ctx, KeyReleasesPrefix+id+"/"); err != nil {
+			return fmt.Errorf("modelrepo: deleteModelReleases 删除 %s 子键失败: %w", id, err)
+		}
+		s.mu.Lock()
+		delete(s.release, id)
+		delete(s.nodes, id)
+		s.mu.Unlock()
+	}
 	return nil
 }
 

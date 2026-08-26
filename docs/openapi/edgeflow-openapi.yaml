@@ -124,6 +124,8 @@ components:
           type: string
         lastSeenTime:
           type: string
+        lastOfflineTime:
+          type: string
         conditions:
           type: array
           items:

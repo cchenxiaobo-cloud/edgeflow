@@ -1,6 +1,8 @@
 package registry
 
 import (
+	"bytes"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -406,4 +408,82 @@ func TestConcurrentAccessWithGC(t *testing.T) {
 			}
 		}
 	}
+}
+
+// ── v0.13.0（C，L16）：offlineAt 精确展示 ────────────────────────────────
+
+// TestOfflineAtField Get/List 填充 offlineAt：在线省略、离线如实、重复
+// MarkOffline 不刷新（首离时刻）、恢复在线清除、Seed 播种 = since。
+func TestOfflineAtField(t *testing.T) {
+	r := New()
+	now := time.Now().UnixMilli()
+	r.Register(sampleInfo("node-1"))
+
+	// 在线：Get/List 均无 offlineAt（0 值 + omitempty）
+	if info, ok := r.Get("node-1"); !ok || info.OfflineAt != 0 {
+		t.Fatalf("在线节点 offlineAt 应为 0，got %+v", info)
+	}
+	for _, n := range r.List() {
+		if n.OfflineAt != 0 {
+			t.Fatalf("List 在线节点 offlineAt 应为 0，got %d", n.OfflineAt)
+		}
+	}
+	// JSON 序列化：在线节点无 offlineAt 字段
+	data, _ := json.Marshal(mustGetNodeInfo(t, r, "node-1"))
+	if bytes.Contains(data, []byte("offlineAt")) {
+		t.Errorf("在线节点 JSON 不应含 offlineAt: %s", data)
+	}
+
+	// MarkOffline → offlineAt = 标记时刻
+	r.MarkOffline("node-1")
+	info, _ := r.Get("node-1")
+	if info.OfflineAt == 0 {
+		t.Fatal("离线节点 offlineAt 应非 0")
+	}
+	first := info.OfflineAt
+	// 重复 MarkOffline 不刷新（首离时刻，对齐 L16/复核 M1）
+	r.MarkOffline("node-1")
+	info, _ = r.Get("node-1")
+	if info.OfflineAt != first {
+		t.Errorf("重复 MarkOffline 不应刷新 offlineAt：%d → %d", first, info.OfflineAt)
+	}
+	// List 同刻
+	for _, n := range r.List() {
+		if n.NodeID == "node-1" && n.OfflineAt != first {
+			t.Errorf("List offlineAt 应与 Get 一致：%d vs %d", n.OfflineAt, first)
+		}
+	}
+
+	// 恢复在线 → 字段清除
+	r.UpdateHeartbeat("node-1", now)
+	if info, _ := r.Get("node-1"); info.OfflineAt != 0 {
+		t.Errorf("恢复在线后 offlineAt 应清除，got %d", info.OfflineAt)
+	}
+}
+
+// TestSeedOfflineAt Seed 播种 → Unknown 节点 offlineAt = since（启动时刻，
+// 如实反映重启重置语义）。
+func TestSeedOfflineAt(t *testing.T) {
+	r := New()
+	since := time.Now().UnixMilli() - 1000 // 接近当前时刻，避免被 TTL GC 清
+	if err := r.Seed([]NodeInfo{{NodeID: "node-x"}}, since); err != nil {
+		t.Fatal(err)
+	}
+	info, ok := r.Get("node-x")
+	if !ok {
+		t.Fatal("Seed 节点应存在")
+	}
+	if info.OfflineAt != since {
+		t.Errorf("Seed 节点 offlineAt 应为 since=%d，got %d", since, info.OfflineAt)
+	}
+}
+
+// mustGetNodeInfo 取注册表节点（失败即 panic——测试夹具内恒存在）。
+func mustGetNodeInfo(t *testing.T, r *Registry, id string) NodeInfo {
+	t.Helper()
+	info, ok := r.Get(id)
+	if !ok {
+		t.Fatalf("节点 %s 应存在", id)
+	}
+	return info
 }

@@ -56,11 +56,12 @@ func (r *Registry) ToEdgeNode(info *NodeInfo) *v1alpha1.EdgeNode {
 			Role:   v1alpha1.NodeRoleEdge,
 		},
 		Status: v1alpha1.EdgeNodeStatus{
-			Phase:         phaseFromStatus(info.Status),
-			HeartbeatTime: hb,
-			LastSeenTime:  hb,
-			Version:       info.EdgecoreVersion,
-			Conditions:    []v1alpha1.NodeCondition{readyCondition(info.Status, info.LastHeartbeatAt)},
+			Phase:           phaseFromStatus(info.Status),
+			HeartbeatTime:   hb,
+			LastSeenTime:    hb,
+			LastOfflineTime: msToRFC3339(info.OfflineAt), // v0.13.0，L16：最近标记离线时刻（在线=空串省略）
+			Version:         info.EdgecoreVersion,
+			Conditions:      []v1alpha1.NodeCondition{readyCondition(info.Status, info.LastHeartbeatAt)},
 		},
 	}
 	if node.Name == "" {
@@ -91,7 +92,9 @@ func (r *Registry) ListEdgeNodes() []v1alpha1.EdgeNode {
 	defer r.mu.RUnlock()
 	out := make([]v1alpha1.EdgeNode, 0, len(r.nodes))
 	for _, n := range r.nodes {
-		out = append(out, *r.ToEdgeNode(n))
+		cp := *n
+		cp.OfflineAt = r.offlineSince[n.NodeID] // 内部节点 OfflineAt 为 0，先填再映射（v0.13.0，L16）
+		out = append(out, *r.ToEdgeNode(&cp))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

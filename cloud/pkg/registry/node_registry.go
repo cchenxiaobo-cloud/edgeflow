@@ -53,6 +53,9 @@ type NodeInfo struct {
 	RegisteredAt    int64      `json:"registeredAt"`    // 注册时间（毫秒时间戳）
 	LastHeartbeatAt int64      `json:"lastHeartbeatAt"` // 最近心跳时间（毫秒时间戳）
 	Status          NodeStatus `json:"status"`          // 节点状态（Ready/Unknown/Offline）
+	// OfflineAt 是标记离线时刻（毫秒时间戳；v0.13.0，L16）：在线/未知 = 0 省略
+	// （omitempty）；如实反映保留期时钟，重启重置为 Seed 时刻。瞬态内存数据不落盘。
+	OfflineAt int64 `json:"offlineAt,omitempty"`
 }
 
 // Registry 是内存态节点注册表（读写缓存的实现基座）。
@@ -324,7 +327,9 @@ func (r *Registry) Get(nodeID string) (NodeInfo, bool) {
 	if !ok {
 		return NodeInfo{}, false
 	}
-	return *n, true
+	cp := *n
+	cp.OfflineAt = r.offlineSince[nodeID] // 在线=0（键已删）→ omitempty 省略（v0.13.0，L16）
+	return cp, true
 }
 
 // List 返回全部节点信息的拷贝，按 NodeID 排序保证输出确定性。
@@ -333,7 +338,9 @@ func (r *Registry) List() []NodeInfo {
 	defer r.mu.RUnlock()
 	out := make([]NodeInfo, 0, len(r.nodes))
 	for _, n := range r.nodes {
-		out = append(out, *n)
+		cp := *n
+		cp.OfflineAt = r.offlineSince[n.NodeID] // v0.13.0，L16
+		out = append(out, cp)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
 	return out

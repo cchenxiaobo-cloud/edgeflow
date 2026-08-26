@@ -1,6 +1,8 @@
 package registry
 
 import (
+	"bytes"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -298,5 +300,53 @@ func TestMsToRFC3339(t *testing.T) {
 	now := time.Now().UnixMilli()
 	if _, err := time.Parse(time.RFC3339, msToRFC3339(now)); err != nil {
 		t.Errorf("msToRFC3339 输出不是合法 RFC3339: %v", err)
+	}
+}
+
+// ── v0.13.0（C，L16）：EdgeNode 视图 lastOfflineTime ─────────────────────
+
+// TestToEdgeNodeLastOfflineTime ToEdgeNode 映射 offlineAt → RFC3339；
+// 在线 = 空串（omitempty）。
+func TestToEdgeNodeLastOfflineTime(t *testing.T) {
+	r := New()
+	r.Register(sampleInfo("node-1"))
+
+	// 在线：lastOfflineTime 空
+	info, _ := r.Get("node-1")
+	node := r.ToEdgeNode(&info)
+	if node.Status.LastOfflineTime != "" {
+		t.Errorf("在线节点 lastOfflineTime 应为空，got %q", node.Status.LastOfflineTime)
+	}
+	// JSON 序列化：在线无该字段
+	data, _ := json.Marshal(node.Status)
+	if bytes.Contains(data, []byte("lastOfflineTime")) {
+		t.Errorf("在线节点 JSON 不应含 lastOfflineTime: %s", data)
+	}
+
+	// 离线：lastOfflineTime = MarkOffline 时刻 RFC3339
+	r.MarkOffline("node-1")
+	info, _ = r.Get("node-1")
+	node = r.ToEdgeNode(&info)
+	want := msToRFC3339(info.OfflineAt)
+	if node.Status.LastOfflineTime != want {
+		t.Errorf("lastOfflineTime 应=%q，got %q", want, node.Status.LastOfflineTime)
+	}
+}
+
+// TestListEdgeNodesOfflineAt 内部节点 OfflineAt 为 0，ListEdgeNodes 应先填
+// 再映射（离线节点 lastOfflineTime 非空）。
+func TestListEdgeNodesOfflineAt(t *testing.T) {
+	r := New()
+	r.Register(sampleInfo("node-1"))
+	r.MarkOffline("node-1")
+	info, _ := r.Get("node-1")
+	want := msToRFC3339(info.OfflineAt)
+
+	edges := r.ListEdgeNodes()
+	if len(edges) != 1 {
+		t.Fatalf("期望 1 节点，got %d", len(edges))
+	}
+	if edges[0].Status.LastOfflineTime != want {
+		t.Errorf("ListEdgeNodes lastOfflineTime 应=%q，got %q", want, edges[0].Status.LastOfflineTime)
 	}
 }

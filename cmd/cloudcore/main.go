@@ -400,7 +400,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		// MemoryModelStore + NoopLockKV（单实例天然领跑者，锁逻辑空转无害，
 		// 设计 §3.4/§5.4）；重启后模型/版本/发布/部署影子丢失为明示行为（L22）。
 		warnReleaseLockTTLIgnored()
-		modelStore = modelrepo.NewMemoryModelStore()
+		modelStore = modelrepo.NewMemoryModelStore(modelrepo.WithReleaseGC(releaseGCEnabled, releaseGCKeep))
 		deploy, derr := modelrelease.NewDeployer(modelStore, hub.ReliableSendContext)
 		if derr != nil {
 			log.Errorf("[modelrelease] 部署执行器装配失败: %v", derr)
@@ -442,7 +442,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			// embed：与注册表装配同口径降级（理论不可达——embed kvStore 恒
 			// 满足 AtomicKV；防御性兜底，模型功能退化但进程继续）
 			log.Errorf("[modelrelease] 嵌入式模型仓库装配失败，降级纯内存: %v", err)
-			modelStore = modelrepo.NewMemoryModelStore()
+			modelStore = modelrepo.NewMemoryModelStore(modelrepo.WithReleaseGC(releaseGCEnabled, releaseGCKeep))
 		}
 	}
 	if relCtrl != nil {

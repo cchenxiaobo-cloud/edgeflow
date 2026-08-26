@@ -300,7 +300,7 @@ func assembleModelStores(kv etcdstore.KVStore,
 
 	closeModel := func() {} // 失败路径兜底：无可关（成功路径会覆盖）
 
-	store, err := modelrepo.NewEtcdModelStore(kv)
+	store, err := modelrepo.NewEtcdModelStore(kv, modelrepo.WithReleaseGC(gcEnabled, gcKeep))
 	if err != nil {
 		return nil, nil, closeModel, err
 	}

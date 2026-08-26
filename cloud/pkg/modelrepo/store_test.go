@@ -1029,3 +1029,99 @@ func TestMemoryGCReleases(t *testing.T) {
 		t.Errorf("二次 GC 应 0 删除，removed=%d err=%v", removed, err)
 	}
 }
+
+// ── v0.13.0（B）：DeleteModel 在 GC 开启下级联清理该模型全部终态发布 ──────
+
+// TestMemDeleteModelReleaseGCOff 默认（GC-off）→ 删除模型保留终态发布（L31 审计口径回归）。
+func TestMemDeleteModelReleaseGCOff(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryModelStore() // 缺省 = GC 关闭
+	s.now = func() time.Time { return fixedTime }
+	mustFinishRelease(t, s, "mnist", "rel-1", ReleaseStatusSucceeded)
+	mustFinishRelease(t, s, "mnist", "rel-2", ReleaseStatusFailed)
+	if err := s.DeleteModel(ctx, "mnist"); err != nil {
+		t.Fatalf("删除模型失败: %v", err)
+	}
+	for _, id := range []string{"rel-1", "rel-2"} {
+		if _, err := s.GetRelease(ctx, id); err != nil {
+			t.Errorf("GC-off 下 %s 应保留（L31 审计口径），got err=%v", id, err)
+		}
+	}
+	// 无关模型发布不受影响
+	if _, err := s.GetRelease(ctx, "rel-1"); err != nil {
+		t.Errorf("rel-1 应保留: %v", err)
+	}
+}
+
+// TestMemDeleteModelReleaseGCOn GC 开启 → 删除模型全清该模型终态发布（头+逐节点）。
+func TestMemDeleteModelReleaseGCOn(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryModelStore(WithReleaseGC(true, 100))
+	s.now = func() time.Time { return fixedTime }
+	mustFinishRelease(t, s, "mnist", "rel-1", ReleaseStatusSucceeded)
+	mustFinishRelease(t, s, "mnist", "rel-2", ReleaseStatusFailed)
+	_ = s.SetNodeResult(ctx, "rel-1", "node-a", &NodeReleaseResult{NodeID: "node-a", Status: NodeRelDeployed})
+	if err := s.DeleteModel(ctx, "mnist"); err != nil {
+		t.Fatalf("删除模型失败: %v", err)
+	}
+	for _, id := range []string{"rel-1", "rel-2"} {
+		if _, err := s.GetRelease(ctx, id); !errors.Is(err, ErrReleaseNotFound) {
+			t.Errorf("GC-on 下 %s 应被级联清理，got err=%v", id, err)
+		}
+		if _, err := s.GetNodeResult(ctx, id, "node-a"); !errors.Is(err, ErrReleaseNotFound) {
+			t.Errorf("%s 逐节点结果应清空，got err=%v", id, err)
+		}
+	}
+	// 模型本身已删
+	if _, err := s.GetModel(ctx, "mnist"); !errors.Is(err, ErrModelNotFound) {
+		t.Errorf("模型应 404，got %v", err)
+	}
+}
+
+// TestMemDeleteModelReleaseGCOnInFlight 在途发布仍 409 拒绝（GC-on 前置守卫不变）。
+func TestMemDeleteModelReleaseGCOnInFlight(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryModelStore(WithReleaseGC(true, 100))
+	s.now = func() time.Time { return fixedTime }
+	if err := s.CreateModel(ctx, &Model{Name: "mnist"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateVersion(ctx, &ModelVersion{Model: "mnist", Version: "v1", Mirror: "reg/x:v1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRelease(ctx, &ModelRelease{ID: "rel-inflight", Model: "mnist",
+		Version: "v1", BatchSize: 1, TargetNodes: []string{"n1"}}); err != nil {
+		t.Fatal(err)
+	}
+	err := s.DeleteModel(ctx, "mnist")
+	var rce *ReleaseConflictError
+	if !errors.As(err, &rce) || rce.InFlight != "rel-inflight" {
+		t.Fatalf("在途发布应拒绝删除并带在途 ID，got %v", err)
+	}
+}
+
+// mustFinishRelease 造一个模型 + 一条终态发布（helper，v0.13.0 B 测试）。
+func mustFinishRelease(t *testing.T, s *MemoryModelStore, model, id string, status ReleaseStatus) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := s.GetModel(ctx, model); err != nil {
+		if err := s.CreateModel(ctx, &Model{Name: model}); err != nil {
+			t.Fatalf("创建模型失败: %v", err)
+		}
+	}
+	if _, err := s.GetVersion(ctx, model, "v1"); err != nil {
+		if err := s.CreateVersion(ctx, &ModelVersion{Model: model, Version: "v1", Mirror: "reg/x:v1"}); err != nil {
+			t.Fatalf("创建版本失败: %v", err)
+		}
+	}
+	if err := s.CreateRelease(ctx, &ModelRelease{ID: id, Model: model,
+		Version: "v1", BatchSize: 1, TargetNodes: []string{"node-a"}}); err != nil {
+		t.Fatalf("创建发布 %s 失败: %v", id, err)
+	}
+	if err := s.UpdateReleaseHead(ctx, id, func(cur *ModelRelease) error {
+		cur.Status = status
+		return nil
+	}); err != nil {
+		t.Fatalf("置 %s 终态失败: %v", id, err)
+	}
+}

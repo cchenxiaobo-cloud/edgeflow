@@ -1291,3 +1291,114 @@ func (p *plainAtomicKV) CompareAndDelete(ctx context.Context, key string, expect
 func (p *plainAtomicKV) GuardedDelete(ctx context.Context, guardKey, targetKey string) (bool, error) {
 	return p.fake.GuardedDelete(ctx, guardKey, targetKey)
 }
+
+// ── v0.13.0（B）：DeleteModel 在 GC 开启下级联清理该模型全部终态发布 ──────
+
+// TestEtcdDeleteModelGCOnClearsReleases GC-on：删模型 → 头键 + 逐节点/lock
+// 前缀 + 内存缓存全清；无关模型发布不受影响。
+func TestEtcdDeleteModelGCOnClearsReleases(t *testing.T) {
+	ctx := context.Background()
+	kv := newFakeKV()
+	store, err := NewEtcdModelStore(kv, WithReleaseGC(true, 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 造 mnist：模型 + 版本 + 2 终态发布（succeeded/failed）+ 逐节点结果
+	if err := store.CreateModel(ctx, &Model{Name: "mnist"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateVersion(ctx, &ModelVersion{Model: "mnist", Version: "v1", Mirror: "reg/x:v1"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []struct {
+		id     string
+		status ReleaseStatus
+	}{{"rel-ok", ReleaseStatusSucceeded}, {"rel-fail", ReleaseStatusFailed}} {
+		if err := store.CreateRelease(ctx, &ModelRelease{ID: rel.id, Model: "mnist",
+			Version: "v1", BatchSize: 1, TargetNodes: []string{"node-a"}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.UpdateReleaseHead(ctx, rel.id, func(cur *ModelRelease) error {
+			cur.Status = rel.status
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = store.SetNodeResult(ctx, "rel-ok", "node-a", &NodeReleaseResult{NodeID: "node-a", Status: NodeRelDeployed})
+
+	// 无关模型（other）的终态发布：GC-on 下删 mnist 不应波及
+	if err := store.CreateModel(ctx, &Model{Name: "other"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateVersion(ctx, &ModelVersion{Model: "other", Version: "v1", Mirror: "reg/o:v1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateRelease(ctx, &ModelRelease{ID: "rel-other", Model: "other",
+		Version: "v1", BatchSize: 1, TargetNodes: []string{"node-a"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateReleaseHead(ctx, "rel-other", func(cur *ModelRelease) error {
+		cur.Status = ReleaseStatusSucceeded
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.DeleteModel(ctx, "mnist"); err != nil {
+		t.Fatalf("删除模型失败: %v", err)
+	}
+
+	// 该模型发布键全清（头 + 前缀 + 内存）
+	for _, k := range []string{releaseKey("rel-ok"), releaseKey("rel-fail")} {
+		if kv.hasKey(k) {
+			t.Errorf("GC-on 应清除头键 %s", k)
+		}
+	}
+	for _, p := range []string{KeyReleasesPrefix + "rel-ok/", KeyReleasesPrefix + "rel-fail/"} {
+		if entries, _ := kv.ListByPrefix(ctx, p); len(entries) != 0 {
+			t.Errorf("GC-on 应清空前缀 %s，残留 %d 键", p, len(entries))
+		}
+	}
+	for _, id := range []string{"rel-ok", "rel-fail"} {
+		if _, err := store.GetRelease(ctx, id); !errors.Is(err, ErrReleaseNotFound) {
+			t.Errorf("%s 内存缓存应清，got err=%v", id, err)
+		}
+	}
+	// 无关模型发布保留（断言：rel-other 键仍在）
+	if !kv.hasKey(releaseKey("rel-other")) {
+		t.Error("无关模型发布不应被清除")
+	}
+	if _, err := store.GetRelease(ctx, "rel-other"); err != nil {
+		t.Errorf("rel-other 应保留: %v", err)
+	}
+}
+
+// TestEtcdDeleteModelGCOffKeepsReleases GC-off（缺省）：删模型 → 该模型
+// 终态发布键/内存保留（L31 审计口径回归）。
+func TestEtcdDeleteModelGCOffKeepsReleases(t *testing.T) {
+	ctx := context.Background()
+	kv, store := newEtcdFixture(t) // 缺省 GC-off
+	if err := store.ArchiveVersion(ctx, "defect-detector", "v2.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateRelease(ctx, &ModelRelease{ID: "rel-keep", Model: "defect-detector",
+		Version: "v2.0.0", BatchSize: 1, TargetNodes: []string{"n1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateReleaseHead(ctx, "rel-keep", func(cur *ModelRelease) error {
+		cur.Status = ReleaseStatusSucceeded
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteModel(ctx, "defect-detector"); err != nil {
+		t.Fatal(err)
+	}
+	if !kv.hasKey(releaseKey("rel-keep")) {
+		t.Error("GC-off 应保留终态发布头键（L31 审计口径）")
+	}
+	if _, err := store.GetRelease(ctx, "rel-keep"); err != nil {
+		t.Errorf("GC-off 内存缓存应保留 rel-keep: %v", err)
+	}
+}

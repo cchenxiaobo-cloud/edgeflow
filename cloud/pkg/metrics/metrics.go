@@ -36,6 +36,10 @@ type Providers struct {
 	Devices func() int
 	// ActiveConnections 返回 CloudHub 当前活跃连接数（cloudhub.Server.ConnCount）。
 	ActiveConnections func() int
+	// LeaseRenewalFailures 返回外部 etcd 模式心跳租约续约失败累计计数
+	// （v0.8.0，L12；lease_registry.RenewalFailures）。仅外部多副本形态注入，
+	// 其余形态 nil → 指标行不输出。
+	LeaseRenewalFailures func() uint64
 }
 
 // Metrics 是云端指标注册表：持有 gauge Provider 与请求计数，负责渲染
@@ -177,6 +181,13 @@ func (m *Metrics) render() []byte {
 			fmt.Fprintf(&b, "edgeflow_cloudcore_http_requests_total{path=%q,code=%q} %d\n",
 				escapeLabel(k.path), strconv.Itoa(k.code), m.requests[k])
 		}
+	}
+
+	// 续约失败计数（v0.8.0，L12）：Provider 注入时始终输出（0 值也有监控
+	// 意义——面板可基于增长率告警，见 KNOWN-ISSUES L12 建议）。
+	if m.providers.LeaseRenewalFailures != nil {
+		fmt.Fprintf(&b, "# HELP edgeflow_cloudcore_lease_renewal_failures_total 外部 etcd 心跳租约续约失败累计数（持续增长 = etcd 侧异常/网络分区，告警阈值参考判活 TTL）。\n# TYPE edgeflow_cloudcore_lease_renewal_failures_total counter\n%s %d\n",
+			"edgeflow_cloudcore_lease_renewal_failures_total", m.providers.LeaseRenewalFailures())
 	}
 	return []byte(b.String())
 }

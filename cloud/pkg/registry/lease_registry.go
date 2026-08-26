@@ -101,6 +101,12 @@ type LeaseEtcdRegistry struct {
 	renewCh  chan string
 	watchRev atomic.Int64
 
+	// renewalFailures 是心跳租约续约失败累计计数（v0.8.0，L12）：
+	// renewWorker 每次 Grant+Put 失败即自增，供 /metrics
+	// edgeflow_cloudcore_lease_renewal_failures_total 消费（监控告警：
+	// 持续增长 = etcd 侧异常或网络分区，见 KNOWN-ISSUES L12）。
+	renewalFailures atomic.Uint64
+
 	contactMu   sync.Mutex
 	lastContact time.Time // 最近一次成功的 etcd 接触（healthz 多副本模式用）
 
@@ -168,6 +174,11 @@ func (r *LeaseEtcdRegistry) EtcdHealthyWithin(d time.Duration) bool {
 	r.contactMu.Lock()
 	defer r.contactMu.Unlock()
 	return time.Since(r.lastContact) <= d
+}
+
+// RenewalFailures 返回心跳租约续约失败累计计数（v0.8.0，L12，/metrics 用）。
+func (r *LeaseEtcdRegistry) RenewalFailures() uint64 {
+	return r.renewalFailures.Load()
 }
 
 // servingGrace 是「本副本正在服务该节点」的判定窗 = leaseTTL/2：
@@ -239,6 +250,7 @@ func (r *LeaseEtcdRegistry) renewWorker(ctx context.Context) {
 			}
 			if err := r.grantHeartbeat(nodeID); err != nil {
 				log.Warnf("[LeaseEtcdRegistry] 心跳租约续约失败（nodeID=%s，重试窗口 ≤ %v，不影响内存态）: %v", nodeID, r.opts.LeaseTTL, err)
+				r.renewalFailures.Add(1)
 				r.scheduleRetry(ctx, nodeID)
 			}
 		}

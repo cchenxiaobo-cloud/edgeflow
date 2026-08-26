@@ -568,11 +568,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	// 可观测性（WBS 10.1）：/metrics 端点输出 Prometheus 文本格式指标。
 	// gauge 取值函数由装配层注入（依赖倒置，metrics 包不感知各存储实现）。
+	// v0.8.0（L12）：续约失败计数仅外部模式（LeaseEtcdRegistry）注入，
+	// 其余形态 Provider 为 nil → 指标行不输出（保持 5 项基线输出不变）。
+	var leaseRenewalFailures func() uint64
+	if lr, ok := nodeReg.(*registry.LeaseEtcdRegistry); ok {
+		leaseRenewalFailures = lr.RenewalFailures
+	}
 	m := metrics.New(metrics.Providers{
-		Nodes:             nodeReg.Count,
-		Pods:              podStore.Count,
-		Devices:           deviceStore.Count,
-		ActiveConnections: hub.ConnCount,
+		Nodes:                 nodeReg.Count,
+		Pods:                  podStore.Count,
+		Devices:               deviceStore.Count,
+		ActiveConnections:     hub.ConnCount,
+		LeaseRenewalFailures:  leaseRenewalFailures,
 	})
 	mux.HandleFunc("GET /metrics", m.Handler())
 

@@ -162,3 +162,32 @@ func TestStatusRecorder(t *testing.T) {
 		t.Errorf("显式状态码 = %d，期望 404（重复 WriteHeader 应忽略）", rec.statusCode())
 	}
 }
+
+// TestLeaseRenewalFailuresMetric 验证 v0.8.0（L12）续约失败计数指标：
+// Provider 注入时始终输出（含 0 值），未注入时不出现在输出中。
+func TestLeaseRenewalFailuresMetric(t *testing.T) {
+	t.Run("injected", func(t *testing.T) {
+		m := New(Providers{LeaseRenewalFailures: func() uint64 { return 42 }})
+		body := m.render()
+		text := string(body)
+		if !strings.Contains(text, "# HELP edgeflow_cloudcore_lease_renewal_failures_total") ||
+			!strings.Contains(text, "# TYPE edgeflow_cloudcore_lease_renewal_failures_total counter") {
+			t.Errorf("缺少续约失败指标元信息:\n%s", text)
+		}
+		if !strings.Contains(text, "edgeflow_cloudcore_lease_renewal_failures_total 42") {
+			t.Errorf("缺少取值行:\n%s", text)
+		}
+	})
+	t.Run("zero-value-visible", func(t *testing.T) {
+		m := New(Providers{LeaseRenewalFailures: func() uint64 { return 0 }})
+		if !strings.Contains(string(m.render()), "edgeflow_cloudcore_lease_renewal_failures_total 0") {
+			t.Error("0 值也应输出（监控面板基线）")
+		}
+	})
+	t.Run("nil-provider-omitted", func(t *testing.T) {
+		m := New(Providers{})
+		if strings.Contains(string(m.render()), "lease_renewal_failures_total") {
+			t.Error("Provider 为 nil 时不应输出续约失败指标（非外部模式基线）")
+		}
+	})
+}

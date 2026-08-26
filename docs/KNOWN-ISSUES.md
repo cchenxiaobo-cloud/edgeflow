@@ -42,7 +42,7 @@
 |---|------|------|------|------|
 | ① | `data/etcd/member/wal/` 坏 WAL（内容损坏/截断） | **实测 etcd v3.5.33 在 raft 恢复阶段直接 panic**（`panic: cannot use none as id`，RestartNode），**不是返回 error**——设计初稿预期"启动失败 → error → 降级"，实际需装配层 `defer recover()` 兜底 | 无兜底则进程裸崩（系统级重启循环）；现有装配已 recover：默认降级纯内存 + 启动期大告警（数据未持久化），`EDGEFLOW_CLOUDCORE_ETCD_STRICT=1` 时 fail-fast 退出。恢复路径：etcdutl restore 或清空数据目录重收敛（边缘重连重新注册） | 已按实测修订设计 §6.5 与文档口径（DEPLOYMENT §10.5）；保持 recover 兜底 + 回归测试 `TestBadWALTolerance` |
 | ② | `data/etcd/member/` 目录整体丢失 | embed 重建空库正常启动（旧数据不在、新写可用）——**单目录丢失 ≠ 崩溃，但等于全量丢数据** | 注册台账与设备 Desired 从零重建：节点靠边缘重连重新注册，Desired 靠指令重发；Pod/上报 ≤1 上报周期自愈 | 备份策略兜底：在线 `etcdutl snapshot save` / 离线 `cp -a data/etcd`（停进程后整体拷贝，**文件拷贝≠有效备份**），见 DEPLOYMENT §10.4 |
-| ③ | 云端 Pod 状态 / 设备 reported（properties/LastReportedAt） | v0.4.0 起**整表不落盘**（写穿范围仅注册元数据 + Desired）：cloudcore 重启后 pods 列表短时为空、设备 properties 为空 map `{}` | 重启窗口内查询 API 显示"暂时缺失"；≤1 上报周期（默认 30s）边缘重连后自愈，**非永久丢失**；监控/告警阈值需容忍该窗口 | API-SPEC §9 已登记为"短暂清空"语义；后续版本若需持久化，键空间 `/edgeflow/podstatus/...` 已预留，直接启用即 |
+| ③ | 云端 Pod 状态 / 设备 reported（properties/LastReportedAt） | v0.4.0 起**整表不落盘**（写穿范围仅注册元数据 + Desired）：cloudcore 重启后 pods 列表短时为空、设备 properties 为空 map `{}` | 重启窗口内查询 API 显示"暂时缺失"；≤1 上报周期（默认 30s）边缘重连后自愈，**非永久丢失**；监控/告警阈值需容忍该窗口 | **v0.9.0 闭环（Pod 部分）**：`/edgeflow/podstatus/` 键空间启用（EtcdPodStore 写穿 Upsert/Delete + 内存缓存 + Load/watch），重启后 Pod 列表直接可见；**设备 reported 仍未持久化**（另行延后登记） |
 | ④ | `cloud/pkg/etcdstore` embed.Close() 幂等性 | v3.5.33 的 `close(e.errc)` 无 closeOnce 保护，二次 Close 会 `panic: close of closed channel` | 已在本层用 sync.Once 整体幂等化解（`Close()` 可安全重复调用）；集成层勿绕过 `EmbeddedEtcd` 直接持有 embed.Etcd | 已闭环（包内化解）；登记备忘 |
 
 ---
@@ -111,3 +111,13 @@
 | L12 | 续约失败无可观测性 | ✅ **v0.8.0 闭环**：`/metrics` 新增 `edgeflow_cloudcore_lease_renewal_failures_total`（counter，仅外部模式注入；0 值也输出便于面板基线）；建议告警：持续增长（如 5min 内 >N）→ etcd 侧异常/网络分区 | 无独立"hb 键重建"计数（自愈可观测性可后续加）；告警阈值需按判活 TTL 折算 |
 | L28 | release/模型列表无分页 + 终态无 GC | ✅ **v0.8.0 闭环**：① 分页——GET models/versions/releases 支持 `limit`(1-1000)/`offset`(≥0)，响应头 `X-Total-Count`，缺省全量（零破坏）；② GC——`GCReleases` 按 CreatedAt 保留最近 keep 条终态（默认 **关闭**，`EDGEFLOW_CLOUDCORE_RELEASE_GC_ENABLED=1` + `RELEASE_GC_KEEP` 默认 100 开启），删除旧终态头+逐节点结果，非终态/在途绝不删 | GC 开启后 L31 口径变更：终态键不再永久保留（按 keep 截断），审计痕迹以 ops 台账/文档为准；默认关闭保持原口径 |
 | N-4 | （L28 同族）终态 release 常驻内存无 GC | ✅ 随 L28 GC 闭环（三模式统一；纯内存模式也受益——防长运行内存线性增长） | — |
+
+
+## 9. v0.9.0 开发轮闭环登记（2026-08-26，云端状态持久化补全 + 发布运营性增强）
+
+> 提交：bdbf5a0（③ Pod 写穿）/ 516bf9a（R-1 镜像探活）。
+
+| 编号 | 问题面 | 闭环说明 | 残余与建议 |
+|---|---|---|---|
+| ③（Pod 部分） | 云端 Pod 状态不落盘 | ✅ **v0.9.0 闭环**：EtcdPodStore 写穿（Upsert/Delete 先 etcd 后内存、失败内存不动）+ 读路径内存缓存 + Load 全量重建 + LoadAnchored/StartWatch 外部多副本增量同步；键空间 `/edgeflow/podstatus/<nodeID>/<ns>/<podName>`（v0.4.0 预留）启用；E2E 实测：重启后 Pod 列表立即可见（不再短暂清空） | 设备 reported（properties/LastReportedAt）仍不落盘（延后，与 Pod 原同族登记）；写穿失败降级内存（Upsert 返回 error，上报自愈） |
+| R-1 | 发布前镜像存在性探活 | ✅ **v0.9.0 实现**（P2 升级）：registry v2 HEAD（私有 registry 直连 + Docker Hub token 换取）；env `EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK`（off/warn/fail，**默认 off 零行为变化**）+ `RELEASE_MIRROR_CHECK_TIMEOUT`（5s）+ `REGISTRY_TOKEN`（私有 registry Bearer）；warn=仅告警（发布照常 202）/fail=阻断 422（带 mirror 字段） | 探活是"存在性"检查非"可拉取"保证（拉取在边缘，PodStatus 暴露）；镜像 digest 级校验未做（后续版本） |

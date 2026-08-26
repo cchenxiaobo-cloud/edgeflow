@@ -53,6 +53,9 @@ Modbus 组独立成节见下）。设置方式：启动进程前 \texttt{export}
 \texttt{EDGEFLOW\_CLOUDCORE\_ETCD\_USERNAME} / \texttt{ETCD\_PASSWORD} & 空 & 外部 etcd RBAC 用户名密码鉴权；必须成对设置（只设其一 fail-fast）；与 TLS/mTLS 正交；仅外部模式消费（v0.8.0） \\
 \texttt{EDGEFLOW\_CLOUDCORE\_RELEASE\_GC\_ENABLED} & 空 & 终态发布 GC 开关（\texttt{1}/\texttt{true} 开启）；默认关闭（终态 release 键永久保留，v0.8.0） \\
 \texttt{EDGEFLOW\_CLOUDCORE\_RELEASE\_GC\_KEEP} & \texttt{100} & 终态发布保留条数；≥1 否则 fail-fast；仅 GC 开启时消费（v0.8.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_RELEASE\_MIRROR\_CHECK} & 空 & 发布前镜像存在性探活：空/off=不检查（默认）、warn=失败仅告警、fail=失败阻断发布（422）（v0.9.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_RELEASE\_MIRROR\_CHECK\_TIMEOUT} & \texttt{5s} & 镜像探活超时；>0 否则 fail-fast（v0.9.0） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_REGISTRY\_TOKEN} & 空 & 私有 registry Bearer token（可选；Docker Hub 自动换取）（v0.9.0） \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -331,7 +334,7 @@ cloudcore 日志，反馈问题 \\
   \item 云端三存储（registry/podstatus/devicestatus）由纯内存改为
         \textbf{嵌入式单成员 etcd}（127.0.0.1:12379/12380，只绑回环）
         \textbf{写穿持久化}：落盘 = 节点注册元数据 + 设备 Desired；不落盘 =
-        心跳/Status/Pod 状态/设备 Properties（重启 ≤1 上报周期自愈）；
+        心跳/Status/设备 Properties 不落盘（重启 ≤1 上报周期自愈）；Pod 状态 v0.9.0 起写穿（重启立即可见）；
   \item 坏库默认降级纯内存 + 大告警，\texttt{ETCD\_STRICT=1} fail-fast；
         GC 级联（节点删除 DeleteRange 设备子树，CleanupLoop 1h）；
   \item \textbf{升级注意}：默认启用（无迁移脚本）；Helm 必须带 PVC
@@ -431,7 +434,7 @@ resources + 409 超卖拒绝 + 漂移重建）、Mapper 装配开关与设备命
 
 \begin{enumerate}
   \item \textbf{云端分级持久化（v0.4.0 起）}：注册台账与设备 Desired
-        跨重启保留（写穿 etcd）；Pod 状态与上报属性重启后短暂清空
+        跨重启保留（写穿 etcd）；v0.9.0 起 Pod 状态亦写穿（重启后立即可见，见附录 E）；设备上报属性仍短暂清空
         （\textbf{≤1 上报周期自愈，非永久丢失}）；心跳/Status 不落盘
         （重启待首心跳翻新）；在途未确认消息可能丢失，由上层控制器
         恢复后重新下发。

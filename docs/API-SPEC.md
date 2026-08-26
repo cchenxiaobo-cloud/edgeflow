@@ -1,7 +1,7 @@
 # EdgeFlow API 规范（v0.1.0 定稿）
 
 > - 对应 ROADMAP WBS 9.2「API 文档」，覆盖两部分：**REST API 参考**（cloudcore 对外 HTTP 接口）与 **CRD 类型定义**（`apis/edge/v1alpha1/`）。
-> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.2.0 开发轮已更新**（2026-08-18：podsync 资源字段与 409 语义、device-command namespace 路由、资源调度环境变量），**v0.3.0 开发轮已更新**（2026-08-19：syncPod 400 响应 JSON 安全加固说明 + 第四部分共享库/协议包 API 边界），**v0.4.0 开发轮已更新**（2026-08-24：§1 并发语义、§9 已知限制首条改为分级持久化、nodeID 字符约束登记），**v0.7.0 开发轮已更新**（2026-08-25：模型仓库/版本管理/灰度发布 17 个新端点（**14→31**）、新增 202/422 错误语义、新章节 §7 模型 API），**v0.8.0 开发轮已更新**（2026-08-26：列表分页 limit/offset + X-Total-Count（§7.2）、外部 etcd RBAC 鉴权透传与终态发布 GC 配置（见 DEPLOYMENT §10.7）、列表分页 limit/offset（§1.1/§7.2）、指标 5→7 项（§1.2））。评审记录见 `docs/REVIEWS.md`（9.2 评审归档）。
+> - 状态：✅ **v0.1.0 定稿**（2026-08-14），**v0.2.0 开发轮已更新**（2026-08-18：podsync 资源字段与 409 语义、device-command namespace 路由、资源调度环境变量），**v0.3.0 开发轮已更新**（2026-08-19：syncPod 400 响应 JSON 安全加固说明 + 第四部分共享库/协议包 API 边界），**v0.4.0 开发轮已更新**（2026-08-24：§1 并发语义、§9 已知限制首条改为分级持久化、nodeID 字符约束登记），**v0.7.0 开发轮已更新**（2026-08-25：模型仓库/版本管理/灰度发布 17 个新端点（**14→31**）、新增 202/422 错误语义、新章节 §7 模型 API），**v0.8.0 开发轮已更新**（2026-08-26：列表分页 limit/offset + X-Total-Count（§7.2）、外部 etcd RBAC 鉴权透传与终态发布 GC 配置（见 DEPLOYMENT §10.7）、指标 5→7 项（§1.2）），**v0.9.0 开发轮已更新**（2026-08-26：发布创建镜像存在性探活（R-1，默认 off，见 §7.2/§7.3）、Pod 状态写穿持久化（重启后 Pod 列表直接可见，§9 行为变化））。评审记录见 `docs/REVIEWS.md`（9.2 评审归档）。
 > - 代码位置：cloudcore 路由装配 `cmd/cloudcore/main.go`、设备 API `cmd/cloudcore/device_api.go`、CRD 类型 `apis/edge/v1alpha1/`。
 > - 版本策略：v0.1.0 为 MVP 定稿版；后续接入 Kubernetes 后由 OpenAPI schema / CRD 校验取代，见 §8。
 
@@ -54,7 +54,7 @@
 | DELETE | `/api/v1/models/{modelName}/versions/{version}` | 删除版本（仅 draft/archived） | 200 / 404 / 409 |
 | POST | `/api/v1/models/{modelName}/versions/{version}/activate` | 激活（draft→active，自动降级旧 active） | 200 / 400 / 404 / 409 |
 | POST | `/api/v1/models/{modelName}/versions/{version}/archive` | 归档（active→archived） | 200 / 404 / 409 |
-| POST | `/api/v1/models/{modelName}/releases` | **创建灰度发布（异步执行）** | **202** / 400 / 404 / 409 / 422 |
+| POST | `/api/v1/models/{modelName}/releases` | **创建灰度发布（异步执行）**；v0.9.0 起可选镜像存在性探活（R-1：`EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK` off/warn/fail，默认 off；fail 时探活失败 → 422） | **202** / 400 / 404 / 409 / 422 |
 | GET | `/api/v1/models/{modelName}/releases` | 发布列表（按 createdAt 升序；v0.8.0 起支持分页，同上） | 200 / 400 / 404 |
 | GET | `/api/v1/models/{modelName}/releases/{releaseID}` | 发布详情（含 perNode 汇总） | 200 / 404 |
 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/cancel` | 取消（pending/running） | 200 / 404 / 409 |

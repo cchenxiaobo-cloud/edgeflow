@@ -646,6 +646,9 @@ etcdctl get /edgeflow/_meta/schemaVersion          # = "1"（快照自带则保�
 | `EDGEFLOW_CLOUDCORE_ETCD_USERNAME` / `EDGEFLOW_CLOUDCORE_ETCD_PASSWORD` | 空 | 外部 etcd RBAC 用户名密码鉴权（v0.8.0，L1）：必须成对设置（只设其一 fail-fast）；与 TLS/mTLS 正交；仅外部模式消费，embed/纯内存显式设置 → Warn 忽略 |
 | `EDGEFLOW_CLOUDCORE_RELEASE_GC_ENABLED` | 空 | 终态发布 GC 开关（v0.8.0，L28）：`1`/`true` 开启；默认关闭（L31 审计口径——终态 release 键永久保留） |
 | `EDGEFLOW_CLOUDCORE_RELEASE_GC_KEEP` | `100` | 终态发布保留条数（v0.8.0，L28）：≥1，非法 fail-fast；仅 GC 开启时消费 |
+| `EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK` | 空 | 发布前镜像存在性探活模式（v0.9.0，R-1）：空/off=不检查（默认，零行为变化）、warn=失败仅告警（发布照常）、fail=失败阻断发布（422）；非法值 fail-fast |
+| `EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK_TIMEOUT` | `5s` | 镜像探活超时（>0，非法 fail-fast）；Docker Hub 需先换 token（约 2 次 RTT） |
+| `EDGEFLOW_CLOUDCORE_REGISTRY_TOKEN` | 空 | 私有 registry 的 Bearer token（可选；Docker Hub 自动换取无需配置） |
 
 K8s 部署（Helm）：两者均可经 `cloudcore.env` 透传（values.yaml 已留注释行示例）；Chart 无新增 values 必填项。
 

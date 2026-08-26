@@ -369,14 +369,20 @@ func ValidateVersionTag(s string) error {
 
 // ValidateMirror 校验镜像 ref（设计 §8.1）：小写、必带 tag、禁 ".."、禁连续 '/'
 // （正则已排除）、端口 1..65535 越界拒绝。tag 由最后一个 ':' 界定。
+// v0.11.0（R-1+ 关联）：允许显式 scheme（http:// https://，内网明文
+// registry 场景）——与探活层 parseMirror 对齐（剥 scheme 后按原规则校验）。
 func ValidateMirror(s string) error {
 	if s == "" {
 		return errors.New("mirror is required")
 	}
-	if !mirrorRe.MatchString(s) {
+	body := s
+	if i := strings.Index(body, "://"); i >= 0 {
+		body = body[i+3:]
+	}
+	if !mirrorRe.MatchString(body) {
 		return fmt.Errorf("invalid mirror %q: must be a lowercase registry reference with at least one path segment and an explicit tag (e.g. registry.example.com/ns/model:v1.2.0)", s)
 	}
-	if m := mirrorPortRe.FindStringSubmatch(s); m != nil {
+	if m := mirrorPortRe.FindStringSubmatch(body); m != nil {
 		port := 0
 		for _, c := range m[2] {
 			port = port*10 + int(c-'0')

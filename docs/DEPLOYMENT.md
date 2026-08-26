@@ -647,7 +647,8 @@ etcdctl get /edgeflow/_meta/schemaVersion          # = "1"（快照自带则保�
 | `EDGEFLOW_CLOUDCORE_RELEASE_GC_ENABLED` | 空 | 终态发布 GC 开关（v0.8.0，L28）：`1`/`true` 开启；默认关闭（L31 审计口径——终态 release 键永久保留） |
 | `EDGEFLOW_CLOUDCORE_RELEASE_GC_KEEP` | `100` | 终态发布保留条数（v0.8.0，L28）：≥1，非法 fail-fast；仅 GC 开启时消费 |
 | `EDGEFLOW_CLOUDCORE_RELEASE_BATCH_PARALLEL` | `1` | 发布批内并行部署度（v0.10.0，D6）：≥1，非法 fail-fast；默认 1=逐节点串行（零行为变化）；>1 时批内节点并行 DeployVersion（信号量限流，min(parallel, 批大小)）；failFast 下本批在途执行完、后续批次中止 |
-| `EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK` | 空 | 发布前镜像存在性探活模式（v0.9.0，R-1）：空/off=不检查（默认，零行为变化）、warn=失败仅告警（发布照常）、fail=失败阻断发布（422）；非法值 fail-fast |
+| `EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK` | 空 | 发布前镜像存在性探活（off/warn/fail，v0.9.0 R-1）；v0.11.0 起探活成功时固化 manifest digest 至发布头（mirrorDigest），warn/fail 模式下发布终态新增「节点上报 digest 与期望一致」约束（不一致 → perNode failed/digest-mismatch；off 或 HEAD 缺头 → digest 空、全链路跳过） |
+ 发布前镜像存在性探活模式（v0.9.0，R-1）：空/off=不检查（默认，零行为变化）、warn=失败仅告警（发布照常）、fail=失败阻断发布（422）；非法值 fail-fast |
 | `EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK_TIMEOUT` | `5s` | 镜像探活超时（>0，非法 fail-fast）；Docker Hub 需先换 token（约 2 次 RTT） |
 | `EDGEFLOW_CLOUDCORE_REGISTRY_TOKEN` | 空 | 私有 registry 的 Bearer token（可选；Docker Hub 自动换取无需配置） |
 

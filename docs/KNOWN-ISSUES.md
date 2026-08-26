@@ -69,7 +69,7 @@
 
 | # | 位置 | 限制 | 影响 | 计划 |
 |---|------|------|------|------|
-| L12 | 判活/续约路径（LeaseEtcdRegistry 心跳续约 + 三态判活） | **判活依赖 etcd 可用性**：quorum 丢失/全断 > lease TTL（默认 300s）→ 租约到期删 hb 键 → 节点**全量软离线**（有界：≤TTL+重试窗口）；etcd 恢复 → ≤1 心跳周期自动重建租约自愈。与 v0.5.0「etcd 故障期间判活完全不受影响（内存瞬态）」**语义差异**，已在 RELEASE-NOTES-v060 §一.2 明示 | etcd 故障 >TTL 时 API 显示节点短时 Offline（**零数据删除**：软离线 + 24h 保留期 + 删除守卫）；监控假警报需按 TTL 折算阈值 | 续约重试缓冲（<TTL 无感）+ 默认 TTL 300s 覆盖常见恢复窗口；文档明示（DEPLOYMENT §10.8.4）；建议 /metrics「续约失败计数」gauge 告警（**v0.7.0 未纳入，排后续版本**） |
+| L12 | 判活/续约路径（LeaseEtcdRegistry 心跳续约 + 三态判活） | **判活依赖 etcd 可用性**：quorum 丢失/全断 > lease TTL（默认 300s）→ 租约到期删 hb 键 → 节点**全量软离线**（有界：≤TTL+重试窗口）；etcd 恢复 → ≤1 心跳周期自动重建租约自愈。与 v0.5.0「etcd 故障期间判活完全不受影响（内存瞬态）」**语义差异**，已在 RELEASE-NOTES-v060 §一.2 明示 | etcd 故障 >TTL 时 API 显示节点短时 Offline（**零数据删除**：软离线 + 24h 保留期 + 删除守卫）；监控假警报需按 TTL 折算阈值 | 续约重试缓冲（<TTL 无感）+ 默认 TTL 300s 覆盖常见恢复窗口；文档明示（DEPLOYMENT §10.8.4）；建议 /metrics「续约失败计数」gauge 告警（**v0.8.0 已闭环**：renewal_failures_total；**v0.11.0 补 hb 键重建计数** hb_rebuilds_total，见 §11） |
 | L13 | watch 同步（WatchPrefix 应用器 → 内存缓存） | **watch 延迟窗口**：跨副本读一致有界延迟（常态 ms 级；断线重放 ≤ 重扫周期 30s）；读可能短暂落后 | 多副本间 API 查询结果瞬时不一致（他副本刚写的 Desired/心跳 ≤1 重放周期内可见） | 判活/GC 正确性不依赖 watch（GuardedDelete + 周期重扫兜底）；API 粘性路由仅为体验建议（正确性无关，CAS 已保证） |
 | L13b | 离线检出时延 | 离线检出时延上界 ≈ **2×TTL**（租约到期 + 续约重试窗口） | 断开事件丢失场景下 Offline 判定最多滞后 ≈2×TTL（默认 ≈10m）；正常断开仍由 CloudHub 90s 事件快路径判定，不受影响 | TTL 可配（调参权衡表见 DEPLOYMENT §10.8.4）；监控告警阈值按此折算 |
 | L14 | hb 键值 lastSeen（跨副本展示精度） | lastHeartbeatAt 精度 = hb 键值 lastSeen（副本时钟写入）；**判活不看时间戳只看键存在性** → 时钟漂移绝不影响判活，仅影响展示精度 | 副本时钟偏差大时跨副本 lastHeartbeatAt 展示有偏差（不影响 Ready/Offline 判定） | 如需高精度可后续加时钟同步约束（etcd NTP 要求见 §10.7.4）；登记 |
@@ -120,7 +120,7 @@
 | 编号 | 问题面 | 闭环说明 | 残余与建议 |
 |---|---|---|---|
 | ③（Pod 部分） | 云端 Pod 状态不落盘 | ✅ **v0.9.0 闭环**：EtcdPodStore 写穿（Upsert/Delete 先 etcd 后内存、失败内存不动）+ 读路径内存缓存 + Load 全量重建 + LoadAnchored/StartWatch 外部多副本增量同步；键空间 `/edgeflow/podstatus/<nodeID>/<ns>/<podName>`（v0.4.0 预留）启用；E2E 实测：重启后 Pod 列表立即可见（不再短暂清空） | 设备 reported（properties/LastReportedAt）仍不落盘（延后，与 Pod 原同族登记）；写穿失败降级内存（Upsert 返回 error，上报自愈） |
-| R-1 | 发布前镜像存在性探活 | ✅ **v0.9.0 实现**（P2 升级）：registry v2 HEAD（私有 registry 直连 + Docker Hub token 换取）；env `EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK`（off/warn/fail，**默认 off 零行为变化**）+ `RELEASE_MIRROR_CHECK_TIMEOUT`（5s）+ `REGISTRY_TOKEN`（私有 registry Bearer）；warn=仅告警（发布照常 202）/fail=阻断 422（带 mirror 字段） | 探活是"存在性"检查非"可拉取"保证（拉取在边缘，PodStatus 暴露）；镜像 digest 级校验未做（后续版本） |
+| R-1 | 发布前镜像存在性探活 | ✅ **v0.9.0 实现**（P2 升级）：registry v2 HEAD（私有 registry 直连 + Docker Hub token 换取）；env `EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK`（off/warn/fail，**默认 off 零行为变化**）+ `RELEASE_MIRROR_CHECK_TIMEOUT`（5s）+ `REGISTRY_TOKEN`（私有 registry Bearer）；warn=仅告警（发布照常 202）/fail=阻断 422（带 mirror 字段） | 探活是"存在性"检查非"可拉取"保证（拉取在边缘，PodStatus 暴露）；镜像 digest 级校验未做（后续版本）——**v0.11.0 已闭环**（R-1+：探活固化 mirrorDigest + 边缘 imageDigest 上报比对，见 §11） |
 
 
 ## 10. v0.10.0 开发轮闭环登记（2026-08-26，云端状态收官 + 发布执行增强 + 平台构建修复）
@@ -131,4 +131,15 @@
 |---|---|---|---|
 | ③（设备部分） | 设备 reported 不落盘 | ✅ **v0.10.0 闭环**：EtcdDeviceStore.Upsert 写穿完整快照（身份+Desired+reported，先 etcd 后内存、失败内存不动）；与 SetDesired CAS 路径共存（两路径写同一键完整快照，CAS 读基准合并写回天然保留 reported）；applyPut 整值采用（reported 从"各副本本地瞬态"升级为"全局一致快照——最后写入者"）；E2E 实测：重启后设备属性立即可见 | 写放大评估：设备上报 30s 周期 × 每设备一次 Put，量级 MB 可接受；多副本下 reported 收敛为最后写入者（与 Pod 一致） |
 | D6 | 批内并发（v0.8/v0.9 两次延后） | ✅ **v0.10.0 实现**（P2 升级）：`EDGEFLOW_CLOUDCORE_RELEASE_BATCH_PARALLEL`（默认 1=串行，零行为变化；≥1 非法 fail-fast）；批内信号量限流并行（min(parallel, 批大小)）；failFast 语义：并发下本批在途执行完、后续批次中止（终态 head=failed + 未部署 skipped 与串行收敛一致）；E2E 实测 batchSize=3 + parallel=2 → succeeded | batchSize 仍是批粒度非并发度（并行度由本 env 独立控制） |
-| L20b | Windows 交叉编译断链 | ✅ **v0.10.0 闭环**：lockCRLFile/unlockCRLFile 平台分文件（crl_lock_unix.go / crl_lock_windows.go，x/sys/windows LockFileEx）；GOOS=windows 交叉编译 ./pkg/certs/ ./cmd/cloudcore/ 通过 | 测试辅助 syscall.Dup 仅 Unix（Windows 上不跑本仓库测试，登记为测试环境边界）；Windows 制品未加入发布矩阵（12 制品口径不变，可后续加） |
+| L20b | Windows 交叉编译断链 | ✅ **v0.10.0 闭环**：lockCRLFile/unlockCRLFile 平台分文件（crl_lock_unix.go / crl_lock_windows.go，x/sys/windows LockFileEx）；GOOS=windows 交叉编译 ./pkg/certs/ ./cmd/cloudcore/ 通过 | 测试辅助 syscall.Dup 仅 Unix——**v0.11.0 已闭环**（captureStderrFd 平台分文件，GOOS=windows vet 通过）；Windows 制品已加入发布矩阵——**v0.11.0 已闭环**（12→18，见 §11） |
+
+
+## 11. v0.11.0 开发轮闭环登记（2026-08-26，发布镜像可信化 + 可观测性补全 + 发布矩阵扩展）
+
+> 提交：fd803c5（R-1+/L12+/L20b+）/ 36a40c9（ValidateMirror scheme 对齐）。
+
+| 编号 | 问题面 | 闭环说明 | 残余与建议 |
+|---|---|---|---|
+| R-1+ | 镜像 digest 级校验（§9 R-1 升级） | ✅ **v0.11.0 闭环**：探活固化 manifest digest（CheckMirror 返回 HEAD Docker-Content-Digest；200 缺头 → ("",nil) 保持 v0.9.0 语义静默降级）；ModelRelease.MirrorDigest 承载期望值（off/warn 失败为空 → 全链路跳过）；边缘 PodStatus 上报 imageDigest（云端/wire/边缘三端 DTO，老边缘字段缺失兼容）；控制器三接入点比对（部署即时检查/推进期复查/终态复核），mismatch=perNode failed（reason=digest-mismatch）+ 与部署失败同权；E2E 五场景实测全过（match→succeeded / mismatch→failed / 老边缘跳过 / off 空 / 推进期 catch） | ① 真实 edgecore 无运行时镜像 digest 采集（BuildStatusPayload 不填）→ 对真实边缘等效 off，需容器运行时接入（后续版本）；② 终态后晚到 mismatch 不回写（审计稳定；运维经 GET release.mirrorDigest vs GET pods.imageDigest 对比发现，处置=人工回滚/重发）；③ ValidateMirror 支持显式 scheme（http:// 内网明文 registry，可信隔离网络） |
+| L12+ | hb 键重建计数（§8 L12 残余） | ✅ **v0.11.0 闭环**：续约队列改 renewRequest{nodeID, repair}；三处修复性入口（applyDelete locallyServing / rescanOnce / gcSweepOne 守卫 0）经 enqueueRepairRenew 标记；worker grant 成功才计数（重试成功只计一次；正常心跳不计）；/metrics 第 8 项 edgeflow_cloudcore_lease_hb_rebuilds_total（仅外部模式注入，0 值输出）；单测 3 用例 + metrics 3 用例 | 告警建议：持续增长（如 5min 内 >N）→ 租约抖动/键被外部删除，与 renewal_failures 互补（MONITORING-ALERTING-v011） |
+| L20b+ | 测试辅助平台隔离 + Windows 入矩阵（§10 L20b 残余） | ✅ **v0.11.0 闭环**：captureStderrFd 平台分文件（certs_stderr_unix_test.go 原实现 / certs_stderr_windows_test.go SetOutput 捕获 + pkg/log.Output 访问器）；GOOS=windows vet ./pkg/certs/ 通过；Makefile CROSS_PLATFORMS 3×6（+windows amd64/arm64 +keadm），cross-build 实测 18 制品（PE 格式） | edgecore-windows 仅验证编译与构建（主要部署面仍 linux/arm64），不承诺运行语义；发布矩阵 12→18 口径 |

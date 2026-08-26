@@ -50,6 +50,18 @@ scrape_configs:
 短期以 API 探测兜底；建议 v0.1.x 后续补 `edgeflow_cloudcore_nodes_offline_total`（gauge，
 由 registry 按节点状态计数注入，与现有 Providers 注入机制同构——cloud/pkg/metrics/metrics.go）。
 
+### 2.6 v0.11.0 指标补全（L12+，hb 键修复性重建计数）
+
+外部 etcd 模式 /metrics 由 7 项增至 **8 项**（embed/纯内存保持 7 项）：
+
+- `edgeflow_cloudcore_lease_hb_rebuilds_total`（counter，仅外部模式注入，**0 值也输出**）：
+  hb 键被删/缺失后由续约 worker **成功重建**的次数（本副本仍在服务但键丢失的场景：
+  applyDelete locallyServing / rescanOnce / gcSweepOne 守卫 0 三处修复性入口）。
+- **告警建议**：持续增长（如 5min 内 >N）→ 租约抖动 / hb 键被外部删除（etcdctl 误删、他副本异常）
+  ——与 `lease_renewal_failures_total`（etcd 侧异常/网络分区）**互补**：前者偏"键被外部干预"，
+  后者偏"连接/服务故障"；两者同时增长 = etcd 侧异常。
+- 阈值参考：判活 TTL（默认 300s）内允许少量重建（<TTL 窗口自愈）；>N/5min 持续 → 告警。
+
 ---
 
 ## 3. Prometheus 告警规则草案（YAML 片段）

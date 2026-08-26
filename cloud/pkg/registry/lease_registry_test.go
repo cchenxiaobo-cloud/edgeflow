@@ -503,3 +503,91 @@ func TestLeaseRegLoadAnchored(t *testing.T) {
 		t.Fatalf("LoadAnchored 不应写入任何键（只读加载）: keys=%v", keys)
 	}
 }
+
+// ── v0.11.0（L12+）：hb 键修复性重建计数 ───────────────────────────────
+
+// TestLeaseRegRepairRebuildCounter 修复性重写（applyDelete locallyServing）
+// → worker grant 成功 → HBRebuildsCount 自增。
+func TestLeaseRegRepairRebuildCounter(t *testing.T) {
+	f := newFakeExtKV()
+	r, err := newLeaseReg(f)
+	if err != nil {
+		t.Fatalf("NewLeaseEtcdRegistry: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer r.Close()
+	r.StartWatch(ctx)
+	if err := r.Seed([]NodeInfo{testInfo("n1")}, 0); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	if err := r.UpdateHeartbeat("n1", time.Now().UnixMilli()); err != nil {
+		t.Fatalf("UpdateHeartbeat: %v", err)
+	}
+	// hb 键被删 → 修复性重写入队 → worker 重建成功 → 计数 1
+	r.applyDelete(KeyHeartbeatsPrefix + "n1")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if r.HBRebuildsCount() == 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("修复性重建后 HBRebuildsCount = %d，期望 1", r.HBRebuildsCount())
+}
+
+// TestLeaseRegNormalRenewNotCounted 正常心跳续约（非修复）不计入重建计数。
+func TestLeaseRegNormalRenewNotCounted(t *testing.T) {
+	f := newFakeExtKV()
+	r, err := newLeaseReg(f)
+	if err != nil {
+		t.Fatalf("NewLeaseEtcdRegistry: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer r.Close()
+	r.StartWatch(ctx)
+	if err := r.Seed([]NodeInfo{testInfo("n1")}, 0); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := r.UpdateHeartbeat("n1", time.Now().UnixMilli()); err != nil {
+			t.Fatalf("UpdateHeartbeat #%d: %v", i, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := r.HBRebuildsCount(); got != 0 {
+		t.Fatalf("正常心跳后 HBRebuildsCount = %d，期望 0（仅修复性重写计数）", got)
+	}
+}
+
+// TestLeaseRegRescanRepairCounted rescanOnce 修复性入口（hb 缺失但本副本
+// 连接活着）→ 重建成功计数。
+func TestLeaseRegRescanRepairCounted(t *testing.T) {
+	f := newFakeExtKV()
+	r, err := newLeaseReg(f)
+	if err != nil {
+		t.Fatalf("NewLeaseEtcdRegistry: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer r.Close()
+	r.StartWatch(ctx)
+	if err := r.Seed([]NodeInfo{testInfo("n1")}, 0); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	if err := r.UpdateHeartbeat("n1", time.Now().UnixMilli()); err != nil {
+		t.Fatalf("UpdateHeartbeat: %v", err)
+	}
+	// 直接删 hb 键（不经 applyDelete 事件）→ rescanOnce 应发现缺失并修复
+	_ = f.Delete(context.Background(), KeyHeartbeatsPrefix+"n1")
+	r.rescanOnce(ctx)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if r.HBRebuildsCount() >= 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("rescan 修复后 HBRebuildsCount = %d，期望 ≥1", r.HBRebuildsCount())
+}

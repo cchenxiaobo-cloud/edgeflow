@@ -74,6 +74,12 @@ func SetOutput(w io.Writer) {
 	logger.SetOutput(w)
 }
 
+// Output 返回当前日志输出目标（v0.11.0，L20b+：Windows 测试注入恢复用；
+// 与 SetOutput 对称）。
+func Output() io.Writer {
+	return logger.Writer()
+}
+
 // Debugf 打印一条 Debug 级别日志，用法与 fmt.Printf 相同。
 func Debugf(format string, args ...any) {
 	logf(LevelDebug, format, args...)

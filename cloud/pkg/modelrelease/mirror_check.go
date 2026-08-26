@@ -23,6 +23,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"edgeflow/pkg/log"
 )
 
 // MirrorCheckMode 是镜像探活模式。
@@ -118,12 +120,14 @@ func parseMirror(mirror string) (mirrorParts, error) {
 // manifestAccept 是 Docker 分发 manifest 的 Accept 头（部分 registry 校验）。
 const manifestAccept = "application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json, application/json"
 
-// CheckMirror 检查镜像在 registry 中是否存在。返回 nil = 存在；错误 =
-// 不存在或 registry 不可达（调用方按模式决定 warn/fail）。
-func CheckMirror(ctx context.Context, mirror string, opts MirrorCheckOptions) error {
+// CheckMirror 检查镜像在 registry 中是否存在，并返回 manifest digest
+// （HEAD 响应的 Docker-Content-Digest 头；200 但缺头 → ("", nil)，保持
+// v0.9.0 "200=成功" 语义并静默降级为不比对——调用方按模式决定 warn/fail）。
+// 返回 nil = 存在；错误 = 不存在或 registry 不可达。
+func CheckMirror(ctx context.Context, mirror string, opts MirrorCheckOptions) (digest string, err error) {
 	parts, err := parseMirror(mirror)
 	if err != nil {
-		return err
+		return "", err
 	}
 	timeout := opts.Timeout
 	if timeout <= 0 {
@@ -153,13 +157,13 @@ func CheckMirror(ctx context.Context, mirror string, opts MirrorCheckOptions) er
 	if parts.Registry == "" {
 		token, terr := dockerHubToken(ctx, client, parts.Repo, endpoint)
 		if terr != nil {
-			return fmt.Errorf("modelrelease: Docker Hub token 获取失败: %w", terr)
+			return "", fmt.Errorf("modelrelease: Docker Hub token 获取失败: %w", terr)
 		}
 		opts.Token = token
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, manifestURL, nil)
 	if err != nil {
-		return fmt.Errorf("modelrelease: 构造探活请求失败: %w", err)
+		return "", fmt.Errorf("modelrelease: 构造探活请求失败: %w", err)
 	}
 	req.Header.Set("Accept", manifestAccept)
 	if opts.Token != "" {
@@ -167,19 +171,23 @@ func CheckMirror(ctx context.Context, mirror string, opts MirrorCheckOptions) er
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("modelrelease: 镜像探活请求失败（registry 不可达?）: %w", err)
+		return "", fmt.Errorf("modelrelease: 镜像探活请求失败（registry 不可达?）: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	switch {
 	case resp.StatusCode == http.StatusOK:
-		return nil
+		d := strings.TrimSpace(resp.Header.Get("Docker-Content-Digest"))
+		if d == "" {
+			log.Warnf("[modelrelease] 镜像 %s 探活 200 但响应缺 Docker-Content-Digest 头——digest 校验对该发布降级为不比对", mirror)
+		}
+		return d, nil
 	case resp.StatusCode == http.StatusNotFound:
-		return fmt.Errorf("modelrelease: 镜像 %s 在 registry 中不存在（404）", mirror)
+		return "", fmt.Errorf("modelrelease: 镜像 %s 在 registry 中不存在（404）", mirror)
 	case resp.StatusCode == http.StatusUnauthorized:
-		return fmt.Errorf("modelrelease: 镜像探活被拒（401）——registry 需要鉴权，请配置 EDGEFLOW_CLOUDCORE_REGISTRY_TOKEN（私有 registry）或检查网络策略（Docker Hub）")
+		return "", fmt.Errorf("modelrelease: 镜像探活被拒（401）——registry 需要鉴权，请配置 EDGEFLOW_CLOUDCORE_REGISTRY_TOKEN（私有 registry）或检查网络策略（Docker Hub）")
 	default:
-		return fmt.Errorf("modelrelease: 镜像探活异常状态码 %d（mirror=%s）", resp.StatusCode, mirror)
+		return "", fmt.Errorf("modelrelease: 镜像探活异常状态码 %d（mirror=%s）", resp.StatusCode, mirror)
 	}
 }
 

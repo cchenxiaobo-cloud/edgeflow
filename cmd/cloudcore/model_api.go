@@ -83,20 +83,22 @@ type mirrorCheckConfig struct {
 	token   string
 }
 
-// check 执行一次镜像探活；返回 (是否阻断, 错误)。off 模式恒不检查。
-func (c *mirrorCheckConfig) check(ctx context.Context, mirror string) (block bool, err error) {
+// check 执行一次镜像探活；返回 (digest, 是否阻断, 错误)。off 模式恒不
+// 检查（digest 空）。v0.11.0 R-1+：探活成功时固化 manifest digest 至
+// 发布头（mirrorDigest），供终态 digest 校验。
+func (c *mirrorCheckConfig) check(ctx context.Context, mirror string) (digest string, block bool, err error) {
 	if c == nil || c.mode == modelrelease.MirrorCheckOff {
-		return false, nil
+		return "", false, nil
 	}
-	err = modelrelease.CheckMirror(ctx, mirror, modelrelease.MirrorCheckOptions{
+	digest, err = modelrelease.CheckMirror(ctx, mirror, modelrelease.MirrorCheckOptions{
 		Mode:    c.mode,
 		Timeout: c.timeout,
 		Token:   c.token,
 	})
 	if err == nil {
-		return false, nil
+		return digest, false, nil
 	}
-	return c.mode == modelrelease.MirrorCheckFail, err
+	return "", c.mode == modelrelease.MirrorCheckFail, err
 }
 
 // Register 一次性注册 17 条模型 API 路由（WBS-7 装配面最小：main.go 在
@@ -756,7 +758,8 @@ func (a *modelAPI) createRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// R-1（v0.9.0）：发布前镜像存在性探活（默认 off；warn 仅告警/fail 阻断 422）
-	if block, err := a.mirrorCheck.check(r.Context(), version.Mirror); err != nil {
+	digest, block, err := a.mirrorCheck.check(r.Context(), version.Mirror)
+	if err != nil {
 		if block {
 			writeErr(w, http.StatusUnprocessableEntity,
 				fmt.Sprintf("release mirror check failed: %v", err),
@@ -788,6 +791,7 @@ func (a *modelAPI) createRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	// 6) guard + release 头键 + perNode pending 预写（存储层；202 返回）
 	release := &modelrepo.ModelRelease{
+		MirrorDigest: digest,
 		ID: newReleaseID(), Model: modelName, Version: req.Version,
 		Target: req.Target, TargetNodes: targetNodes,
 		BatchSize: req.BatchSize, PauseBetween: req.PauseBetween,

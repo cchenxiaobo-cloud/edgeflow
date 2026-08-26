@@ -56,6 +56,7 @@ func TestCheckMirrorPrivate(t *testing.T) {
 			if r.Header.Get("Authorization") != "" {
 				authHeader = r.Header.Get("Authorization")
 			}
+			w.Header().Set("Docker-Content-Digest", "sha256:1111111111111111111111111111111111111111111111111111111111111111")
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -63,23 +64,26 @@ func TestCheckMirrorPrivate(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+		w.Header().Set("Docker-Content-Digest", "sha256:1111111111111111111111111111111111111111111111111111111111111111")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
-	// 存在
+	// 存在（200 + Docker-Content-Digest 头 → 返回 digest）
 	opts := MirrorCheckOptions{Timeout: 3 * time.Second, HTTPClient: srv.Client()}
-	if err := CheckMirror(context.Background(), srv.URL+"/team/model:v1", opts); err != nil {
+	if _, err := CheckMirror(context.Background(), srv.URL+"/team/model:v1", opts); err != nil {
 		t.Errorf("存在应返回 nil: %v", err)
 	}
 	// 不存在
-	if err := CheckMirror(context.Background(), srv.URL+"/team/missing:latest", opts); err == nil || !strings.Contains(err.Error(), "404") {
+	if _, err := CheckMirror(context.Background(), srv.URL+"/team/missing:latest", opts); err == nil || !strings.Contains(err.Error(), "404") {
 		t.Errorf("不存在应报 404: %v", err)
 	}
 	// 带 token（私有 registry 探活应携带 Authorization）
 	opts.Token = "sekret"
-	if err := CheckMirror(context.Background(), srv.URL+"/team/model:v1", opts); err != nil {
+	if d, err := CheckMirror(context.Background(), srv.URL+"/team/model:v1", opts); err != nil {
 		t.Errorf("带 token 探活失败: %v", err)
+	} else if d == "" {
+		t.Error("探活成功但 digest 为空（应返回 Docker-Content-Digest）")
 	}
 	if authHeader != "Bearer sekret" {
 		t.Errorf("Authorization 头 = %q，期望 Bearer sekret", authHeader)
@@ -103,6 +107,7 @@ func TestCheckMirrorDockerHubFlow(t *testing.T) {
 			if r.Header.Get("Authorization") == "Bearer hub-token-123" {
 				sawToken = true
 			}
+			w.Header().Set("Docker-Content-Digest", "sha256:2222222222222222222222222222222222222222222222222222222222222222")
 			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -110,13 +115,16 @@ func TestCheckMirrorDockerHubFlow(t *testing.T) {
 	}))
 	defer srv.Close()
 	// 走完整 CheckMirror（HubEndpoint 注入本地端点，不连真实 Docker Hub）
-	err := CheckMirror(context.Background(), "mnist:v1", MirrorCheckOptions{
+	d, err := CheckMirror(context.Background(), "mnist:v1", MirrorCheckOptions{
 		Timeout:     3 * time.Second,
 		HubEndpoint: srv.URL,
 		HTTPClient:  srv.Client(),
 	})
 	if err != nil {
 		t.Fatalf("CheckMirror 失败: %v", err)
+	}
+	if d == "" {
+		t.Error("Docker Hub 流程 digest 为空")
 	}
 	if !sawToken {
 		t.Error("sawToken=false：HEAD 应携带换取到的 Bearer token")
@@ -132,7 +140,7 @@ func TestCheckMirrorTimeout(t *testing.T) {
 	defer srv.Close()
 	opts := MirrorCheckOptions{Timeout: 50 * time.Millisecond, HTTPClient: srv.Client()}
 	start := time.Now()
-	err := CheckMirror(context.Background(), srv.URL+"/repo:v1", opts)
+	_, err := CheckMirror(context.Background(), srv.URL+"/repo:v1", opts)
 	if err == nil {
 		t.Error("超时应返回错误")
 	}
@@ -166,5 +174,42 @@ func TestParseMirrorCheckMode(t *testing.T) {
 		if err != nil || got != c.want {
 			t.Errorf("%q → %v err=%v，期望 %v", c.in, got, err, c.want)
 		}
+	}
+}
+
+
+// TestCheckMirrorReturnsDigest 验证 200 + Docker-Content-Digest 头 → 返回该值。
+func TestCheckMirrorReturnsDigest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Docker-Content-Digest", "  sha256:abc123  ")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	d, err := CheckMirror(context.Background(), srv.URL+"/team/model:v1", MirrorCheckOptions{
+		Timeout: 3 * time.Second, HTTPClient: srv.Client(),
+	})
+	if err != nil {
+		t.Fatalf("探活失败: %v", err)
+	}
+	if d != "sha256:abc123" {
+		t.Errorf("digest = %q，期望 sha256:abc123（应 TrimSpace）", d)
+	}
+}
+
+// TestCheckMirrorMissingDigestHeader 验证 200 但缺 Docker-Content-Digest
+// 头 → ("", nil)（v0.9.0 语义保持，digest 校验静默降级）。
+func TestCheckMirrorMissingDigestHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	d, err := CheckMirror(context.Background(), srv.URL+"/team/model:v1", MirrorCheckOptions{
+		Timeout: 3 * time.Second, HTTPClient: srv.Client(),
+	})
+	if err != nil {
+		t.Fatalf("探活失败: %v", err)
+	}
+	if d != "" {
+		t.Errorf("缺头应返回空 digest，实际 %q", d)
 	}
 }

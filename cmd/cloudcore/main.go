@@ -44,6 +44,26 @@ import (
 	"edgeflow/pkg/version"
 )
 
+
+// nodeDigestOf 返回节点最近上报的镜像 digest（v0.11.0，R-1+ DigestLookup
+// 装配）：优先模型部署 Pod（edgeflow-model-* 前缀），无则取该节点任意
+// 非空 imageDigest；全部为空 → ""（跳过比对，老边缘不误伤）。
+func nodeDigestOf(podStore podstatus.Store) func(string) string {
+	return func(nodeID string) string {
+		for _, ps := range podStore.ListByNode(nodeID) {
+			if strings.HasPrefix(ps.PodName, "edgeflow-model-") && ps.ImageDigest != "" {
+				return ps.ImageDigest
+			}
+		}
+		for _, ps := range podStore.ListByNode(nodeID) {
+			if ps.ImageDigest != "" {
+				return ps.ImageDigest
+			}
+		}
+		return ""
+	}
+}
+
 func main() {
 	// run 返回进程退出码：非 0 表示启动/运行失败
 	if code := run(os.Args[1:], os.Stdout, os.Stderr); code != 0 {
@@ -411,6 +431,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			GCEnabled:      releaseGCEnabled,
 			GCKeep:         releaseGCKeep,
 			BatchParallel:  releaseBatchParallel,
+			DigestLookup:   nodeDigestOf(podStore),
 		})
 		if err != nil {
 			log.Errorf("[modelrelease] 发布控制器装配失败: %v", err)
@@ -431,7 +452,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		modelStore, relCtrl, closeModel, err = assembleModelStores(
 			modelKV, hub.ReliableSendContext, externalEtcd, modeLabel, sigCtx, releaseScan, releaseLockTTL,
-			releaseGCEnabled, releaseGCKeep, releaseBatchParallel)
+			releaseGCEnabled, releaseGCKeep, releaseBatchParallel, podStore)
 		if err != nil {
 			if externalEtcd {
 				log.Errorf("[modelrelease] 外部模式模型仓库装配失败，拒绝启动（不降级——外部 etcd 是显式部署依赖）: %v", err)
@@ -514,6 +535,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			Phase:           ps.Phase,
 			Message:         ps.Message,
 			LastReconcileAt: ps.LastReconcileAt,
+			ImageDigest:     ps.ImageDigest,
 		})
 	})
 
@@ -624,8 +646,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// v0.8.0（L12）：续约失败计数仅外部模式（LeaseEtcdRegistry）注入，
 	// 其余形态 Provider 为 nil → 指标行不输出（保持 5 项基线输出不变）。
 	var leaseRenewalFailures func() uint64
+	var leaseHBRebuilds func() uint64
 	if lr, ok := nodeReg.(*registry.LeaseEtcdRegistry); ok {
 		leaseRenewalFailures = lr.RenewalFailures
+		leaseHBRebuilds = lr.HBRebuildsCount
 	}
 	m := metrics.New(metrics.Providers{
 		Nodes:                 nodeReg.Count,
@@ -633,6 +657,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		Devices:               deviceStore.Count,
 		ActiveConnections:     hub.ConnCount,
 		LeaseRenewalFailures:  leaseRenewalFailures,
+		LeaseHBRebuilds:       leaseHBRebuilds,
 	})
 	mux.HandleFunc("GET /metrics", m.Handler())
 

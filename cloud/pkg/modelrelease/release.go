@@ -82,6 +82,10 @@ type Options struct {
 	GCEnabled bool
 	// GCKeep 终态保留条数（默认 100，≥1；仅 GCEnabled 时消费）。
 	GCKeep int
+	// DigestLookup 返回节点最近上报的镜像 digest（v0.11.0，R-1+）；nil =
+	// 关闭 digest 校验（回归锚点）。配合发布头 MirrorDigest：期望非空且
+	// lookup 非空且不等 → perNode failed（reason=digest-mismatch）。
+	DigestLookup func(nodeID string) string
 	// BatchParallel 批内并行部署度（v0.10.0，D6）：默认 1 = 逐节点串行
 	// （与 v0.7.0-v0.9.0 行为逐字节一致）；>1 时批内节点并行 DeployVersion
 	// （信号量限流，min(BatchParallel, 批大小)）。failFast 语义：并发下
@@ -345,6 +349,23 @@ func (c *Controller) advance(ctx context.Context, id string) {
 	for _, nr := range results {
 		byNode[nr.NodeID] = nr
 	}
+	// 推进期 digest 复查（v0.11.0，R-1+ 接入点②）：对已 deployed 节点复核
+	// 上报 digest 与发布头期望一致；mismatch 已由 digestMismatch 写 perNode
+	// failed——failFast 下中止（后续批次 skipped），否则继续（终态按失败
+	// 计数判定）。
+	for _, nodeID := range h.TargetNodes {
+		nr, ok := byNode[nodeID]
+		if !ok || nr.Status != modelrepo.NodeRelDeployed {
+			continue
+		}
+		if ok, reason := c.digestMismatch(ctx, id, h, nodeID); ok {
+			log.Warnf("[modelrelease] 推进期 digest 复核失败（release %s, node %s）: %s", id, nodeID, reason)
+			if h.FailFast {
+				c.abortFailFast(ctx, id, h, nodeID, reason, byNode)
+				return
+			}
+		}
+	}
 	batches := BuildBatches(h.TargetNodes, h.BatchSize)
 	bi := firstUnexecutedBatch(batches, byNode)
 	if bi < 0 {
@@ -421,6 +442,22 @@ func firstUnexecutedBatch(batches [][]string, byNode map[string]modelrepo.NodeRe
 //     无 failed——不满足 → head=failed（暴露实现缺陷，绝不静默 succeeded）；
 //   - 通过 → succeeded。
 func (c *Controller) finish(ctx context.Context, h *modelrepo.ModelRelease, results []modelrepo.NodeReleaseResult) {
+	// digest 终态复核（v0.11.0，R-1+ 接入点③）：对入参 results 中 deployed
+	// 节点逐一比对上报 digest；mismatch 写 perNode failed（幂等：置 failed
+	// 后不再被复核查到）后重新读取最新 perNode 再走既有判定。
+	for _, nr := range results {
+		if nr.Status != modelrepo.NodeRelDeployed {
+			continue
+		}
+		if ok, reason := c.digestMismatch(ctx, h.ID, h, nr.NodeID); ok {
+			log.Warnf("[modelrelease] 终态 digest 复核失败（release %s, node %s）: %s", h.ID, nr.NodeID, reason)
+		}
+	}
+	if results, err := c.store.ListNodeResults(ctx, h.ID); err == nil {
+		results = results
+	} else {
+		log.Warnf("[modelrelease] 终态复核后读 perNode 失败（release %s，按入参判定）: %v", h.ID, err)
+	}
 	sum := SummarizeNodes(results)
 	if sum.Failed > 0 {
 		c.setTerminal(ctx, h.ID, modelrepo.ReleaseStatusFailed, fmt.Sprintf("%d node(s) failed", sum.Failed))
@@ -523,6 +560,31 @@ func (c *Controller) deployBatchNodes(ctx context.Context, id string, h *modelre
 	return firstNode, firstReason
 }
 
+// digestMismatch 校验节点上报 digest 与发布头期望 digest（v0.11.0，
+// R-1+）。三跳过（任一成立返回 false, ""）：
+//   - 控制器 DigestLookup 未注入（nil）→ 整体关闭（回归锚点）；
+//   - 发布头 MirrorDigest 空（off 模式/HEAD 缺头/warn 失败）→ 全链路跳过；
+//   - 节点上报 digest 空（老边缘/未上报）→ 该节点跳过，不误伤不阻塞。
+// 不一致时写 perNode failed（Reason="digest-mismatch: expected <exp> got
+// <got>"）并返回 (true, reason)。幂等：节点已 failed 后不再被复核查到。
+func (c *Controller) digestMismatch(ctx context.Context, id string, h *modelrepo.ModelRelease, nodeID string) (bool, string) {
+	if c.opts.DigestLookup == nil || h.MirrorDigest == "" {
+		return false, ""
+	}
+	got := c.opts.DigestLookup(nodeID)
+	if got == "" {
+		return false, ""
+	}
+	if got == h.MirrorDigest {
+		return false, ""
+	}
+	reason := fmt.Sprintf("digest-mismatch: expected %s got %s", h.MirrorDigest, got)
+	_ = c.store.SetNodeResult(ctx, id, nodeID, &modelrepo.NodeReleaseResult{
+		NodeID: nodeID, Status: modelrepo.NodeRelFailed, Version: h.Version, Reason: reason,
+	})
+	return true, reason
+}
+
 // deployBatchNode 部署单节点（返回失败节点与原因；成功返回 "", ""）。
 func (c *Controller) deployBatchNode(ctx context.Context, id string, h *modelrepo.ModelRelease, nodeID string, byNode map[string]modelrepo.NodeReleaseResult) (string, string) {
 	// 接管续跑：已 deployed 跳过（6.1 重试语义：对 failed 节点不自动
@@ -549,6 +611,16 @@ func (c *Controller) deployBatchNode(ctx context.Context, id string, h *modelrep
 			NodeID: nodeID, Status: modelrepo.NodeRelFailed, Version: h.Version, Reason: reason,
 		})
 		log.Warnf("[modelrelease] node %s 部署失败（release %s）: %s", nodeID, id, reason)
+		if h.FailFast {
+			return nodeID, reason
+		}
+		return "", ""
+	}
+	// 部署即时 digest 检查（v0.11.0，R-1+ 接入点①）：上报已可见且不一致
+	// → 当轮按节点失败处理（failFast 立即可中止；SetNodeResult 已由
+	// digestMismatch 写成 failed）。
+	if ok, reason := c.digestMismatch(ctx, id, h, nodeID); ok {
+		log.Warnf("[modelrelease] node %s 部署即时 digest 检查失败（release %s）: %s", nodeID, id, reason)
 		if h.FailFast {
 			return nodeID, reason
 		}
@@ -645,6 +717,23 @@ func (c *Controller) runRollback(ctx context.Context, id string) {
 	byNode := make(map[string]modelrepo.NodeReleaseResult, len(results))
 	for _, nr := range results {
 		byNode[nr.NodeID] = nr
+	}
+	// 推进期 digest 复查（v0.11.0，R-1+ 接入点②）：对已 deployed 节点复核
+	// 上报 digest 与发布头期望一致；mismatch 已由 digestMismatch 写 perNode
+	// failed——failFast 下中止（后续批次 skipped），否则继续（终态按失败
+	// 计数判定）。
+	for _, nodeID := range h.TargetNodes {
+		nr, ok := byNode[nodeID]
+		if !ok || nr.Status != modelrepo.NodeRelDeployed {
+			continue
+		}
+		if ok, reason := c.digestMismatch(ctx, id, h, nodeID); ok {
+			log.Warnf("[modelrelease] 推进期 digest 复核失败（release %s, node %s）: %s", id, nodeID, reason)
+			if h.FailFast {
+				c.abortFailFast(ctx, id, h, nodeID, reason, byNode)
+				return
+			}
+		}
 	}
 	batches := BuildBatches(h.TargetNodes, h.BatchSize)
 

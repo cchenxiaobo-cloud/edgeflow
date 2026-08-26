@@ -21,6 +21,10 @@ type PodStatusPayload struct {
 	Phase           string `json:"phase"`           // 阶段：Running/Stopped/Absent/Unknown/Error
 	Message         string `json:"message"`         // 错误文本（Phase=Error 时非空，其余为空串）
 	LastReconcileAt int64  `json:"lastReconcileAt"` // 最近一次调谐时间（毫秒时间戳）
+	// ImageDigest 镜像 manifest digest（v0.11.0，R-1+）；可选。真实 edgecore
+	// 暂不采集运行时 digest（BuildStatusPayload 不填）——字段透传由整体
+	// marshal 自动完成，对真实边缘等效 off。
+	ImageDigest string `json:"imageDigest,omitempty"`
 }
 
 // phaseOf 把（状态，错误）映射为上报阶段，与云端契约一致：

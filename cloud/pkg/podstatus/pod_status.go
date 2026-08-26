@@ -70,6 +70,9 @@ type PodStatus struct {
 	Phase           string `json:"phase"`           // 阶段（Running/Stopped/Absent/Error）
 	Message         string `json:"message"`         // 附加说明（如错误原因）
 	LastReconcileAt int64  `json:"lastReconcileAt"` // 最近一次协调时间（毫秒时间戳）
+	// ImageDigest 节点上报的镜像 manifest digest（v0.11.0，R-1+）；可选——
+	// 老边缘/无运行时采集为空。云端发布终态判定用于与发布头 mirrorDigest 比对。
+	ImageDigest string `json:"imageDigest,omitempty"`
 }
 
 // DefaultNamespace 是契约中 namespace 缺省时的取值（与 K8s 默认命名空间一致）。

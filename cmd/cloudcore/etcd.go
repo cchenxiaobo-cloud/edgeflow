@@ -18,6 +18,7 @@ import (
 	"edgeflow/pkg/httpx"
 	"edgeflow/pkg/log"
 	"edgeflow/pkg/protocol"
+	"edgeflow/cloud/pkg/podstatus"
 )
 
 // nodeRetentionFromEnv 解析 EDGEFLOW_CLOUDCORE_NODE_RETENTION（默认
@@ -295,7 +296,7 @@ func warnReleaseLockTTLIgnored() {
 func assembleModelStores(kv etcdstore.KVStore,
 	send func(ctx context.Context, nodeID string, msg *protocol.Message, opts cloudhub.ReliableOptions) error,
 	external bool, modeLabel string, sigCtx context.Context, scanInterval, lockTTL time.Duration,
-	gcEnabled bool, gcKeep int, batchParallel int) (modelrepo.ModelStore, *modelrelease.Controller, func(), error) {
+	gcEnabled bool, gcKeep int, batchParallel int, podStore podstatus.Store) (modelrepo.ModelStore, *modelrelease.Controller, func(), error) {
 
 	closeModel := func() {} // 失败路径兜底：无可关（成功路径会覆盖）
 
@@ -325,6 +326,7 @@ func assembleModelStores(kv etcdstore.KVStore,
 		GCEnabled:     gcEnabled,
 		GCKeep:        gcKeep,
 		BatchParallel: batchParallel,
+		DigestLookup:  nodeDigestOf(podStore),
 	})
 	if err != nil {
 		return nil, nil, closeModel, err

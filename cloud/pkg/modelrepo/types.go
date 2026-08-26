@@ -222,6 +222,11 @@ type ModelRelease struct {
 	NextBatchAt       int64         `json:"nextBatchAt"`             // 下一批最早开始时间（Unix 毫秒）；跨接管持久
 	FailureReason     string        `json:"failureReason,omitempty"` // 终态失败原因（回滚中止 D2/D4、fail-fast 中止等；设计 §2.3 未列字段，
 	//   为 D2「head 置 failed（reason=...）」的落点新增，omitempty 向后兼容，实施登记）
+	// MirrorDigest 发布创建时镜像探活固化的期望 manifest digest（v0.11.0，
+	// R-1+）；空 = 该发布不做 digest 校验（off 模式 / HEAD 缺头 / warn 失败）。
+	// 终态判定时对 deployed 节点比对边缘上报 digest，不一致 → perNode failed
+	// （reason=digest-mismatch）。
+	MirrorDigest string `json:"mirrorDigest,omitempty"`
 	CreatedAt  int64 `json:"createdAt"`
 	StartedAt  int64 `json:"startedAt"`
 	FinishedAt int64 `json:"finishedAt"`

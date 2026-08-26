@@ -82,6 +82,14 @@ type LeaseRegOptions struct {
 }
 
 // LeaseEtcdRegistry 实现 Store（外部模式多副本注册表，判活 = hb 键存在性）。
+// renewRequest 是续约队列元素：nodeID 目标节点；repair=true 表示修复性
+// 重写（v0.11.0，L12+）——本副本仍服务但 hb 键被删/缺失，grant 成功时
+// 计入 hbRebuilds。
+type renewRequest struct {
+	nodeID string
+	repair bool
+}
+
 type LeaseEtcdRegistry struct {
 	reg  *Registry              // 内存缓存（读路径唯一事实源；OfflineTTL=0，GC 由本层两阶段接管）
 	kv   etcdstore.ExtendedKV   // 扩展 KV 面（CAS/watch/lease）
@@ -98,7 +106,7 @@ type LeaseEtcdRegistry struct {
 	lastQueueWarn time.Time
 	lastReload    time.Time
 
-	renewCh  chan string
+	renewCh  chan renewRequest
 	watchRev atomic.Int64
 
 	// renewalFailures 是心跳租约续约失败累计计数（v0.8.0，L12）：
@@ -106,6 +114,13 @@ type LeaseEtcdRegistry struct {
 	// edgeflow_cloudcore_lease_renewal_failures_total 消费（监控告警：
 	// 持续增长 = etcd 侧异常或网络分区，见 KNOWN-ISSUES L12）。
 	renewalFailures atomic.Uint64
+
+	// hbRebuilds 是 hb 键修复性重建累计计数（v0.11.0，L12+）：本副本仍
+	// 在服务（servingGrace 窗内）但 hb 键被删/缺失 → 续约 worker 经
+	// enqueueRepairRenew 标记并**成功重建**（grant 成功）时自增；正常心跳
+	// 续约不计。供 /metrics edgeflow_cloudcore_lease_hb_rebuilds_total
+	// 消费（持续增长 = 租约抖动/键被外部删除，与 renewalFailures 互补）。
+	hbRebuilds atomic.Uint64
 
 	contactMu   sync.Mutex
 	lastContact time.Time // 最近一次成功的 etcd 接触（healthz 多副本模式用）
@@ -152,7 +167,7 @@ func NewLeaseEtcdRegistry(kv etcdstore.ExtendedKV, opts LeaseRegOptions) (*Lease
 		aliveHB:  make(map[string]int64),
 		pending:  make(map[string]struct{}),
 		retrying: make(map[string]struct{}),
-		renewCh:  make(chan string, renewQueueCapacity),
+		renewCh:  make(chan renewRequest, renewQueueCapacity),
 		closeCh:  make(chan struct{}),
 	}, nil
 }
@@ -181,6 +196,12 @@ func (r *LeaseEtcdRegistry) RenewalFailures() uint64 {
 	return r.renewalFailures.Load()
 }
 
+// HBRebuildsCount 返回 hb 键修复性重建累计计数（v0.11.0，L12+，供
+// /metrics edgeflow_cloudcore_lease_hb_rebuilds_total 消费）。
+func (r *LeaseEtcdRegistry) HBRebuildsCount() uint64 {
+	return r.hbRebuilds.Load()
+}
+
 // servingGrace 是「本副本正在服务该节点」的判定窗 = leaseTTL/2：
 //   - 正常断连：hb 到期删除事件距最后一次本地心跳 ≈ TTL > TTL/2 → 判离线 ✓
 //   - 租约抖动（etcd 故障恢复）：本地心跳持续刷新（≤30s）< TTL/2 → 修复性重写 ✓
@@ -202,11 +223,23 @@ func (r *LeaseEtcdRegistry) locallyServing(nodeID string) bool {
 
 // ── 续约流水线（grant-per-heartbeat，D1）────────────────────────────────
 
-// enqueueRenew 非阻塞入队续约请求（hub 读循环零阻塞：队列满则丢弃 + 降频
-// Warn，受影响的节点租约到期后由下一次心跳自然重建，自愈）。
+// enqueueRenew 非阻塞入队普通续约请求（hub 读循环零阻塞：队列满则丢弃 +
+// 降频 Warn，受影响的节点租约到期后由下一次心跳自然重建，自愈）。
 func (r *LeaseEtcdRegistry) enqueueRenew(nodeID string) {
+	r.enqueue(renewRequest{nodeID: nodeID})
+}
+
+// enqueueRepairRenew 非阻塞入队修复性重写请求（v0.11.0，L12+）：本副本仍
+// 在服务但 hb 键被删/缺失（applyDelete/rescanOnce/gcSweepOne 守卫 0 三处
+// 修复性入口）；worker grant 成功时计入 hbRebuilds。
+func (r *LeaseEtcdRegistry) enqueueRepairRenew(nodeID string) {
+	r.enqueue(renewRequest{nodeID: nodeID, repair: true})
+}
+
+// enqueue 入队统一实现。
+func (r *LeaseEtcdRegistry) enqueue(req renewRequest) {
 	select {
-	case r.renewCh <- nodeID:
+	case r.renewCh <- req:
 	default:
 		r.lm.Lock()
 		now := r.opts.now()
@@ -244,14 +277,17 @@ func (r *LeaseEtcdRegistry) renewWorker(ctx context.Context) {
 			return
 		case <-r.closeCh:
 			return
-		case nodeID := <-r.renewCh:
-			if !r.locallyServing(nodeID) {
+		case req := <-r.renewCh:
+			if !r.locallyServing(req.nodeID) {
 				continue // 断开即停续：节点已不在本副本服务集
 			}
-			if err := r.grantHeartbeat(nodeID); err != nil {
-				log.Warnf("[LeaseEtcdRegistry] 心跳租约续约失败（nodeID=%s，重试窗口 ≤ %v，不影响内存态）: %v", nodeID, r.opts.LeaseTTL, err)
+			if err := r.grantHeartbeat(req.nodeID); err != nil {
+				log.Warnf("[LeaseEtcdRegistry] 心跳租约续约失败（nodeID=%s，重试窗口 ≤ %v，不影响内存态）: %v", req.nodeID, r.opts.LeaseTTL, err)
 				r.renewalFailures.Add(1)
-				r.scheduleRetry(ctx, nodeID)
+				r.scheduleRetry(ctx, req.nodeID, req.repair)
+			} else if req.repair {
+				// 修复性重写成功（v0.11.0，L12+）：hb 键已重建，计数一次
+				r.hbRebuilds.Add(1)
 			}
 		}
 	}
@@ -259,7 +295,8 @@ func (r *LeaseEtcdRegistry) renewWorker(ctx context.Context) {
 
 // scheduleRetry 启动单节点单在途的退避重试：指数退避（基值 5s，上限 60s），
 // 总重试窗口 ≤ lease TTL；每次重试前复查本地服务状态（断开即放弃）。
-func (r *LeaseEtcdRegistry) scheduleRetry(ctx context.Context, nodeID string) {
+// repair 透传：重试成功且为修复性重写 → 计入 hbRebuilds（只计一次）。
+func (r *LeaseEtcdRegistry) scheduleRetry(ctx context.Context, nodeID string, repair bool) {
 	r.lm.Lock()
 	if _, dup := r.retrying[nodeID]; dup {
 		r.lm.Unlock()
@@ -292,6 +329,9 @@ func (r *LeaseEtcdRegistry) scheduleRetry(ctx context.Context, nodeID string) {
 				return // 断开即停续
 			}
 			if err := r.grantHeartbeat(nodeID); err == nil {
+				if repair {
+					r.hbRebuilds.Add(1)
+				}
 				return
 			}
 			delay *= 2
@@ -597,7 +637,7 @@ func (r *LeaseEtcdRegistry) applyDelete(key string) {
 			r.lm.Lock()
 			delete(r.pending, id)
 			r.lm.Unlock()
-			r.enqueueRenew(id)
+			r.enqueueRepairRenew(id)
 			return
 		}
 		_ = r.reg.MarkOffline(id) // 租约到期 = 判离线（offlineSince=事件时刻，近似精确）
@@ -802,7 +842,7 @@ func (r *LeaseEtcdRegistry) rescanOnce(ctx context.Context) {
 		}
 		if info.Status == StatusReady && r.locallyServing(info.NodeID) {
 			// 本副本连接还活着但 hb 键缺失（续约失败窗口）：修复性重入队，不判离线
-			r.enqueueRenew(info.NodeID)
+			r.enqueueRepairRenew(info.NodeID)
 			continue
 		}
 		if info.Status != StatusOffline {
@@ -881,7 +921,7 @@ func (r *LeaseEtcdRegistry) gcSweepOne(ctx context.Context, id string) {
 
 	// 守卫 0：本副本正在服务（心跳刚发生、hb 键异步重建中）→ 跳过，等续约恢复
 	if r.locallyServing(id) {
-		r.enqueueRenew(id)
+		r.enqueueRepairRenew(id)
 		r.markContact()
 		return
 	}

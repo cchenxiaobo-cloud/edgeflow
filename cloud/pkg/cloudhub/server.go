@@ -119,6 +119,9 @@ type PodStatusPayload struct {
 	Phase           string `json:"phase"`           // 阶段：Running/Stopped/Absent/Error
 	Message         string `json:"message"`         // 附加说明（如错误原因）
 	LastReconcileAt int64  `json:"lastReconcileAt"` // 最近一次协调时间（毫秒时间戳）
+	// ImageDigest 边缘上报的镜像 manifest digest（v0.11.0，R-1+）；可选，
+	// 老边缘字段缺失兼容。
+	ImageDigest string `json:"imageDigest,omitempty"`
 }
 
 // HeartbeatAckPayload 是 HeartbeatAck 消息的负载（云→边）。

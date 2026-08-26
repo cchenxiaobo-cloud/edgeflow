@@ -1,7 +1,6 @@
 package certs
 
 import (
-	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -18,7 +17,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -1538,35 +1536,6 @@ func TestReconcileCRLArtifacts(t *testing.T) {
 }
 
 // ---- M3：CRL 锁失败降级日志 ----
-
-// captureStderrFd 把 fd 2（stderr）重定向到内存 buffer 后执行 fn，
-// 返回 fn 期间写入 stderr 的输出。pkg/log 的 logger 在包初始化时
-// 已持有 os.Stderr（fd 2 的包装），重定向 fd 2 本身即可截获其输出。
-// 本包测试无 t.Parallel（测试串行执行），重定向期间无并发写 stderr。
-func captureStderrFd(t *testing.T, fn func()) string {
-	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("创建管道失败: %v", err)
-	}
-	saved, err := syscall.Dup(2)
-	if err != nil {
-		t.Fatalf("备份 fd 2 失败: %v", err)
-	}
-	if err := syscall.Dup2(int(w.Fd()), 2); err != nil {
-		_ = syscall.Close(saved)
-		t.Fatalf("重定向 fd 2 失败: %v", err)
-	}
-	fn()
-	// 恢复 fd 2（先于读取，避免管道写端未关闭导致读取阻塞）
-	_ = syscall.Dup2(saved, 2)
-	_ = syscall.Close(saved)
-	_ = w.Close()
-	var buf bytes.Buffer
-	_, _ = io.Copy(&buf, r)
-	_ = r.Close()
-	return buf.String()
-}
 
 // resetCRLDegradedWarnState 重置降级日志限频状态（测试隔离用，
 // 避免其他测试的 5 分钟窗口干扰断言）。

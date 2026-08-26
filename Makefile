@@ -19,7 +19,8 @@ DIST_DIR := dist
 CHART_DIR := build/charts/edgeflow
 
 # 交叉编译目标平台：linux/amd64 + linux/arm64（边缘设备以 arm64 为主）
-CROSS_PLATFORMS := linux/amd64 linux/arm64
+# v0.11.0（L20b+）：Windows 入发布矩阵，3 组件 × 6 平台 = 18 制品
+CROSS_PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
 # 版本信息：默认 v0.1.0，可用 make build VERSION=v0.2.0 覆盖
 VERSION ?= v0.1.0
@@ -65,7 +66,7 @@ helm-lint:
 		echo "helm 未安装，跳过 helm-lint（安装方式：brew install helm）"; \
 	fi
 
-## cross-build: 交叉编译 cloudcore/edgecore 到 dist/ 目录（linux amd64/arm64）
+## cross-build: 交叉编译 cloudcore/edgecore/keadm 到 dist/ 目录（3 组件 × 6 平台 = 18 制品，v0.11.0 起含 Windows）
 cross-build:
 	@mkdir -p $(DIST_DIR)
 	@for target in $(CROSS_PLATFORMS); do \
@@ -73,8 +74,9 @@ cross-build:
 		echo "==> 交叉编译 $$os/$$arch ..."; \
 		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/cloudcore-$$os-$$arch ./cmd/cloudcore; \
 		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/edgecore-$$os-$$arch ./cmd/edgecore; \
+		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/keadm-$$os-$$arch ./cmd/keadm; \
 	done
-	@echo "cross-build done: 产物见 $(DIST_DIR)/"
+	@echo "cross-build done: 18 个产物见 $(DIST_DIR)/（3 组件 × 6 平台）"
 
 ## clean: 清理编译产物
 clean:

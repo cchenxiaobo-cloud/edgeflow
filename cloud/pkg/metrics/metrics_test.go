@@ -191,3 +191,31 @@ func TestLeaseRenewalFailuresMetric(t *testing.T) {
 		}
 	})
 }
+
+// TestLeaseHBRebuildsMetric 验证 hb 键修复性重建计数指标（v0.11.0，
+// L12+）：注入输出 / 0 值可见 / 未注入不输出（照 L12 模式）。
+func TestLeaseHBRebuildsMetric(t *testing.T) {
+	t.Run("injected", func(t *testing.T) {
+		m := New(Providers{LeaseHBRebuilds: func() uint64 { return 42 }})
+		text := string(m.render())
+		if !strings.Contains(text, "# HELP edgeflow_cloudcore_lease_hb_rebuilds_total") ||
+			!strings.Contains(text, "# TYPE edgeflow_cloudcore_lease_hb_rebuilds_total counter") {
+			t.Errorf("缺少 hb 重建指标元信息:\n%s", text)
+		}
+		if !strings.Contains(text, "edgeflow_cloudcore_lease_hb_rebuilds_total 42") {
+			t.Errorf("缺少取值行:\n%s", text)
+		}
+	})
+	t.Run("zero-value-visible", func(t *testing.T) {
+		m := New(Providers{LeaseHBRebuilds: func() uint64 { return 0 }})
+		if !strings.Contains(string(m.render()), "edgeflow_cloudcore_lease_hb_rebuilds_total 0") {
+			t.Error("0 值也应输出（监控面板基线）")
+		}
+	})
+	t.Run("nil-provider-omitted", func(t *testing.T) {
+		m := New(Providers{})
+		if strings.Contains(string(m.render()), "lease_hb_rebuilds_total") {
+			t.Error("Provider 为 nil 时不应输出 hb 重建指标（非外部模式基线）")
+		}
+	})
+}

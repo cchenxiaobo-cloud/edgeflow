@@ -40,6 +40,10 @@ type Providers struct {
 	// （v0.8.0，L12；lease_registry.RenewalFailures）。仅外部多副本形态注入，
 	// 其余形态 nil → 指标行不输出。
 	LeaseRenewalFailures func() uint64
+	// LeaseHBRebuilds 返回外部 etcd 模式 hb 键修复性重建累计计数
+	// （v0.11.0，L12+；lease_registry.HBRe builds）。仅外部多副本形态注入，
+	// 其余形态 nil → 指标行不输出。
+	LeaseHBRebuilds func() uint64
 }
 
 // Metrics 是云端指标注册表：持有 gauge Provider 与请求计数，负责渲染
@@ -188,6 +192,12 @@ func (m *Metrics) render() []byte {
 	if m.providers.LeaseRenewalFailures != nil {
 		fmt.Fprintf(&b, "# HELP edgeflow_cloudcore_lease_renewal_failures_total 外部 etcd 心跳租约续约失败累计数（持续增长 = etcd 侧异常/网络分区，告警阈值参考判活 TTL）。\n# TYPE edgeflow_cloudcore_lease_renewal_failures_total counter\n%s %d\n",
 			"edgeflow_cloudcore_lease_renewal_failures_total", m.providers.LeaseRenewalFailures())
+	}
+	// hb 键修复性重建计数（v0.11.0，L12+）：Provider 注入时始终输出（0 值
+	// 也有监控意义——面板可基于增长率告警；持续增长 = 租约抖动/键被外部删除）。
+	if m.providers.LeaseHBRebuilds != nil {
+		fmt.Fprintf(&b, "# HELP edgeflow_cloudcore_lease_hb_rebuilds_total 外部 etcd 心跳键修复性重建累计数（本副本在服务但 hb 键被删/缺失后由续约 worker 成功重建的次数；持续增长 = 租约抖动/键被外部删除）。\n# TYPE edgeflow_cloudcore_lease_hb_rebuilds_total counter\n%s %d\n",
+			"edgeflow_cloudcore_lease_hb_rebuilds_total", m.providers.LeaseHBRebuilds())
 	}
 	return []byte(b.String())
 }

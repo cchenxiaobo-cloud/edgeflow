@@ -647,7 +647,7 @@ etcdctl get /edgeflow/_meta/schemaVersion          # = "1"（快照自带则保�
 | `EDGEFLOW_CLOUDCORE_RELEASE_GC_ENABLED` | 空 | 终态发布 GC 开关（v0.8.0，L28）：`1`/`true` 开启；默认关闭（L31 审计口径——终态 release 键永久保留） |
 | `EDGEFLOW_CLOUDCORE_RELEASE_GC_KEEP` | `100` | 终态发布保留条数（v0.8.0，L28）：≥1，非法 fail-fast；仅 GC 开启时消费 |
 | `EDGEFLOW_CLOUDCORE_RELEASE_BATCH_PARALLEL` | `1` | 发布批内并行部署度（v0.10.0，D6）：≥1，非法 fail-fast；默认 1=逐节点串行（零行为变化）；>1 时批内节点并行 DeployVersion（信号量限流，min(parallel, 批大小)）；failFast 下本批在途执行完、后续批次中止 |
-| `EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK` | 空 | 发布前镜像存在性探活（off/warn/fail，v0.9.0 R-1）；v0.11.0 起探活成功时固化 manifest digest 至发布头（mirrorDigest），warn/fail 模式下发布终态新增「节点上报 digest 与期望一致」约束（不一致 → perNode failed/digest-mismatch；off 或 HEAD 缺头 → digest 空、全链路跳过） |
+| `EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK` | 空 | 发布前镜像存在性探活（off/warn/fail，v0.9.0 R-1）；v0.11.0 起探活成功时固化 manifest digest 至发布头（mirrorDigest），warn/fail 模式下发布终态新增「节点上报 digest 与期望一致」约束（不一致 → perNode failed/digest-mismatch；off 或 HEAD 缺头 → digest 空、全链路跳过）。**v0.12.0 起对真实边缘端到端生效**：edgecore 双通道采集上报 imageDigest（声明式——Desired Pod 镜像含 `@sha256:`；运行时——docker RepoDigests 兜底），仅 Running 态上报、失败降级空串、零新增 env；终态后晚到 mismatch 不回写，运维经 `GET .../releases/{id}/digest` 复核端点一键对比（示例见下） |
  发布前镜像存在性探活模式（v0.9.0，R-1）：空/off=不检查（默认，零行为变化）、warn=失败仅告警（发布照常）、fail=失败阻断发布（422）；非法值 fail-fast |
 | `EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK_TIMEOUT` | `5s` | 镜像探活超时（>0，非法 fail-fast）；Docker Hub 需先换 token（约 2 次 RTT） |
 | `EDGEFLOW_CLOUDCORE_REGISTRY_TOKEN` | 空 | 私有 registry 的 Bearer token（可选；Docker Hub 自动换取无需配置） |
@@ -828,3 +828,15 @@ etcdctl del /edgeflow/registry/heartbeats --prefix
 | 单副本误设 MULTI_REPLICA | 不推荐（healthz 绑定 etcd 后，etcd 故障窗口会触发自身重启放大影响）；Helm 只在 replicaCount>1 时注入，手工裸跑请勿单副本设置 |
 | 多副本下某副本与 etcd 分区但边缘连接正常 | 该副本无法续约 → 其节点 ≤TTL 判离线（etcd 视角正确）；读路径仍服务自身内存（可能陈旧）；**liveness（healthz 503）会重启该副本自愈**（§10.8.3 残余窗口） |
 | embed 模式 replicaCount>1 | 渲染期 `{{ fail }}` 拦截（脑裂文案）；手工裸跑请保持 1 |
+
+
+## 12. 发布 digest 复核端点（v0.12.0，D-1）
+
+`GET /api/v1/models/{modelName}/releases/{releaseID}/digest`：一键对比发布期望 digest（mirrorDigest）与各节点当前上报 imageDigest，用于「终态后晚到 mismatch 不回写」的运维发现通道（审计稳定设计取舍，处置仍为人工回滚/重发）。
+
+```bash
+# 复核某发布（任意状态可查；非终态为进行中视图）
+curl http://<cloudcore>:8080/api/v1/models/mnist/releases/<releaseID>/digest
+```
+
+响应 `consistency`（head + 逐节点）：`skipped`=发布级未启用（mirrorDigest 空）/ `consistent`=一致 / `inconsistent`=两边非空且不等 / `unknown`=节点侧缺失（未上报/无 Pod/无运行时采集）。head 聚合：任一节点 inconsistent → inconsistent；否则任一 unknown → unknown；否则 consistent。

@@ -54,7 +54,7 @@ Modbus 组独立成节见下）。设置方式：启动进程前 \texttt{export}
 \texttt{EDGEFLOW\_CLOUDCORE\_RELEASE\_GC\_ENABLED} & 空 & 终态发布 GC 开关（\texttt{1}/\texttt{true} 开启）；默认关闭（终态 release 键永久保留，v0.8.0） \\
 \texttt{EDGEFLOW\_CLOUDCORE\_RELEASE\_GC\_KEEP} & \texttt{100} & 终态发布保留条数；≥1 否则 fail-fast；仅 GC 开启时消费（v0.8.0） \\
 \texttt{EDGEFLOW\_CLOUDCORE\_RELEASE\_BATCH\_PARALLEL} & \texttt{1} & 发布批内并行部署度；≥1 否则 fail-fast；默认 1=串行（v0.10.0） \\
-\texttt{EDGEFLOW\_CLOUDCORE\_RELEASE\_MIRROR\_CHECK} & 空 & 发布前镜像存在性探活：空/off=不检查（默认）、warn=失败仅告警、fail=失败阻断发布（422）（v0.9.0）；v0.11.0 起探活成功时固化 manifest digest 至发布头（mirrorDigest），warn/fail 下发布终态新增\textbf{digest 一致性约束}（节点上报 imageDigest 与期望不一致 $\rightarrow$ perNode failed/digest-mismatch；off 或 HEAD 缺头 $\rightarrow$ digest 空、全链路跳过） \\
+\texttt{EDGEFLOW\_CLOUDCORE\_RELEASE\_MIRROR\_CHECK} & 空 & 发布前镜像存在性探活：空/off=不检查（默认）、warn=失败仅告警、fail=失败阻断发布（422）（v0.9.0）；v0.11.0 起探活成功时固化 manifest digest 至发布头（mirrorDigest），warn/fail 下发布终态新增\textbf{digest 一致性约束}（节点上报 imageDigest 与期望不一致 $\rightarrow$ perNode failed/digest-mismatch；off 或 HEAD 缺头 $\rightarrow$ digest 空、全链路跳过）。\textbf{v0.12.0 起对真实边缘端到端生效}：edgecore 双通道采集上报（声明式——期望镜像含 @sha256: 即上报；运行时——docker RepoDigests 兜底；仅 Running 态、失败降级空串、零新增 env）；终态后晚到 mismatch 不回写，运维经 GET .../releases/\{id\}/digest 复核端点一键对比 \\
 \texttt{EDGEFLOW\_CLOUDCORE\_RELEASE\_MIRROR\_CHECK\_TIMEOUT} & \texttt{5s} & 镜像探活超时；>0 否则 fail-fast（v0.9.0） \\
 \texttt{EDGEFLOW\_CLOUDCORE\_REGISTRY\_TOKEN} & 空 & 私有 registry Bearer token（可选；Docker Hub 自动换取）（v0.9.0） \\
 \bottomrule

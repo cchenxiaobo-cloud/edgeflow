@@ -246,3 +246,11 @@ echo "edgeflow_crl_nextupdate_epoch_seconds $crl_epoch" >> "$TEXTFILE/edgeflow_c
 ---
 
 *本文件为 v0.1.1 发布保障文件之二；配套 release-prep-v011.md、rollback-runbook-v011.md。*
+
+
+## 7. digest-mismatch 处置指引（v0.12.0 更新，D-1）
+
+发布失败 reason=`digest-mismatch`（探活与边缘拉取之间 TOCTOU：tag 被重指）时：
+
+1. 复核当前状态：`GET /api/v1/models/{model}/releases/{id}/digest` 一键对比发布 mirrorDigest vs 各节点当前 imageDigest（head=inconsistent → 命中漂移；unknown → 节点侧缺失，等上报或查节点 Pod 明细 `GET /api/v1/nodes/{nodeID}/pods`）。
+2. 处置：发布方修正镜像 ref（pin `@sha256:` 或重推 tag）后重新发布/回滚；终态后晚到 mismatch 不回写（审计稳定），以复核端点快照为准。

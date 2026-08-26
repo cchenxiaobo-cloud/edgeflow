@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"edgeflow/cloud/pkg/cloudhub"
@@ -145,6 +146,13 @@ const (
 	// TTL ≥ 3×refresh，refresh=max(5s,TTL/3)；仅外部模式消费，embed/纯内存
 	// 显式设置 → Warn 忽略，并入 warnEmbedFieldsIgnored 同族）。
 	envReleaseLockTTL = "EDGEFLOW_CLOUDCORE_RELEASE_LOCK_TTL"
+	// envReleaseGCEnabled / envReleaseGCKeep 是终态发布 GC 开关与保留条数
+	// （v0.8.0，L28）：默认关闭（L31 审计口径——终态 release 键永久保留）；
+	// 开启后控制器在发布进入终态时按 keep 保留最近 N 条终态，旧终态及其
+	// 逐节点结果被清理（内存与 etcd 键空间同步）。keep 默认 100，≥1；
+	// 仅开启时校验（关闭时配错不阻断启动，对齐外部变量忽略惯例）。
+	envReleaseGCEnabled = "EDGEFLOW_CLOUDCORE_RELEASE_GC_ENABLED"
+	envReleaseGCKeep    = "EDGEFLOW_CLOUDCORE_RELEASE_GC_KEEP"
 )
 
 // releaseScanIntervalFromEnv 解析发布控制器扫描周期（默认 5s；支持
@@ -191,6 +199,28 @@ func releaseLockTTLFromEnv() (time.Duration, error) {
 	return d, nil
 }
 
+// releaseGCFromEnv 解析终态发布 GC 配置（v0.8.0，L28）：返回 (enabled, keep)。
+// enabled 默认 false（L31 审计口径）；keep 默认 100（仅开启时校验 ≥1）。
+func releaseGCFromEnv() (bool, int, error) {
+	enabled := false
+	switch v := os.Getenv(envReleaseGCEnabled); v {
+	case "":
+	case "1", "true":
+		enabled = true
+	default:
+		return false, 0, fmt.Errorf("%s=%q 只支持空/'1'（开）", envReleaseGCEnabled, v)
+	}
+	keep := modelrelease.DefaultGCKeep
+	if v := os.Getenv(envReleaseGCKeep); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return false, 0, fmt.Errorf("%s=%q 必须为 ≥1 的整数（默认 %d）", envReleaseGCKeep, v, modelrelease.DefaultGCKeep)
+		}
+		keep = n
+	}
+	return enabled, keep, nil
+}
+
 // warnReleaseLockTTLIgnored 在 embed/纯内存模式检测用户显式设置了
 // EDGEFLOW_CLOUDCORE_RELEASE_LOCK_TTL（仅外部模式消费）→ Warn 忽略
 // （对齐 warnLeaseTTLIgnored 同族风格，设计 §9.3）。
@@ -217,7 +247,8 @@ func warnReleaseLockTTLIgnored() {
 //     （不关底层 kv——kv 生命周期归调用方 closeEtcd 链）。
 func assembleModelStores(kv etcdstore.KVStore,
 	send func(ctx context.Context, nodeID string, msg *protocol.Message, opts cloudhub.ReliableOptions) error,
-	external bool, modeLabel string, sigCtx context.Context, scanInterval, lockTTL time.Duration) (modelrepo.ModelStore, *modelrelease.Controller, func(), error) {
+	external bool, modeLabel string, sigCtx context.Context, scanInterval, lockTTL time.Duration,
+	gcEnabled bool, gcKeep int) (modelrepo.ModelStore, *modelrelease.Controller, func(), error) {
 
 	closeModel := func() {} // 失败路径兜底：无可关（成功路径会覆盖）
 
@@ -244,6 +275,8 @@ func assembleModelStores(kv etcdstore.KVStore,
 	ctrl, err := modelrelease.NewController(store, deploy, locks, modelrelease.Options{
 		ScanInterval: scanInterval,
 		LockTTL:      lockTTL,
+		GCEnabled:    gcEnabled,
+		GCKeep:       gcKeep,
 	})
 	if err != nil {
 		return nil, nil, closeModel, err

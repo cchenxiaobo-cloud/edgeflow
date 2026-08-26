@@ -950,3 +950,82 @@ func TestMemConcurrentHeadTransitions(t *testing.T) {
 		t.Fatalf("head 应为二者之一: %+v", r)
 	}
 }
+
+// TestMemoryGCReleases 验证 v0.8.0（L28）终态发布 GC：保留最近 keep 条
+// 终态、删除更旧的终态及其逐节点结果、非终态不删、keep<1 报错。
+func TestMemoryGCReleases(t *testing.T) {
+	ctx := context.Background()
+	now := newFakeNow(fixedTime)
+	s := NewMemoryModelStore()
+	s.now = now.Now
+
+	// 造一个模型
+	if err := s.CreateModel(ctx, &Model{Name: "mnist"}); err != nil {
+		t.Fatalf("创建模型失败: %v", err)
+	}
+	// 造 5 个终态发布（succeeded）+ 1 个在途（pending）。
+	// 内存 CreateRelease 的在途检查 = 扫描非终态（guard 键是 etcd 概念，
+	// 内存 ReleaseGuard 为 no-op），因此「创建 → 置终态」串行推进，每个
+	// 创建时前序已终态、无在途冲突。
+	createRelease := func(id string) {
+		now.mu.Lock()
+		now.t = now.t.Add(time.Second)
+		now.mu.Unlock()
+		if err := s.CreateRelease(ctx, &ModelRelease{
+			ID: id, Model: "mnist", Version: "v1.0.0",
+			Status: ReleaseStatusPending, TargetNodes: []string{"node-a"},
+		}); err != nil {
+			t.Fatalf("创建发布 %s 失败: %v", id, err)
+		}
+	}
+	setStatus := func(id string, status ReleaseStatus) {
+		if err := s.UpdateReleaseHead(ctx, id, func(cur *ModelRelease) error {
+			cur.Status = status
+			return nil
+		}); err != nil {
+			t.Fatalf("置 %s 状态 %s 失败: %v", id, status, err)
+		}
+	}
+	for i := 1; i <= 5; i++ {
+		createRelease(fmt.Sprintf("r%d", i))
+		setStatus(fmt.Sprintf("r%d", i), ReleaseStatusSucceeded)
+	}
+	createRelease("inflight") // 保持在途（pending），验证 GC 不删非终态
+
+	// 给 r1/r2 造逐节点结果（验证级联删除）
+	_ = s.SetNodeResult(ctx, "r1", "node-a", &NodeReleaseResult{NodeID: "node-a", Status: NodeRelDeployed})
+	_ = s.SetNodeResult(ctx, "r2", "node-a", &NodeReleaseResult{NodeID: "node-a", Status: NodeRelDeployed})
+
+	// keep=3 → 应删 r1、r2（最早两条终态），保留 r3/r4/r5 + inflight + running
+	removed, err := s.GCReleases(ctx, "mnist", 3)
+	if err != nil {
+		t.Fatalf("GCReleases 失败: %v", err)
+	}
+	if removed != 2 {
+		t.Errorf("removed=%d，期望 2", removed)
+	}
+	for _, gone := range []string{"r1", "r2"} {
+		if _, err := s.GetRelease(ctx, gone); !errors.Is(err, ErrReleaseNotFound) {
+			t.Errorf("%s 应被 GC，实际 err=%v", gone, err)
+		}
+	}
+	for _, keep := range []string{"r3", "r4", "r5", "inflight"} {
+		if _, err := s.GetRelease(ctx, keep); err != nil {
+			t.Errorf("%s 应保留，实际 err=%v", keep, err)
+		}
+	}
+	// 逐节点结果级联删除：release 已删 → ListNodeResults 返回 ErrReleaseNotFound
+	// （或空列表），两者皆证明子键已随主键清理
+	if rs, err := s.ListNodeResults(ctx, "r1"); !errors.Is(err, ErrReleaseNotFound) && len(rs) != 0 {
+		t.Errorf("r1 逐节点结果应被级联删除，err=%v len=%d", err, len(rs))
+	}
+
+	// keep<1 报错
+	if _, err := s.GCReleases(ctx, "mnist", 0); err == nil {
+		t.Error("keep=0 应报错")
+	}
+	// 幂等：再跑一次（只剩 3 条终态）→ 0 删除
+	if removed, err := s.GCReleases(ctx, "mnist", 3); err != nil || removed != 0 {
+		t.Errorf("二次 GC 应 0 删除，removed=%d err=%v", removed, err)
+	}
+}

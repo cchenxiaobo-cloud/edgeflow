@@ -625,3 +625,105 @@ func TestModelAPIErrorSentinelParity(t *testing.T) {
 		t.Errorf("RequestRollback 缺失 = %v, want ErrReleaseNotFound", err)
 	}
 }
+
+// TestModelAPIPagination 验证 v0.8.0（L28）列表分页：limit/offset 切片、
+// X-Total-Count 头、非法参数 400、缺省全量兼容。
+func TestModelAPIPagination(t *testing.T) {
+	srv, _, _ := newContractEnv(t)
+	base := srv.URL
+
+	// 造 3 个模型
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		if code, _ := doJSON(t, "POST", base+"/api/v1/models", map[string]any{
+			"name": name, "description": name,
+		}); code != http.StatusOK {
+			t.Fatalf("创建模型 %s 状态码=%d", name, code)
+		}
+	}
+
+	t.Run("limit-page", func(t *testing.T) {
+		resp, err := http.Get(base + "/api/v1/models?limit=2")
+		if err != nil {
+			t.Fatalf("请求失败: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if total := resp.Header.Get("X-Total-Count"); total != "3" {
+			t.Errorf("X-Total-Count=%q，期望 3", total)
+		}
+		var out struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatalf("解析失败: %v", err)
+		}
+		if len(out.Items) != 2 {
+			t.Errorf("limit=2 应返回 2 条，实际 %d", len(out.Items))
+		}
+	})
+	t.Run("offset-page", func(t *testing.T) {
+		var out struct {
+			Items []map[string]any `json:"items"`
+		}
+		code, _ := doJSON(t, "GET", base+"/api/v1/models?limit=2&offset=2", nil)
+		if code != http.StatusOK {
+			t.Fatalf("状态码=%d", code)
+		}
+		req, _ := http.NewRequest("GET", base+"/api/v1/models?limit=2&offset=2", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("请求失败: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatalf("解析失败: %v", err)
+		}
+		if len(out.Items) != 1 {
+			t.Errorf("limit=2&offset=2 应返回 1 条，实际 %d", len(out.Items))
+		}
+	})
+	t.Run("offset-beyond", func(t *testing.T) {
+		var out struct {
+			Items []map[string]any `json:"items"`
+		}
+		req, _ := http.NewRequest("GET", base+"/api/v1/models?offset=99", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("请求失败: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatalf("解析失败: %v", err)
+		}
+		if len(out.Items) != 0 {
+			t.Errorf("offset 超界应返回空列表，实际 %d", len(out.Items))
+		}
+	})
+	t.Run("invalid-limit", func(t *testing.T) {
+		if code, _ := doJSON(t, "GET", base+"/api/v1/models?limit=0", nil); code != http.StatusBadRequest {
+			t.Errorf("limit=0 应 400，实际 %d", code)
+		}
+		if code, _ := doJSON(t, "GET", base+"/api/v1/models?limit=1001", nil); code != http.StatusBadRequest {
+			t.Errorf("limit=1001 应 400，实际 %d", code)
+		}
+		if code, _ := doJSON(t, "GET", base+"/api/v1/models?limit=abc", nil); code != http.StatusBadRequest {
+			t.Errorf("limit=abc 应 400，实际 %d", code)
+		}
+	})
+	t.Run("default-full", func(t *testing.T) {
+		var out struct {
+			Items []map[string]any `json:"items"`
+		}
+		req, _ := http.NewRequest("GET", base+"/api/v1/models", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("请求失败: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatalf("解析失败: %v", err)
+		}
+		if len(out.Items) != 3 {
+			t.Errorf("缺省应全量 3 条，实际 %d", len(out.Items))
+		}
+	})
+}

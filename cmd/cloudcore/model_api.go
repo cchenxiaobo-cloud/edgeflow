@@ -46,6 +46,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -97,6 +98,59 @@ func (a *modelAPI) Register(mux routeRegistrar) {
 // ── 响应/错误辅助 ──────────────────────────────────────────────────────
 
 const jsonContentType = "application/json; charset=utf-8"
+
+// pageParams 是列表分页参数（v0.8.0，L28）：limit=0 表示全量（默认），
+// 合法范围 limit ∈ [1,1000]、offset ≥ 0。不传任何参数 = 旧行为（全量）。
+type pageParams struct {
+	limit  int
+	offset int
+}
+
+// parsePageParams 解析 limit/offset 查询参数：非法 → error（handler 回 400）；
+// 未设置 → 零值（limit=0 = 全量，offset=0）。
+func parsePageParams(r *http.Request) (pageParams, error) {
+	var p pageParams
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 1000 {
+			return p, fmt.Errorf("limit 必须为 1-1000 的整数（缺省 = 全量返回）")
+		}
+		p.limit = n
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return p, fmt.Errorf("offset 必须为非负整数（缺省 = 0）")
+		}
+		p.offset = n
+	}
+	return p, nil
+}
+
+// slicePage 应用分页切片：全量列表 → [offset, offset+limit)；
+// limit=0 = 全量；offset 超界 → 空切片。返回切片与总数（X-Total-Count 用）。
+func slicePage[T any](all []T, p pageParams) ([]T, int) {
+	total := len(all)
+	if p.limit == 0 {
+		if p.offset >= total {
+			return []T{}, total
+		}
+		return all[p.offset:], total
+	}
+	if p.offset >= total {
+		return []T{}, total
+	}
+	hi := p.offset + p.limit
+	if hi > total {
+		hi = total
+	}
+	return all[p.offset:hi], total
+}
+
+// writePageHeaders 写分页响应头（X-Total-Count；v0.8.0，L28）。
+func writePageHeaders(w http.ResponseWriter, total int) {
+	w.Header().Set("X-Total-Count", strconv.Itoa(total))
+}
 
 // writeJSON 写 JSON 响应（状态码 + Content-Type + 编码失败仅记日志）。
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -367,15 +421,22 @@ var releaseIDFallback atomic.Uint64
 
 // ── 模型端点（5）──────────────────────────────────────────────────────
 
-// listModels 处理 GET /api/v1/models。
+// listModels 处理 GET /api/v1/models（v0.8.0 起支持 limit/offset 分页）。
 func (a *modelAPI) listModels(w http.ResponseWriter, r *http.Request) {
+	pp, err := parsePageParams(r)
+	if err != nil {
+		badRequest(w, "%v", err)
+		return
+	}
 	models, err := a.store.ListModels(r.Context())
 	if err != nil {
 		modelError(w, err)
 		return
 	}
-	items := make([]modelrepo.Model, 0, len(models))
-	items = append(items, models...)
+	page, total := slicePage(models, pp)
+	writePageHeaders(w, total)
+	items := make([]modelrepo.Model, 0, len(page))
+	items = append(items, page...)
 	writeJSON(w, http.StatusOK, modelList{Kind: "ModelList", APIVersion: "v1", Items: items})
 }
 
@@ -477,13 +538,20 @@ func (a *modelAPI) listVersions(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "%v", err)
 		return
 	}
+	pp, err := parsePageParams(r)
+	if err != nil {
+		badRequest(w, "%v", err)
+		return
+	}
 	versions, err := a.store.ListVersions(r.Context(), modelName)
 	if err != nil {
 		modelError(w, err)
 		return
 	}
-	items := make([]modelrepo.ModelVersion, 0, len(versions))
-	items = append(items, versions...)
+	page, total := slicePage(versions, pp)
+	writePageHeaders(w, total)
+	items := make([]modelrepo.ModelVersion, 0, len(page))
+	items = append(items, page...)
 	writeJSON(w, http.StatusOK, versionList{Kind: "ModelVersionList", APIVersion: "v1", Items: items})
 }
 
@@ -767,14 +835,21 @@ func (a *modelAPI) listReleases(w http.ResponseWriter, r *http.Request) {
 		modelError(w, err) // 子资源随模型 404
 		return
 	}
+	pp, err := parsePageParams(r)
+	if err != nil {
+		badRequest(w, "%v", err)
+		return
+	}
 	releases, err := a.store.ListReleases(r.Context(), modelName)
 	if err != nil {
 		modelError(w, err)
 		return
 	}
-	items := make([]releaseResponse, 0, len(releases))
-	for i := range releases {
-		items = append(items, releaseResponse{ModelRelease: releases[i]})
+	page, total := slicePage(releases, pp)
+	writePageHeaders(w, total)
+	items := make([]releaseResponse, 0, len(page))
+	for i := range page {
+		items = append(items, releaseResponse{ModelRelease: page[i]})
 	}
 	writeJSON(w, http.StatusOK, releaseList{Kind: "ModelReleaseList", APIVersion: "v1", Items: items})
 }

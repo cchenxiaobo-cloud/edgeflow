@@ -963,6 +963,45 @@ func (s *EtcdModelStore) ReleaseGuard(ctx context.Context, model string) error {
 	return nil
 }
 
+// GCReleases etcd 实现（v0.8.0，L28）：与内存版同语义——按 CreatedAt
+// 升序保留最近 keep 条终态（succeeded/failed/canceled/rolled_back），
+// 删除更旧的终态头（releaseKey）与其逐节点结果前缀（releases/<id>/nodes/）
+// 及内存缓存。风格对齐 DeleteModel：快照收集 → 网络删除 → 锁内清缓存；
+// 中途失败返回已删数与错误（控制器下轮重试）。非终态/在途绝不删除。
+func (s *EtcdModelStore) GCReleases(ctx context.Context, model string, keep int) (int, error) {
+	if keep < 1 {
+		return 0, fmt.Errorf("modelrepo: GCReleases keep=%d 必须 ≥1", keep)
+	}
+	s.mu.RLock()
+	var terminals []*ModelRelease
+	for _, r := range s.release {
+		if model != "" && r.Model != model {
+			continue
+		}
+		if r.Status.IsTerminal() {
+			terminals = append(terminals, r)
+		}
+	}
+	s.mu.RUnlock()
+	sort.Slice(terminals, func(i, j int) bool { return terminals[i].CreatedAt < terminals[j].CreatedAt })
+	removed := 0
+	for i := 0; i < len(terminals)-keep; i++ {
+		id := terminals[i].ID
+		if err := s.kv.Delete(ctx, releaseKey(id)); err != nil {
+			return removed, fmt.Errorf("modelrepo: GCReleases 删除 %s 失败: %w", id, err)
+		}
+		if err := s.kv.DeleteRange(ctx, KeyReleasesPrefix+id+"/"); err != nil {
+			return removed, fmt.Errorf("modelrepo: GCReleases 删除 %s 子键失败: %w", id, err)
+		}
+		s.mu.Lock()
+		delete(s.release, id)
+		delete(s.nodes, id)
+		s.mu.Unlock()
+		removed++
+	}
+	return removed, nil
+}
+
 // ── 加载与 watch（外部模式多副本读一致；设计 §3.5）─────────────────────
 
 // classifyKey 把键分类为 (kind, parts)：kind ∈ {model, version, releaseHead,

@@ -118,6 +118,12 @@ type ModelStore interface {
 	// 失败返回 error，控制器下一轮重试，对齐 sweepGC 模式）。内存实现为
 	// 空操作（guard 语义由互斥锁等价实现，无持久化守卫键）。
 	ReleaseGuard(ctx context.Context, model string) error
+	// GCReleases 清理终态发布（v0.8.0，L28）：按 CreatedAt 升序保留最近
+	// keep 条终态（succeeded/failed/canceled/rolled_back），删除更旧的
+	// 终态及其逐节点结果；非终态/在途发布绝不删除。返回删除条数。
+	// keep < 1 → 报错（调用方负责校验）。默认关闭（L31 审计口径：终态键
+	// 永久保留），由 EDGEFLOW_CLOUDCORE_RELEASE_GC_ENABLED=1 显式开启。
+	GCReleases(ctx context.Context, model string, keep int) (int, error)
 
 	// Load 全量加载持久化后端并灌入内存缓存（embed/纯内存路径；纯内存 = 空操作）。
 	Load(ctx context.Context) error
@@ -702,6 +708,34 @@ func (s *MemoryModelStore) DeleteModelDeployments(_ context.Context, model strin
 // ReleaseGuard 内存实现：空操作（guard 语义由互斥锁等价实现，无持久化守卫键；
 // 接口契约占位，与 etcd 实现保持方法面一致）。
 func (s *MemoryModelStore) ReleaseGuard(_ context.Context, _ string) error { return nil }
+
+// GCReleases 内存实现（v0.8.0，L28）：保留最近 keep 条终态，删除更旧的
+// 终态头与其逐节点结果（防长运行内存线性增长，N-4）。
+func (s *MemoryModelStore) GCReleases(_ context.Context, model string, keep int) (int, error) {
+	if keep < 1 {
+		return 0, fmt.Errorf("modelrepo: GCReleases keep=%d 必须 ≥1", keep)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var terminals []*ModelRelease
+	for _, r := range s.release {
+		if model != "" && r.Model != model {
+			continue
+		}
+		if r.Status.IsTerminal() {
+			terminals = append(terminals, r)
+		}
+	}
+	sort.Slice(terminals, func(i, j int) bool { return terminals[i].CreatedAt < terminals[j].CreatedAt })
+	removed := 0
+	for i := 0; i < len(terminals)-keep; i++ {
+		id := terminals[i].ID
+		delete(s.release, id)
+		delete(s.nodes, id)
+		removed++
+	}
+	return removed, nil
+}
 
 // Load 纯内存实现：无可加载的持久化后端，空操作。
 func (s *MemoryModelStore) Load(_ context.Context) error { return nil }

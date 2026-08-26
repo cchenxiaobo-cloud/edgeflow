@@ -53,6 +53,9 @@ const (
 	// MinLockTTL 是领跑锁 TTL 下限（>=15s，非法 fail-fast，设计 §9.3；
 	// D5：TTL ≥ 3×refresh 护栏在此下限上恒成立）。
 	MinLockTTL = 15 * time.Second
+	// DefaultGCKeep 是终态发布 GC 保留条数默认值（v0.8.0，L28，env
+	// EDGEFLOW_CLOUDCORE_RELEASE_GC_KEEP 默认 100；仅 GC 开启时消费）。
+	DefaultGCKeep = 100
 )
 
 // RefreshPeriod 计算锁刷新周期（主线裁决 D5）：refresh = max(5s, TTL/3)。
@@ -73,6 +76,12 @@ type Options struct {
 	ScanInterval time.Duration
 	LockTTL      time.Duration
 	Now          func() time.Time
+	// GCEnabled 终态发布 GC 开关（v0.8.0，L28；默认 false——L31 审计口径：
+	// 终态 release 键永久保留。开启后按 GCKeep 保留最近 N 条终态，旧终态
+	// 及其逐节点结果被清理，审计痕迹以 ops 台账为准）。
+	GCEnabled bool
+	// GCKeep 终态保留条数（默认 100，≥1；仅 GCEnabled 时消费）。
+	GCKeep int
 }
 
 // withDefaults 填充零值（ScanInterval 默认 5s；LockTTL 默认 60s）。
@@ -224,6 +233,7 @@ func (c *Controller) scanOnce(ctx context.Context) {
 			c.releaseGuard(ctx, r)
 		default: // 终态（succeeded/failed/rolled_back）
 			c.releaseGuard(ctx, r)
+			c.gcIfEnabled(ctx, r)
 		}
 	}
 }
@@ -742,4 +752,22 @@ func (c *Controller) releaseGuard(ctx context.Context, r *modelrepo.ModelRelease
 		return
 	}
 	log.Infof("[modelrelease] 已释放 guard（model=%s release=%s 终态）——同模型可再次发布", r.Model, r.ID)
+}
+
+// gcIfEnabled 在终态发布释放 guard 后按配置执行终态 GC（v0.8.0，L28）：
+// 默认关闭（L31 审计口径）；开启后按 GCKeep 保留最近 N 条终态（含本次），
+// 旧终态及其逐节点结果由 store.GCReleases 清理。失败仅告警（下个终态
+// 事件重试），不影响发布主流程。
+func (c *Controller) gcIfEnabled(ctx context.Context, r *modelrepo.ModelRelease) {
+	if !c.opts.GCEnabled {
+		return
+	}
+	removed, err := c.store.GCReleases(ctx, r.Model, c.opts.GCKeep)
+	if err != nil {
+		log.Warnf("[modelrelease] 终态发布 GC 失败（model=%s，下个终态事件重试）: %v", r.Model, err)
+		return
+	}
+	if removed > 0 {
+		log.Infof("[modelrelease] 终态发布 GC：model=%s 清理 %d 条旧终态（保留最近 %d 条）", r.Model, removed, c.opts.GCKeep)
+	}
 }

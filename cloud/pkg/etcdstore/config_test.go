@@ -21,7 +21,7 @@ import (
 // 环境变量清理：确保本文件用例不受其他测试遗留 env 影响。
 func clearExternalEnv(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{EnvEndpoints, EnvTLSCA, EnvTLSCert, EnvTLSKey, EnvAllowInsecure} {
+	for _, k := range []string{EnvEndpoints, EnvTLSCA, EnvTLSCert, EnvTLSKey, EnvAllowInsecure, EnvUsername, EnvPassword} {
 		os.Unsetenv(k)
 	}
 }
@@ -358,4 +358,68 @@ func TestConfigSegmentIsolation(t *testing.T) {
 	if _, err := ConfigFromEnv(); err == nil {
 		t.Error("ALLOW_INSECURE=abc 应 fail-fast")
 	}
+}
+
+// TestConfigAuth 验证 v0.8.0（L1）RBAC 用户名密码鉴权解析与成对校验。
+func TestConfigAuth(t *testing.T) {
+	t.Run("both-set", func(t *testing.T) {
+		clearExternalEnv(t)
+		t.Setenv(EnvEndpoints, "http://127.0.0.1:2379") // 外部模式门控
+		t.Setenv(EnvAllowInsecure, "1")                 // 明文护栏放行（鉴权用例不涉及 TLS）
+		t.Setenv(EnvUsername, "edgeflow")
+		t.Setenv(EnvPassword, "s3cret")
+		cfg, err := ConfigFromEnv()
+		if err != nil {
+			t.Fatalf("成对设置应成功: %v", err)
+		}
+		if cfg.Username != "edgeflow" || cfg.Password != "s3cret" {
+			t.Errorf("Username/Password 解析错误: %+v", cfg)
+		}
+	})
+	t.Run("user-only", func(t *testing.T) {
+		clearExternalEnv(t)
+		t.Setenv(EnvEndpoints, "http://127.0.0.1:2379")
+		t.Setenv(EnvAllowInsecure, "1")
+		t.Setenv(EnvUsername, "edgeflow")
+		if _, err := ConfigFromEnv(); err == nil {
+			t.Error("仅设 USERNAME 应 fail-fast（成对校验）")
+		}
+	})
+	t.Run("password-only", func(t *testing.T) {
+		clearExternalEnv(t)
+		t.Setenv(EnvEndpoints, "http://127.0.0.1:2379")
+		t.Setenv(EnvAllowInsecure, "1")
+		t.Setenv(EnvPassword, "s3cret")
+		if _, err := ConfigFromEnv(); err == nil {
+			t.Error("仅设 PASSWORD 应 fail-fast（成对校验）")
+		}
+	})
+	t.Run("embed-ignored", func(t *testing.T) {
+		// M2 回归锚点：embed 模式（ENDPOINTS 空）忽略外部变量，不报错
+		clearExternalEnv(t)
+		t.Setenv(EnvUsername, "edgeflow")
+		t.Setenv(EnvPassword, "s3cret")
+		cfg, err := ConfigFromEnv()
+		if err != nil {
+			t.Fatalf("embed 模式不应被外部变量串扰: %v", err)
+		}
+		if cfg.Username != "" || cfg.Password != "" {
+			t.Errorf("embed 模式应忽略鉴权变量: %+v", cfg)
+		}
+	})
+	t.Run("auth-with-mtls-orthogonal", func(t *testing.T) {
+		// 鉴权与 mTLS 正交：可同时配置（鉴权不要求 TLS）
+		clearExternalEnv(t)
+		t.Setenv(EnvEndpoints, "http://127.0.0.1:2379")
+		t.Setenv(EnvAllowInsecure, "1")
+		t.Setenv(EnvUsername, "edgeflow")
+		t.Setenv(EnvPassword, "s3cret")
+		cfg, err := ConfigFromEnv()
+		if err != nil {
+			t.Fatalf("明文+鉴权应可共存: %v", err)
+		}
+		if cfg.Username == "" || cfg.Password == "" {
+			t.Errorf("鉴权字段丢失: %+v", cfg)
+		}
+	})
 }

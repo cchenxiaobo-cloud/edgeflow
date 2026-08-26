@@ -229,13 +229,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 			log.Errorf("[etcdstore] 外部 etcd TLS 配置无效，拒绝启动: %v", err)
 			return 1
 		}
-		kv, err := etcdstore.NewKVStoreWithTLS(etcdCfg.Endpoints, tlsCfg)
+		kv, err := etcdstore.NewKVStoreWithAuth(etcdCfg.Endpoints, tlsCfg, etcdCfg.Username, etcdCfg.Password)
 		if err != nil {
 			log.Errorf("[etcdstore] 外部 etcd 连接失败（endpoints=%v），拒绝启动（fail-fast，不降级）: %v",
 				etcdCfg.Endpoints, err)
 			return 1
 		}
-		log.Infof("[etcdstore] 外部 etcd 模式 endpoints=%v tls=%v", etcdCfg.Endpoints, tlsCfg != nil)
+		log.Infof("[etcdstore] 外部 etcd 模式 endpoints=%v tls=%v auth=%v", etcdCfg.Endpoints, tlsCfg != nil, etcdCfg.Username != "")
 		// R3 启动探活：clientv3.New 是懒连接，必须显式线性一致 Get 验证集群
 		// 可读可写（quorum），失败 = fail-fast（至多 3 次尝试/预算 ≤20s）。
 		if err := etcdstore.ProbeAlive(kv); err != nil {

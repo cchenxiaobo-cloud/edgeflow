@@ -51,6 +51,12 @@ const (
 	// EnvTLSCert / EnvTLSKey 外部 etcd 客户端证书/私钥 PEM 路径（与 CA 同设即 mTLS）。
 	EnvTLSCert = "EDGEFLOW_CLOUDCORE_ETCD_TLS_CERT"
 	EnvTLSKey  = "EDGEFLOW_CLOUDCORE_ETCD_TLS_KEY"
+	// EnvUsername / EnvPassword 外部 etcd RBAC 用户名密码鉴权（v0.8.0，L1）：
+	// clientv3 Username/Password 透传；必须同设/同缺（只设其一 fail-fast，
+	// 对齐 TLS_CERT/KEY 惯例）；与 TLS/mTLS 正交——可单独使用，也可叠加
+	// mTLS（CN→角色映射由 etcd 侧 --client-cert-auth 配置，见 DEPLOYMENT §10.7.4）。
+	EnvUsername = "EDGEFLOW_CLOUDCORE_ETCD_USERNAME"
+	EnvPassword = "EDGEFLOW_CLOUDCORE_ETCD_PASSWORD"
 )
 
 // 默认配置（对齐设计 §4 配置表；端口选 12379/12380 避开标准 2379/2380，
@@ -96,6 +102,11 @@ type Config struct {
 	// TLS 时默认拒绝启动；=1 时放行但装配区打印大告警（设计 §1.2 M9/M10）。
 	// 注意：Enabled=false 时该字段不解析、不校验（M1 短路的逃生语义）。
 	AllowInsecure bool
+	// Username / Password 外部 etcd RBAC 用户名密码鉴权（v0.8.0，L1）：
+	// 均空=不启用；非空时 clientv3 透传；仅外部模式消费，embed/纯内存
+	// 显式设置 → Warn 忽略（M2 回归锚点：embed 不被外部变量串扰）。
+	Username string
+	Password string
 	// MaxSnapFiles / MaxWALFiles 自动清理保留上限（etcd 原生语义）：0 = 禁用
 	// purge 自动清理（测试环境与高保留场景）；默认 5（etcd 默认值，由
 	// DefaultConfig 提供）。注意非零时 embed 每 30s 清理旧快照/WAL——测试
@@ -212,6 +223,18 @@ func ConfigFromEnv() (Config, error) {
 			// （静默忽略会让运维误以为 mTLS 已生效，安全底线）。
 			if (cfg.CertFile != "" || cfg.KeyFile != "") && cfg.CAFile == "" {
 				return Config{}, fmt.Errorf("etcdstore: 设置了客户端证书但 %s 为空——TLS 未启用（CA 非空才启用 TLS）", EnvTLSCA)
+			}
+			// v0.8.0（L1）：RBAC 用户名密码鉴权，必须同设/同缺（对齐
+			// TLS_CERT/KEY 惯例；只设其一静默忽略会让运维误以为鉴权已生效，
+			// 安全底线同 mTLS）。密码不落日志（下方仅输出用户名存在性）。
+			user, pass := os.Getenv(EnvUsername), os.Getenv(EnvPassword)
+			switch {
+			case user != "" && pass == "":
+				return Config{}, fmt.Errorf("etcdstore: 环境变量 %s=%q 与 %s 必须成对设置（RBAC 用户名密码鉴权）", EnvUsername, user, EnvPassword)
+			case user == "" && pass != "":
+				return Config{}, fmt.Errorf("etcdstore: 环境变量 %s 已设置但 %s 为空——必须成对设置（RBAC 用户名密码鉴权）", EnvPassword, EnvUsername)
+			case user != "" && pass != "":
+				cfg.Username, cfg.Password = user, pass
 			}
 			if v := os.Getenv(EnvAllowInsecure); v != "" {
 				switch v {

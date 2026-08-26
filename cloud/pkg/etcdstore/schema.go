@@ -76,7 +76,7 @@ func ProbeAlive(kv KVStore) error {
 		// PermissionDenied 码，附加专属引导文案（KNOWN-ISSUES ⑤ 契约）——
 		// v0.5.0 不支持鉴权参数透传，必须到 etcd 侧授权。
 		if status.Code(err) == codes.PermissionDenied {
-			return fmt.Errorf("etcdstore: 启动探活被拒绝（PermissionDenied）——v0.5.0 不支持 URL 内凭证/鉴权参数透传，请在外部 etcd 侧为键前缀 /edgeflow/ 授权（连接用户需 etcd 读写权限）后再启动: %w", err)
+			return fmt.Errorf("etcdstore: 启动探活被拒绝（PermissionDenied）——请检查：① 外部 etcd 侧已为连接用户授予 /edgeflow/ 键前缀读写权限（etcdctl role grant-permission）；② RBAC 用户名密码已通过 %s/%s 成对配置（v0.8.0 起支持，与 TLS/mTLS 正交）；③ 若用 mTLS，证书 CN 已在 etcd 侧映射角色（--client-cert-auth）: %w", EnvUsername, EnvPassword, err)
 		}
 		if attempt < maxAttempts {
 			time.Sleep(probeRetryGap)

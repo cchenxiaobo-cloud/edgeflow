@@ -62,18 +62,26 @@ var _ KVStore = (*kvStore)(nil)
 // v0.5+ 外部 etcd 模式下跳过 embed、直接用本工厂连接 EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS
 // 指向的集群（设计 §7：业务层零改动）。
 func NewKVStore(endpoints []string) (KVStore, error) {
-	return newKVStore(endpoints, nil)
+	return newKVStore(endpoints, nil, "", "")
 }
 
 // NewKVStoreWithTLS 创建带 TLS 的 KVStore（外部 etcd 模式 TLS/mTLS 路径）：
 // tlsCfg 非 nil 时启用 TLS（CA 池 + 可选客户端证书，见 Config.BuildTLS）。
 func NewKVStoreWithTLS(endpoints []string, tlsCfg *tls.Config) (KVStore, error) {
-	return newKVStore(endpoints, tlsCfg)
+	return newKVStore(endpoints, tlsCfg, "", "")
 }
 
-// newKVStore 是两种工厂的公共实现：clientv3 直连，DialTimeout 5s
+// NewKVStoreWithAuth 创建带 TLS 与 RBAC 用户名密码鉴权的 KVStore
+// （v0.8.0，L1：外部 etcd 模式 ETCD_USERNAME/PASSWORD 透传）。
+// username/password 均空 = 与 NewKVStoreWithTLS 等价；调用方负责成对校验
+// 与护栏决策（ConfigFromEnv 已执行）。
+func NewKVStoreWithAuth(endpoints []string, tlsCfg *tls.Config, username, password string) (KVStore, error) {
+	return newKVStore(endpoints, tlsCfg, username, password)
+}
+
+// newKVStore 是三种工厂的公共实现：clientv3 直连，DialTimeout 5s
 // （对齐接口注释 5s 约定），clientv3 自带自动重连，无需应用层处理。
-func newKVStore(endpoints []string, tlsCfg *tls.Config) (KVStore, error) {
+func newKVStore(endpoints []string, tlsCfg *tls.Config, username, password string) (KVStore, error) {
 	if len(endpoints) == 0 {
 		return nil, fmt.Errorf("etcdstore: NewKVStore 需要非空 endpoints")
 	}
@@ -81,6 +89,8 @@ func newKVStore(endpoints []string, tlsCfg *tls.Config) (KVStore, error) {
 		Endpoints:   endpoints,
 		DialTimeout: opTimeout,
 		TLS:         tlsCfg,
+		Username:    username,
+		Password:    password,
 	})
 	if err != nil {
 		return nil, err

@@ -14,7 +14,7 @@ import (
 
 // newPodAPIServer 构造带 Pod 状态查询路由的测试 HTTP 服务
 // （/api/v1/pods、/api/v1/nodes/{nodeID}/pods），返回服务与共享存储。
-func newPodAPIServer(t *testing.T, reg *registry.Registry, pods *podstatus.PodStatusStore) *httptest.Server {
+func newPodAPIServer(t *testing.T, reg *registry.Registry, pods podstatus.Store) *httptest.Server {
 	t.Helper()
 	api := &nodeAPI{reg: reg, pods: pods}
 	mux := http.NewServeMux()

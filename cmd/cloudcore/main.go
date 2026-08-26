@@ -187,7 +187,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	var (
 		nodeReg     registry.Store     // 节点注册表（纯内存或 EtcdRegistry 写穿包装）
 		deviceStore devicestatus.Store // 设备状态存储（纯内存或 EtcdDeviceStore 写穿包装）
-		closeEtcd   func()             // etcd 关停闭包（§6.1：注册表循环 → kv → embed，最后执行）
+		// v0.9.0（③）：Pod 状态存储（纯内存或 EtcdPodStore 写穿包装——
+		// 写穿后 cloudcore 重启 Pod 列表直接可见，不再短暂清空）。
+		podStore  podstatus.Store
+		closeEtcd func() // etcd 关停闭包（§6.1：注册表循环 → kv → embed，最后执行）
 		// v0.6.0 多副本参数（外部模式解析；其余形态零值/默认，路由区按 externalMode 消费）
 		leaseTTL     time.Duration // 判活租约 TTL（EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL，默认 300s）
 		multiReplica bool          // 多副本标识（EDGEFLOW_CLOUDCORE_MULTI_REPLICA="1"/"true"）
@@ -207,6 +210,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		log.Errorf("[etcdstore] %s，降级纯内存模式——数据未持久化，重启将丢失", reason)
 		nodeReg = registry.New(registry.WithOfflineTTL(retention))
 		deviceStore = devicestatus.NewStore()
+		podStore = podstatus.NewStore()
 	}
 
 	if !etcdCfg.Enabled {
@@ -216,6 +220,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		warnLeaseTTLIgnored() // M1/M15：纯内存不解析新 env 死路径，显式设置 → Warn 忽略
 		nodeReg = registry.New(registry.WithOfflineTTL(retention))
 		deviceStore = devicestatus.NewStore()
+		podStore = podstatus.NewStore()
 	} else if len(etcdCfg.Endpoints) > 0 {
 		// ── v0.5.0 外部 etcd 模式（方案④，配置级切换）────────────────────
 		// 跳过 embed：不建目录/不占端口/忽略 DATA_DIR，clientv3 直连
@@ -287,6 +292,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 		externalFailFast := func(reason string) {
 			log.Errorf("[etcdstore] 外部模式 %s，拒绝启动（不降级——外部 etcd 是显式部署依赖）", reason)
 		}
+		// v0.9.0（③）：Pod 状态写穿持久化（外部模式，锚定加载 + watch 同步）。
+		// 失败语义：探活已通过、kv 可用，本步失败仅告警降级内存（Pod 状态
+		// 是瞬态上报，重启后仍可自愈——写穿是增强非硬依赖）。
+		ps, perr := podstatus.NewEtcdPodStore(ext)
+		if perr != nil {
+			log.Warnf("[podstatus] 外部模式写穿装配失败，降级纯内存: %v", perr)
+			podStore = podstatus.NewStore()
+		} else {
+			if _, lerr := ps.LoadAnchored(sigCtx); lerr != nil {
+				log.Warnf("[podstatus] 外部模式锚定加载失败（以空库继续，watch/重扫会收敛）: %v", lerr)
+			}
+			ps.StartWatch(sigCtx)
+			podStore = ps
+		}
 		nodeReg, deviceStore, closeEtcd, err = assembleExternalEtcdStores(
 			ext, func() {
 				if err := kv.Close(); err != nil {
@@ -318,6 +337,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 						log.Errorf("[etcdstore] 嵌入式 etcd 关停失败: %v", err)
 					}
 				}, "嵌入式 etcd", retention, sigCtx, downgrade)
+			// v0.9.0（③）：Pod 状态写穿持久化（embed 模式，全量加载）。
+			ps, perr := podstatus.NewEtcdPodStore(kv)
+			if perr != nil {
+				log.Warnf("[podstatus] 写穿装配失败，降级纯内存: %v", perr)
+				podStore = podstatus.NewStore()
+			} else {
+				if lerr := ps.Load(sigCtx); lerr != nil {
+					log.Warnf("[podstatus] 全量加载失败（以空库继续，上报会收敛）: %v", lerr)
+				}
+				podStore = ps
+			}
 			modelKV = kv // v0.7.0：模型仓库存储复用 embed kvStore（CAS 恒成功，D4 口径）
 		}
 	}
@@ -437,10 +467,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		log.Infof("NodeController 装配完成: 扫描周期 %v, 心跳超时 %v", scanInterval, nodeTimeout)
 	}
 
-	// Pod 状态存储（内存态，WBS 6.3）与 CloudHub 上报回调桥接：
+	// Pod 状态存储与 CloudHub 上报回调桥接（依赖注入，CloudHub 不感知实现）：
 	// 边侧上报的 PodStatus 消息经 CloudHub 校验后注入存储，供查询 API 使用。
-	// 依赖注入（SetPodStatusHandler），CloudHub 不感知存储实现。
-	podStore := podstatus.NewStore()
+	// v0.9.0（③）起 write-through：纯内存/降级路径在上方各分支已赋值；
+	// 此处兜底防漏（任何分支未赋值时保持内存语义）。
+	if podStore == nil {
+		podStore = podstatus.NewStore()
+	}
 	hub.SetPodStatusHandler(func(nodeID string, ps cloudhub.PodStatusPayload) {
 		// 回调运行在 CloudHub 读循环 goroutine 内：recover 兜底，
 		// 防止单条异常数据导致整个连接处理崩溃（M2B 审查 P2-4）。
@@ -1136,8 +1169,8 @@ func applyConfigReload(old, next *config.Config, hr *httpReloader) error {
 type nodeAPI struct {
 	// reg 是节点注册表存储（纯内存或 etcd 写穿实现；与 CloudHub 事件桥接共享同一实例）。
 	reg registry.Store
-	// pods 是 Pod 状态存储（与 CloudHub 上报回调共享同一实例）。
-	pods *podstatus.PodStatusStore
+	// pods 是 Pod 状态存储（纯内存或 v0.9.0 写穿实现；与 CloudHub 上报回调共享同一实例）。
+	pods podstatus.Store
 	// devices 是设备状态存储（纯内存或 etcd 写穿实现；与 CloudHub 上报回调
 	// 共享同一实例，WBS 5.3）。
 	devices devicestatus.Store

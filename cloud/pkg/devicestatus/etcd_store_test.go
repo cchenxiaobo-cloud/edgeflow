@@ -209,9 +209,9 @@ func TestEtcdDeviceStoreSetDesiredPutFailureKeepsMemory(t *testing.T) {
 	}
 }
 
-// TestEtcdDeviceStoreUpsertNoPersist 验证 reported 上报不落盘：
-// Upsert 不新增 etcd 键、不改写既有键；内存正常更新。
-func TestEtcdDeviceStoreUpsertNoPersist(t *testing.T) {
+// TestEtcdDeviceStoreUpsertPersists 验证 v0.10.0 reported 写穿：
+// Upsert 写穿完整快照（含 Properties/LastReportedAt）且保 Desired；内存同步更新。
+func TestEtcdDeviceStoreUpsertPersists(t *testing.T) {
 	kv := newFakeKV()
 	s := mustNew(t, kv)
 	if err := s.SetDesired("n1", "default", "d1", "target", 25); err != nil {
@@ -226,26 +226,29 @@ func TestEtcdDeviceStoreUpsertNoPersist(t *testing.T) {
 		t.Fatal(err)
 	}
 	if n := len(kv.keys()); n != 1 {
-		t.Errorf("Upsert 不应新增 etcd 键（当前 %d）: %v", n, kv.keys())
+		t.Errorf("Upsert 应写穿既有键（键数 %d）: %v", n, kv.keys())
 	}
 	var rec deviceShadowRecord
 	if err := json.Unmarshal(kv.raw(key), &rec); err != nil {
 		t.Fatal(err)
 	}
 	if len(rec.Desired) != 1 || rec.Desired["target"] != 25 {
-		t.Errorf("Upsert 不应改写 etcd 记录: %v", rec.Desired)
+		t.Errorf("Upsert 写穿应保留 Desired: %v", rec.Desired)
+	}
+	if rec.Properties["temperature"] != 25.5 || rec.LastReportedAt != 2000 {
+		t.Errorf("Upsert 写穿应含 reported: %+v", rec)
 	}
 	got, _ := s.Get("n1", "default", "d1")
 	if got.Properties["temperature"] != 25.5 || got.LastReportedAt != 2000 {
 		t.Errorf("内存应含上报属性: %+v", got)
 	}
 
-	// 全新设备的 Upsert：仅内存，不产生 etcd 键
+	// 全新设备的 Upsert：写穿（v0.10.0 起 reported 持久化）→ 新增 etcd 键
 	if err := s.Upsert("n1", DeviceStatus{DeviceName: "d9", Properties: map[string]float64{"v": 1}}); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(kv.keys()); n != 1 {
-		t.Errorf("全新设备 Upsert 也不应落盘（当前 %d）", n)
+	if n := len(kv.keys()); n != 2 {
+		t.Errorf("全新设备 Upsert 应写穿新增键（当前 %d）", n)
 	}
 	if _, ok := s.Get("n1", "default", "d9"); !ok {
 		t.Error("内存应有 d9")
@@ -283,11 +286,11 @@ func TestEtcdDeviceStoreRestartRecovery(t *testing.T) {
 	if got.Desired["temp"] != 30 {
 		t.Errorf("Desired 应恢复: %v", got.Desired)
 	}
-	if got.Properties == nil || len(got.Properties) != 0 {
-		t.Errorf("Properties 应归一为空 map（非 nil）: %#v", got.Properties)
+	if got.Properties == nil {
+		t.Errorf("Properties 应为非 nil（v0.10.0 起 reported 持久化，恢复应含上报属性）: %#v", got.Properties)
 	}
-	if got.LastReportedAt != 0 {
-		t.Errorf("LastReportedAt 应归零（瞬态不落盘）: %d", got.LastReportedAt)
+	if got.LastReportedAt == 0 {
+		t.Errorf("LastReportedAt 应保留（v0.10.0 起 reported 持久化）: %d", got.LastReportedAt)
 	}
 	got2, ok := s2.Get("n2", "default", "d2")
 	if !ok || got2.Desired["power"] != 1 {
@@ -549,11 +552,11 @@ func TestDeviceShadowRecordRoundtrip(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := raw["properties"]; ok {
-		t.Error("序列化不应含 properties")
+	if _, ok := raw["properties"]; !ok {
+		t.Error("序列化应含 properties（v0.10.0 起 reported 持久化）")
 	}
-	if _, ok := raw["lastReportedAt"]; ok {
-		t.Error("序列化不应含 lastReportedAt")
+	if _, ok := raw["lastReportedAt"]; !ok {
+		t.Error("序列化应含 lastReportedAt（v0.10.0 起 reported 持久化）")
 	}
 
 	var rec deviceShadowRecord
@@ -561,11 +564,11 @@ func TestDeviceShadowRecordRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	restored := rec.toDeviceStatus()
-	if restored.Properties == nil || len(restored.Properties) != 0 {
-		t.Errorf("Properties 应为非 nil 空 map: %#v", restored.Properties)
+	if restored.Properties == nil || len(restored.Properties) == 0 {
+		t.Errorf("Properties 应保留（v0.10.0 起 reported 持久化）: %#v", restored.Properties)
 	}
-	if restored.LastReportedAt != 0 {
-		t.Errorf("LastReportedAt 应归零: %d", restored.LastReportedAt)
+	if restored.LastReportedAt == 0 {
+		t.Errorf("LastReportedAt 应保留（v0.10.0 起 reported 持久化）: %d", restored.LastReportedAt)
 	}
 	if restored.Desired["target"] != 25 {
 		t.Errorf("Desired 应保留: %v", restored.Desired)

@@ -47,22 +47,28 @@ type KVEntry = etcdstore.KVEntry
 type KVStore = etcdstore.KVStore
 
 // deviceShadowRecord 是设备影子的 etcd 持久化 DTO（设计 §2）。
-// 显式**不含** properties / lastReportedAt（瞬态上报，不落盘）；
+// v0.10.0（③ 收官）：**含** properties / lastReportedAt——设备 reported
+// 由"各副本本地瞬态"升级为"全局一致快照（最后写入者）"，Upsert 写穿
+// 完整快照；旧数据（无 reported 字段）反序列化为零值，兼容无损。
 // 字段名与 DeviceStatus 的 JSON tag 一致（小驼峰）。
 type deviceShadowRecord struct {
-	NodeID     string             `json:"nodeID"`
-	DeviceName string             `json:"deviceName"`
-	Namespace  string             `json:"namespace"`
-	Desired    map[string]float64 `json:"desired"`
+	NodeID        string             `json:"nodeID"`
+	DeviceName    string             `json:"deviceName"`
+	Namespace     string             `json:"namespace"`
+	Desired       map[string]float64 `json:"desired"`
+	Properties    map[string]float64 `json:"properties,omitempty"`
+	LastReportedAt int64             `json:"lastReportedAt,omitempty"`
 }
 
-// toDeviceShadowRecord 把内存态设备状态收缩为持久化 DTO（丢弃瞬态字段）。
+// toDeviceShadowRecord 把内存态设备状态收缩为持久化 DTO（完整快照）。
 func toDeviceShadowRecord(ds DeviceStatus) deviceShadowRecord {
 	return deviceShadowRecord{
-		NodeID:     ds.NodeID,
-		DeviceName: ds.DeviceName,
-		Namespace:  ds.Namespace,
-		Desired:    ds.Desired,
+		NodeID:         ds.NodeID,
+		DeviceName:     ds.DeviceName,
+		Namespace:      ds.Namespace,
+		Desired:        ds.Desired,
+		Properties:     ds.Properties,
+		LastReportedAt: ds.LastReportedAt,
 	}
 }
 
@@ -70,12 +76,17 @@ func toDeviceShadowRecord(ds DeviceStatus) deviceShadowRecord {
 // Properties 恒为非 nil 空 map（JSON 编码为 {} 而非 null，与 API 层
 // cloneDeviceStatus 惯例一致），LastReportedAt 归零（上报瞬态不落盘）。
 func (r deviceShadowRecord) toDeviceStatus() DeviceStatus {
+	props := r.Properties
+	if props == nil {
+		props = map[string]float64{}
+	}
 	return DeviceStatus{
-		NodeID:     r.NodeID,
-		DeviceName: r.DeviceName,
-		Namespace:  normNamespace(r.Namespace),
-		Properties: map[string]float64{},
-		Desired:    r.Desired,
+		NodeID:         r.NodeID,
+		DeviceName:     r.DeviceName,
+		Namespace:      normNamespace(r.Namespace),
+		Properties:     props,
+		LastReportedAt: r.LastReportedAt,
+		Desired:        r.Desired,
 	}
 }
 
@@ -175,9 +186,42 @@ func (s *EtcdDeviceStore) deviceKey(nodeID, namespace, deviceName string) string
 //
 // v0.4.0 **不落盘**：reported 是周期上报瞬态，仅内存字段级合并
 // （保 Desired 语义由内存实现保证，加载后依然成立）。恒返回 nil。
+// Upsert 写入（或更新）一台设备的 reported 快照（边→云上报落点）。
+//
+// v0.10.0（③ 收官）：**写穿完整快照**（身份+Desired+reported）——先合并
+// 内存基准（保 Desired，与 mem.Upsert 同语义）→ etcd Put（5s 超时）→
+// 成功后再提交内存（"写成功 = 已持久化"；失败返回 error、内存不动）。
+// 与 SetDesired 的 CAS 路径共存：两路径写同一键的完整快照，CAS 读基准
+// 合并写回时天然保留 reported（收敛为完整快照语义）。
+// 空参数与内存实现一致忽略（返回 nil）；键段非法 → 拒绝写入。
 func (s *EtcdDeviceStore) Upsert(nodeID string, ds DeviceStatus) error {
+	if nodeID == "" || ds.DeviceName == "" {
+		return nil
+	}
+	ds.NodeID = nodeID
+	if ds.Namespace == "" {
+		ds.Namespace = DefaultNamespace
+	}
+	if err := validateKeyParts(nodeID, ds.Namespace, ds.DeviceName); err != nil {
+		return err
+	}
+	// 合并基准（保 Desired）：先算 merged（不提交内存），etcd 成功后再提交。
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	merged := ds
+	if existing, ok := s.mem.Get(nodeID, ds.Namespace, ds.DeviceName); ok && len(existing.Desired) > 0 {
+		merged.Desired = existing.Desired
+	}
+	data, err := json.Marshal(toDeviceShadowRecord(merged))
+	if err != nil {
+		return fmt.Errorf("devicestatus: Upsert 编码失败: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err = s.kv.Put(ctx, s.deviceKey(nodeID, ds.Namespace, ds.DeviceName), data)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("devicestatus: Upsert 写穿失败（node=%s device=%s，内存不动）: %w", nodeID, ds.DeviceName, err)
+	}
 	return s.mem.Upsert(nodeID, ds)
 }
 
@@ -440,16 +484,9 @@ func (s *EtcdDeviceStore) applyPut(key string, value []byte) {
 		s.mem.devices[rec.NodeID] = byNode
 	}
 	k := deviceKeyOf(ns, rec.DeviceName)
-	if existing, ok := byNode[k]; ok {
-		// 合并：Desired 以 etcd 为准，reported（Properties/LastReportedAt）保留本地
-		existing.Desired = normalizeDesiredMap(rec.Desired)
-		existing.NodeID = rec.NodeID
-		existing.DeviceName = rec.DeviceName
-		existing.Namespace = ns
-		byNode[k] = existing
-	} else {
-		byNode[k] = rec.toDeviceStatus()
-	}
+	// v0.10.0：整值采用（reported 已持久化，从"本地瞬态"升级为"全局一致
+	// 快照——最后写入者"；不再保留本地 reported，与 EtcdPodStore 一致）。
+	byNode[k] = rec.toDeviceStatus()
 	s.mem.mu.Unlock()
 	s.mu.Unlock()
 }

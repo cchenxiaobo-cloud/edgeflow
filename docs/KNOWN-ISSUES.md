@@ -42,7 +42,7 @@
 |---|------|------|------|------|
 | ① | `data/etcd/member/wal/` 坏 WAL（内容损坏/截断） | **实测 etcd v3.5.33 在 raft 恢复阶段直接 panic**（`panic: cannot use none as id`，RestartNode），**不是返回 error**——设计初稿预期"启动失败 → error → 降级"，实际需装配层 `defer recover()` 兜底 | 无兜底则进程裸崩（系统级重启循环）；现有装配已 recover：默认降级纯内存 + 启动期大告警（数据未持久化），`EDGEFLOW_CLOUDCORE_ETCD_STRICT=1` 时 fail-fast 退出。恢复路径：etcdutl restore 或清空数据目录重收敛（边缘重连重新注册） | 已按实测修订设计 §6.5 与文档口径（DEPLOYMENT §10.5）；保持 recover 兜底 + 回归测试 `TestBadWALTolerance` |
 | ② | `data/etcd/member/` 目录整体丢失 | embed 重建空库正常启动（旧数据不在、新写可用）——**单目录丢失 ≠ 崩溃，但等于全量丢数据** | 注册台账与设备 Desired 从零重建：节点靠边缘重连重新注册，Desired 靠指令重发；Pod/上报 ≤1 上报周期自愈 | 备份策略兜底：在线 `etcdutl snapshot save` / 离线 `cp -a data/etcd`（停进程后整体拷贝，**文件拷贝≠有效备份**），见 DEPLOYMENT §10.4 |
-| ③ | 云端 Pod 状态 / 设备 reported（properties/LastReportedAt） | v0.4.0 起**整表不落盘**（写穿范围仅注册元数据 + Desired）：cloudcore 重启后 pods 列表短时为空、设备 properties 为空 map `{}` | 重启窗口内查询 API 显示"暂时缺失"；≤1 上报周期（默认 30s）边缘重连后自愈，**非永久丢失**；监控/告警阈值需容忍该窗口 | **v0.9.0 闭环（Pod 部分）**：`/edgeflow/podstatus/` 键空间启用（EtcdPodStore 写穿 Upsert/Delete + 内存缓存 + Load/watch），重启后 Pod 列表直接可见；**设备 reported 仍未持久化**（另行延后登记） |
+| ③ | 云端 Pod 状态 / 设备 reported（properties/LastReportedAt） | v0.4.0 起**整表不落盘**（写穿范围仅注册元数据 + Desired）：cloudcore 重启后 pods 列表短时为空、设备 properties 为空 map `{}` | 重启窗口内查询 API 显示"暂时缺失"；≤1 上报周期（默认 30s）边缘重连后自愈，**非永久丢失**；监控/告警阈值需容忍该窗口 | **v0.9.0/v0.10.0 闭环**：`/edgeflow/podstatus/` 键空间启用（EtcdPodStore 写穿，重启后 Pod 列表直接可见）；**v0.10.0 设备 reported 亦写穿**（EtcdDeviceStore.Upsert 完整快照 + applyPut 整值采用，重启后设备属性立即可见）——③ 全部闭环 |
 | ④ | `cloud/pkg/etcdstore` embed.Close() 幂等性 | v3.5.33 的 `close(e.errc)` 无 closeOnce 保护，二次 Close 会 `panic: close of closed channel` | 已在本层用 sync.Once 整体幂等化解（`Close()` 可安全重复调用）；集成层勿绕过 `EmbeddedEtcd` 直接持有 embed.Etcd | 已闭环（包内化解）；登记备忘 |
 
 ---
@@ -79,7 +79,7 @@
 | L18 | 心跳写放大（续约路径） | **每节点每心跳 2 次 RPC**（Grant + Put）；千节点 × 30s 心跳 ≈ 67 写/s/副本 + ~60 RPC/s 读（重扫/Get） | etcd 负载较 v0.5.0 增（纯读）明显；3 节点承载余量充足（万级写/s 基线）；quota 256MiB/compaction 1h 下修订增长 ≈12MB/h，远低于配额 | 异步合并队列有背压（队列满丢弃 + Warn，下次心跳自然重入队）；etcd 侧容量基线沿用 DEPLOYMENT §10.7.4 |
 | L19 | GC 级联（gcCascadeLoop 顺序） | **GC 级联 at-most-once**：副本在「删台账成功 → 级联删设备子树」之间崩溃且他副本未同步到 → 设备 Desired 孤儿残留（按节点过滤不可见，低危） | 陈年孤儿 Desired 占据键空间（MB 量级可忽略）；节点重注册后旧 Desired 不再可见（查询按节点过滤） | 节点重注册覆盖；根除需 txn 级联删除（etcd 无跨前缀事务，需自实现），后续候选 |
 | L20 | 外部模式装配（NodeController 停用 + env 语义迁移） | `NODE_SCAN_INTERVAL` 在外部模式语义迁移为「etcd 重扫/GC 周期」；`NODE_TIMEOUT` **不再作为外部模式判活阈值**（NodeController 停用，判活阈值 = `NODE_LEASE_TTL` 独立默认 300s，D2 解耦）；embed/纯内存两 env 语义不变 | 运维按 v0.5.0 文档理解这两个 env 会在外部模式得到不同行为（NODE_TIMEOUT 调整不再影响判活；NODE_SCAN_INTERVAL 影响重扫粒度） | 启动日志三态明示「外部模式：判活由 etcd 租约机制承担，NodeController 停用；NODE_SCAN_INTERVAL→重扫周期；NODE_TIMEOUT 不再参与判活（NODE_LEASE_TTL 独立默认 300s）」（对齐 v0.3.0 env 日志惯例）；文档配置表标注两种语义（RELEASE-NOTES-v060 §三.3.2） |
-| L20b | 跨平台编译（pkg/certs CRL 文件锁） | `lockCRLFile/unlockCRLFile` 使用 `syscall.Flock`（UNIX 专属）——**Windows 交叉编译断链为 v0.5.0 引入的既有现状**（v0.4.0/v0.5.0 发布矩阵均不含 windows 制品，v0.6.0/v0.7.0 同）；不影响 darwin/linux 构建与运行（**原编号 L21，2026-08-25 更名 L20b 避免与 v0.7.0 轮编号冲突，见 §2 复查记录**） | 有 windows 构建诉求的团队需自行 patch（或等后续版本平台分文件：flock_unix.go / flock_windows.go） | 排未来版本（与 v0.6.0 真多活主题无关，控制范围不做） |
+| L20b | 跨平台编译（pkg/certs CRL 文件锁） | ✅ **v0.10.0 闭环**：平台分文件（crl_lock_unix.go syscall.Flock / crl_lock_windows.go x/sys/windows LockFileEx），GOOS=windows 交叉编译通过（原：`lockCRLFile/unlockCRLFile` 使用 `syscall.Flock`（UNIX 专属）——**Windows 交叉编译断链为 v0.5.0 引入的既有现状**（v0.4.0/v0.5.0 发布矩阵均不含 windows 制品，v0.6.0/v0.7.0 同）；不影响 darwin/linux 构建与运行（**原编号 L21，2026-08-25 更名 L20b 避免与 v0.7.0 轮编号冲突，见 §2 复查记录**） | 有 windows 构建诉求的团队需自行 patch（或等后续版本平台分文件：flock_unix.go / flock_windows.go） | ✅ 已闭环（v0.10.0，平台分文件；Windows 制品可加发布矩阵，测试辅助 syscall.Dup 的 Windows 兼容性为测试环境边界） |
 
 ---
 
@@ -121,3 +121,14 @@
 |---|---|---|---|
 | ③（Pod 部分） | 云端 Pod 状态不落盘 | ✅ **v0.9.0 闭环**：EtcdPodStore 写穿（Upsert/Delete 先 etcd 后内存、失败内存不动）+ 读路径内存缓存 + Load 全量重建 + LoadAnchored/StartWatch 外部多副本增量同步；键空间 `/edgeflow/podstatus/<nodeID>/<ns>/<podName>`（v0.4.0 预留）启用；E2E 实测：重启后 Pod 列表立即可见（不再短暂清空） | 设备 reported（properties/LastReportedAt）仍不落盘（延后，与 Pod 原同族登记）；写穿失败降级内存（Upsert 返回 error，上报自愈） |
 | R-1 | 发布前镜像存在性探活 | ✅ **v0.9.0 实现**（P2 升级）：registry v2 HEAD（私有 registry 直连 + Docker Hub token 换取）；env `EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK`（off/warn/fail，**默认 off 零行为变化**）+ `RELEASE_MIRROR_CHECK_TIMEOUT`（5s）+ `REGISTRY_TOKEN`（私有 registry Bearer）；warn=仅告警（发布照常 202）/fail=阻断 422（带 mirror 字段） | 探活是"存在性"检查非"可拉取"保证（拉取在边缘，PodStatus 暴露）；镜像 digest 级校验未做（后续版本） |
+
+
+## 10. v0.10.0 开发轮闭环登记（2026-08-26，云端状态收官 + 发布执行增强 + 平台构建修复）
+
+> 提交：2e6e38c（③ 收官）/ f82488a（D6 + L20b）。
+
+| 编号 | 问题面 | 闭环说明 | 残余与建议 |
+|---|---|---|---|
+| ③（设备部分） | 设备 reported 不落盘 | ✅ **v0.10.0 闭环**：EtcdDeviceStore.Upsert 写穿完整快照（身份+Desired+reported，先 etcd 后内存、失败内存不动）；与 SetDesired CAS 路径共存（两路径写同一键完整快照，CAS 读基准合并写回天然保留 reported）；applyPut 整值采用（reported 从"各副本本地瞬态"升级为"全局一致快照——最后写入者"）；E2E 实测：重启后设备属性立即可见 | 写放大评估：设备上报 30s 周期 × 每设备一次 Put，量级 MB 可接受；多副本下 reported 收敛为最后写入者（与 Pod 一致） |
+| D6 | 批内并发（v0.8/v0.9 两次延后） | ✅ **v0.10.0 实现**（P2 升级）：`EDGEFLOW_CLOUDCORE_RELEASE_BATCH_PARALLEL`（默认 1=串行，零行为变化；≥1 非法 fail-fast）；批内信号量限流并行（min(parallel, 批大小)）；failFast 语义：并发下本批在途执行完、后续批次中止（终态 head=failed + 未部署 skipped 与串行收敛一致）；E2E 实测 batchSize=3 + parallel=2 → succeeded | batchSize 仍是批粒度非并发度（并行度由本 env 独立控制） |
+| L20b | Windows 交叉编译断链 | ✅ **v0.10.0 闭环**：lockCRLFile/unlockCRLFile 平台分文件（crl_lock_unix.go / crl_lock_windows.go，x/sys/windows LockFileEx）；GOOS=windows 交叉编译 ./pkg/certs/ ./cmd/cloudcore/ 通过 | 测试辅助 syscall.Dup 仅 Unix（Windows 上不跑本仓库测试，登记为测试环境边界）；Windows 制品未加入发布矩阵（12 制品口径不变，可后续加） |

@@ -6,7 +6,7 @@ EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备�
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.9.0**（2026-08-26，云端状态持久化补全 + 发布运营性增强）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**云端分级持久化（v0.4.0 嵌入式 etcd / v0.5.0 外部 etcd 模式 / v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**、**外部 etcd RBAC 鉴权透传与终态发布 GC（v0.8.0：L1/L28 闭环）+ 续约失败监控指标**。
+> 当前版本：**v0.10.0**（2026-08-26，云端状态收官 + 发布执行增强 + 平台构建修复）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**云端分级持久化（v0.4.0 嵌入式 etcd / v0.5.0 外部 etcd 模式 / v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**、**外部 etcd RBAC 鉴权透传与终态发布 GC（v0.8.0：L1/L28 闭环）+ 续约失败监控指标**。
 
 ## 目录结构
 
@@ -96,6 +96,7 @@ helm install edgeflow build/charts/edgeflow/
 
 ## 版本历史
 
+- **v0.10.0**（2026-08-26）：设备属性写穿持久化（③ 收官，重启后属性立即可见）+ 发布批内并发（`RELEASE_BATCH_PARALLEL`，默认 1=串行）+ Windows 交叉编译修复（L20b）（详见 [RELEASE-NOTES-v0100.md](docs/RELEASE-NOTES-v0100.md)）
 - **v0.9.0**（2026-08-26）：云端状态持久化补全（Pod 状态写穿 `/edgeflow/podstatus/`，重启后 Pod 列表直接可见）+ 发布前镜像存在性探活（R-1：`RELEASE_MIRROR_CHECK` off/warn/fail，默认 off）（详见 [RELEASE-NOTES-v090.md](docs/RELEASE-NOTES-v090.md)）
 - **v0.8.0**（2026-08-26）：运维与安全增强——外部 etcd RBAC 鉴权透传（ETCD_USERNAME/PASSWORD，L1）、续约失败监控指标（L12）、模型列表分页（limit/offset + X-Total-Count）与终态发布 GC（L28，默认关）（详见 [RELEASE-NOTES-v080.md](docs/RELEASE-NOTES-v080.md)）
 - **v0.7.0**（2026-08-25）：模型仓库/版本管理/灰度发布——云端模型台账（F41）+ 服务端灰度执行器（F42：白名单/按比例、分批、fail-fast、取消、逆序回滚），模型 API 17 端点（总 HTTP 端点 14→31），边缘零改动（详见 [RELEASE-NOTES-v070.md](docs/RELEASE-NOTES-v070.md)）

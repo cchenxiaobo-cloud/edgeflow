@@ -5,7 +5,7 @@
 | 项 | 内容 |
 |---|---|
 | 产品版本基线 | EdgeFlow v0.7.0(2026-08-25 发布;事实基线自 v0.1.0 演进,增量见修订记录) |
-| 手册版本 | v1.3.0 |
+| 手册版本 | v1.4.0 |
 | 密级 | 公开(售前/客户技术交流) |
 | 适用范围 | 售前方案设计、客户技术决策、PoC 部署参考 |
 
@@ -15,6 +15,7 @@
 
 | 版本 | 日期 | 修订人 | 说明 |
 |---|---|---|---|
+| v1.4.0 | 2026-08-26 | 技术团队 | v0.10.0 收官入册:设备 reported 写穿持久化(③ 全闭环——重启后设备属性立即可见,见 1.5/6.2)、发布批内并发(RELEASE_BATCH_PARALLEL 默认 1=串行,见 4.2)、Windows 交叉编译修复(L20b);KNOWN-ISSUES §10 登记 |
 | v1.3.0 | 2026-08-26 | 技术团队 | v0.9.0 运维补全入册:云端 Pod 状态写穿持久化(/edgeflow/podstatus/ 启用,重启后 Pod 列表直接可见,见 1.5/6.2)、发布前镜像存在性探活(R-1:RELEASE_MIRROR_CHECK off/warn/fail,默认 off,见 4.2);KNOWN-ISSUES §3③ 闭环 + §9 登记 |
 | v1.2.0 | 2026-08-26 | 技术团队 | v0.8.0 运维与安全增强入册:外部 etcd RBAC 鉴权透传(ETCD_USERNAME/PASSWORD,与 TLS/mTLS 正交,见 1.5/附录 B)、/metrics 续约失败计数(7 指标)、模型列表分页(limit/offset + X-Total-Count)与终态发布 GC(默认关,L31 审计口径保留,见 4.2);表 C-1 F31 口径补充;KNOWN-ISSUES L1/L12/L28 闭环 |
 | v1.1.0 | 2026-08-25 | 技术团队 | v0.7.0 模型仓库(F41)与模型灰度发布(F42)落地入册:第 4 章重写为正式能力(过渡路径降级为"兼容路径",keadm 升级分批保留为产品升级灰度);附录 C 表 C-1 追加 F41/F42(已实现,● 模型管理场景)、表 C-2 摘除;FAQ A7 更新为平台化流程;术语表新增模型仓库/灰度发布/部署影子/领跑锁;端点口径 14→31(模型 API 17 端点,见第 4 章与 API-SPEC §7);同步补齐 v0.2.0–v0.6.0 覆盖(资源调度/超卖、Mapper 装配开关、Modbus 命名空间、OPC-UA 协议栈状态、云端分级持久化与部署形态/高可用,见 1.3/1.5/2.2/附录 B/C) |
@@ -121,7 +122,7 @@ EdgeFlow 采用"设备层-边缘层-云层"三层架构,文字版说明如下:
 | 模式 | 配置 | 数据可靠性 | 说明 |
 |---|---|---|---|
 | 纯内存 | EDGEFLOW_CLOUDCORE_ETCD_ENABLED=false | 重启丢失(注册台账、Desired 与模型发布任务/部署影子均不保留,L22) | 仅适合演示/联调 |
-| 嵌入式 etcd(默认) | 不设 ETCD_ENDPOINTS(默认启用 embed,127.0.0.1:12379/12380,只绑回环) | 注册台账与设备 Desired 写穿落盘(data/etcd);v0.9.0 起 Pod 状态亦写穿(重启后立即可见);心跳/Status/属性快照不落盘(重启 ≤1 上报周期自愈) | **单副本铁律**:replicaCount 必须 1(多副本各自 embed = 脑裂,Helm Chart 渲染期 {{ fail }} 守卫);Helm 必须挂 PVC(默认 1Gi,emptyDir 名存实亡) |
+| 嵌入式 etcd(默认) | 不设 ETCD_ENDPOINTS(默认启用 embed,127.0.0.1:12379/12380,只绑回环) | 注册台账与设备 Desired 写穿落盘(data/etcd);v0.9.0 起 Pod 状态亦写穿;v0.10.0 起设备 reported 亦写穿(重启后 Pod 列表/设备属性均立即可见);心跳/Status 不落盘(重启 ≤1 上报周期自愈) | **单副本铁律**:replicaCount 必须 1(多副本各自 embed = 脑裂,Helm Chart 渲染期 {{ fail }} 守卫);Helm 必须挂 PVC(默认 1Gi,emptyDir 名存实亡) |
 | 外部 etcd | EDGEFLOW_CLOUDCORE_ETCD_ENDPOINTS 指向共享集群(clientv3 直连,跳过 embed) | 写穿外部集群(建议 3 节点奇数、同地域、quota 256MiB、compaction 1h、最小权限角色 readwrite /edgeflow/) | 需 TLS(推荐 mTLS);非回环端点+无 TLS 拒绝启动(明文护栏,逃生门 ETCD_ALLOW_INSECURE=1 仅限可信内网);v0.6.0 起支持多副本 active-active;v0.8.0 起支持 RBAC 用户名密码鉴权(ETCD_USERNAME/PASSWORD 成对透传,与 TLS/mTLS 正交) |
 
 **单副本约束与真多活**:

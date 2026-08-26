@@ -45,12 +45,12 @@ const (
 
 // 续约流水线与重扫周期常量（设计 §1.2/§1.5）。
 const (
-	renewQueueCapacity = 4096               // 续约队列容量（满则丢弃 + Warn，下次心跳自然重入队）
-	defaultRenewWorkers = 4                 // 续约 worker 数
-	renewBackoffBase   = 5 * time.Second    // 续约失败退避基值
-	renewBackoffCap    = 60 * time.Second   // 退避上限
-	minScanInterval    = 30 * time.Second   // 重扫/GC 周期下限（max(30s, NODE_SCAN_INTERVAL)）
-	defaultScanInterval = 30 * time.Second  // NODE_SCAN_INTERVAL 默认值（外部模式语义迁移）
+	renewQueueCapacity  = 4096             // 续约队列容量（满则丢弃 + Warn，下次心跳自然重入队）
+	defaultRenewWorkers = 4                // 续约 worker 数
+	renewBackoffBase    = 5 * time.Second  // 续约失败退避基值
+	renewBackoffCap     = 60 * time.Second // 退避上限
+	minScanInterval     = 30 * time.Second // 重扫/GC 周期下限（max(30s, NODE_SCAN_INTERVAL)）
+	defaultScanInterval = 30 * time.Second // NODE_SCAN_INTERVAL 默认值（外部模式语义迁移）
 )
 
 // hbValue 是心跳键的持久化值（etcdctl 可人读；键存在即判活，值解析失败
@@ -91,8 +91,8 @@ type renewRequest struct {
 }
 
 type LeaseEtcdRegistry struct {
-	reg  *Registry              // 内存缓存（读路径唯一事实源；OfflineTTL=0，GC 由本层两阶段接管）
-	kv   etcdstore.ExtendedKV   // 扩展 KV 面（CAS/watch/lease）
+	reg  *Registry            // 内存缓存（读路径唯一事实源；OfflineTTL=0，GC 由本层两阶段接管）
+	kv   etcdstore.ExtendedKV // 扩展 KV 面（CAS/watch/lease）
 	opts LeaseRegOptions
 
 	// lm 保护以下注册表自身的并发结构（锁序：绝不嵌套持有 reg.mu 再取 lm；

@@ -71,6 +71,32 @@ type modelAPI struct {
 	store modelrepo.ModelStore
 	// reg 是节点注册表（发布创建的 Ready 快照 / 白名单存在性校验用）。
 	reg registry.Store
+	// mirrorCheck 是发布前镜像探活配置（v0.9.0，R-1）；nil = 不检查
+	// （默认 off，零行为变化）。
+	mirrorCheck *mirrorCheckConfig
+}
+
+// mirrorCheckConfig 是装配层注入的探活配置（env 解析见 etcd.go）。
+type mirrorCheckConfig struct {
+	mode    modelrelease.MirrorCheckMode
+	timeout time.Duration
+	token   string
+}
+
+// check 执行一次镜像探活；返回 (是否阻断, 错误)。off 模式恒不检查。
+func (c *mirrorCheckConfig) check(ctx context.Context, mirror string) (block bool, err error) {
+	if c == nil || c.mode == modelrelease.MirrorCheckOff {
+		return false, nil
+	}
+	err = modelrelease.CheckMirror(ctx, mirror, modelrelease.MirrorCheckOptions{
+		Mode:    c.mode,
+		Timeout: c.timeout,
+		Token:   c.token,
+	})
+	if err == nil {
+		return false, nil
+	}
+	return c.mode == modelrelease.MirrorCheckFail, err
 }
 
 // Register 一次性注册 17 条模型 API 路由（WBS-7 装配面最小：main.go 在
@@ -728,6 +754,16 @@ func (a *modelAPI) createRelease(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnprocessableEntity,
 			fmt.Sprintf("release target version %s/%s must be active (status=%s)", modelName, req.Version, version.Status), nil)
 		return
+	}
+	// R-1（v0.9.0）：发布前镜像存在性探活（默认 off；warn 仅告警/fail 阻断 422）
+	if block, err := a.mirrorCheck.check(r.Context(), version.Mirror); err != nil {
+		if block {
+			writeErr(w, http.StatusUnprocessableEntity,
+				fmt.Sprintf("release mirror check failed: %v", err),
+				map[string]any{"mirror": version.Mirror})
+			return
+		}
+		log.Warnf("[modelrelease] 镜像探活失败（warn 模式，不阻断发布，mirror=%s）: %v", version.Mirror, err)
 	}
 	// 4) 物化 TargetNodes（设计 §5.2 step4/§5.3；未知节点/无 Ready → 422）
 	targetNodes, err := a.materializeTargetNodes(req.Target, version)

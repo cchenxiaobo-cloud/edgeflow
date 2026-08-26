@@ -153,6 +153,13 @@ const (
 	// 仅开启时校验（关闭时配错不阻断启动，对齐外部变量忽略惯例）。
 	envReleaseGCEnabled = "EDGEFLOW_CLOUDCORE_RELEASE_GC_ENABLED"
 	envReleaseGCKeep    = "EDGEFLOW_CLOUDCORE_RELEASE_GC_KEEP"
+	// envMirrorCheck / envMirrorCheckTimeout / envRegistryToken 是发布前
+	// 镜像探活配置（v0.9.0，R-1）：mode 空/off=不检查（零行为变化）、
+	// warn=失败仅告警、fail=失败阻断发布（422）；timeout 默认 5s（>0）；
+	// token 为私有 registry 的 Bearer token（可选）。
+	envMirrorCheck        = "EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK"
+	envMirrorCheckTimeout = "EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK_TIMEOUT"
+	envRegistryToken      = "EDGEFLOW_CLOUDCORE_REGISTRY_TOKEN"
 )
 
 // releaseScanIntervalFromEnv 解析发布控制器扫描周期（默认 5s；支持
@@ -219,6 +226,31 @@ func releaseGCFromEnv() (bool, int, error) {
 		keep = n
 	}
 	return enabled, keep, nil
+}
+
+// mirrorCheckFromEnv 解析发布前镜像探活配置（v0.9.0，R-1）：返回 nil = off
+// （默认，零行为变化）。非法 mode fail-fast；timeout 缺省 5s（>0）。
+func mirrorCheckFromEnv() (*mirrorCheckConfig, error) {
+	mode, err := modelrelease.ParseMirrorCheckMode(os.Getenv(envMirrorCheck))
+	if err != nil {
+		return nil, fmt.Errorf("%v", err)
+	}
+	if mode == modelrelease.MirrorCheckOff {
+		return nil, nil
+	}
+	timeout := modelrelease.DefaultMirrorCheckTimeout
+	if v := os.Getenv(envMirrorCheckTimeout); v != "" {
+		d, derr := time.ParseDuration(v)
+		if derr != nil || d <= 0 {
+			return nil, fmt.Errorf("%s=%q 无效（支持 \"5s\" 等正时长，默认 %v）", envMirrorCheckTimeout, v, modelrelease.DefaultMirrorCheckTimeout)
+		}
+		timeout = d
+	}
+	return &mirrorCheckConfig{
+		mode:    mode,
+		timeout: timeout,
+		token:   os.Getenv(envRegistryToken),
+	}, nil
 }
 
 // warnReleaseLockTTLIgnored 在 embed/纯内存模式检测用户显式设置了

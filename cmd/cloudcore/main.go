@@ -377,6 +377,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		log.Errorf("[modelrelease] %v", err)
 		return 1
 	}
+	// v0.9.0（R-1）：发布前镜像探活配置（默认 off；warn/fail 见 env 注释）
+	mirrorCheckCfg, err := mirrorCheckFromEnv()
+	if err != nil {
+		log.Errorf("[modelrelease] %v", err)
+		return 1
+	}
 	var (
 		modelStore modelrepo.ModelStore     // 模型仓库存储（三模式）
 		relCtrl    *modelrelease.Controller // 灰度发布控制器
@@ -598,7 +604,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// v0.7.0 模型仓库 API（17 条，设计定稿 §4.1 表逐一落地：模型 5 +
 	// 版本 6 + 发布 5 + 部署影子 1；注册在既有 apiMux → auth/audit 链
 	// 自动覆盖，零新中间件代码）
-	(&modelAPI{store: modelStore, reg: nodeReg}).Register(apiMux)
+	(&modelAPI{store: modelStore, reg: nodeReg, mirrorCheck: mirrorCheckCfg}).Register(apiMux)
 
 	var apiHandler http.Handler = apiMux
 	if authEnabled {

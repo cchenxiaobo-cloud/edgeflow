@@ -453,8 +453,8 @@ func (c *Controller) finish(ctx context.Context, h *modelrepo.ModelRelease, resu
 			log.Warnf("[modelrelease] 终态 digest 复核失败（release %s, node %s）: %s", h.ID, nr.NodeID, reason)
 		}
 	}
-	if results, err := c.store.ListNodeResults(ctx, h.ID); err == nil {
-		results = results
+	if latest, err := c.store.ListNodeResults(ctx, h.ID); err == nil {
+		results = latest // 刷新为复核后的最新 perNode（v0.12.0 F-1：修复 v0.11.0 shadow 自赋值，终态判定不再基于陈旧快照）
 	} else {
 		log.Warnf("[modelrelease] 终态复核后读 perNode 失败（release %s，按入参判定）: %v", h.ID, err)
 	}

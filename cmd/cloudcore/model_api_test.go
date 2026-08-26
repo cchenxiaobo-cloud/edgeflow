@@ -1,6 +1,6 @@
 package main
 
-// 模型 API 契约测试（v0.7.0，WBS-9）：17 端点路由注册 + 路由数口径
+// 模型 API 契约测试（v0.7.0，WBS-9；v0.12.0 +digest 复核端点）：18 端点路由注册 + 路由数口径
 // （apiMux 14 + 新 17 = 31 的 17 半边）+ 鉴权审计链（中间件装配点断言）
 // + 行为契约表驱动（模型/版本/发布/部署影子 + 灰度边界）。
 //
@@ -25,7 +25,7 @@ import (
 // ── 测试基建 ──────────────────────────────────────────────────────────
 
 // countingRegistrar 是 routeRegistrar 的计数实现：记录注册的模式（保序、
-// 去重计数——同一模式注册两次只算一条，断言 17 条唯一路由）。
+// 去重计数——同一模式注册两次只算一条，断言 18 条唯一路由）。
 type countingRegistrar struct{ patterns []string }
 
 func (c *countingRegistrar) HandleFunc(pattern string, _ func(http.ResponseWriter, *http.Request)) {
@@ -48,7 +48,7 @@ func (c *countingRegistrar) count(prefix string) int {
 }
 
 // newContractEnv 构造契约测试环境：内存存储 + 注册表 + 已装配的 mux
-// （模型 API 17 路由 + 节点 API 4 路由，模拟 apiMux 装配面）。
+// （模型 API 18 路由 + 节点 API 4 路由，模拟 apiMux 装配面）。
 func newContractEnv(t *testing.T, readyNodes ...string) (*httptest.Server, *modelrepo.MemoryModelStore, *registry.Registry) {
 	t.Helper()
 	store := modelrepo.NewMemoryModelStore()
@@ -138,12 +138,13 @@ func TestModelAPIRouteCount(t *testing.T) {
 		"POST /api/v1/models/{modelName}/releases",
 		"GET /api/v1/models/{modelName}/releases",
 		"GET /api/v1/models/{modelName}/releases/{releaseID}",
+		"GET /api/v1/models/{modelName}/releases/{releaseID}/digest",
 		"POST /api/v1/models/{modelName}/releases/{releaseID}/cancel",
 		"POST /api/v1/models/{modelName}/releases/{releaseID}/rollback",
 		"GET /api/v1/models/{modelName}/deployments",
 	}
 	if len(reg.patterns) != len(want) {
-		t.Fatalf("路由注册数 = %d, want %d（17 新端点，D1 口径）；实际: %v", len(reg.patterns), len(want), reg.patterns)
+		t.Fatalf("路由注册数 = %d, want %d（18 新端点，D1 口径）；实际: %v", len(reg.patterns), len(want), reg.patterns)
 	}
 	for i, w := range want {
 		if reg.patterns[i] != w {
@@ -172,8 +173,8 @@ func TestModelAPIRouteCount(t *testing.T) {
 	if versionFamily != 6 {
 		t.Errorf("版本族路由 = %d, want 6", versionFamily)
 	}
-	if releaseFamily != 5 {
-		t.Errorf("发布族路由 = %d, want 5", releaseFamily)
+	if releaseFamily != 6 {
+		t.Errorf("发布族路由 = %d, want 6（v0.12.0 +digest 复核）", releaseFamily)
 	}
 	if deployFamily != 1 {
 		t.Errorf("部署影子路由 = %d, want 1", deployFamily)
@@ -724,6 +725,119 @@ func TestModelAPIPagination(t *testing.T) {
 		}
 		if len(out.Items) != 3 {
 			t.Errorf("缺省应全量 3 条，实际 %d", len(out.Items))
+		}
+	})
+}
+
+// ---------- v0.12.0 D-1 发布 digest 复核端点测试 ----------
+
+// newDigestReportEnv 构造复核端点环境：模型+版本+发布（可设 MirrorDigest）+
+// 注入 digestOf 闭包。返回 server/store/releaseID。
+func newDigestReportEnv(t *testing.T, mirrorDigest string, digestOf func(string) string, targetNodes []string) (*httptest.Server, *modelrepo.MemoryModelStore, string) {
+	t.Helper()
+	store := modelrepo.NewMemoryModelStore()
+	ctx := context.Background()
+	if err := store.CreateModel(ctx, &modelrepo.Model{Name: "mnist", Type: "classification"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateVersion(ctx, &modelrepo.ModelVersion{
+		Model: "mnist", Version: "v1.0.0", Mirror: "reg.io/mnist:v1", Sha256: "sha256:aaa",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ActivateVersion(ctx, "mnist", "v1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	rel := &modelrepo.ModelRelease{
+		ID: "rel-digest", Model: "mnist", Version: "v1.0.0",
+		Target:       modelrepo.ReleaseTarget{Type: "nodeIDs", NodeIDs: targetNodes},
+		TargetNodes:  targetNodes,
+		BatchSize:    1,
+		PrevActive:   "",
+		MirrorDigest: mirrorDigest,
+	}
+	if err := store.CreateRelease(ctx, rel); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	api := &modelAPI{store: store, reg: registry.New(), digestOf: digestOf}
+	api.Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, store, rel.ID
+}
+
+// TestGetReleaseDigest 验证复核端点 consistency 全矩阵（v0.12.0，D-1）：
+// consistent / inconsistent / unknown / skipped + 404 + digestOf nil。
+func TestGetReleaseDigest(t *testing.T) {
+	const expD = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	t.Run("consistent", func(t *testing.T) {
+		srv, store, rid := newDigestReportEnv(t, expD, func(string) string { return expD }, []string{"n1", "n2"})
+		ctx := context.Background()
+		_ = store.SetNodeResult(ctx, rid, "n1", &modelrepo.NodeReleaseResult{NodeID: "n1", Status: modelrepo.NodeRelDeployed})
+		code, body := doJSON(t, http.MethodGet, srv.URL+"/api/v1/models/mnist/releases/"+rid+"/digest", nil)
+		if code != http.StatusOK {
+			t.Fatalf("consistent: code=%d, want 200", code)
+		}
+		if body["consistency"] != "consistent" {
+			t.Errorf("head = %v, want consistent", body["consistency"])
+		}
+		nodes := body["nodes"].([]any)
+		if len(nodes) != 2 {
+			t.Fatalf("nodes = %d, want 2", len(nodes))
+		}
+		n0 := nodes[0].(map[string]any)
+		if n0["consistency"] != "consistent" || n0["releaseStatus"] != "deployed" || n0["currentImageDigest"] != expD {
+			t.Errorf("节点 0 = %v, want consistent+deployed+digest", n0)
+		}
+	})
+	t.Run("inconsistent", func(t *testing.T) {
+		srv, _, rid := newDigestReportEnv(t, expD, func(string) string { return "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }, []string{"n1"})
+		code, body := doJSON(t, http.MethodGet, srv.URL+"/api/v1/models/mnist/releases/"+rid+"/digest", nil)
+		if code != http.StatusOK || body["consistency"] != "inconsistent" {
+			t.Errorf("head = %v code=%d, want inconsistent+200", body["consistency"], code)
+		}
+	})
+	t.Run("unknown（节点未上报）", func(t *testing.T) {
+		srv, _, rid := newDigestReportEnv(t, expD, func(string) string { return "" }, []string{"n1"})
+		code, body := doJSON(t, http.MethodGet, srv.URL+"/api/v1/models/mnist/releases/"+rid+"/digest", nil)
+		if code != http.StatusOK || body["consistency"] != "unknown" {
+			t.Errorf("head = %v code=%d, want unknown+200", body["consistency"], code)
+		}
+	})
+	t.Run("skipped（mirrorDigest 空）", func(t *testing.T) {
+		srv, _, rid := newDigestReportEnv(t, "", func(string) string { return expD }, []string{"n1"})
+		code, body := doJSON(t, http.MethodGet, srv.URL+"/api/v1/models/mnist/releases/"+rid+"/digest", nil)
+		if code != http.StatusOK || body["consistency"] != "skipped" {
+			t.Errorf("head = %v code=%d, want skipped+200", body["consistency"], code)
+		}
+		if nodes := body["nodes"].([]any); nodes[0].(map[string]any)["consistency"] != "skipped" {
+			t.Errorf("skipped 模式节点应 skipped，got %v", nodes)
+		}
+	})
+	t.Run("发布不存在 → 404", func(t *testing.T) {
+		srv, _, _ := newDigestReportEnv(t, expD, func(string) string { return expD }, []string{"n1"})
+		code, _ := doJSON(t, http.MethodGet, srv.URL+"/api/v1/models/mnist/releases/ghost/digest", nil)
+		if code != http.StatusNotFound {
+			t.Errorf("缺失发布复核 = %d, want 404", code)
+		}
+	})
+	t.Run("digestOf nil → unknown", func(t *testing.T) {
+		srv, _, rid := newDigestReportEnv(t, expD, nil, []string{"n1"})
+		code, body := doJSON(t, http.MethodGet, srv.URL+"/api/v1/models/mnist/releases/"+rid+"/digest", nil)
+		if code != http.StatusOK || body["consistency"] != "unknown" {
+			t.Errorf("digestOf nil head = %v code=%d, want unknown+200", body["consistency"], code)
+		}
+	})
+	t.Run("节点无结果 → pending", func(t *testing.T) {
+		srv, _, rid := newDigestReportEnv(t, expD, func(string) string { return expD }, []string{"n1"})
+		code, body := doJSON(t, http.MethodGet, srv.URL+"/api/v1/models/mnist/releases/"+rid+"/digest", nil)
+		if code != http.StatusOK {
+			t.Fatalf("code=%d want 200", code)
+		}
+		if st := body["nodes"].([]any)[0].(map[string]any)["releaseStatus"]; st != "pending" {
+			t.Errorf("节点无 perNode 结果应 pending，got %v", st)
 		}
 	})
 }

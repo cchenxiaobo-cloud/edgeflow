@@ -65,6 +65,15 @@ type ContainerRuntime interface {
 	// 触发重建（EnsureRunning 内部先停再建，幂等收敛）。
 	ImageMatches(pod metamanager.Pod, index int) (bool, error)
 
+	// ImageDigest 查询 Pod 第 index 个副本实际拉取镜像的 manifest digest
+	// （v0.12.0，R-1++ 运行时通道）：返回 docker 记录的 RepoDigests 中首个
+	// "@sha256:<64hex>" 条目的 sha256 部分（与云端发布头 mirrorDigest 同源
+	// ——registry HEAD 的 Docker-Content-Digest）。容器不存在 / 镜像无
+	// RepoDigests（本地构建、未从 registry 拉取）→ ("", nil)（调用方降级
+	// 空串跳过比对）；运行时不可用等 → ("", error)（调用方记 Warn 后降级
+	// 空串，不阻塞上报）。
+	ImageDigest(pod metamanager.Pod, index int) (string, error)
+
 	// ResourcesMatch 检查 Pod 第 index 个副本容器的资源 limit 是否与期望
 	// 一致（WBS 6.5 资源漂移检测：docker update --cpus/--memory 等外部改动
 	// 使已运行容器的 limit 偏离期望）。

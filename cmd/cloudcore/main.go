@@ -45,25 +45,6 @@ import (
 )
 
 
-// nodeDigestOf 返回节点最近上报的镜像 digest（v0.11.0，R-1+ DigestLookup
-// 装配）：优先模型部署 Pod（edgeflow-model-* 前缀），无则取该节点任意
-// 非空 imageDigest；全部为空 → ""（跳过比对，老边缘不误伤）。
-func nodeDigestOf(podStore podstatus.Store) func(string) string {
-	return func(nodeID string) string {
-		for _, ps := range podStore.ListByNode(nodeID) {
-			if strings.HasPrefix(ps.PodName, "edgeflow-model-") && ps.ImageDigest != "" {
-				return ps.ImageDigest
-			}
-		}
-		for _, ps := range podStore.ListByNode(nodeID) {
-			if ps.ImageDigest != "" {
-				return ps.ImageDigest
-			}
-		}
-		return ""
-	}
-}
-
 func main() {
 	// run 返回进程退出码：非 0 表示启动/运行失败
 	if code := run(os.Args[1:], os.Stdout, os.Stderr); code != 0 {
@@ -431,7 +412,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			GCEnabled:      releaseGCEnabled,
 			GCKeep:         releaseGCKeep,
 			BatchParallel:  releaseBatchParallel,
-			DigestLookup:   nodeDigestOf(podStore),
+			DigestLookup:   podstatus.NodeDigestOf(podStore),
 		})
 		if err != nil {
 			log.Errorf("[modelrelease] 发布控制器装配失败: %v", err)
@@ -632,7 +613,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// v0.7.0 模型仓库 API（17 条，设计定稿 §4.1 表逐一落地：模型 5 +
 	// 版本 6 + 发布 5 + 部署影子 1；注册在既有 apiMux → auth/audit 链
 	// 自动覆盖，零新中间件代码）
-	(&modelAPI{store: modelStore, reg: nodeReg, mirrorCheck: mirrorCheckCfg}).Register(apiMux)
+	(&modelAPI{store: modelStore, reg: nodeReg, mirrorCheck: mirrorCheckCfg, digestOf: podstatus.NodeDigestOf(podStore)}).Register(apiMux)
 
 	var apiHandler http.Handler = apiMux
 	if authEnabled {

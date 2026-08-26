@@ -41,6 +41,12 @@ type MockRuntime struct {
 	// 直接 SetState 注入状态、未记录资源的实例不误重建）。
 	resources map[string]resRecord
 
+	// digests 是注入的镜像 digest（key 同 states，instanceKey → digest）；
+	// v0.12.0 R-1++ 运行时通道。ImageDigest 命中返回注入值（模拟 docker
+	// RepoDigests 查询）；未记录的 key → ("", nil)（无真实运行时，默认
+	// 走声明式通道）。SetImageDigest 供测试注入。
+	digests map[string]string
+
 	// 调用计数（测试断言用）
 	ensureRunningCalls map[string]int
 	ensureStoppedCalls map[string]int
@@ -68,6 +74,7 @@ func NewMockRuntime() *MockRuntime {
 		states:             make(map[string]RuntimeState),
 		images:             make(map[string]string),
 		resources:          make(map[string]resRecord),
+		digests:            make(map[string]string),
 		ensureRunningCalls: make(map[string]int),
 		ensureStoppedCalls: make(map[string]int),
 		createCalls:        make(map[string]int),
@@ -293,6 +300,32 @@ func (m *MockRuntime) Image(key string) string {
 // 未记录镜像（images 无此 key）视为一致；已记录则精确比对。
 // 模拟"容器不存在"时也返回 (false, nil)（与 DockerRuntime 语义对齐，
 // 容器不存在不算漂移）。
+// ImageDigest 返回注入的镜像 digest（v0.12.0，R-1++ 运行时通道模拟）：
+// 命中 digests 表 → 注入值；未记录 → ("", nil)（无真实运行时，调用方走
+// 声明式通道）。SetImageDigest 供测试注入。
+func (m *MockRuntime) ImageDigest(pod metamanager.Pod, index int) (string, error) {
+	key := instanceKey(pod.Namespace, pod.Name, index)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if d, ok := m.digests[key]; ok {
+		return d, nil
+	}
+	return "", nil
+}
+
+// SetImageDigest 注入实例的镜像 digest（测试用，模拟 docker RepoDigests
+// 查询结果）；digest 为空串时清除注入。
+func (m *MockRuntime) SetImageDigest(ns, name string, index int, digest string) {
+	key := instanceKey(ns, name, index)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if digest == "" {
+		delete(m.digests, key)
+		return
+	}
+	m.digests[key] = digest
+}
+
 func (m *MockRuntime) ImageMatches(pod metamanager.Pod, index int) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

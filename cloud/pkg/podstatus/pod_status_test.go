@@ -230,3 +230,43 @@ func TestConcurrentUpsertList(t *testing.T) {
 		t.Error("edge-shared 节点不应为空")
 	}
 }
+
+// v0.12.0 D-1：NodeDigestOf 偏好口径（优先 edgeflow-model-*，否则任意非空，
+// 全空/nil store → ""）。供控制器 DigestLookup 与发布复核端点共用。
+func TestNodeDigestOf(t *testing.T) {
+	const modelD = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const otherD = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	t.Run("优先模型部署 Pod", func(t *testing.T) {
+		s := NewStore()
+		_ = s.Upsert("n1", PodStatus{PodName: "edgeflow-model-abc", Namespace: "default", ImageDigest: modelD})
+		_ = s.Upsert("n1", PodStatus{PodName: "edgeflow-model-abc-2", Namespace: "default", ImageDigest: otherD})
+		_ = s.Upsert("n1", PodStatus{PodName: "web-demo", Namespace: "default", ImageDigest: otherD})
+		f := NodeDigestOf(s)
+		if got := f("n1"); got != modelD {
+			t.Errorf("应优先 edgeflow-model-* 的 digest，got %q want %q", got, modelD)
+		}
+	})
+	t.Run("无模型 Pod 取任意非空", func(t *testing.T) {
+		s := NewStore()
+		_ = s.Upsert("n1", PodStatus{PodName: "web-demo", Namespace: "default", ImageDigest: otherD})
+		f := NodeDigestOf(s)
+		if got := f("n1"); got != otherD {
+			t.Errorf("任意非空兜底，got %q want %q", got, otherD)
+		}
+	})
+	t.Run("全空 → 空串", func(t *testing.T) {
+		s := NewStore()
+		_ = s.Upsert("n1", PodStatus{PodName: "web-demo", Namespace: "default"})
+		f := NodeDigestOf(s)
+		if got := f("n1"); got != "" {
+			t.Errorf("全空应返回空串，got %q", got)
+		}
+	})
+	t.Run("nil store → 空串", func(t *testing.T) {
+		f := NodeDigestOf(nil)
+		if got := f("n1"); got != "" {
+			t.Errorf("nil store 应返回空串，got %q", got)
+		}
+	})
+}

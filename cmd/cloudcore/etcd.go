@@ -326,7 +326,7 @@ func assembleModelStores(kv etcdstore.KVStore,
 		GCEnabled:     gcEnabled,
 		GCKeep:        gcKeep,
 		BatchParallel: batchParallel,
-		DigestLookup:  nodeDigestOf(podStore),
+		DigestLookup:  podstatus.NodeDigestOf(podStore),
 	})
 	if err != nil {
 		return nil, nil, closeModel, err

@@ -39,7 +39,7 @@
 | POST | `/api/v1/nodes/{nodeID}/device-command` | 下发设备指令（期望值） | 200 / 400 / 404 / 502 / 504 |
 | POST | `/ocsp` | OCSP 在线吊销查询（RFC 6960；请求/响应均为 DER 编码，Content-Type: application/ocsp-request / application/ocsp-response）。免认证（唯一例外，详见 §1.3）；per-IP 限流（默认 10 req/s，burst 20，超限 429）；成功响应带 `Cache-Control: max-age=3600` | 200 / 400 / 429 / 500 |
 
-> **v0.7.0 模型 API（17 个新端点，总端点 14→31）**：以下 17 行为新增，注册于既有 apiMux（自动覆盖 auth+audit）；既有 14 行端点零改动。契约详见 §7 模型 API。
+> **v0.7.0 模型 API（17 个新端点，总端点 14→31）**：以下 18 行为新增（v0.12.0 增发布 digest 复核端点），注册于既有 apiMux（自动覆盖 auth+audit）；既有 14 行端点零改动。契约详见 §7 模型 API。
 
 | 方法 | 路径 | 说明 | 主要状态码 |
 |------|------|------|-----------|
@@ -57,6 +57,7 @@
 | POST | `/api/v1/models/{modelName}/releases` | **创建灰度发布（异步执行）**；v0.9.0 起可选镜像存在性探活（R-1：`EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK` off/warn/fail，默认 off；fail 时探活失败 → 422） | **202** / 400 / 404 / 409 / 422 |
 | GET | `/api/v1/models/{modelName}/releases` | 发布列表（按 createdAt 升序；v0.8.0 起支持分页，同上） | 200 / 400 / 404 |
 | GET | `/api/v1/models/{modelName}/releases/{releaseID}` | 发布详情（含 perNode 汇总） | 200 / 404 |
+| GET | `/api/v1/models/{modelName}/releases/{releaseID}/digest` | **发布 digest 复核（v0.12.0，D-1：发布 mirrorDigest vs 各节点当前 imageDigest 一致结论，含 consistency）** | 200 / 404 |
 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/cancel` | 取消（pending/running） | 200 / 404 / 409 |
 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/rollback` | **回滚（异步执行，逆序批量）** | **202** / 404 / 409 / 422 |
 | GET | `/api/v1/models/{modelName}/deployments` | 部署影子（版本—节点—时间追踪，F41 台账） | 200 / 404 |

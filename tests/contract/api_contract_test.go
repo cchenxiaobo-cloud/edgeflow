@@ -381,7 +381,7 @@ type registeredRoute struct {
 // registeredRoutesFromSource 静态解析 cmd/cloudcore 的路由注册。
 // v0.7.0 起模型 API 17 条路由注册在 model_api.go（modelAPI.Register），
 // 与 main.go 同扫：main.go 为既有 11 条 + 前缀挂载，model_api.go 为
-// 17 条新端点（D1 口径：31 = 14 文档 + 17 模型）。
+// 18 条新端点（D1 口径：32 = 14 文档 + 17 模型 + 1 digest 复核）。
 func registeredRoutesFromSource(t *testing.T) []registeredRoute {
 	t.Helper()
 	var routes []registeredRoute

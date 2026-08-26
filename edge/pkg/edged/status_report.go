@@ -1,14 +1,20 @@
 // Pod 状态上报（WBS 6.3 边缘侧）与状态表过期条目清理（P2-1）。
 //
-// 本文件只提供纯函数与状态表操作：BuildStatusPayload 从 Status() 生成
-// 上报负载；cleanupStatus 在每轮调谐末尾清理已不在期望集合的残留条目。
-// 上报循环本体（周期、发送、优雅退出）在 cmd/edgecore/status_report.go，
-// 与调谐解耦（见该文件注释）。
+// 本文件提供：BuildStatusPayload 从 Status() 生成上报负载（v0.12.0 起为
+// 只读采样——digest 采集失败降级空串，不阻塞上报，无副作用）；digestOfImageRef
+// 声明式 digest 解析纯函数；cleanupStatus 在每轮调谐末尾清理已不在期望集合
+// 的残留条目。上报循环本体（周期、发送、优雅退出）在 cmd/edgecore/
+// status_report.go，与调谐解耦（见该文件注释）。
 package edged
 
 import (
+	"encoding/json"
 	"sort"
+	"strings"
 	"time"
+
+	"edgeflow/edge/pkg/metamanager"
+	"edgeflow/pkg/log"
 )
 
 // PodStatusPayload 是 Pod 状态上报消息（TypePodStatus）的负载，
@@ -21,9 +27,9 @@ type PodStatusPayload struct {
 	Phase           string `json:"phase"`           // 阶段：Running/Stopped/Absent/Unknown/Error
 	Message         string `json:"message"`         // 错误文本（Phase=Error 时非空，其余为空串）
 	LastReconcileAt int64  `json:"lastReconcileAt"` // 最近一次调谐时间（毫秒时间戳）
-	// ImageDigest 镜像 manifest digest（v0.11.0，R-1+）；可选。真实 edgecore
-	// 暂不采集运行时 digest（BuildStatusPayload 不填）——字段透传由整体
-	// marshal 自动完成，对真实边缘等效 off。
+	// ImageDigest 镜像 manifest digest（v0.11.0 字段，v0.12.0 R-1++ 真实
+	// 填充）；可选。采集为只读采样（声明式优先、运行时兜底），失败降级
+	// 空串——不阻塞上报，云端对空 digest 跳过比对（老边缘/无采集等效 off）。
 	ImageDigest string `json:"imageDigest,omitempty"`
 }
 
@@ -48,9 +54,30 @@ func phaseOf(state RuntimeState, err error) (phase, message string) {
 
 // BuildStatusPayload 从 Status() 生成上报负载数组（每条对应一个 Pod）。
 // 输出按 podKey 升序排列：同一轮上报内容稳定有序，便于云端对账与日志比对。
-// 纯读取、无副作用；节点 ID 由调用方传入（edgecore 用自身 nodeID）。
+// 只读采样、可失败降级（v0.12.0）：digest 采集失败仅跳过该字段，不阻塞
+// 上报；节点 ID 由调用方传入（edgecore 用自身 nodeID）。
+//
+// digest 采集（R-1++ 双通道，仅 StateRunning 上报）：① 声明式——期望
+// Pod 镜像引用含 "@sha256:"（digestOfImageRef 解析，pin 语义保证运行镜像
+// 与 digest 一致，零运行时依赖）；② 运行时——无声明式时查 index 0 副本
+// 的 RepoDigests（DockerRuntime.ImageDigest，拉取后真实 digest）。两者皆
+// 空/失败 → 空串（omitempty 不写键，云端跳过比对，保持老行为）。
 func (e *Edged) BuildStatusPayload(nodeID string) []PodStatusPayload {
 	status := e.Status()
+	// v0.12.0 R-1++：一轮读一次期望集合（ListPods），构建 key→image 表供
+	// 声明式 digest 解析。读失败退化为空表——仅影响 digest（跳过），不阻塞上报。
+	desiredImages := map[string]string{}
+	if raw, err := e.store.ListPods(); err == nil {
+		for _, j := range raw {
+			var pod metamanager.Pod
+			if json.Unmarshal([]byte(j), &pod) == nil && pod.Name != "" {
+				desiredImages[podKey(pod.Namespace, pod.Name)] = pod.Image
+			}
+		}
+	} else {
+		log.Warnf("Edged 上报: 读取期望 Pod 集合失败（本轮 digest 跳过）: %v", err)
+	}
+
 	keys := make([]string, 0, len(status))
 	for k := range status {
 		keys = append(keys, k)
@@ -75,16 +102,63 @@ func (e *Edged) BuildStatusPayload(nodeID string) []PodStatusPayload {
 			continue
 		}
 		phase, msg := phaseOf(st.State, st.Err)
-		out = append(out, PodStatusPayload{
+		payload := PodStatusPayload{
 			NodeID:          nodeID,
 			PodName:         p.Name,
 			Namespace:       p.Namespace,
 			Phase:           phase,
 			Message:         msg,
 			LastReconcileAt: st.LastReconcile.UnixMilli(),
-		})
+		}
+		// v0.12.0 R-1++：仅 Running 态上报 digest（停掉/报错/Absent 的 Pod
+		// 不应「声称」在跑该镜像，防误导云端 nodeDigestOf）。
+		if st.State == StateRunning {
+			payload.ImageDigest = e.digestOf(p, desiredImages[podKey(p.Namespace, p.Name)])
+		}
+		out = append(out, payload)
 	}
 	return out
+}
+
+// digestOfImageRef 从镜像引用提取 manifest digest（sha256:<64hex>，统一
+// 小写）。规则：取最后一个 '@' 之后的部分；必须匹配 ^sha256:[0-9a-f]{64}$
+// 才返回，否则返回 ""（未 pin digest → 调用方走运行时通道）。小写归一与
+// 云端 Docker-Content-Digest 头形态对齐，避免 spec 大写 pin 比对误伤。
+func digestOfImageRef(ref string) string {
+	i := strings.LastIndex(ref, "@")
+	if i < 0 {
+		return ""
+	}
+	d := ref[i+1:]
+	if !strings.HasPrefix(d, "sha256:") {
+		return ""
+	}
+	hexpart := d[len("sha256:"):]
+	if len(hexpart) != 64 {
+		return ""
+	}
+	for k := 0; k < len(hexpart); k++ {
+		c := hexpart[k]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return ""
+		}
+	}
+	return "sha256:" + strings.ToLower(hexpart)
+}
+
+// digestOf 计算 Pod 上报 digest（v0.12.0，R-1++）：声明式（期望镜像引用含
+// @sha256:）优先；否则运行时查 index 0 副本（多副本同镜像）；两者皆空/失败
+// → ""（云端跳过比对，保持老行为）。运行时失败记 Warn 后降级空串，不阻塞。
+func (e *Edged) digestOf(p metamanager.Pod, image string) string {
+	if d := digestOfImageRef(image); d != "" {
+		return d
+	}
+	d, err := e.rt.ImageDigest(p, 0)
+	if err != nil {
+		log.Warnf("Edged digest 采集失败（%s/%s）: %v", p.Namespace, p.Name, err)
+		return ""
+	}
+	return d
 }
 
 // cleanupStatus 清理 status map 中已不在期望集合的残留条目（P2-1）。

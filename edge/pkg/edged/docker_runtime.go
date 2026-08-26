@@ -2,6 +2,7 @@ package edged
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -350,6 +351,63 @@ func (d *DockerRuntime) Inspect(pod metamanager.Pod, index int) (RuntimeState, e
 		return StateAbsent, nil
 	}
 	return StateUnknown, err
+}
+
+// ImageDigest 查询 Pod 第 index 个副本实际拉取镜像的 manifest digest
+// （v0.12.0，R-1++ 运行时通道）：取容器创建时镜像引用（docker inspect
+// {{.Config.Image}}），再查该镜像的 RepoDigests（docker image inspect
+// {{json .RepoDigests}}）中首个 sha256 条目（与云端发布头 mirrorDigest
+// 同源——registry HEAD 的 Docker-Content-Digest）。容器不存在 / 镜像无
+// RepoDigests（本地构建、未从 registry 拉取）→ ("", nil)（调用方降级
+// 空串跳过比对）；daemon 不可用等 → ("", error)（调用方记 Warn 后降级，
+// 不阻塞上报）。
+func (d *DockerRuntime) ImageDigest(pod metamanager.Pod, index int) (string, error) {
+	name := ContainerName(pod.Namespace, pod.Name, index)
+	out, err := d.exec("inspect", "--format", "{{.Config.Image}}", name)
+	if err != nil {
+		if isNoSuchContainer(err.Error()) {
+			return "", nil
+		}
+		return "", err
+	}
+	ref := strings.TrimSpace(out)
+	if ref == "" {
+		return "", nil
+	}
+	out, err = d.exec("image", "inspect", "--format", "{{json .RepoDigests}}", ref)
+	if err != nil {
+		if isNoSuchImage(err.Error()) {
+			return "", nil
+		}
+		return "", err
+	}
+	return firstSha256RepoDigest(out), nil
+}
+
+// firstSha256RepoDigest 解析 docker image inspect RepoDigests 的 JSON 数组
+// 输出，返回首个 "@sha256:<64hex>" 条目（逐条目复用 digestOfImageRef，
+// DRY；非 sha256 条目跳过）。解析失败 → ""（调用方降级空串）。
+func firstSha256RepoDigest(raw string) string {
+	var list []string
+	if err := json.Unmarshal([]byte(raw), &list); err != nil {
+		return ""
+	}
+	for _, entry := range list {
+		if dg := digestOfImageRef(entry); dg != "" {
+			return dg
+		}
+	}
+	return ""
+}
+
+// isNoSuchImage 识别"镜像不存在"类错误（docker image inspect 的幂等依据；
+// 本地构建未入库/未拉取）。与 daemon 不可用互斥判断。
+func isNoSuchImage(msg string) bool {
+	lower := strings.ToLower(msg)
+	if isDaemonUnavailable(lower) {
+		return false
+	}
+	return strings.Contains(lower, "no such image") || strings.Contains(lower, "no such object")
 }
 
 // List 列出本机由 Edged 管理的全部容器实例（含已停止的），返回 Pod 标识 + 副本序号。

@@ -570,3 +570,84 @@ func countPrefix(calls []string, prefix string) int {
 	}
 	return n
 }
+
+// ---------- v0.12.0 R-1++ 运行时 digest 测试 ----------
+
+// TestFirstSha256RepoDigest 验证 RepoDigests JSON 数组解析：
+// 单条 / 多条取首个 sha256 / 空数组 / 非法 JSON / 非 sha256 条目跳过。
+func TestFirstSha256RepoDigest(t *testing.T) {
+	const d1 = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const d2 = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"单条", `["reg/ns/model@` + d1 + `"]`, d1},
+		{"多条取首个 sha256", `["reg/ns/model@sha512:xxxx","reg/ns/model@` + d1 + `","reg/ns/model@` + d2 + `"]`, d1},
+		{"空数组", `[]`, ""},
+		{"非法 JSON", `not-json`, ""},
+		{"非 sha256 条目跳过", `["reg/ns/model@sha512:xxxx"]`, ""},
+		{"空 JSON null", `null`, ""},
+	}
+	for _, tc := range cases {
+		if got := firstSha256RepoDigest(tc.raw); got != tc.want {
+			t.Errorf("%s: firstSha256RepoDigest(%q) = %q，期望 %q", tc.name, tc.raw, got, tc.want)
+		}
+	}
+}
+
+// TestDockerImageDigest 验证运行时 digest 查询（v0.12.0，R-1++）：
+// 容器不存在 → ("", nil)；Config.Image → RepoDigests 查询 → 返回 sha256；
+// 镜像不存在 → ("", nil)；daemon 不可用 → error。
+func TestDockerImageDigest(t *testing.T) {
+	const d = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	t.Run("容器不存在", func(t *testing.T) {
+		docker := newTestDocker(fakeRunner(
+			[]any{"", errFakeNoCtr},
+		))
+		got, err := docker.ImageDigest(metamanager.Pod{Namespace: "default", Name: "web"}, 0)
+		if err != nil || got != "" {
+			t.Errorf("容器不存在: got=%q err=%v，期望 (\"\", nil)", got, err)
+		}
+	})
+	t.Run("正常查询返回 sha256", func(t *testing.T) {
+		docker := newTestDocker(fakeRunner(
+			[]any{"reg.io/ns/model:v1", nil},                       // inspect Config.Image
+			[]any{`["reg.io/ns/model@` + d + `"]`, nil},            // image inspect RepoDigests
+		))
+		got, err := docker.ImageDigest(metamanager.Pod{Namespace: "default", Name: "web"}, 0)
+		if err != nil || got != d {
+			t.Errorf("正常查询: got=%q err=%v，期望 %q", got, err, d)
+		}
+	})
+	t.Run("镜像无 RepoDigests → 空", func(t *testing.T) {
+		docker := newTestDocker(fakeRunner(
+			[]any{"reg.io/ns/model:v1", nil},
+			[]any{`[]`, nil},
+		))
+		got, err := docker.ImageDigest(metamanager.Pod{Namespace: "default", Name: "web"}, 0)
+		if err != nil || got != "" {
+			t.Errorf("镜像无 RepoDigests: got=%q err=%v，期望 (\"\", nil)", got, err)
+		}
+	})
+	t.Run("镜像不存在 → 空", func(t *testing.T) {
+		docker := newTestDocker(fakeRunner(
+			[]any{"reg.io/ns/model:v1", nil},
+			[]any{"", errors.New("Error: No such image: reg.io/ns/model:v1")},
+		))
+		got, err := docker.ImageDigest(metamanager.Pod{Namespace: "default", Name: "web"}, 0)
+		if err != nil || got != "" {
+			t.Errorf("镜像不存在: got=%q err=%v，期望 (\"\", nil)", got, err)
+		}
+	})
+	t.Run("daemon 不可用 → error", func(t *testing.T) {
+		docker := newTestDocker(fakeRunner(
+			[]any{"", errFakeDaemonDown},
+		))
+		_, err := docker.ImageDigest(metamanager.Pod{Namespace: "default", Name: "web"}, 0)
+		if err == nil {
+			t.Error("daemon 不可用应返回 error")
+		}
+	})
+}

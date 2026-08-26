@@ -190,3 +190,33 @@ func TestReleaseDigestLookupNilRegression(t *testing.T) {
 		t.Fatalf("DigestLookup nil 应关闭比对 succeeded，got %s（reason=%q）", r.Status, r.FailureReason)
 	}
 }
+
+// F-1 修复专属用例（v0.12.0）：mismatch 仅在 finish ③ 被 catch（推进期②
+// 无复查窗口）时，head 必须 failed（v0.11.0 shadow 自赋值 bug 会错误
+// succeeded——perNode 已 failed 而 head 用陈旧快照判定通过）。
+// 构造：batchSize=2 单批部署 a/b（无推进期复查窗口）、failFast=false；
+// DigestLookup 调用计数闭包——前 2 次（部署即时检查① a/b 各 1 次）match，
+// 第 3 次起（finish ③ 复核）mismatch。
+func TestReleaseDigestMismatchCaughtOnlyAtFinish(t *testing.T) {
+	exp := "sha256:exp"
+	fx := newDigestFixture(t, []string{"a", "b"}, 2, 0, false, exp, nil)
+	calls := 0
+	fx.ctrl.opts.DigestLookup = func(nodeID string) string {
+		calls++
+		if calls <= 2 {
+			return exp // 部署即时检查 match
+		}
+		return "sha256:evil" // finish 复核 mismatch
+	}
+	fx.ctrl.scanOnce(context.Background()) // 单批部署 a/b + finish ③ 复核 catch
+	r := fx.release(t)
+	if r.Status != modelrepo.ReleaseStatusFailed {
+		t.Fatalf("finish③ 首个 catch mismatch 应 failed，got %s（reason=%q）——v0.11.0 shadow 自赋值 bug 会 succeeded", r.Status, r.FailureReason)
+	}
+	for _, n := range []string{"a", "b"} {
+		nr := fx.nodeResult(t, n)
+		if nr.Status != modelrepo.NodeRelFailed || !strings.Contains(nr.Reason, "digest-mismatch") {
+			t.Fatalf("finish③ 后 %s 应 failed+digest-mismatch，got %+v", n, nr)
+		}
+	}
+}

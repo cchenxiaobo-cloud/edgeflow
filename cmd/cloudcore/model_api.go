@@ -1,4 +1,4 @@
-// 模型仓库 API（v0.7.0，WBS-7）：17 个新 REST 端点
+// 模型仓库 API（v0.7.0，WBS-7）：18 个新 REST 端点
 // （模型 5 + 版本 6 + 发布 5 + 部署影子 1，设计定稿 §4.1 表 / 主线裁决 D1
 // 端点数 17 统一；F-1 修正稿）。全部注册在既有 apiMux 上，自动挂
 // auth.Middleware + ledger.Middleware（401 审计、action/operator 留痕
@@ -20,6 +20,7 @@
 //	POST   /api/v1/models/{modelName}/releases             创建发布（202）
 //	GET    /api/v1/models/{modelName}/releases             发布列表
 //	GET    /api/v1/models/{modelName}/releases/{releaseID} 发布详情（含 summary）
+//	GET    /api/v1/models/{modelName}/releases/{releaseID}/digest   发布 digest 复核（v0.12.0）
 //	POST   /api/v1/models/{modelName}/releases/{releaseID}/cancel    取消
 //	POST   /api/v1/models/{modelName}/releases/{releaseID}/rollback  回滚（202）
 //	GET    /api/v1/models/{modelName}/deployments          部署影子
@@ -74,6 +75,10 @@ type modelAPI struct {
 	// mirrorCheck 是发布前镜像探活配置（v0.9.0，R-1）；nil = 不检查
 	// （默认 off，零行为变化）。
 	mirrorCheck *mirrorCheckConfig
+	// digestOf 返回节点当前上报镜像 digest（v0.12.0，D-1 发布 digest 复核）；
+	// 与控制器 DigestLookup 同一闭包实例（podstatus.NodeDigestOf），nil 安全
+	// （nil → 全节点 currentImageDigest 空 → unknown）。
+	digestOf func(nodeID string) string
 }
 
 // mirrorCheckConfig 是装配层注入的探活配置（env 解析见 etcd.go）。
@@ -101,8 +106,8 @@ func (c *mirrorCheckConfig) check(ctx context.Context, mirror string) (digest st
 	return "", c.mode == modelrelease.MirrorCheckFail, err
 }
 
-// Register 一次性注册 17 条模型 API 路由（WBS-7 装配面最小：main.go 在
-// 既有 11 条之后一行调用）。
+// Register 一次性注册 18 条模型 API 路由（WBS-7 装配面最小：main.go 在
+// 既有 11 条之后一行调用；v0.12.0 新增 digest 复核端点）。
 func (a *modelAPI) Register(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/v1/models", a.listModels)
 	mux.HandleFunc("POST /api/v1/models", a.createModel)
@@ -118,6 +123,7 @@ func (a *modelAPI) Register(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/v1/models/{modelName}/releases", a.createRelease)
 	mux.HandleFunc("GET /api/v1/models/{modelName}/releases", a.listReleases)
 	mux.HandleFunc("GET /api/v1/models/{modelName}/releases/{releaseID}", a.getRelease)
+	mux.HandleFunc("GET /api/v1/models/{modelName}/releases/{releaseID}/digest", a.getReleaseDigest)
 	mux.HandleFunc("POST /api/v1/models/{modelName}/releases/{releaseID}/cancel", a.cancelRelease)
 	mux.HandleFunc("POST /api/v1/models/{modelName}/releases/{releaseID}/rollback", a.rollbackRelease)
 	mux.HandleFunc("GET /api/v1/models/{modelName}/deployments", a.listDeployments)
@@ -905,6 +911,116 @@ func (a *modelAPI) getRelease(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, releaseResponse{
 		ModelRelease: *release,
 		Summary:      a.summaryOf(r.Context(), release.ID),
+	})
+}
+
+// releaseDigestReport 是 GET .../releases/{releaseID}/digest 的响应
+// （v0.12.0，D-1 发布 digest 复核）：发布期望 digest + 逐节点当前 digest +
+// 一致结论。目的：KNOWN-ISSUES §11 残余②「终态后晚到 mismatch 不回写」的
+// 运维通道——一键对比 release.mirrorDigest 与各节点当前上报 imageDigest，
+// 免人工双端点比对（处置仍为人工回滚/重发，审计稳定不变）。
+type releaseDigestReport struct {
+	Kind         string                  `json:"kind"`
+	APIVersion   string                  `json:"apiVersion"`
+	ReleaseID    string                  `json:"releaseID"`
+	Model        string                  `json:"model"`
+	Version      string                  `json:"version"`
+	Status       modelrepo.ReleaseStatus `json:"status"`
+	MirrorDigest string                  `json:"mirrorDigest,omitempty"`
+	Consistency  string                  `json:"consistency"` // skipped|consistent|inconsistent|unknown
+	GeneratedAt  int64                   `json:"generatedAt"`
+	Nodes        []releaseDigestNode     `json:"nodes"` // 恒非 nil（空发布 → []）
+}
+
+type releaseDigestNode struct {
+	NodeID             string                  `json:"nodeID"`
+	ReleaseStatus      modelrepo.NodeRelStatus `json:"releaseStatus"`
+	CurrentImageDigest string                  `json:"currentImageDigest,omitempty"`
+	Consistency        string                  `json:"consistency"` // skipped|consistent|inconsistent|unknown
+}
+
+// consistencyOf 逐节点 digest 一致性判定（纯函数，可单测）：
+// expected 空 → "skipped"（发布级未启用 digest 校验）；current 空 →
+// "unknown"（节点侧缺失：未上报/无 Pod/无运行时采集）；相等 → "consistent"；
+// 否则 → "inconsistent"。
+func consistencyOf(expected, current string) string {
+	if expected == "" {
+		return "skipped"
+	}
+	if current == "" {
+		return "unknown"
+	}
+	if current == expected {
+		return "consistent"
+	}
+	return "inconsistent"
+}
+
+// getReleaseDigest 处理 GET /api/v1/models/{modelName}/releases/{releaseID}/digest
+// （v0.12.0，D-1 发布 digest 复核）。发布不存在 → 404（modelError 既有语义）；
+// 任意状态可查（pending/running 为进行中视图，status 字段明示）。
+// head 聚合：mirrorDigest 空 → skipped；任一节点 inconsistent → inconsistent；
+// 任一节点 unknown → unknown；否则 consistent。
+func (a *modelAPI) getReleaseDigest(w http.ResponseWriter, r *http.Request) {
+	release, err := a.store.GetRelease(r.Context(), r.PathValue("releaseID"))
+	if err != nil {
+		modelError(w, err)
+		return
+	}
+	results, err := a.store.ListNodeResults(r.Context(), release.ID)
+	if err != nil {
+		modelError(w, err)
+		return
+	}
+	byNode := make(map[string]modelrepo.NodeReleaseResult, len(results))
+	for _, nr := range results {
+		byNode[nr.NodeID] = nr
+	}
+	nodes := make([]releaseDigestNode, 0, len(release.TargetNodes))
+	anyInconsistent, anyUnknown := false, false
+	for _, nodeID := range release.TargetNodes {
+		cur := ""
+		if a.digestOf != nil {
+			cur = a.digestOf(nodeID)
+		}
+		cons := consistencyOf(release.MirrorDigest, cur)
+		st := modelrepo.NodeRelPending
+		if nr, ok := byNode[nodeID]; ok {
+			st = nr.Status
+		}
+		nodes = append(nodes, releaseDigestNode{
+			NodeID:             nodeID,
+			ReleaseStatus:      st,
+			CurrentImageDigest: cur,
+			Consistency:        cons,
+		})
+		switch cons {
+		case "inconsistent":
+			anyInconsistent = true
+		case "unknown":
+			anyUnknown = true
+		}
+	}
+	head := "consistent"
+	switch {
+	case release.MirrorDigest == "":
+		head = "skipped"
+	case anyInconsistent:
+		head = "inconsistent"
+	case anyUnknown:
+		head = "unknown"
+	}
+	writeJSON(w, http.StatusOK, releaseDigestReport{
+		Kind:         "ReleaseDigestReport",
+		APIVersion:   "v1",
+		ReleaseID:    release.ID,
+		Model:        release.Model,
+		Version:      release.Version,
+		Status:       release.Status,
+		MirrorDigest: release.MirrorDigest,
+		Consistency:  head,
+		GeneratedAt:  time.Now().UnixMilli(),
+		Nodes:        nodes,
 	})
 }
 

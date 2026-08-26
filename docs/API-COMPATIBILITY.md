@@ -42,9 +42,10 @@
 | 26 | POST | `/api/v1/models/{modelName}/releases` | ✅ 新增（v0.7.0） | Bearer Token | **创建灰度发布（异步，202）** |
 | 27 | GET | `/api/v1/models/{modelName}/releases` | ✅ 新增（v0.7.0） | Bearer Token | 发布列表（按 createdAt 升序） |
 | 28 | GET | `/api/v1/models/{modelName}/releases/{releaseID}` | ✅ 新增（v0.7.0） | Bearer Token | 发布详情（含 perNode 汇总） |
-| 29 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/cancel` | ✅ 新增（v0.7.0） | Bearer Token | 取消（pending/running） |
-| 30 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/rollback` | ✅ 新增（v0.7.0） | Bearer Token | **回滚（异步，逆序批量，202）** |
-| 31 | GET | `/api/v1/models/{modelName}/deployments` | ✅ 新增（v0.7.0） | Bearer Token | 部署影子（版本—节点—时间台账） |
+| 29 | GET | `/api/v1/models/{modelName}/releases/{releaseID}/digest` | ✅ 新增（v0.12.0） | Bearer Token | 发布 digest 复核（D-1：mirrorDigest vs 各节点当前 imageDigest 一致结论） |
+| 30 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/cancel` | ✅ 新增（v0.7.0） | Bearer Token | 取消（pending/running） |
+| 31 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/rollback` | ✅ 新增（v0.7.0） | Bearer Token | **回滚（异步，逆序批量，202）** |
+| 32 | GET | `/api/v1/models/{modelName}/deployments` | ✅ 新增（v0.7.0） | Bearer Token | 部署影子（版本—节点—时间台账） |
 
 > 契约详情见 API-SPEC.md §7（v0.7.0）。
 

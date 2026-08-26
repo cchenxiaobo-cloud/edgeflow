@@ -82,6 +82,12 @@ type Options struct {
 	GCEnabled bool
 	// GCKeep 终态保留条数（默认 100，≥1；仅 GCEnabled 时消费）。
 	GCKeep int
+	// BatchParallel 批内并行部署度（v0.10.0，D6）：默认 1 = 逐节点串行
+	// （与 v0.7.0-v0.9.0 行为逐字节一致）；>1 时批内节点并行 DeployVersion
+	// （信号量限流，min(BatchParallel, 批大小)）。failFast 语义：并发下
+	// 本批在途节点跑完、后续批次中止（与串行的"失败即停"语义收敛为同一
+	// 终态 head=failed + 未部署节点 skipped）。
+	BatchParallel int
 }
 
 // withDefaults 填充零值（ScanInterval 默认 5s；LockTTL 默认 60s）。
@@ -359,43 +365,7 @@ func (c *Controller) advance(ctx context.Context, id string) {
 
 	batch := batches[bi]
 	now := c.nowMs()
-	failNode, failReason := "", ""
-	for _, nodeID := range batch {
-		// 接管续跑：已 deployed 跳过（6.1 重试语义：对 failed 节点不自动
-		// 重试——人工决策重新发布或回滚；deployed 判据在 byNode 快照内）
-		if nr, ok := byNode[nodeID]; ok && nr.Status != modelrepo.NodeRelPending {
-			continue
-		}
-		ver, err := c.store.GetVersion(ctx, h.Model, h.Version)
-		if err != nil {
-			// 目标版本运行期不可用（被删等异常）：按节点失败处理
-			reason := fmt.Sprintf("target version %s unavailable: %v", h.Version, err)
-			_ = c.store.SetNodeResult(ctx, id, nodeID, &modelrepo.NodeReleaseResult{
-				NodeID: nodeID, Status: modelrepo.NodeRelFailed, Version: h.Version, Reason: reason,
-			})
-			log.Warnf("[modelrelease] node %s 部署失败（release %s）: %s", nodeID, id, reason)
-			if h.FailFast {
-				failNode, failReason = nodeID, reason
-				break
-			}
-			continue
-		}
-		if err := c.deploy.DeployVersion(ctx, nodeID, id, ver); err != nil {
-			reason := DeployReason(err)
-			_ = c.store.SetNodeResult(ctx, id, nodeID, &modelrepo.NodeReleaseResult{
-				NodeID: nodeID, Status: modelrepo.NodeRelFailed, Version: h.Version, Reason: reason,
-			})
-			log.Warnf("[modelrelease] node %s 部署失败（release %s）: %s", nodeID, id, reason)
-			if h.FailFast {
-				failNode, failReason = nodeID, reason
-				break
-			}
-			continue
-		}
-		_ = c.store.SetNodeResult(ctx, id, nodeID, &modelrepo.NodeReleaseResult{
-			NodeID: nodeID, Status: modelrepo.NodeRelDeployed, Version: h.Version,
-		})
-	}
+	failNode, failReason := c.deployBatchNodes(ctx, id, h, batch, byNode)
 
 	if failNode != "" {
 		// fail-fast：本批剩余与后续全部标 skipped，head 置 failed（§5.4）
@@ -497,6 +467,99 @@ func (c *Controller) setTerminal(ctx context.Context, id string, st modelrepo.Re
 // 判据只看"快照中已非 pending"；本批成功节点因不在快照中不会被误标，
 // 但为防御并发写（他副本接管窗口），标 skipped 前先读最新 perNode，
 // 仍 pending/缺失才标（missing 表示创建期预写缺失，等同 pending）。
+// deployBatchNodes 部署一批节点（v0.10.0，D6：批内可并行）。
+// parallel = min(BatchParallel, 批大小)；=1 时为逐节点串行（与旧版逐字节
+// 一致）。返回 (首个失败节点, 失败原因)；failFast 下并发版本批在途节点
+// 全部执行完（后续批次由调用方 abortFailFast 中止）。
+func (c *Controller) deployBatchNodes(ctx context.Context, id string, h *modelrepo.ModelRelease, batch []string, byNode map[string]modelrepo.NodeReleaseResult) (string, string) {
+	parallel := c.opts.BatchParallel
+	if parallel < 1 {
+		parallel = 1
+	}
+	if parallel > len(batch) {
+		parallel = len(batch)
+	}
+	if parallel == 1 {
+		// 串行路径（回归锚点：与 v0.7.0-v0.9.0 逐字节一致）
+		for _, nodeID := range batch {
+			failNode, failReason := c.deployBatchNode(ctx, id, h, nodeID, byNode)
+			if failNode != "" {
+				if h.FailFast {
+					return failNode, failReason
+				}
+				// failFast=false：记录首个失败继续（与旧版一致，最终按失败计数判定）
+				if failReason != "" {
+					continue
+				}
+			}
+		}
+		return "", ""
+	}
+	// 并行路径：信号量限流 + WaitGroup；failFast 下本批在途全部执行完
+	sem := make(chan struct{}, parallel)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	firstNode, firstReason := "", ""
+	recordFail := func(nodeID, reason string) {
+		mu.Lock()
+		if firstNode == "" {
+			firstNode, firstReason = nodeID, reason
+		}
+		mu.Unlock()
+	}
+	for _, nodeID := range batch {
+		wg.Add(1)
+		go func(n string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			failNode, failReason := c.deployBatchNode(ctx, id, h, n, byNode)
+			if failNode != "" && h.FailFast {
+				recordFail(failNode, failReason)
+			}
+		}(nodeID)
+	}
+	wg.Wait()
+	return firstNode, firstReason
+}
+
+// deployBatchNode 部署单节点（返回失败节点与原因；成功返回 "", ""）。
+func (c *Controller) deployBatchNode(ctx context.Context, id string, h *modelrepo.ModelRelease, nodeID string, byNode map[string]modelrepo.NodeReleaseResult) (string, string) {
+	// 接管续跑：已 deployed 跳过（6.1 重试语义：对 failed 节点不自动
+	// 重试——人工决策重新发布或回滚；deployed 判据在 byNode 快照内）
+	if nr, ok := byNode[nodeID]; ok && nr.Status != modelrepo.NodeRelPending {
+		return "", ""
+	}
+	ver, err := c.store.GetVersion(ctx, h.Model, h.Version)
+	if err != nil {
+		// 目标版本运行期不可用（被删等异常）：按节点失败处理
+		reason := fmt.Sprintf("target version %s unavailable: %v", h.Version, err)
+		_ = c.store.SetNodeResult(ctx, id, nodeID, &modelrepo.NodeReleaseResult{
+			NodeID: nodeID, Status: modelrepo.NodeRelFailed, Version: h.Version, Reason: reason,
+		})
+		log.Warnf("[modelrelease] node %s 部署失败（release %s）: %s", nodeID, id, reason)
+		if h.FailFast {
+			return nodeID, reason
+		}
+		return "", ""
+	}
+	if err := c.deploy.DeployVersion(ctx, nodeID, id, ver); err != nil {
+		reason := DeployReason(err)
+		_ = c.store.SetNodeResult(ctx, id, nodeID, &modelrepo.NodeReleaseResult{
+			NodeID: nodeID, Status: modelrepo.NodeRelFailed, Version: h.Version, Reason: reason,
+		})
+		log.Warnf("[modelrelease] node %s 部署失败（release %s）: %s", nodeID, id, reason)
+		if h.FailFast {
+			return nodeID, reason
+		}
+		return "", ""
+	}
+	_ = c.store.SetNodeResult(ctx, id, nodeID, &modelrepo.NodeReleaseResult{
+		NodeID: nodeID, Status: modelrepo.NodeRelDeployed, Version: h.Version,
+	})
+	return "", ""
+}
+
 func (c *Controller) abortFailFast(ctx context.Context, id string, h *modelrepo.ModelRelease, failedNode, reason string, byNode map[string]modelrepo.NodeReleaseResult) {
 	skipped := 0
 	for _, nodeID := range h.TargetNodes {

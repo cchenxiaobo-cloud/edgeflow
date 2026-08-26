@@ -372,6 +372,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		log.Errorf("[modelrelease] %v", err)
 		return 1
 	}
+	releaseBatchParallel, err := releaseBatchParallelFromEnv()
+	if err != nil {
+		log.Errorf("[modelrelease] %v", err)
+		return 1
+	}
 	releaseGCEnabled, releaseGCKeep, err := releaseGCFromEnv()
 	if err != nil {
 		log.Errorf("[modelrelease] %v", err)
@@ -401,10 +406,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		relCtrl, err = modelrelease.NewController(modelStore, deploy, &modelrelease.NoopLockKV{}, modelrelease.Options{
-			ScanInterval: releaseScan,
-			LockTTL:      releaseLockTTL,
-			GCEnabled:    releaseGCEnabled,
-			GCKeep:       releaseGCKeep,
+			ScanInterval:   releaseScan,
+			LockTTL:        releaseLockTTL,
+			GCEnabled:      releaseGCEnabled,
+			GCKeep:         releaseGCKeep,
+			BatchParallel:  releaseBatchParallel,
 		})
 		if err != nil {
 			log.Errorf("[modelrelease] 发布控制器装配失败: %v", err)
@@ -425,7 +431,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		modelStore, relCtrl, closeModel, err = assembleModelStores(
 			modelKV, hub.ReliableSendContext, externalEtcd, modeLabel, sigCtx, releaseScan, releaseLockTTL,
-			releaseGCEnabled, releaseGCKeep)
+			releaseGCEnabled, releaseGCKeep, releaseBatchParallel)
 		if err != nil {
 			if externalEtcd {
 				log.Errorf("[modelrelease] 外部模式模型仓库装配失败，拒绝启动（不降级——外部 etcd 是显式部署依赖）: %v", err)

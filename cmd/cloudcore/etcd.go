@@ -157,6 +157,7 @@ const (
 	// 镜像探活配置（v0.9.0，R-1）：mode 空/off=不检查（零行为变化）、
 	// warn=失败仅告警、fail=失败阻断发布（422）；timeout 默认 5s（>0）；
 	// token 为私有 registry 的 Bearer token（可选）。
+	envBatchParallel      = "EDGEFLOW_CLOUDCORE_RELEASE_BATCH_PARALLEL"
 	envMirrorCheck        = "EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK"
 	envMirrorCheckTimeout = "EDGEFLOW_CLOUDCORE_RELEASE_MIRROR_CHECK_TIMEOUT"
 	envRegistryToken      = "EDGEFLOW_CLOUDCORE_REGISTRY_TOKEN"
@@ -228,6 +229,20 @@ func releaseGCFromEnv() (bool, int, error) {
 	return enabled, keep, nil
 }
 
+// releaseBatchParallelFromEnv 解析批内并行部署度（v0.10.0，D6）：默认 1
+// （串行，零行为变化）；≥1 非法 fail-fast。
+func releaseBatchParallelFromEnv() (int, error) {
+	v := os.Getenv(envBatchParallel)
+	if v == "" {
+		return 1, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("%s=%q 必须为 ≥1 的整数（默认 1=串行）", envBatchParallel, v)
+	}
+	return n, nil
+}
+
 // mirrorCheckFromEnv 解析发布前镜像探活配置（v0.9.0，R-1）：返回 nil = off
 // （默认，零行为变化）。非法 mode fail-fast；timeout 缺省 5s（>0）。
 func mirrorCheckFromEnv() (*mirrorCheckConfig, error) {
@@ -280,7 +295,7 @@ func warnReleaseLockTTLIgnored() {
 func assembleModelStores(kv etcdstore.KVStore,
 	send func(ctx context.Context, nodeID string, msg *protocol.Message, opts cloudhub.ReliableOptions) error,
 	external bool, modeLabel string, sigCtx context.Context, scanInterval, lockTTL time.Duration,
-	gcEnabled bool, gcKeep int) (modelrepo.ModelStore, *modelrelease.Controller, func(), error) {
+	gcEnabled bool, gcKeep int, batchParallel int) (modelrepo.ModelStore, *modelrelease.Controller, func(), error) {
 
 	closeModel := func() {} // 失败路径兜底：无可关（成功路径会覆盖）
 
@@ -305,10 +320,11 @@ func assembleModelStores(kv etcdstore.KVStore,
 		locks = modelrelease.NewEtcdLockKV(lb, nil)
 	}
 	ctrl, err := modelrelease.NewController(store, deploy, locks, modelrelease.Options{
-		ScanInterval: scanInterval,
-		LockTTL:      lockTTL,
-		GCEnabled:    gcEnabled,
-		GCKeep:       gcKeep,
+		ScanInterval:  scanInterval,
+		LockTTL:       lockTTL,
+		GCEnabled:     gcEnabled,
+		GCKeep:        gcKeep,
+		BatchParallel: batchParallel,
 	})
 	if err != nil {
 		return nil, nil, closeModel, err

@@ -178,6 +178,12 @@ var checkedAtNowMs = func() int64 { return time.Now().UnixMilli() }
 // （400/404/422 族同因同报），预检通过 → 200 + wouldCreate=true 摘要。
 // 绝不调用 CreateRelease/SetNodeResult（零落盘、零 guard 键）。
 func (a *modelAPI) dryRunCreateRelease(w http.ResponseWriter, r *http.Request, modelName string, req *createReleaseRequest) {
+	// C-4 链序同源（设计稿裁定）：GetModel(404) 先于 ValidateCreate(400)，
+	// 与真实创建路径逐字对齐——叠加错误场景下两链路同因同码。
+	if _, err := a.store.GetModel(r.Context(), modelName); err != nil {
+		modelError(w, err)
+		return
+	}
 	pre := &modelrepo.ModelRelease{Model: modelName, Version: req.Version,
 		Target: req.Target, BatchSize: req.BatchSize, PauseBetween: req.PauseBetween,
 		NotBeforeMs: req.NotBeforeMs}
@@ -185,10 +191,7 @@ func (a *modelAPI) dryRunCreateRelease(w http.ResponseWriter, r *http.Request, m
 		badRequest(w, "%v", err)
 		return
 	}
-	if _, err := a.store.GetModel(r.Context(), modelName); err != nil {
-		modelError(w, err)
-		return
-	}
+
 	if req.NotBeforeMs > 0 && req.NotBeforeMs < time.Now().UnixMilli()-5*60*1000 {
 		badRequest(w, "notBeforeMs is too far in the past (clock drift guard; use 0 for immediate)")
 		return

@@ -168,11 +168,16 @@ func TestV170DryRunCreatePreview(t *testing.T) {
 		return p
 	}
 
-	// 0) 模型名含 '/' 时 ServeMux 路由不再命中 models/{modelName}/releases
-	// （路径段变了）→ 404；dryRun 与真实创建在处理器入口共用同一校验链，
-	// 这里用合法但未注册的模型名验证 404 同因同报。
+	// 0) 未注册模型 → 404（C-4 链序同源裁定：GetModel 先于 ValidateCreate，
+	// 与真实创建逐字对齐——叠加错误场景两链路同因同码）
 	if code, _ := doJSON(t, http.MethodPost, srv.URL+"/api/v1/models/ghost-model/releases", payload(nil)); code != http.StatusNotFound {
 		t.Fatalf("dryRun 未注册模型 = %d, want 404", code)
+	}
+	// 0b) 叠加错误：未注册模型 + 非法内容（batchSize=0）→ 同样 404
+	//     （证明 404 优先于 400，与真实创建链序一致）
+	if code, _ := doJSON(t, http.MethodPost, srv.URL+"/api/v1/models/ghost-model/releases",
+		payload(map[string]any{"batchSize": 0})); code != http.StatusNotFound {
+		t.Fatalf("dryRun 叠加错误 = %d, want 404", code)
 	}
 
 	v170SeedActiveModel(t, srv, "m-dry", "v1.0.0")

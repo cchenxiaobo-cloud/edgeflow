@@ -58,7 +58,11 @@
 | GET | `/api/v1/models/{modelName}/releases` | 发布列表（按 createdAt 升序；v0.8.0 起支持分页，同上） | 200 / 400 / 404 |
 | GET | `/api/v1/models/{modelName}/releases/{releaseID}` | 发布详情（含 perNode 汇总） | 200 / 404 |
 | GET | `/api/v1/models/{modelName}/releases/{releaseID}/digest` | **发布 digest 复核（v0.12.0，D-1：发布 mirrorDigest vs 各节点当前 imageDigest 一致结论，含 consistency）** | 200 / 404 |
-| POST | `/api/v1/models/{modelName}/releases/{releaseID}/cancel` | 取消（pending/running） | 200 / 404 / 409 |
+| POST | `/api/v1/models/{modelName}/releases/{releaseID}/pause` | **暂停发布（v0.16.0：running→paused，节点边界生效；幂等）** | 200 / 404 / 409 |
+| POST | `/api/v1/models/{modelName}/releases/{releaseID}/resume` | **恢复发布（v0.16.0：paused→running，NextBatchAt 保持原节奏）** | 200 / 404 / 409 |
+| GET | `/api/v1/models/export` | **模型目录导出（v0.16.0：models+versions 全量快照 JSON，schemaVersion=1）** | 200 |
+| POST | `/api/v1/models/import` | **模型目录导入（v0.16.0：幂等 upsert；同 version 跳过、active 直通灾备语义）** | 200 / 400 |
+| POST | `/api/v1/models/{modelName}/releases/{releaseID}/cancel` | 取消（v0.16.0 起 pending/running/paused） | 200 / 404 / 409 |
 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/rollback` | **回滚（异步执行，逆序批量）** | **202** / 404 / 409 / 422 |
 | GET | `/api/v1/models/{modelName}/deployments` | 部署影子（版本—节点—时间追踪，F41 台账）；**v0.13.0 支持 `limit`(1-1000)/`offset`(≥0) 分页 + `X-Total-Count` 头，缺省全量** | 200 / 404 |
 
@@ -574,6 +578,21 @@ pending ─▶ running ─┬─ 全部 deployed ──────────�
 
 > 代码位置：`apis/edge/v1alpha1/`（Group `edgeflow.io`，Version `v1alpha1`）。
 > 此部分为 M0-2 已定稿内容，随 v0.1.0 一并归档。
+
+### 7.6 v0.16.0 增量：定时维护窗口 / 暂停恢复 / 目录导出导入
+
+**新增端点（4）**：
+
+| 端点 | 语义 |
+|------|------|
+| `POST /api/v1/models/{m}/releases/{id}/pause` | running→paused；重复幂等返回 200；pending/终态→409。批边界生效，不中断在途下发；paused 保 active 身份续租领跑锁 |
+| `POST /api/v1/models/{m}/releases/{id}/resume` | paused→running；非 paused→409。NextBatchAt 保持原值（过期即推进、未到守 PauseBetween） |
+| `GET /api/v1/models/export` | models+versions 全量快照 JSON：`{schemaVersion:"1", exportedAt, models[], versions[]}`；Content-Disposition 附件提示 |
+| `POST /api/v1/models/import` | 幂等 upsert：模型存在→元数据覆盖（modelsUpdated）；版本同 (model,version)→跳过（versionsSkipped）；active 经 draft+activate 直通灾备语义；响应 `{kind:"importReport", modelsImported, modelsUpdated, versionsImported, versionsSkipped}` |
+
+**创建参数增量**：`notBeforeMs`（Unix 毫秒，opt-in，0=立即）——窗口未到控制器不认领不占领跑锁；校验 ≥0 且 ≥now-5min。
+
+**状态机扩展**：running ⇄ paused（`CanTransitionRelease` 只增扩展）；paused 属 InFlight（占 guard、非终态）；CancelRelease 接受 paused；RequestRollback 拒 paused（先 resume 或 cancel）。
 
 ## A. Group / Version 约定
 

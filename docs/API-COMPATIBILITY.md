@@ -46,6 +46,10 @@
 | 30 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/cancel` | ✅ 新增（v0.7.0） | Bearer Token | 取消（pending/running） |
 | 31 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/rollback` | ✅ 新增（v0.7.0） | Bearer Token | **回滚（异步，逆序批量，202）** |
 | 32 | GET | `/api/v1/models/{modelName}/deployments` | ✅ 新增（v0.7.0） | Bearer Token | 部署影子（版本—节点—时间台账） |
+| 33 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/pause` | ✅ 新增（v0.16.0） | Bearer Token | 暂停发布（running→paused，节点边界生效） |
+| 34 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/resume` | ✅ 新增（v0.16.0） | Bearer Token | 恢复发布（paused→running，NextBatchAt 保持原节奏） |
+| 35 | GET | `/api/v1/models/export` | ✅ 新增（v0.16.0） | Bearer Token | 模型目录导出（全量快照 JSON） |
+| 36 | POST | `/api/v1/models/import` | ✅ 新增（v0.16.0） | Bearer Token | 模型目录导入（幂等 upsert） |
 
 > 契约详情见 API-SPEC.md §7（v0.7.0）。
 

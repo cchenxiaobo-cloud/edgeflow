@@ -6,7 +6,7 @@ EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备�
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.15.0**（2026-08-27，OPC-UA 里程碑第三阶段：Subscription 订阅推送 + Browse 浏览发现——值变化即时采集与一键点位发现，零新依赖）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**云端分级持久化（v0.4.0 嵌入式 etcd / v0.5.0 外部 etcd 模式 / v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**、**外部 etcd RBAC 鉴权透传与终态发布 GC（v0.8.0：L1/L28 闭环）+ 续约失败监控指标**。
+> 当前版本：**v0.16.0**（2026-08-27，AI 模型管理深化：定时维护窗口发布 + 运行中暂停/恢复 + 模型目录导出/导入——云端模型管理面运维纵深，零新依赖）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**云端分级持久化（v0.4.0 嵌入式 etcd / v0.5.0 外部 etcd 模式 / v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**、**外部 etcd RBAC 鉴权透传与终态发布 GC（v0.8.0：L1/L28 闭环）+ 续约失败监控指标**。
 
 ## 目录结构
 
@@ -96,6 +96,7 @@ helm install edgeflow build/charts/edgeflow/
 
 ## 版本历史
 
+- **v0.16.0**（2026-08-27）：AI 模型管理深化——定时维护窗口发布（notBeforeMs opt-in）+ 运行中发布 pause/resume（批边界生效/保锁续租）+ 模型目录 export/import（幂等 upsert/active 直通灾备）；HTTP 端点 32→36 只增不改；详见 [docs/RELEASE-NOTES-v0116.md](docs/RELEASE-NOTES-v0116.md)
 - **v0.15.0**（2026-08-27）：OPC-UA 里程碑第三阶段——Subscription 订阅推送（EDGEFLOW_OPCUA_SUBSCRIPTION=on，值变化即时采集/断线自动重建/缺省 off 轮询不变）+ Browse 点位发现（hack/opcua-browse 一键输出 NODES 配置行）；TypeIds 经 OPC Foundation 官方表核验；修复试解分派误吞互操作缺陷（详见 [docs/OPCUA-GUIDE.md](docs/OPCUA-GUIDE.md) 与 [docs/RELEASE-NOTES-v0115.md](docs/RELEASE-NOTES-v0115.md)）
 - **v0.14.0**（2026-08-27）：OPC-UA 里程碑第二阶段——端到端设备接入闭环：pkg/opcua 补齐 SecureChannel/Session（匿名）/Read/Write 服务与 Client API（零新依赖）+ 自研模拟器 pkg/opcuasim（6 点位动态模型）+ mappers/opcua 采集转换/写点回读/台账 + edgecore 4 env opt-in 装配；零新增端点（32 不变）、老边缘零动作（详见 [docs/OPCUA-GUIDE.md](docs/OPCUA-GUIDE.md)）
 - **v0.13.0**（2026-08-26）：模型生命周期与运维收尾——deployments 列表分页（A′，L28 同族收官）+ 删除级联收官（B，GC 开启下删模型级联清终态发布）+ offlineAt 精确展示（C，L16 残余）；零新增 env、零新增端点（详见 [RELEASE-NOTES-v0113.md](docs/RELEASE-NOTES-v0113.md)）

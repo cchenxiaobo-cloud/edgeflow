@@ -193,3 +193,14 @@
 | WIRE | 模拟器异步出站帧缺 MSG 帧头（对称头+序列头直写 TCP），客户端 ReadMessage 解析错位 | ✅ **v0.15.0 修复**：writeServerFrame 统一补 EncodeHeader（MsgSecureMessage + channelID + size） | 无 |
 
 > 排除项延续：Sign/SignAndEncrypt、事件订阅（Alarm&Condition）、第三方 UA 栈互操作 cross-check。
+
+
+## 16. v0.16.0 开发轮闭环登记（2026-08-27，AI 模型管理深化：定时维护窗口 + 发布暂停恢复 + 模型目录导出导入）
+
+> 提交：757a1b0。设计：.cluster/edgeflow-v0160/design.md。契约变更：HTTP 端点 32→36（pause/resume/export/import），三守卫测试联动绿。
+
+| 编号 | 问题面 | 闭环说明 | 残余与建议 |
+|---|---|---|---|
+| MR-W | 发布创建即扫描认领，无法预约工业夜间/低峰维护窗口 | ✅ **v0.16.0 闭环**：`notBeforeMs` 创建参数（opt-in，0=立即行为不变）——控制器窗口未到不认领、不占领跑锁；API 校验 ≥0 且 ≥now-5min（钟漂护栏）；窗口期 InFlight 守 guard 同模型不并发 | 待调度队列无专门观测视图（列表接口 NotBeforeMs 可见）；cron 式重复发布不在范围 |
+| MR-P | 灰度中途发现异常只能取消重来（已部署节点需回滚），缺"先停下观察"能力 | ✅ **v0.16.0 闭环**：POST pause/resume——running⇄paused 状态机扩展；批边界生效不中断在途下发；paused 保 active 身份续租领跑锁（多副本接管语义不变）；NextBatchAt 保持原节奏；paused 可直接 cancel，rollback 拒 paused | 持锁副本崩溃且无人接管期间发布保持 paused（安全但停滞，R1 登记） |
+| MR-X | 开发→生产环境模型台账迁移靠手工 etcd 操作；灾备恢复无官方通道 | ✅ **v0.16.0 闭环**：GET export（models+versions 全量快照 JSON，schemaVersion=1）+ POST import 幂等 upsert——同 (model,version) 跳过计数、active 经 draft+activate 直通灾备语义、孤儿版本自动补建空壳模型、改段重放可达"新环境全量导入" | 导出/导入无分页与流式（1MiB import 上限内规模可用，R2/R3）；releases/deployments 明确不可迁移 |

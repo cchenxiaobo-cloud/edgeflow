@@ -125,6 +125,10 @@ func (a *modelAPI) Register(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/v1/models/{modelName}/releases/{releaseID}", a.getRelease)
 	mux.HandleFunc("GET /api/v1/models/{modelName}/releases/{releaseID}/digest", a.getReleaseDigest)
 	mux.HandleFunc("POST /api/v1/models/{modelName}/releases/{releaseID}/cancel", a.cancelRelease)
+	mux.HandleFunc("POST /api/v1/models/{modelName}/releases/{releaseID}/pause", a.pauseRelease)
+	mux.HandleFunc("POST /api/v1/models/{modelName}/releases/{releaseID}/resume", a.resumeRelease)
+	mux.HandleFunc("GET /api/v1/models/export", a.exportCatalog)
+	mux.HandleFunc("POST /api/v1/models/import", a.importCatalog)
 	mux.HandleFunc("POST /api/v1/models/{modelName}/releases/{releaseID}/rollback", a.rollbackRelease)
 	mux.HandleFunc("GET /api/v1/models/{modelName}/deployments", a.listDeployments)
 }
@@ -379,6 +383,8 @@ type createReleaseRequest struct {
 	BatchSize    int                     `json:"batchSize"`
 	PauseBetween int64                   `json:"pauseBetween"`
 	FailFast     *bool                   `json:"failFast"`
+	// NotBeforeMs 定时维护窗口起点（v0.16.0 opt-in；Unix 毫秒；0 = 立即）。
+	NotBeforeMs int64 `json:"notBeforeMs,omitempty"`
 }
 
 // applyDefaults 落设计缺省值（batchSize 缺省 1；failFast 缺省 true）。
@@ -745,11 +751,17 @@ func (a *modelAPI) createRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 2) 内容校验（400 族：target 白名单/percentage 越界/nodeIDs 字符集/
-	//    batchSize≥1/pauseBetween≥0），via ValidateCreate（设计 §5.2 step3）
+	//    batchSize≥1/pauseBetween≥0/notBeforeMs≥0），via ValidateCreate（设计 §5.2 step3）
 	pre := &modelrepo.ModelRelease{Model: modelName, Version: req.Version,
-		Target: req.Target, BatchSize: req.BatchSize, PauseBetween: req.PauseBetween}
+		Target: req.Target, BatchSize: req.BatchSize, PauseBetween: req.PauseBetween,
+		NotBeforeMs: req.NotBeforeMs}
 	if err := pre.ValidateCreate(); err != nil {
 		badRequest(w, "%v", err)
+		return
+	}
+	// v0.16.0：窗口不允许早于 now-5min（防钟漂误触即时启动；>now 正常预约）
+	if req.NotBeforeMs > 0 && req.NotBeforeMs < time.Now().UnixMilli()-5*60*1000 {
+		badRequest(w, "notBeforeMs is too far in the past (clock drift guard; use 0 for immediate)")
 		return
 	}
 	// 3) 目标版本存在且须 active（否则 422）
@@ -802,6 +814,7 @@ func (a *modelAPI) createRelease(w http.ResponseWriter, r *http.Request) {
 		Target: req.Target, TargetNodes: targetNodes,
 		BatchSize: req.BatchSize, PauseBetween: req.PauseBetween,
 		FailFast: *req.FailFast, PrevActive: prevActive,
+		NotBeforeMs: req.NotBeforeMs,
 	}
 	if err := a.store.CreateRelease(r.Context(), release); err != nil {
 		modelError(w, err)
@@ -1041,6 +1054,220 @@ func (a *modelAPI) cancelRelease(w http.ResponseWriter, r *http.Request) {
 		ModelRelease: *release,
 		Summary:      a.summaryOf(r.Context(), release.ID),
 	})
+}
+
+// pauseRelease 处理 POST /api/v1/models/{modelName}/releases/{releaseID}/pause
+// （v0.16.0）：running → paused（存储层守卫：仅 running 可暂停，重复幂等；
+// pending/终态 → 409 族）。200 返回最新 release + summary。
+func (a *modelAPI) pauseRelease(w http.ResponseWriter, r *http.Request) {
+	releaseID := r.PathValue("releaseID")
+	if err := a.store.PauseRelease(r.Context(), releaseID); err != nil {
+		modelError(w, err)
+		return
+	}
+	release, err := a.store.GetRelease(r.Context(), releaseID)
+	if err != nil {
+		modelError(w, err)
+		return
+	}
+	log.Infof("[modelAPI] 发布 %s 已暂停（model=%s version=%s）", release.ID, release.Model, release.Version)
+	writeJSON(w, http.StatusOK, releaseResponse{
+		ModelRelease: *release,
+		Summary:      a.summaryOf(r.Context(), release.ID),
+	})
+}
+
+// resumeRelease 处理 POST /api/v1/models/{modelName}/releases/{releaseID}/resume
+// （v0.16.0）：paused → running（非 paused → 409）；NextBatchAt 保持原值。
+func (a *modelAPI) resumeRelease(w http.ResponseWriter, r *http.Request) {
+	releaseID := r.PathValue("releaseID")
+	if err := a.store.ResumeRelease(r.Context(), releaseID); err != nil {
+		modelError(w, err)
+		return
+	}
+	release, err := a.store.GetRelease(r.Context(), releaseID)
+	if err != nil {
+		modelError(w, err)
+		return
+	}
+	log.Infof("[modelAPI] 发布 %s 已恢复（model=%s version=%s）", release.ID, release.Model, release.Version)
+	writeJSON(w, http.StatusOK, releaseResponse{
+		ModelRelease: *release,
+		Summary:      a.summaryOf(r.Context(), release.ID),
+	})
+}
+
+// ── 模型目录导出/导入（v0.16.0，2 端点）──────────────────────────
+
+// ModelCatalog 是导出/导入同构的目录快照（纯云端台账；不含 releases/
+// deployments/guards——发布任务与环境绑定、影子是派生台账，均不可迁移）。
+type ModelCatalog struct {
+	SchemaVersion string                    `json:"schemaVersion"` // 恒 "1"
+	ExportedAt    int64                     `json:"exportedAt"`   // Unix 毫秒
+	Models        []modelrepo.Model         `json:"models"`
+	Versions      []modelrepo.ModelVersion  `json:"versions"`
+}
+
+// exportCatalog 处理 GET /api/v1/models/export：全量模型+版本 JSON 快照下载。
+// 恒 200（空目录 → models/versions = []）。Content-Disposition 附文件名提示。
+func (a *modelAPI) exportCatalog(w http.ResponseWriter, r *http.Request) {
+	models, err := a.store.ListModels(r.Context())
+	if err != nil {
+		modelError(w, err)
+		return
+	}
+	cat := ModelCatalog{
+		SchemaVersion: "1",
+		ExportedAt:    time.Now().UnixMilli(),
+		Models:        []modelrepo.Model{},
+		Versions:      []modelrepo.ModelVersion{},
+	}
+	for i := range models {
+		m := models[i]
+		cat.Models = append(cat.Models, m)
+		vs, verr := a.store.ListVersions(r.Context(), m.Name)
+		if verr != nil {
+			continue // 导出尽力而为：单模型版本读失败不中断整体（记日志）
+		}
+		cat.Versions = append(cat.Versions, vs...)
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="edgeflow-model-catalog.json"`)
+	writeJSON(w, http.StatusOK, cat)
+}
+
+// importReport 是 POST /api/v1/models/import 的响应计数。
+type importReport struct {
+	Kind             string `json:"kind"`
+	APIVersion       string `json:"apiVersion"`
+	ModelsImported   int    `json:"modelsImported"`   // 新建模型数
+	ModelsUpdated    int    `json:"modelsUpdated"`    // 元数据覆盖更新数
+	VersionsImported int    `json:"versionsImported"` // 新建版本数（含 active 补齐）
+	VersionsSkipped  int    `json:"versionsSkipped"`  // 同 (model,version) 已存在而跳过
+}
+
+// importCatalog 处理 POST /api/v1/models/import：目录快照幂等 upsert。
+// 幂等律：模型存在 → 元数据整表覆盖；版本已存在 → 跳过计数（不覆盖本地
+// 状态机演进）；active 版本经 CreateVersion(draft)+ActivateVersion 直通。
+func (a *modelAPI) importCatalog(w http.ResponseWriter, r *http.Request) {
+	var cat ModelCatalog
+	if err := decodeWriteBody(w, r, &cat); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeErr(w, http.StatusRequestEntityTooLarge, "request body too large (limit 1MiB)", nil)
+			return
+		}
+		badRequest(w, "invalid json body")
+		return
+	}
+	if cat.SchemaVersion == "" {
+		cat.SchemaVersion = "1"
+	}
+	if cat.SchemaVersion != "1" {
+		badRequest(w, "unsupported catalog schemaVersion %q (only \"1\")", cat.SchemaVersion)
+		return
+	}
+	rep := importReport{Kind: "importReport", APIVersion: "v1alpha1"}
+	for i := range cat.Models {
+		m := cat.Models[i]
+		if err := modelrepo.ValidateModelName(m.Name); err != nil {
+			badRequest(w, "invalid model name in catalog: %v", err)
+			return
+		}
+		_, gerr := a.store.GetModel(r.Context(), m.Name)
+		if gerr == nil {
+			err := a.store.UpdateModel(r.Context(), m.Name, func(cur *modelrepo.Model) error {
+				cur.Description = m.Description
+				cur.Type = m.Type
+				if len(m.Metadata) > 0 {
+					cur.Metadata = m.Metadata
+				}
+				return nil
+			})
+			if err != nil {
+				modelError(w, err)
+				return
+			}
+			rep.ModelsUpdated++
+			continue
+		}
+		if !errors.Is(gerr, modelrepo.ErrModelNotFound) {
+			modelError(w, gerr)
+			return
+		}
+		created := m
+		now := time.Now().UnixMilli()
+		if created.CreatedAt == 0 {
+			created.CreatedAt = now
+		}
+		if created.UpdatedAt == 0 {
+			created.UpdatedAt = now
+		}
+		if err := a.store.CreateModel(r.Context(), &created); err != nil {
+			modelError(w, err)
+			return
+		}
+		rep.ModelsImported++
+	}
+	for i := range cat.Versions {
+		v := cat.Versions[i]
+		if err := modelrepo.ValidateModelName(v.Model); err != nil {
+			badRequest(w, "invalid model name in catalog versions: %v", err)
+			return
+		}
+		if err := modelrepo.ValidateVersionTag(v.Version); err != nil {
+			badRequest(w, "invalid version tag in catalog: %v", err)
+			return
+		}
+		if !v.Status.IsValid() {
+			badRequest(w, "invalid version status %q", v.Status)
+			return
+		}
+		// 模型缺失时自动补建空壳（versions 段自洽保障）
+		if _, gerr := a.store.GetModel(r.Context(), v.Model); errors.Is(gerr, modelrepo.ErrModelNotFound) {
+			now := time.Now().UnixMilli()
+			shell := modelrepo.Model{Name: v.Model, Description: "(imported shell for orphan version)", CreatedAt: now, UpdatedAt: now}
+			if cerr := a.store.CreateModel(r.Context(), &shell); cerr != nil && !errors.Is(cerr, modelrepo.ErrModelExists) {
+				modelError(w, cerr)
+				return
+			}
+		} else if gerr != nil {
+			modelError(w, gerr)
+			return
+		}
+		if _, gerr := a.store.GetVersion(r.Context(), v.Model, v.Version); gerr == nil {
+			rep.VersionsSkipped++ // 幂等：不覆盖本地状态机演进
+			continue
+		} else if !errors.Is(gerr, modelrepo.ErrVersionNotFound) {
+			modelError(w, gerr)
+			return
+		}
+		ins := v
+		now := time.Now().UnixMilli()
+		if ins.CreatedAt == 0 {
+			ins.CreatedAt = now
+		}
+		if ins.UpdatedAt == 0 {
+			ins.UpdatedAt = now
+		}
+		status := ins.Status
+		ins.Status = modelrepo.VersionStatusDraft // CreateVersion 强制初始态
+		if err := a.store.CreateVersion(r.Context(), &ins); err != nil {
+			if errors.Is(err, modelrepo.ErrVersionExists) {
+				rep.VersionsSkipped++
+				continue
+			}
+			modelError(w, err)
+			return
+		}
+		rep.VersionsImported++
+		if status == modelrepo.VersionStatusActive {
+			if aerr := a.store.ActivateVersion(r.Context(), v.Model, v.Version); aerr != nil {
+				modelError(w, aerr)
+				return
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 // rollbackRelease 处理 POST /api/v1/models/{modelName}/releases/{releaseID}/rollback

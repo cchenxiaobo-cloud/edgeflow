@@ -46,18 +46,18 @@ type EtcdModelStore struct {
 	atomic etcdstore.AtomicKV // CAS 面（构造时断言；embed/外部均满足）
 	ext    etcdstore.WatchKV  // watch 面（外部模式；nil → StartWatch no-op）
 
-	mu         sync.RWMutex
-	models     map[string]*Model
-	version    map[string]map[string]*ModelVersion
-	release    map[string]*ModelRelease
-	nodes      map[string]map[string]*NodeReleaseResult
-	deploys    map[string]map[string]DeploymentState
-	watchRev   atomic.Int64
+	mu       sync.RWMutex
+	models   map[string]*Model
+	version  map[string]map[string]*ModelVersion
+	release  map[string]*ModelRelease
+	nodes    map[string]map[string]*NodeReleaseResult
+	deploys  map[string]map[string]DeploymentState
+	watchRev atomic.Int64
 
 	// v0.13.0（B）：GC 显式开启时，DeleteModel 级联清理该模型全部终态发布
 	// （默认关闭 = L31 审计口径零变化）。
-	gcEnabled bool
-	gcKeep    int // 语义占位（对齐 WithReleaseGC）；本层全清不消费 keep
+	gcEnabled  bool
+	gcKeep     int // 语义占位（对齐 WithReleaseGC）；本层全清不消费 keep
 	lastReload time.Time
 
 	closeCh chan struct{}
@@ -796,12 +796,38 @@ func (s *EtcdModelStore) UpdateReleaseHead(ctx context.Context, id string, mutat
 func (s *EtcdModelStore) CancelRelease(ctx context.Context, id string) error {
 	return s.UpdateReleaseHead(ctx, id, func(r *ModelRelease) error {
 		switch r.Status {
-		case ReleaseStatusPending, ReleaseStatusRunning:
+		case ReleaseStatusPending, ReleaseStatusRunning, ReleaseStatusPaused:
 		default:
 			return fmt.Errorf("%w: release already %s", ErrReleaseTerminal, r.Status)
 		}
 		r.Status = ReleaseStatusCanceled
 		r.FinishedAt = s.nowMs()
+		return nil
+	})
+}
+
+// PauseRelease 实现 ModelStore（v0.16.0）：running → paused（CAS 守卫同族）。
+func (s *EtcdModelStore) PauseRelease(ctx context.Context, id string) error {
+	return s.UpdateReleaseHead(ctx, id, func(r *ModelRelease) error {
+		if r.Status == ReleaseStatusPaused {
+			return nil // 幂等
+		}
+		if r.Status != ReleaseStatusRunning {
+			return fmt.Errorf("%w: release %s not pausable (status=%s)", ErrReleaseTerminal, id, r.Status)
+		}
+		r.Status = ReleaseStatusPaused
+		r.PausedAt = s.nowMs()
+		return nil
+	})
+}
+
+// ResumeRelease 实现 ModelStore（v0.16.0）：paused → running。
+func (s *EtcdModelStore) ResumeRelease(ctx context.Context, id string) error {
+	return s.UpdateReleaseHead(ctx, id, func(r *ModelRelease) error {
+		if r.Status != ReleaseStatusPaused {
+			return fmt.Errorf("%w: release %s not paused (status=%s)", ErrReleaseTerminal, id, r.Status)
+		}
+		r.Status = ReleaseStatusRunning
 		return nil
 	})
 }
@@ -813,6 +839,8 @@ func (s *EtcdModelStore) RequestRollback(ctx context.Context, id string) error {
 		case ReleaseStatusRunning, ReleaseStatusSucceeded, ReleaseStatusFailed, ReleaseStatusCanceled:
 		case ReleaseStatusPending:
 			return fmt.Errorf("%w: release pending (not yet started)", ErrReleaseTerminal)
+		case ReleaseStatusPaused:
+			return fmt.Errorf("%w: release paused (resume or cancel first)", ErrReleaseTerminal)
 		case ReleaseStatusRolledBack:
 			return fmt.Errorf("%w: release already rolled back", ErrReleaseTerminal)
 		}

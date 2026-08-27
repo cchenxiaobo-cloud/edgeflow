@@ -52,6 +52,7 @@ type ReleaseStatus string
 const (
 	ReleaseStatusPending    ReleaseStatus = "pending"
 	ReleaseStatusRunning    ReleaseStatus = "running"
+	ReleaseStatusPaused     ReleaseStatus = "paused"
 	ReleaseStatusSucceeded  ReleaseStatus = "succeeded"
 	ReleaseStatusFailed     ReleaseStatus = "failed"
 	ReleaseStatusCanceled   ReleaseStatus = "canceled"
@@ -79,7 +80,7 @@ func (s NodeRelStatus) IsValid() bool {
 // IsValid 报告发布状态是否为已知取值。
 func (s ReleaseStatus) IsValid() bool {
 	switch s {
-	case ReleaseStatusPending, ReleaseStatusRunning, ReleaseStatusSucceeded,
+	case ReleaseStatusPending, ReleaseStatusRunning, ReleaseStatusPaused, ReleaseStatusSucceeded,
 		ReleaseStatusFailed, ReleaseStatusCanceled, ReleaseStatusRolledBack:
 		return true
 	}
@@ -97,7 +98,7 @@ func (s ReleaseStatus) IsTerminal() bool {
 
 // InFlight 报告发布状态是否在途（占用同模型 guard 键）。
 func (s ReleaseStatus) InFlight() bool {
-	return s == ReleaseStatusPending || s == ReleaseStatusRunning
+	return s == ReleaseStatusPending || s == ReleaseStatusRunning || s == ReleaseStatusPaused
 }
 
 // ── 状态机转换合法性表（设计 §2.4，纯函数）─────────────────────────────
@@ -121,6 +122,7 @@ func CanTransitionVersion(from, to VersionStatus) bool {
 //
 //	pending → running（控制器认领）/ canceled（cancel API）
 //	running → succeeded / failed / canceled / rolled_back
+//	running ⇄ paused（v0.16.0 暂停/恢复：pause API 与 resume API）
 //	succeeded|failed|canceled → rolled_back（回滚执行，逐节点逆序）
 //	rolled_back → 无（终态；API 再回滚 → 409）
 func CanTransitionRelease(from, to ReleaseStatus) bool {
@@ -133,6 +135,13 @@ func CanTransitionRelease(from, to ReleaseStatus) bool {
 	case ReleaseStatusRunning:
 		switch to {
 		case ReleaseStatusSucceeded, ReleaseStatusFailed, ReleaseStatusCanceled, ReleaseStatusRolledBack:
+			return true
+		case ReleaseStatusPaused: // v0.16.0：暂停（节点边界生效）
+			return true
+		}
+	case ReleaseStatusPaused: // v0.16.0：恢复/取消/回滚；终态由控制器正常推进进入
+		switch to {
+		case ReleaseStatusRunning, ReleaseStatusCanceled:
 			return true
 		}
 	case ReleaseStatusSucceeded, ReleaseStatusFailed, ReleaseStatusCanceled:
@@ -216,7 +225,7 @@ type ModelRelease struct {
 	BatchSize         int           `json:"batchSize"`               // 每批节点数；>=1；默认 1；批内逐节点串行（D6）
 	PauseBetween      int64         `json:"pauseBetween"`            // 批间暂停（毫秒）；>=0；默认 0
 	FailFast          bool          `json:"failFast"`                // 单节点失败策略；默认 true（对齐 keadm batch fail-fast 语义）
-	Status            ReleaseStatus `json:"status"`                  // pending|running|succeeded|failed|canceled|rolled_back
+	Status            ReleaseStatus `json:"status"`                  // pending|running|paused|succeeded|failed|canceled|rolled_back（v0.16.0 起 paused）
 	PrevActive        string        `json:"prevActive"`              // 创建时模型当前 active 版本（≠ 目标版本时记录；=="" 表示无）；回滚目标
 	RollbackRequested bool          `json:"rollbackRequested"`       // 回滚 API 置位，控制器异步执行
 	NextBatchAt       int64         `json:"nextBatchAt"`             // 下一批最早开始时间（Unix 毫秒）；跨接管持久
@@ -227,6 +236,15 @@ type ModelRelease struct {
 	// 终态判定时对 deployed 节点比对边缘上报 digest，不一致 → perNode failed
 	// （reason=digest-mismatch）。
 	MirrorDigest string `json:"mirrorDigest,omitempty"`
+
+	// NotBeforeMs 定时维护窗口起点（v0.16.0，opt-in）：Unix 毫秒；0 = 立即
+	// （缺省行为与 v0.15.0 逐字节一致）。控制器扫描到窗口未到的 pending
+	// release 不认领、不占领跑锁；API 创建校验 ≥0 且不早于 now-5min。
+	NotBeforeMs int64 `json:"notBeforeMs,omitempty"`
+	// PausedAt 最近一次进入 paused 的时刻（v0.16.0；omitempty：非暂停态省略，
+	// 向后兼容）。恢复时不清零——保留最近暂停时刻供审计（暂停累计时长可由
+	// 状态流转台账推导，不冗余存储）。
+	PausedAt   int64 `json:"pausedAt,omitempty"`
 	CreatedAt  int64 `json:"createdAt"`
 	StartedAt  int64 `json:"startedAt"`
 	FinishedAt int64 `json:"finishedAt"`
@@ -523,6 +541,9 @@ func (r *ModelRelease) ValidateCreate() error {
 	}
 	if r.PauseBetween < 0 {
 		return fmt.Errorf("pauseBetween must be >= 0, got %d", r.PauseBetween)
+	}
+	if r.NotBeforeMs < 0 {
+		return fmt.Errorf("notBeforeMs must be >= 0, got %d", r.NotBeforeMs)
 	}
 	return nil
 }

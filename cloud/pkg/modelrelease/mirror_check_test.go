@@ -177,7 +177,6 @@ func TestParseMirrorCheckMode(t *testing.T) {
 	}
 }
 
-
 // TestCheckMirrorReturnsDigest 验证 200 + Docker-Content-Digest 头 → 返回该值。
 func TestCheckMirrorReturnsDigest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

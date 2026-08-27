@@ -229,12 +229,24 @@ func (c *Controller) scanOnce(ctx context.Context) {
 		}
 		switch r.Status {
 		case modelrepo.ReleaseStatusPending:
+			// v0.16.0 定时维护窗口：未到点的发布不认领、不占领跑锁
+			// （NotBeforeMs=0 恒立即，缺省行为与 v0.15.0 逐字节一致）。
+			if r.NotBeforeMs > 0 && r.NotBeforeMs > c.nowMs() {
+				continue
+			}
 			c.claim(ctx, r)
 		case modelrepo.ReleaseStatusRunning:
 			if c.isActive(r.ID) {
 				c.advance(ctx, r.ID)
 			} else if c.ensureActive(ctx, r.ID) {
 				c.advance(ctx, r.ID) // 接管：锁到期后他副本重新 grant 续跑
+			}
+		case modelrepo.ReleaseStatusPaused:
+			// v0.16.0 暂停态：非终态仍占 guard/锁语义；本副本若持锁则
+			// 保留 active 身份（refresh 循环续租），但不推进批次——恢复
+			// 由 resume API 置回 running 后按正常路径接管。
+			if !c.isActive(r.ID) {
+				_ = c.ensureActive(ctx, r.ID)
 			}
 		case modelrepo.ReleaseStatusCanceled:
 			c.cancelRemainder(ctx, r.ID)
@@ -334,6 +346,12 @@ func (c *Controller) advance(ctx context.Context, id string) {
 		return
 	}
 	if h.Status != modelrepo.ReleaseStatusRunning {
+		if h.Status == modelrepo.ReleaseStatusPaused {
+			// v0.16.0 暂停中：保留 active 身份（领跑锁刷新循环继续续租，
+			// 多副本接管竞争不变），仅停止推进批次；resume 置回 running
+			// 后下一扫描周期从原节奏继续。
+			return
+		}
 		c.removeActive(id) // 已终态/已取消：停止推进（cancelRemainder 等路径收敛）
 		return
 	}
@@ -380,7 +398,11 @@ func (c *Controller) advance(ctx context.Context, id string) {
 		return
 	}
 	if cur.Status != modelrepo.ReleaseStatusRunning {
-		c.removeActive(id)
+		if cur.Status != modelrepo.ReleaseStatusPaused {
+			c.removeActive(id)
+		}
+		// v0.16.0：部署下一批前复查到 paused → 本批不发车（批边界生效）；
+		// 保留 active 身份同上。
 		return
 	}
 
@@ -565,6 +587,7 @@ func (c *Controller) deployBatchNodes(ctx context.Context, id string, h *modelre
 //   - 控制器 DigestLookup 未注入（nil）→ 整体关闭（回归锚点）；
 //   - 发布头 MirrorDigest 空（off 模式/HEAD 缺头/warn 失败）→ 全链路跳过；
 //   - 节点上报 digest 空（老边缘/未上报）→ 该节点跳过，不误伤不阻塞。
+//
 // 不一致时写 perNode failed（Reason="digest-mismatch: expected <exp> got
 // <got>"）并返回 (true, reason)。幂等：节点已 failed 后不再被复核查到。
 func (c *Controller) digestMismatch(ctx context.Context, id string, h *modelrepo.ModelRelease, nodeID string) (bool, string) {

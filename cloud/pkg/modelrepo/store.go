@@ -83,10 +83,19 @@ type ModelStore interface {
 	// 时中止不写；冲突重试 ≤3，耗尽 → ErrConcurrentConflict；
 	// 不存在 → ErrReleaseNotFound。
 	UpdateReleaseHead(ctx context.Context, id string, mutate func(*ModelRelease) error) error
-	// CancelRelease 取消发布（pending/running → canceled + FinishedAt；
+	// CancelRelease 取消发布（pending/running/paused → canceled + FinishedAt；
 	// 已终态 → ErrReleaseTerminal）。perNode skipped 补齐由控制器 ≤1 扫描
-	// 周期完成（L27）。
+	// 周期完成（L27）。v0.16.0 起接受 paused（暂停中发布可直接取消）。
 	CancelRelease(ctx context.Context, id string) error
+	// PauseRelease 暂停发布（v0.16.0）：running → paused + PausedAt；
+	// pending/终态 → ErrReleaseTerminal（pause 仅对已启动发布有意义）。
+	// 重复 pause 幂等返回 nil。批内当前节点完成后生效（节点边界粒度，控制器侧）。
+	PauseRelease(ctx context.Context, id string) error
+	// ResumeRelease 恢复发布（v0.16.0）：paused → running；非 paused →
+	// ErrReleaseTerminal（409 族）。resume 后 NextBatchAt 保持原值——若原值
+	// 已过期则下一扫描周期立即推进下一批，若尚在未来则遵守原节奏
+	// （PauseBetween 不重置，避免暂停/恢复循环把批次节奏重算）。
+	ResumeRelease(ctx context.Context, id string) error
 	// RequestRollback 请求回滚（设计 §5.5 前置守卫全量落这里）：
 	//  1) status ∈ {running, succeeded, failed, canceled}（pending/rolled_back
 	//     → ErrReleaseTerminal 409；重复请求幂等返回 nil）；
@@ -574,12 +583,39 @@ func (s *MemoryModelStore) UpdateReleaseHead(_ context.Context, id string, mutat
 func (s *MemoryModelStore) CancelRelease(ctx context.Context, id string) error {
 	return s.UpdateReleaseHead(ctx, id, func(r *ModelRelease) error {
 		switch r.Status {
-		case ReleaseStatusPending, ReleaseStatusRunning:
+		case ReleaseStatusPending, ReleaseStatusRunning, ReleaseStatusPaused:
 		default:
 			return fmt.Errorf("%w: release already %s", ErrReleaseTerminal, r.Status)
 		}
 		r.Status = ReleaseStatusCanceled
 		r.FinishedAt = s.nowMs()
+		return nil
+	})
+}
+
+// PauseRelease 实现 ModelStore（v0.16.0）：running → paused。
+func (s *MemoryModelStore) PauseRelease(ctx context.Context, id string) error {
+	return s.UpdateReleaseHead(ctx, id, func(r *ModelRelease) error {
+		if r.Status == ReleaseStatusPaused {
+			return nil // 幂等：已暂停，重复请求结果一致
+		}
+		if r.Status != ReleaseStatusRunning {
+			return fmt.Errorf("%w: release %s not pausable (status=%s)", ErrReleaseTerminal, id, r.Status)
+		}
+		r.Status = ReleaseStatusPaused
+		r.PausedAt = s.nowMs()
+		return nil
+	})
+}
+
+// ResumeRelease 实现 ModelStore（v0.16.0）：paused → running。
+func (s *MemoryModelStore) ResumeRelease(ctx context.Context, id string) error {
+	return s.UpdateReleaseHead(ctx, id, func(r *ModelRelease) error {
+		if r.Status != ReleaseStatusPaused {
+			return fmt.Errorf("%w: release %s not paused (status=%s)", ErrReleaseTerminal, id, r.Status)
+		}
+		r.Status = ReleaseStatusRunning
+		// NextBatchAt 不动：过期则下轮立即推进，未到则守原节奏（接口注释口径）
 		return nil
 	})
 }
@@ -599,6 +635,8 @@ func (s *MemoryModelStore) RequestRollback(ctx context.Context, id string) error
 	case ReleaseStatusRunning, ReleaseStatusSucceeded, ReleaseStatusFailed, ReleaseStatusCanceled:
 	case ReleaseStatusPending:
 		return fmt.Errorf("%w: release pending (not yet started)", ErrReleaseTerminal)
+	case ReleaseStatusPaused:
+		return fmt.Errorf("%w: release paused (resume or cancel first)", ErrReleaseTerminal)
 	case ReleaseStatusRolledBack:
 		return fmt.Errorf("%w: release already rolled back", ErrReleaseTerminal)
 	}

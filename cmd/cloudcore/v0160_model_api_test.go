@@ -14,7 +14,7 @@ func TestV160PauseResumeGuards(t *testing.T) {
 	mustCreateModelVersion(t, srv, "mnist", "v1.0.0")
 
 	code, body := doJSON(t, http.MethodPost, srv.URL+"/api/v1/models/mnist/releases", map[string]any{
-		"target": map[string]any{"type": "nodeIDs", "nodeIDs": []string{"node-a"}},
+		"target":  map[string]any{"type": "nodeIDs", "nodeIDs": []string{"node-a"}},
 		"version": "v1.0.0",
 	})
 	if code != http.StatusAccepted {
@@ -54,21 +54,21 @@ func TestV160NotBeforeWindowValidation(t *testing.T) {
 
 	// 负数 notBeforeMs → 400
 	if code, _ := doJSON(t, http.MethodPost, srv.URL+"/api/v1/models/mnist/releases", map[string]any{
-		"target": map[string]any{"type": "nodeIDs", "nodeIDs": []string{"node-a"}},
+		"target":  map[string]any{"type": "nodeIDs", "nodeIDs": []string{"node-a"}},
 		"version": "v1.0.0", "notBeforeMs": -5,
 	}); code != http.StatusBadRequest {
 		t.Errorf("负 notBeforeMs = %d，want 400", code)
 	}
 	// 远在过去（>5min）→ 400 钟漂护栏
 	if code, _ := doJSON(t, http.MethodPost, srv.URL+"/api/v1/models/mnist/releases", map[string]any{
-		"target": map[string]any{"type": "nodeIDs", "nodeIDs": []string{"node-a"}},
+		"target":  map[string]any{"type": "nodeIDs", "nodeIDs": []string{"node-a"}},
 		"version": "v1.0.0", "notBeforeMs": 1000,
 	}); code != http.StatusBadRequest {
 		t.Errorf("远古 notBeforeMs = %d，want 400", code)
 	}
 	// 合法未来窗口 → 202 且回显 notBeforeMs
 	code, body := doJSON(t, http.MethodPost, srv.URL+"/api/v1/models/mnist/releases", map[string]any{
-		"target": map[string]any{"type": "nodeIDs", "nodeIDs": []string{"node-a"}},
+		"target":  map[string]any{"type": "nodeIDs", "nodeIDs": []string{"node-a"}},
 		"version": "v1.0.0", "notBeforeMs": 9999999999999,
 	})
 	if code != http.StatusAccepted {

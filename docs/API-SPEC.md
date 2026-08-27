@@ -60,6 +60,7 @@
 | GET | `/api/v1/models/{modelName}/releases/{releaseID}/digest` | **发布 digest 复核（v0.12.0，D-1：发布 mirrorDigest vs 各节点当前 imageDigest 一致结论，含 consistency）** | 200 / 404 |
 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/pause` | **暂停发布（v0.16.0：running→paused，节点边界生效；幂等）** | 200 / 404 / 409 |
 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/resume` | **恢复发布（v0.16.0：paused→running，NextBatchAt 保持原节奏）** | 200 / 404 / 409 |
+| PATCH | `/api/v1/models/{modelName}/releases/{releaseID}` | **发布运行中可调参数（v0.17.0：batchSize/pauseBetween/failFast 部分更新，批边界生效；非终态可改）** | 200 / 400 / 404 / 409 |
 | GET | `/api/v1/models/export` | **模型目录导出（v0.16.0：models+versions 全量快照 JSON，schemaVersion=1）** | 200 |
 | POST | `/api/v1/models/import` | **模型目录导入（v0.16.0：幂等 upsert；同 version 跳过、active 直通灾备语义）** | 200 / 400 |
 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/cancel` | 取消（v0.16.0 起 pending/running/paused） | 200 / 404 / 409 |
@@ -593,6 +594,21 @@ pending ─▶ running ─┬─ 全部 deployed ──────────�
 **创建参数增量**：`notBeforeMs`（Unix 毫秒，opt-in，0=立即）——窗口未到控制器不认领不占领跑锁；校验 ≥0 且 ≥now-5min。
 
 **状态机扩展**：running ⇄ paused（`CanTransitionRelease` 只增扩展）；paused 属 InFlight（占 guard、非终态）；CancelRelease 接受 paused；RequestRollback 拒 paused（先 resume 或 cancel）。
+
+### 7.7 v0.17.0 增量：运行中可调参数 / status 过滤 / dryRun 预检
+
+**新增端点（1）**：
+
+| 端点 | 语义 |
+|------|------|
+| `PATCH /api/v1/models/{m}/releases/{id}` | 运行中可调执行参数：请求体 `{batchSize?, pauseBetween?, failFast?}`（全指针=部分更新，未提供保持；至少一个必填）。pending/running/paused 可改、终态 409、不存在 404、值非法 400（batchSize≥1 / pauseBetween≥0）。生效为**批边界**语义：控制器每轮扫描重读 head 重切批次，下一批按新参数执行，不中断在途批。CAS 安全（复用 UpdateReleaseHead，冲突重试 ≤3 → 409）。响应 200 + 发布详情（含 summary） |
+
+**既有端点增量（不新增路由）**：
+
+| 端点 | 增量 |
+|------|------|
+| `GET /api/v1/models/{m}/releases` | 新增 `status` 查询参数：逗号分隔多值过滤（如 `running,pending`），合法枚举=pending/running/paused/succeeded/failed/canceled/rolled_back，含非法值 → 400；先过滤后分页，X-Total-Count 报过滤后总数 |
+| `POST /api/v1/models/{m}/releases` | 请求体新增 `dryRun`（bool，缺省 false）：true 时全量执行真实校验链 + guard 等价只读判定，**零落盘零 guard 键零 perNode 预写**；校验失败同真实创建同因同报（400/404/422 族）；通过 → 200 `{kind:"DryRunPreview", wouldCreate, blockReason?, targetNodes, prevActive, inFlightReleaseId?, checkedAt}`。预检结论为 TOCTOU 快照非承诺语义 |
 
 ## A. Group / Version 约定
 

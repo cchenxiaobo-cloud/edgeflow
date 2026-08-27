@@ -23,7 +23,7 @@ type Endpoint struct {
 	Note   string // 契约说明（与文档矩阵口径一致）
 }
 
-// ContractEndpoints 是 cloudcore HTTP 端点契约表（36 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4）。
+// ContractEndpoints 是 cloudcore HTTP 端点契约表（37 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1）。
 //
 // ⚠️ 路径以 cmd/cloudcore/main.go 实际注册为准（任务提示 podsync/pod-sync
 // 存在歧义：grep 确认代码与两份文档均为 /podsync，无连字符）。
@@ -64,6 +64,7 @@ var ContractEndpoints = []Endpoint{
 	{Method: "POST", Path: "/api/v1/models/{modelName}/releases/{releaseID}/resume", Note: "恢复发布（v0.16.0；paused→running，NextBatchAt 保持原节奏）"},
 	{Method: "GET", Path: "/api/v1/models/export", Note: "模型目录导出（v0.16.0；models+versions 全量快照 JSON）"},
 	{Method: "POST", Path: "/api/v1/models/import", Note: "模型目录导入（v0.16.0；幂等 upsert，active 直通灾备语义）"},
+	{Method: "PATCH", Path: "/api/v1/models/{modelName}/releases/{releaseID}", Note: "发布运行中可调参数（v0.17.0；batchSize/pauseBetween/failFast 部分更新，批边界生效）"},
 	{Method: "POST", Path: "/api/v1/models/{modelName}/releases/{releaseID}/cancel", Note: "取消发布（v0.16.0 起 pending/running/paused）"},
 	{Method: "POST", Path: "/api/v1/models/{modelName}/releases/{releaseID}/rollback", Note: "回滚发布（202 异步，逆序批量）"},
 	{Method: "GET", Path: "/api/v1/models/{modelName}/deployments", Note: "部署影子（版本—节点—时间台账）"},

@@ -204,3 +204,14 @@
 | MR-W | 发布创建即扫描认领，无法预约工业夜间/低峰维护窗口 | ✅ **v0.16.0 闭环**：`notBeforeMs` 创建参数（opt-in，0=立即行为不变）——控制器窗口未到不认领、不占领跑锁；API 校验 ≥0 且 ≥now-5min（钟漂护栏）；窗口期 InFlight 守 guard 同模型不并发 | 待调度队列无专门观测视图（列表接口 NotBeforeMs 可见）；cron 式重复发布不在范围 |
 | MR-P | 灰度中途发现异常只能取消重来（已部署节点需回滚），缺"先停下观察"能力 | ✅ **v0.16.0 闭环**：POST pause/resume——running⇄paused 状态机扩展；批边界生效不中断在途下发；paused 保 active 身份续租领跑锁（多副本接管语义不变）；NextBatchAt 保持原节奏；paused 可直接 cancel，rollback 拒 paused | 持锁副本崩溃且无人接管期间发布保持 paused（安全但停滞，R1 登记） |
 | MR-X | 开发→生产环境模型台账迁移靠手工 etcd 操作；灾备恢复无官方通道 | ✅ **v0.16.0 闭环**：GET export（models+versions 全量快照 JSON，schemaVersion=1）+ POST import 幂等 upsert——同 (model,version) 跳过计数、active 经 draft+activate 直通灾备语义、孤儿版本自动补建空壳模型、改段重放可达"新环境全量导入" | 导出/导入无分页与流式（1MiB import 上限内规模可用，R2/R3）；releases/deployments 明确不可迁移 |
+
+
+## 17. v0.17.0 开发轮闭环登记（2026-08-27，发布任务运维深化：运行中可调参数 + 列表 status 过滤 + dryRun 预检）
+
+> 提交：见 git log。契约变更：HTTP 端点 36→**37**（PATCH 运行中可调参数；status 过滤与 dryRun 复用既有端点形态不新增）。守卫测试联动绿。
+
+| 编号 | 问题面 | 闭环说明 | 残余与建议 |
+|---|---|---|---|
+| RO-A | 发布创建后执行参数不可变——批太大想改小、节奏太密想放慢、失败策略想放宽都只能取消重建（目标节点进度全丢） | ✅ **v0.17.0 闭环**：`PATCH .../releases/{id}` 运行中改 batchSize/pauseBetween/failFast（部分更新语义，未提供字段保持）；控制器 BuildBatches 每轮重切 → 下一批边界生效、不中断在途批、无追溯歧义；pending/running/paused 均可改、终态 409；CAS 并发安全（复用 UpdateReleaseHead 重试 ≤3） | 身份段（Version/Target/TargetNodes）仍不可变（运行期语义清晰优先，变更目标=取消重建） |
+| RO-B | 发布列表只能全量翻页找状态，运维视图需要"只看在途/只看失败"时需客户端过滤 | ✅ **v0.17.0 闭环**：列表 `?status=` 过滤（逗号多值、合法枚举校验 400 族、与 limit/offset 正交、X-Total-Count 报过滤后总数） | 无残余 |
+| RO-C | 创建发布前无预检通道——配错版本/写错节点名只能提交后看 4xx 或等 202 后人工盯 | ✅ **v0.17.0 闭环**：创建请求 `dryRun:true` 全量走真实校验链（模型 404/内容 400/非 active 422/探活阻断/节点物化）+ guard 等价只读判定，返回 200+wouldCreate 摘要（blockReason/inFlightID 可读原因）；**零落盘零 guard 键零 perNode 预写** | 预检结论为 TOCTOU 快照非承诺语义（响应已标注；真实创建以 CreateRelease guard CAS 兜底）——运维不应把 wouldCreate 当预约锁 |

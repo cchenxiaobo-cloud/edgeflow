@@ -122,6 +122,8 @@ func (a *modelAPI) Register(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/v1/models/{modelName}/versions/{version}/archive", a.archiveVersion)
 	mux.HandleFunc("POST /api/v1/models/{modelName}/releases", a.createRelease)
 	mux.HandleFunc("GET /api/v1/models/{modelName}/releases", a.listReleases)
+	// v0.17.0：运行中可调参数（PATCH 部分更新语义；非终态可改执行参数）
+	mux.HandleFunc("PATCH /api/v1/models/{modelName}/releases/{releaseID}", a.updateRelease)
 	mux.HandleFunc("GET /api/v1/models/{modelName}/releases/{releaseID}", a.getRelease)
 	mux.HandleFunc("GET /api/v1/models/{modelName}/releases/{releaseID}/digest", a.getReleaseDigest)
 	mux.HandleFunc("POST /api/v1/models/{modelName}/releases/{releaseID}/cancel", a.cancelRelease)
@@ -385,6 +387,9 @@ type createReleaseRequest struct {
 	FailFast     *bool                   `json:"failFast"`
 	// NotBeforeMs 定时维护窗口起点（v0.16.0 opt-in；Unix 毫秒；0 = 立即）。
 	NotBeforeMs int64 `json:"notBeforeMs,omitempty"`
+	// DryRun 预检模式（v0.17.0 opt-in）：true 时全量执行创建校验链但绝不
+	// 落盘/不占 guard/不预写 perNode；响应 200 + wouldCreate 摘要（非承诺语义）。
+	DryRun bool `json:"dryRun,omitempty"`
 }
 
 // applyDefaults 落设计缺省值（batchSize 缺省 1；failFast 缺省 true）。
@@ -745,6 +750,14 @@ func (a *modelAPI) createRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.applyDefaults()
+	// v0.17.0：dryRun 预检分支——全量走真实创建校验链（模型 404/内容 400/
+	// 版本 active 422/探活/节点物化 422/guard 等价只读判定），但绝不落盘、
+	// 不占 guard、不预写 perNode；响应 200 + wouldCreate 摘要（**非承诺语义**，
+	// TOCTOU：预检通过后资源状态仍可变化，真实创建以 CreateRelease CAS 兑现）。
+	if req.DryRun {
+		a.dryRunCreateRelease(w, r, modelName, &req)
+		return
+	}
 	// 1) 模型存在（404）
 	if _, err := a.store.GetModel(r.Context(), modelName); err != nil {
 		modelError(w, err)
@@ -810,7 +823,7 @@ func (a *modelAPI) createRelease(w http.ResponseWriter, r *http.Request) {
 	// 6) guard + release 头键 + perNode pending 预写（存储层；202 返回）
 	release := &modelrepo.ModelRelease{
 		MirrorDigest: digest,
-		ID: newReleaseID(), Model: modelName, Version: req.Version,
+		ID:           newReleaseID(), Model: modelName, Version: req.Version,
 		Target: req.Target, TargetNodes: targetNodes,
 		BatchSize: req.BatchSize, PauseBetween: req.PauseBetween,
 		FailFast: *req.FailFast, PrevActive: prevActive,
@@ -899,11 +912,18 @@ func (a *modelAPI) listReleases(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "%v", err)
 		return
 	}
+	// v0.17.0：status 过滤（逗号多值；过滤后再分页，X-Total-Count 报过滤后总数）
+	statusAllow, err := parseStatusFilter(r.URL.Query().Get("status"))
+	if err != nil {
+		badRequest(w, "%v", err)
+		return
+	}
 	releases, err := a.store.ListReleases(r.Context(), modelName)
 	if err != nil {
 		modelError(w, err)
 		return
 	}
+	releases = filterReleasesByStatus(releases, statusAllow)
 	page, total := slicePage(releases, pp)
 	writePageHeaders(w, total)
 	items := make([]releaseResponse, 0, len(page))
@@ -1102,10 +1122,10 @@ func (a *modelAPI) resumeRelease(w http.ResponseWriter, r *http.Request) {
 // ModelCatalog 是导出/导入同构的目录快照（纯云端台账；不含 releases/
 // deployments/guards——发布任务与环境绑定、影子是派生台账，均不可迁移）。
 type ModelCatalog struct {
-	SchemaVersion string                    `json:"schemaVersion"` // 恒 "1"
-	ExportedAt    int64                     `json:"exportedAt"`   // Unix 毫秒
-	Models        []modelrepo.Model         `json:"models"`
-	Versions      []modelrepo.ModelVersion  `json:"versions"`
+	SchemaVersion string                   `json:"schemaVersion"` // 恒 "1"
+	ExportedAt    int64                    `json:"exportedAt"`    // Unix 毫秒
+	Models        []modelrepo.Model        `json:"models"`
+	Versions      []modelrepo.ModelVersion `json:"versions"`
 }
 
 // exportCatalog 处理 GET /api/v1/models/export：全量模型+版本 JSON 快照下载。

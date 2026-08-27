@@ -140,11 +140,15 @@ func TestModelAPIRouteCount(t *testing.T) {
 		"GET /api/v1/models/{modelName}/releases/{releaseID}",
 		"GET /api/v1/models/{modelName}/releases/{releaseID}/digest",
 		"POST /api/v1/models/{modelName}/releases/{releaseID}/cancel",
+		"POST /api/v1/models/{modelName}/releases/{releaseID}/pause",
+		"POST /api/v1/models/{modelName}/releases/{releaseID}/resume",
+		"GET /api/v1/models/export",
+		"POST /api/v1/models/import",
 		"POST /api/v1/models/{modelName}/releases/{releaseID}/rollback",
 		"GET /api/v1/models/{modelName}/deployments",
 	}
 	if len(reg.patterns) != len(want) {
-		t.Fatalf("路由注册数 = %d, want %d（18 新端点，D1 口径）；实际: %v", len(reg.patterns), len(want), reg.patterns)
+		t.Fatalf("路由注册数 = %d, want %d（22 新端点，v0.16.0 起 +4：pause/resume/export/import）；实际: %v", len(reg.patterns), len(want), reg.patterns)
 	}
 	for i, w := range want {
 		if reg.patterns[i] != w {
@@ -167,14 +171,15 @@ func TestModelAPIRouteCount(t *testing.T) {
 			modelFamily++
 		}
 	}
-	if modelFamily != 5 {
-		t.Errorf("模型族路由 = %d, want 5", modelFamily)
-	}
 	if versionFamily != 6 {
 		t.Errorf("版本族路由 = %d, want 6", versionFamily)
 	}
-	if releaseFamily != 6 {
-		t.Errorf("发布族路由 = %d, want 6（v0.12.0 +digest 复核）", releaseFamily)
+	if releaseFamily != 8 {
+		t.Errorf("发布族路由 = %d, want 8（v0.12.0 +digest、v0.16.0 +pause/resume）", releaseFamily)
+	}
+	// v0.16.0：export/import 字面路由属模型族（models/export、models/import）
+	if modelFamily != 7 {
+		t.Errorf("模型族路由 = %d, want 7（5 基础 + export + import）", modelFamily)
 	}
 	if deployFamily != 1 {
 		t.Errorf("部署影子路由 = %d, want 1", deployFamily)

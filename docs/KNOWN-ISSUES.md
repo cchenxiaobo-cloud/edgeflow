@@ -226,3 +226,14 @@
 | SO-A | 灰度失败只能靠人盯列表发现——多批长跑发布中途劣化无人知，跑完才看到一片 failed | ✅ **v0.18.0 闭环**：创建参数 `failureBudget`（≥1 启用，0=禁用行为不变）——批完成后 failed 计数达预算且未终态 → **自动 pause**（复用 paused 状态机与 guard 语义），人可介入排查后 resume 续跑剩余批次；head 带 `autoPausedAt` 与 autopause 事件 | 预算只在 failFast=false 跑完判定模式下生效（failFast 首败即中止置 failed，无累计窗口，语义登记）；预算创建后只读（PATCH 三执行参数不变） |
 | SO-B | 发布流转过程是黑盒——暂停过几次、哪批完成、回滚何时请求都靠翻日志拼时间线 | ✅ **v0.18.0 闭环**：`ModelRelease.Events` 时间线——created/paused/resumed/cancelled/terminal/autopause/batch_done/rollback_requested 开放事件集，追加在 UpdateReleaseHead mutate 闭包内 = CAS 保护并发不丢；环形上限 32 条丢最旧保最新；随 release 详情返回、随 export/import 快照迁移 | 高频事件的完整审计长尾依赖外层台账/日志（键值正文不自带 history）；batch_done 为每批一条（长发布最旧事件会被截断，口径登记） |
 | SO-C | 部署影子只能按模型逐个查——"这个节点现在装的是什么版本"这类跨模型问题要循环调 N 个端点 | ✅ **v0.18.0 闭环**：`GET /api/v1/deployments` 全局聚合（Memory 遍历两级 map/Etcd 读 watch 缓存同一口径）；model/nodeID 精确过滤可选；过滤后分页 X-Total-Count 同步；先 Model 再 NodeID 双字典序确定性排序 | 无残余（现有 per-model 端点不动，二者并存） |
+
+
+## 19. v0.19.0 开发轮闭环登记（2026-08-27，发布面智能运维第二批：failureBudget 运行中可调 + 发布审计快照 + 全局发布查询）
+
+> 提交：见 git log。契约变更：HTTP 端点 38→**40**（发布审计快照 + 全局发布查询）；PATCH 白名单扩展 failureBudget 不新增路由。守卫测试联动绿。
+
+| 编号 | 问题面 | 闭环说明 | 残余与建议 |
+|---|---|---|---|
+| SI-A | 失败预算创建后只读——预算设大了跑完才发现刹不住，只能重发一个发布 | ✅ **v0.19.0 闭环**：PATCH 白名单扩展 `failureBudget`（剩余执行面参数，与 batchSize/pauseBetween/failFast 同动线）；批边界生效语义同既有三参数——改小后下一批后立即适用，`=0` 运行中关闸（禁用自动暂停）；值域 [0,10000] 与创建校验同量级护栏；终态仍 409 | AutoPause 判定读的是当前 head 预算+派生 failed 计数，无持久计数器——改动的起算口径="自当下起的剩余批次"（非全程回溯），登记在案 |
+| SI-B | 发布全景要调 N 个端点拼装——头 + 逐节点结果 + events 分开拉，审计取证繁琐且有时序缝隙 | ✅ **v0.19.0 闭环**：`GET .../releases/{id}/snapshot` 审计快照一次拉全（kind=ReleaseSnapshot / generatedAt / release 头含 events 时间线 / summary 六计数实时现算 / nodes 恒非 nil）；跨模型引用钉 head.Model 一律 404 防目录穿越式枚举；GetModel(404) 先行与 v0.17.0 C-4 同链序纪律 | **非承诺语义**（generatedAt 后的写入不在快照内）；超大发布节点结果以分页列表为准（快照不带分页，口径登记） |
+| SI-C | 跨模型发布运维难——"现在有几个 running 发布""最近失败的三条"这类全局问题要循环 N 个模型的列表端点 | ✅ **v0.19.0 闭环**：`GET /api/v1/releases` 全局聚合（与 v0.18.0 /api/v1/deployments 对偶）；status 七态逗号多值过滤复用 v0.17.0 枚举；limit 缺省 100 上限 500 + offset≥0，X-Total-Count 报过滤后总数；CreatedAt 降序稳定 tie-break by ID | 无残余（per-model 列表端点不动，二者并存）；etcd 侧走 ListReleases("") 同一前缀读路径 |

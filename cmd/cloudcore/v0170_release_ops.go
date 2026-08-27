@@ -21,9 +21,10 @@ import (
 // 全字段指针 = 未提供的字段保持不变（部分更新语义）；显式提供即整值替换。
 // 身份段（Version/Target/TargetNodes/Model）不可变——不在此结构中，天然不可改。
 type updateReleaseRequest struct {
-	BatchSize    *int   `json:"batchSize"`
-	PauseBetween *int64 `json:"pauseBetween"`
-	FailFast     *bool  `json:"failFast"`
+	BatchSize     *int   `json:"batchSize"`
+	PauseBetween  *int64 `json:"pauseBetween"`
+	FailFast      *bool  `json:"failFast"`
+	FailureBudget *int   `json:"failureBudget"` // v0.19.0：执行面可调（预算=剩余批次的刹车线，非创建期意图）
 }
 
 // dryRunPreview 是 dryRun 创建的响应体：只读预检结论，**非承诺语义**
@@ -94,8 +95,8 @@ func (a *modelAPI) updateRelease(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "invalid json body")
 		return
 	}
-	if req.BatchSize == nil && req.PauseBetween == nil && req.FailFast == nil {
-		badRequest(w, "empty patch: at least one of batchSize/pauseBetween/failFast is required")
+	if req.BatchSize == nil && req.PauseBetween == nil && req.FailFast == nil && req.FailureBudget == nil {
+		badRequest(w, "empty patch: at least one of batchSize/pauseBetween/failFast/failureBudget is required")
 		return
 	}
 	if req.BatchSize != nil && *req.BatchSize < 1 {
@@ -104,6 +105,10 @@ func (a *modelAPI) updateRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.PauseBetween != nil && *req.PauseBetween < 0 {
 		badRequest(w, "pauseBetween must be >= 0, got %d", *req.PauseBetween)
+		return
+	}
+	if req.FailureBudget != nil && (*req.FailureBudget < 0 || *req.FailureBudget > maxFailureBudget) {
+		badRequest(w, "failureBudget must be in [0,%d], got %d", maxFailureBudget, *req.FailureBudget)
 		return
 	}
 	releaseID := r.PathValue("releaseID")
@@ -119,6 +124,9 @@ func (a *modelAPI) updateRelease(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.FailFast != nil {
 			h.FailFast = *req.FailFast
+		}
+		if req.FailureBudget != nil {
+			h.FailureBudget = *req.FailureBudget // 0=运行中关闸；改小→下一批后立即适用
 		}
 		return nil
 	})

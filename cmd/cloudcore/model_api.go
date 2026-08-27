@@ -125,6 +125,7 @@ func (a *modelAPI) Register(mux routeRegistrar) {
 	// v0.17.0：运行中可调参数（PATCH 部分更新语义；非终态可改执行参数）
 	mux.HandleFunc("PATCH /api/v1/models/{modelName}/releases/{releaseID}", a.updateRelease)
 	mux.HandleFunc("GET /api/v1/models/{modelName}/releases/{releaseID}", a.getRelease)
+	mux.HandleFunc("GET /api/v1/models/{modelName}/releases/{releaseID}/snapshot", a.handleReleaseSnapshot) // v0.19.0
 	mux.HandleFunc("GET /api/v1/models/{modelName}/releases/{releaseID}/digest", a.getReleaseDigest)
 	mux.HandleFunc("POST /api/v1/models/{modelName}/releases/{releaseID}/cancel", a.cancelRelease)
 	mux.HandleFunc("POST /api/v1/models/{modelName}/releases/{releaseID}/pause", a.pauseRelease)
@@ -135,6 +136,7 @@ func (a *modelAPI) Register(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/v1/models/{modelName}/deployments", a.listDeployments)
 	// v0.18.0：全局部署影子查询（跨模型聚合；model/nodeID 过滤 query 可选）
 	mux.HandleFunc("GET /api/v1/deployments", a.listAllDeployments)
+	mux.HandleFunc("GET /api/v1/releases", a.handleListAllReleases) // v0.19.0 全局发布查询
 }
 
 // ── 响应/错误辅助 ──────────────────────────────────────────────────────

@@ -6,7 +6,7 @@ EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备�
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.18.0**（2026-08-27，发布面智能运维：失败预算自动暂停 + 发布事件时间线 + 全局部署影子查询——从被动盯盘到主动干预，零新依赖）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**云端分级持久化（v0.4.0 嵌入式 etcd / v0.5.0 外部 etcd 模式 / v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**、**外部 etcd RBAC 鉴权透传与终态发布 GC（v0.8.0：L1/L28 闭环）+ 续约失败监控指标**。
+> 当前版本：**v0.19.0**（2026-08-27，发布面智能运维第二批：failureBudget 运行中可调 + 发布审计快照 + 全局发布查询——审计取证从拼装到一键，零新依赖）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**云端分级持久化（v0.4.0 嵌入式 etcd / v0.5.0 外部 etcd 模式 / v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**、**外部 etcd RBAC 鉴权透传与终态发布 GC（v0.8.0：L1/L28 闭环）+ 续约失败监控指标**。
 
 ## 目录结构
 
@@ -96,6 +96,7 @@ helm install edgeflow build/charts/edgeflow/
 
 ## 版本历史
 
+- **v0.19.0**（2026-08-27）：发布面智能运维第二批——PATCH 白名单扩展 failureBudget（改小/关闸运行中生效）+ GET releases/{id}/snapshot 审计快照一键全景（events+summary+nodes）+ GET /api/v1/releases 全局发布查询（七态过滤·limit≤500·稳定排序）；HTTP 端点 38→40 只增不改；详见 [docs/RELEASE-NOTES-v0119.md](docs/RELEASE-NOTES-v0119.md)
 - **v0.18.0**（2026-08-27）：发布面智能运维——failureBudget 失败预算达标自动暂停（复用 paused 状态机可 resume 续跑）+ Events 发布事件时间线（CAS 并发安全·环形 32 条·随快照迁移）+ GET /api/v1/deployments 全局部署影子聚合查询；HTTP 端点 37→38 只增不改；详见 [docs/RELEASE-NOTES-v0118.md](docs/RELEASE-NOTES-v0118.md)
 - **v0.17.0**（2026-08-27）：发布任务运维深化——PATCH 运行中可调执行参数（batchSize/pauseBetween/failFast 批边界生效·CAS 安全）+ 发布列表 status 多值过滤 + dryRun 预检（零落盘·TOCTOU 快照口径明示）；HTTP 端点 36→37 只增不改；详见 [docs/RELEASE-NOTES-v0117.md](docs/RELEASE-NOTES-v0117.md)
 - **v0.16.0**（2026-08-27）：AI 模型管理深化——定时维护窗口发布（notBeforeMs opt-in）+ 运行中发布 pause/resume（批边界生效/保锁续租）+ 模型目录 export/import（幂等 upsert/active 直通灾备）；HTTP 端点 32→36 只增不改；详见 [docs/RELEASE-NOTES-v0116.md](docs/RELEASE-NOTES-v0116.md)

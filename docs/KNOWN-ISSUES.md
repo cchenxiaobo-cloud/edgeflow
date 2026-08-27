@@ -179,3 +179,17 @@
 | E2E-BASE | tests/e2e 基建缺陷：cloudcore 嵌入式 etcd 数据目录为相对 cwd 共享路径（data/etcd），跨用例/跨运行残留旧台账导致注册与在线判定串台（TestOPCUADeviceE2E 排障发现，影响全部 e2e 用例的稳定性） | ✅ **v0.14.0 修复**：cloudEnv 为每个用例注入独立 `EDGEFLOW_CLOUDCORE_ETCD_DATA_DIR`（t.TempDir 下），同用例重启场景共享目录保持台账恢复语义；既有语义（autonomy 断连恢复依赖影子恢复）不受影响 | 无 |
 
 > §13 B 残余（非事务级联崩溃窗口）同样经 v0.14.0 设计评估后**登记后续候选（v0.15.0）**（涉及 etcdstore 跨前缀事务接口 + DeleteModel 重构，独立运维主题，与 OPC-UA 大主题纪律冲突）。
+
+
+## 15. v0.15.0 开发轮闭环登记（2026-08-27，OPC-UA 里程碑第三阶段：Subscription 订阅推送 + Browse 浏览发现）
+
+> 提交：4da004f。设计：.cluster/edgeflow-v0150/design.md 六节；服务 TypeIds 以 OPC Foundation UA-Nodeset v1.04 官方 NodeIds.csv 核验（CreateSubscription=787/790、Publish=826/829、Browse=527/530、DataChangeNotification 内容=811 等）。
+
+| 编号 | 问题面 | 闭环说明 | 残余与建议 |
+|---|---|---|---|
+| OPC-D | Mapper 仅轮询批量 Read，点位多时网络开销随 report 周期线性放大；值变化无法即时感知 | ✅ **v0.15.0 闭环**：`EDGEFLOW_OPCUA_SUBSCRIPTION=on` 订阅采集模式——客户端 CreateSubscription/CreateMonitoredItems/Publish 全链路 + 泵模式唯一读 goroutine（RequestId 三级路由：waiter 表→pending 兜底→在途 Publish），推送写缓存快照、Collect 短路返回；KeepAlive 空通知识别；gap→重建订阅；断线全量重建；缺省 off 与 v0.14.0 行为逐字节一致 | HandleCommand 回读后同步刷新缓存已做；Republish 补帧未做（数据集无状态，重建即自愈）；EventNotificationList 只跳过不解码 |
+| OPC-E | 真实设备点位需人工手写 EDGEFLOW_OPCUA_NODES，接入成本高且易错 | ✅ **v0.15.0 闭环**：客户端 Browse API + opcuasim 两级最小目录（Objects i=85 → opcua-sim ns=2;i=5000 → 6 变量）+ hack/opcua-browse CLI（输出可直接粘进 NODES 的 name=nodeId 行） | 目录仅两级静态模型；continuationPoint 分页恒空（requestedMax 尊重但数据量小于页）；BrowseNext 未发起 |
+| INTEROP | 试解分派链缺陷：部分消费即判成功导致请求被错误分支吞掉（本轮实弹排障发现——Browse 帧曾被 Publish 试解器吃掉 34 字节后报错交回，但 Read 对更短帧曾直接误判成功） | ✅ **v0.15.0 修复**：全部请求解码器强制“字节全消费”校验（trailing bytes → ErrInvalidEncoding 交回分派链下一分支）；单包级 round-trip 探针覆盖 CS/CMI/Publish/Browse 互认边界 | 服务端多 chunk / 扩展头场景仍排除 |
+| WIRE | 模拟器异步出站帧缺 MSG 帧头（对称头+序列头直写 TCP），客户端 ReadMessage 解析错位 | ✅ **v0.15.0 修复**：writeServerFrame 统一补 EncodeHeader（MsgSecureMessage + channelID + size） | 无 |
+
+> 排除项延续：Sign/SignAndEncrypt、事件订阅（Alarm&Condition）、第三方 UA 栈互操作 cross-check。

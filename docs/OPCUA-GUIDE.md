@@ -1,6 +1,8 @@
 # EdgeFlow OPC-UA 设备接入指南
 
-> 适用于 EdgeFlow **v0.14.0+**（WBS 5.2 第二阶段）。本文介绍如何用自研 OPC-UA 协议栈（`pkg/opcua`）与模拟器（`pkg/opcuasim`）完成设备接入、采集上报与指令下发全链路。
+> 适用于 EdgeFlow **v0.15.0+**（WBS 5.2 第二阶段）。本文介绍如何用自研 OPC-UA 协议栈（`pkg/opcua`）与模拟器（`pkg/opcuasim`）完成设备接入、采集上报与指令下发全链路。
+
+> **v0.15.0 新增**：Subscription 订阅推送采集模式（值变化即时推送，不再依赖轮询批量 Read）与 Browse 点位发现 CLI。见 §3.1 与 §4.1。
 
 ## 1. 概述
 
@@ -54,6 +56,24 @@ curl -X POST http://127.0.0.1:8080/api/v1/nodes/<nodeID>/device-command \
 | `EDGEFLOW_OPCUA_NAMESPACE` | `default` | 设备命名空间 |
 
 点位 NodeId 支持五种形式（与 UA 规范互逆）：`ns=2;i=1001`（数字）、`ns=0;s=name`（字符串）、`ns=1;g=<GUID>`、`ns=1;b=<HEX>`、纯数字（等价 `ns=0;i=`）。
+
+### 3.1 订阅模式（v0.15.0 opt-in）
+
+设置 `EDGEFLOW_OPCUA_SUBSCRIPTION=on` 启用（缺省 off 轮询，行为不变）：
+
+- Mapper 建立 OPC-UA Subscription，点位变化由服务器**主动推送**进缓存；`Collect()` 返回缓存快照
+- KeepAlive 空通知维持通道活性；序列号跳变或断线自动重建订阅；写点回读后缓存同步刷新
+- 服务 TypeId 均经 OPC Foundation 官方 NodeIds.csv 核验
+
+### 4.1 点位发现（v0.15.0）
+
+```bash
+go run ./hack/opcua-browse -endpoint opc.tcp://127.0.0.1:14840
+# 输出示例：
+# temperature=ns=2;i=1001,humidity=ns=2;i=1002,...
+```
+
+输出的 `name=nodeId` 行可直接粘进 `EDGEFLOW_OPCUA_NODES`。
 
 ## 4. 模拟器点位表（事实标准）
 

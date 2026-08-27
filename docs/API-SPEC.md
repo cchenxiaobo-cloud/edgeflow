@@ -855,7 +855,9 @@ status:
 
 - 本轮仅自研 mock 对端回环验证（transport_test 真实 TCP 握手）；**未**与第三方 UA 栈（open62541/node-opcua）互操作验证——下一里程碑安排 cross-check。
 
-> **v0.14.0 更新**（2026-08-27，OPC-UA 里程碑第二阶段）：§12.1 导出符号与 §12.2 未实现清单已大幅演进——新增 SecureChannel 层（`Conn.OpenSecureChannel`/`SecureChannel`）、Session 匿名会话与 Read/Write 服务消息、高层 `Open`/`Client` API、`DiagnosticInfo` 位域完整实现、`ParseNodeID`、服务端互操作面（`Encode*/Decode*` 包装）；详情见下节 §13 与 docs/OPCUA-GUIDE.md。"Mapper 层客户端 API（后续里程碑）"已闭环（mappers/opcua 落地）；仍未实现：Browse/Subscription/Sign·SignAndEncrypt 安全策略/第三方栈互操作（登记后续）。
+> **v0.14.0 更新**（2026-08-27，OPC-UA 里程碑第二阶段）：§12.1 导出符号与 §12.2 未实现清单已大幅演进——新增 SecureChannel 层（`Conn.OpenSecureChannel`/`SecureChannel`）、Session 匿名会话与 Read/Write 服务消息、高层 `Open`/`Client` API、`DiagnosticInfo` 位域完整实现、`ParseNodeID`、服务端互操作面（`Encode*/Decode*` 包装）；详情见下节 §13 与 docs/OPCUA-GUIDE.md。"Mapper 层客户端 API（后续里程碑）"已闭环（mappers/opcua 落地）。
+
+> **v0.15.0 更新**（2026-08-27，OPC-UA 里程碑第三阶段）：Browse 与 Subscription 已闭环（§13.4）；仍未实现：Sign·SignAndEncrypt 安全策略 / 事件订阅 / 第三方栈互操作。全部请求解码器新增“字节全消费”严格校验（试解防误吞），对正确编码的合法对端透明。
 
 ## 13. pkg/opcua 包边界（v0.14.0 第二阶段，端到端协议栈）
 
@@ -912,3 +914,21 @@ status:
 ### DeleteModel GC-on 级联（B）
 
 `DELETE /api/v1/models/{modelName}` 在 `EDGEFLOW_CLOUDCORE_RELEASE_GC_ENABLED=1` 时级联清理该模型全部终态发布（头键 + 逐节点/lock + 内存缓存）；默认关闭 = L31 审计口径不变。端点语义不变（200/404/409 前置守卫不变）。
+
+
+### 13.4 v0.15.0 增量：Subscription 订阅推送与 Browse 浏览发现
+
+服务 TypeId 均 OPC Foundation UA-Nodeset v1.04 官方 NodeIds.csv 核验。
+
+| 类别 | 符号 |
+|------|------|
+| 订阅消息 | `CreateSubscriptionRequest/Response`(787/790)、`CreateMonitoredItemsRequest/Response`(751/754)、`PublishRequest/Response`(826/829)、`DeleteSubscriptionsRequest/Response`(847/850)、`SubscriptionAcknowledgement`、`NotificationMessage`、`MonitoredItemNotification`、`NotificationData`（DataChange=811 / StatusChange=820 / EventList=916 占位跳过） |
+| 订阅 API | `(*Client).Subscribe(nodes, publishingIntervalMs) (<-chan PublishResult, error)`、`(*Client).PubAck()`、`(*Client).DeleteSubscription()`；`PublishResult{KeepAlive/DataChange/StatusChange}` |
+| Browse 消息 | `BrowseRequest/Response`(527/530)、`ViewDescription`、`BrowseDescription`、`ReferenceDescription`、`ExpandedNodeId`（最小形式）、`BrowseResult` |
+| Browse API | `(*Client).Browse(node) ([]BrowsedNode, error)` |
+| 泵模式 | Client 首次 Subscribe 启动唯一读 goroutine：帧按 RequestId 三级路由（waiter 表→pending 兜底→在途 Publish）；未启用时行为与 v0.14.0 一致 |
+| 试解校验 | 全部 `Decode*Request` 导出解码器强制字节全消费（trailing bytes → ErrInvalidEncoding）——分派链防误吞 |
+
+**opcuasim 扩展**：订阅引擎（步进评估变化推送/KeepAlive 空通知/信封队列 ≤32 store-and-forward/悬挂 Publish 回填 RequestId/DeleteSubscriptions 清理）+ 两级 Browse 目录（Objects i=85 → opcua-sim ns=2;i=5000 → 6 变量）。
+
+**mappers/opcua 扩展**：`EDGEFLOW_OPCUA_SUBSCRIPTION=on` 订阅采集模式（supervisor goroutine 消费推送→缓存快照→Collect 短路；HandleCommand 回读后刷新缓存；gap/断线重建订阅；缺省 off 轮询逐字节不变）+ `hack/opcua-browse` 点位发现 CLI。

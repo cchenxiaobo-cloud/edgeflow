@@ -888,6 +888,15 @@ curl -X POST http://127.0.0.1:8080/api/v1/nodes/<nodeID>/device-command \
 
 SecurityPolicy None 明文传输且无认证（与 pkg/opcua 既有边界一致），**仅限可信隔离网络（本机模拟/封闭 OT 段）**；生产暴露需等待 Sign/SignAndEncrypt 里程碑。模拟器默认只绑 127.0.0.1。
 
+### 14.5 订阅模式（v0.15.0 opt-in）
+
+设置 `EDGEFLOW_OPCUA_SUBSCRIPTION=on` 后，Mapper 改经 OPC-UA Subscription 接收数据变更推送：
+
+- 值变化即时进缓存，`Collect()` 返回缓存快照（不再每周期批量 Read，点位多时网络开销显著下降）
+- KeepAlive 空通知维持通道活性；序列号跳变或断线自动重建订阅
+- 缺省 `off`：轮询模式，与 v0.14.0 行为逐字节一致
+- 点位发现：`go run ./hack/opcua-browse -endpoint opc.tcp://host:port` 打印可直接粘进 `EDGEFLOW_OPCUA_NODES` 的行
+
 ### 14.4 接真实设备
 
 将 `EDGEFLOW_OPCUA_ENDPOINT` 指向真实服务器地址、按设备实际点位改 `EDGEFLOW_OPCUA_NODES` 即可——客户端协议栈已实现 UA Binary 完整读链路（HEL→OPN→CreateSession→ActivateSession→Read）。注意真实服务器若要求签名加密策略将握手失败（v1 边界）。

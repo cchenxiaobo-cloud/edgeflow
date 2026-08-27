@@ -15,6 +15,7 @@ import (
 	"edgeflow/pkg/protocol"
 
 	mocksensor "edgeflow/mappers/mock_sensor"
+	opcuamapper "edgeflow/mappers/opcua"
 )
 
 // fakeMapper 是测试用 DeviceMapper：记录收到的指令、可配置失败、
@@ -523,5 +524,46 @@ func TestRunDeviceReportLoopCollectFailureSurvives(t *testing.T) {
 	}
 	if twin.Reported["temperature"] != 26.5 {
 		t.Errorf("恢复后采集值未汇入影子: %v", twin.Reported)
+	}
+}
+
+// TestBuildMapperRegistryOPCUAGated 验证 OPC-UA Mapper 装配门控：
+//   - EDGEFLOW_OPCUA_ENDPOINT 空 → 不注册（默认零行为变化）；
+//   - ENDPOINT 非空 + NODES 合法 → 注册 opcua-mapper 并按设备名可路由；
+//   - NODES 非法 → 仅告警跳过注册（不影响其余 Mapper）。
+func TestBuildMapperRegistryOPCUAGated(t *testing.T) {
+	t.Setenv(opcuamapper.EnvEndpoint, "")
+	t.Setenv("EDGEFLOW_MODBUS_ADDR", "")
+	reg := buildMapperRegistry(nil, nil)
+	if _, ok := reg.Get("opcua-mapper"); ok {
+		t.Fatal("ENDPOINT 未设置时不应注册 opcua-mapper")
+	}
+
+	t.Setenv(opcuamapper.EnvEndpoint, "opc.tcp://127.0.0.1:14840")
+	t.Setenv(opcuamapper.EnvNodes, "temperature=ns=2;i=1001,setpoint=ns=2;i=3001")
+	reg2 := buildMapperRegistry(nil, nil)
+	m, ok := reg2.Get("opcua-mapper")
+	if !ok {
+		t.Fatal("ENDPOINT 设置后 opcua-mapper 应已注册")
+	}
+	if _, ok := reg2.Route("default", "opcua-device-01"); !ok {
+		t.Error("设备 opcua-device-01 应按设备名可路由")
+	}
+	var names []string
+	if res, ok := m.(interface{ DeviceNames() []string }); ok {
+		names = res.DeviceNames()
+	}
+	if len(names) != 1 || names[0] != "opcua-device-01" {
+		t.Errorf("OPC-UA 设备名 = %v，期望 [opcua-device-01]", names)
+	}
+
+	// NODES 非法 → 仅告警跳过（装配失败不 panic、不影响 mock-sensor）
+	t.Setenv(opcuamapper.EnvNodes, "bad=node!!")
+	reg3 := buildMapperRegistry(nil, nil)
+	if _, ok := reg3.Get("opcua-mapper"); ok {
+		t.Error("NODES 非法时不应注册 opcua-mapper")
+	}
+	if _, ok := reg3.Route("default", "sensor-01"); !ok {
+		t.Error("非法 NODES 不应影响模拟传感器注册")
 	}
 }

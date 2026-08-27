@@ -64,6 +64,10 @@ var (
 	buildOnce sync.Once
 	binDir    string // 编译产物目录
 	buildErr  error  // 构建失败原因（首个用例失败后其余用例直接 Skip）
+
+	// cloudDataDir 是当前用例 cloudcore 的嵌入式 etcd 数据目录
+	// （startCloudcore 每用例生成；同用例重启共享以保持台账恢复语义）。
+	cloudDataDir string
 )
 
 // repoRoot 定位仓库根目录：本文件位于 <root>/tests/e2e/。
@@ -208,10 +212,14 @@ func reservePort(t *testing.T) int {
 }
 
 // cloudEnv 构造 cloudcore 子进程环境：HTTP 端口 + CloudHub 端口。
+// 数据目录用本用例独立的 tempDir（EDGEFLOW_CLOUDCORE_ETCD_DATA_DIR）
+// ——嵌入式 etcd 默认 data/etcd 是相对 cwd 的共享路径，跨用例/跨运行
+// 残留旧台账会导致注册与在线判定串台（v0.14.0 E2E 排障修复）。
 func cloudEnv(httpPort, hubPort int) []string {
 	return append(os.Environ(),
 		"EDGEFLOW_CLOUDCORE_PORT="+strconv.Itoa(httpPort),
 		"EDGEFLOW_CLOUDCORE_HUB_PORT="+strconv.Itoa(hubPort),
+		"EDGEFLOW_CLOUDCORE_ETCD_DATA_DIR="+cloudDataDir,
 		// 审计台账写入临时目录，避免污染仓库（tests/e2e/data 曾因
 		// 未设此变量被写入 2737 行死文件）。
 		"EDGEFLOW_CLOUDCORE_AUDIT_PATH="+filepath.Join(os.TempDir(), "edgeflow-e2e-audit-ledger.jsonl"),
@@ -239,6 +247,9 @@ func edgeEnv(nodeID, cloudAddr, dbPath string) []string {
 func startCloudcore(t *testing.T, root string) (*proc, int, int) {
 	t.Helper()
 	httpPort, hubPort := reservePort(t), reservePort(t)
+	// 每个用例独立的数据目录：同一用例的重启场景（autonomy 等
+	// startCloudcoreOnPorts 复用端口）共享此目录以保持台账恢复语义。
+	cloudDataDir = filepath.Join(t.TempDir(), "etcd")
 	p := startCloudcoreOnPorts(t, root, httpPort, hubPort)
 	return p, httpPort, hubPort
 }

@@ -25,6 +25,7 @@ import (
 
 	mocksensor "edgeflow/mappers/mock_sensor"
 	modbusmapper "edgeflow/mappers/modbus"
+	opcuamapper "edgeflow/mappers/opcua"
 )
 
 // EnvEnableMapper 是 Mapper 装配开关的环境变量名（WBS 5.1 装配门控）。
@@ -134,6 +135,21 @@ func buildMapperRegistry(bus *eventbus.EventBus, ledger *metamanager.Ledger) *ma
 			log.Warnf("注册 Modbus Mapper 失败: %v", err)
 		} else {
 			log.Infof("Modbus Mapper 已注册（addr=%s，设备 mb-sensor-01，台账 %v）", addr, ledger != nil)
+		}
+	}
+	// OPC-UA 设备接入（显式 opt-in，WBS 5.2 第二阶段）：
+	// EDGEFLOW_OPCUA_ENDPOINT 非空即注册（默认设备 opcua-device-01）；
+	// 点位表 EDGEFLOW_OPCUA_NODES 非法 → 注册失败仅 Warn（不影响其余 Mapper）。
+	if ep := os.Getenv(opcuamapper.EnvEndpoint); ep != "" {
+		nodes, perr := opcuamapper.ParseNodes(os.Getenv(opcuamapper.EnvNodes))
+		if perr != nil {
+			log.Warnf("OPC-UA Mapper 点位解析失败，跳过注册: %v", perr)
+		} else if m, merr := opcuamapper.New(ep, opcuamapper.WithPoints(nodes), opcuamapper.WithLedger(ledger)); merr != nil {
+			log.Warnf("注册 OPC-UA Mapper 失败: %v", merr)
+		} else if err := reg.Register(m); err != nil {
+			log.Warnf("注册 OPC-UA Mapper 失败: %v", err)
+		} else {
+			log.Infof("OPC-UA Mapper 已注册（endpoint=%s，点位 %d 个，设备 opcua-device-01）", ep, len(nodes))
 		}
 	}
 	if bus != nil {

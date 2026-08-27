@@ -1515,14 +1515,6 @@ func decodeDataValue(d *decoder) (DataValue, error) {
 }
 
 // ---------------------------------------------------------------------
-// DiagnosticInfo (skeleton)
+// DiagnosticInfo 的完整实现见 diagnostic.go（v0.14.0 补全位域语义；
+// Variant 内嵌 0x19 仍不支持，见 decodeBuiltin）。
 // ---------------------------------------------------------------------
-
-// DiagnosticInfo is a skeleton placeholder for the UA DiagnosticInfo
-// type (OPC UA Part 6 §5.2.2.16).
-//
-// TODO(next milestone): full bitfield semantics — symbolic id,
-// namespace URI, localized text, additional info, and the inner
-// DiagnosticInfo recursion. Not serializable yet; decoding a Variant
-// of type 0x19 returns ErrUnsupportedType.
-type DiagnosticInfo struct{}

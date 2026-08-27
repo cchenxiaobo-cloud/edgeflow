@@ -149,7 +149,11 @@ func buildMapperRegistry(bus *eventbus.EventBus, ledger *metamanager.Ledger) *ma
 		} else if err := reg.Register(m); err != nil {
 			log.Warnf("注册 OPC-UA Mapper 失败: %v", err)
 		} else {
-			log.Infof("OPC-UA Mapper 已注册（endpoint=%s，点位 %d 个，设备 opcua-device-01）", ep, len(nodes))
+			mode := "轮询"
+			if opcuamapper.SubscriptionEnabled() {
+				mode = "订阅推送"
+			}
+			log.Infof("OPC-UA Mapper 已注册（endpoint=%s，点位 %d 个，设备 opcua-device-01，模式 %s）", ep, len(nodes), mode)
 		}
 	}
 	if bus != nil {

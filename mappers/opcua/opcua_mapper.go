@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,6 +52,10 @@ const (
 	EnvDeviceName = "EDGEFLOW_OPCUA_DEVICE_NAME"
 	// EnvNamespace 是覆盖设备命名空间的环境变量。
 	EnvNamespace = "EDGEFLOW_OPCUA_NAMESPACE"
+	// EnvSubscription 是订阅模式开关（v0.15.0）：取值 on/off，缺省 off
+	// （轮询模式，行为与 v0.14.0 逐字节一致）。on 时经 OPC-UA Subscription
+	// 接收数据变更推送，Collect() 返回最近通知缓存快照。
+	EnvSubscription = "EDGEFLOW_OPCUA_SUBSCRIPTION"
 	// DefaultTimeout 是单次操作超时（连接 + 握手 + 读写）。
 	DefaultTimeout = 5 * time.Second
 )
@@ -114,6 +119,11 @@ type OPCUAMapper struct {
 
 	client  *opcuapkg.Client
 	started bool
+
+	// 订阅模式（v0.15.0，EnvSubscription=on）
+	subOn     bool
+	subValues map[string]float64
+	subDirty  bool
 }
 
 // New 创建 OPC-UA Mapper（未启动）。endpoint 为空时从环境变量
@@ -144,7 +154,17 @@ func New(endpoint string, opts ...Option) (*OPCUAMapper, error) {
 	if dn := os.Getenv(EnvDeviceName); dn != "" {
 		m.deviceName = dn
 	}
+	m.subValues = make(map[string]float64)
 	return m, nil
+}
+
+// SubscriptionEnabled 读取订阅开关（env on/off；缺省 off）。
+func SubscriptionEnabled() bool {
+	switch strings.ToLower(os.Getenv(EnvSubscription)) {
+	case "on", "true", "1":
+		return true
+	}
+	return false
 }
 
 // Name 返回注册名（注册表唯一键）。
@@ -173,6 +193,12 @@ func (m *OPCUAMapper) Start(_ context.Context) error {
 		log.Warnf("OPCUAMapper %s: 预连接 %s 失败（%v），操作时将自动重连",
 			m.deviceName, m.endpoint, err)
 	}
+	if SubscriptionEnabled() {
+		if err := m.StartSubscription(); err != nil {
+			log.Warnf("OPCUAMapper %s: 订阅模式启用失败（%v），降级为轮询采集",
+				m.deviceName, err)
+		}
+	}
 	return nil
 }
 
@@ -184,8 +210,10 @@ func (m *OPCUAMapper) Stop() error {
 		return nil
 	}
 	m.started = false
+	m.subOn = false
+	m.subValues = make(map[string]float64)
 	if m.client != nil {
-		_ = m.client.Close()
+		_ = m.client.Close() // Close 内含 DeleteSubscriptions=true
 		m.client = nil
 	}
 	log.Infof("OPCUAMapper %s 已停止", m.deviceName)
@@ -233,6 +261,9 @@ func (m *OPCUAMapper) withClient(op func() error) error {
 func (m *OPCUAMapper) Collect() (map[string]float64, error) {
 	if len(m.points) == 0 {
 		return map[string]float64{}, nil
+	}
+	if props, ok := m.collectFromCache(); ok {
+		return props, nil // 订阅模式：推送缓存快照
 	}
 	nodes := make([]opcuapkg.NodeId, 0, len(m.points))
 	for _, p := range m.points {
@@ -358,6 +389,14 @@ func (m *OPCUAMapper) verifyWrite(pt PointDef, want float64) error {
 	if math.Abs(f-want) > 1e-6 {
 		return fmt.Errorf("回读验证失败：写 %v，回读 %v", want, f)
 	}
+	// 订阅模式下同步刷新推送缓存：写点立即生效，不必等服务端下一拍
+	// 数据通知（可写节点本轮变化也可能被 KeepAlive 间隔吞掉首拍）。
+	m.mu.Lock()
+	if m.subOn {
+		m.subValues[pt.Name] = f
+		m.subDirty = true
+	}
+	m.mu.Unlock()
 	return nil
 }
 
@@ -478,4 +517,132 @@ func ParseNodes(s string) ([]PointDef, error) {
 		out = append(out, PointDef{Name: name, NodeID: nid})
 	}
 	return out, nil
+}
+
+// ---------------------------------------------------------------------
+// 订阅模式（v0.15.0）：EDGEFLOW_OPCUA_SUBSCRIPTION=on 时启用。
+// 通知经 OPC-UA Subscription 推送至缓存；Collect() 返回缓存快照；
+// 轮询路径（off，缺省）不经过以下任何代码。
+// ---------------------------------------------------------------------
+
+// StartSubscription 启用订阅采集：建立订阅并把全部点位登记为监测项，
+// 后台 goroutine 消费通知刷新缓存。幂等（重复调用返回 nil）。
+func (m *OPCUAMapper) StartSubscription() error {
+	m.mu.Lock()
+	if m.subOn {
+		m.mu.Unlock()
+		return nil
+	}
+	// 借用 withClient 的连接（先确保在线）
+	if err := m.ensureClient(); err != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("订阅前连接失败: %w", err)
+	}
+	nodes := make([]opcuapkg.NodeId, 0, len(m.points))
+	for _, p := range m.points {
+		nodes = append(nodes, p.NodeID)
+	}
+	ch, err := m.client.Subscribe(nodes, 0)
+	if err != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("创建订阅失败: %w", err)
+	}
+	m.subOn = true
+	m.mu.Unlock()
+
+	go m.subscriptionLoop(ch)
+	log.Infof("OPCUAMapper %s 订阅模式已启用（点位 %d 个）", m.deviceName, len(m.points))
+	return nil
+}
+
+// subscriptionLoop 消费推送通知：数据变更→缓存+台账；状态变更/gap→重建。
+func (m *OPCUAMapper) subscriptionLoop(ch <-chan opcuapkg.PublishResult) {
+	for pr := range ch {
+		if pr.IsStatusChange {
+			log.Warnf("OPCUAMapper %s: 订阅状态变更（%s），重建订阅", m.deviceName, pr.StatusChange)
+			m.rebuildSubscription()
+			return
+		}
+		if pr.KeepAlive {
+			continue
+		}
+		m.mu.Lock()
+		for _, item := range pr.DataChange {
+			// clientHandle → 点位名（handle 从 1 起，顺序即 points 序）
+			idx := int(item.ClientHandle) - 1
+			if idx < 0 || idx >= len(m.points) {
+				continue
+			}
+			name := m.points[idx].Name
+			dv := item.Value
+			if dv.Status != nil && !dv.Status.IsGood() {
+				continue // Bad 节点跳过（与轮询口径一致）
+			}
+			if dv.Value == nil {
+				continue
+			}
+			if f, ok := variantToFloat(dv.Value.Value); ok {
+				m.subValues[name] = f
+				m.subDirty = true
+			}
+		}
+		dirty := m.subDirty
+		points := nodeIDs(m.points)
+		vals := make([]string, 0, len(m.subValues))
+		for k, v := range m.subValues {
+			vals = append(vals, fmt.Sprintf("%s=%.3f", k, v))
+		}
+		sort.Strings(vals)
+		m.mu.Unlock()
+		if dirty {
+			m.saveOp(metamanager.DirUp, points, "", "ok",
+				fmt.Sprintf("订阅推送 %d 个点位: %s", len(vals), strings.Join(vals, ",")))
+			m.mu.Lock()
+			m.subDirty = false
+			m.mu.Unlock()
+		}
+		_ = m.client.PubAck() // 补挂下一条 Publish（维持发布窗口）
+	}
+}
+
+// rebuildSubscription 断线/状态变更后重建：删除旧订阅→重连→重新 Subscribe。
+func (m *OPCUAMapper) rebuildSubscription() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.subValues = make(map[string]float64)
+	m.subDirty = false
+	if m.client != nil {
+		_ = m.client.DeleteSubscription()
+		_ = m.client.Close()
+		m.client = nil
+	}
+	nodes := make([]opcuapkg.NodeId, 0, len(m.points))
+	for _, p := range m.points {
+		nodes = append(nodes, p.NodeID)
+	}
+	if err := m.ensureClient(); err != nil {
+		log.Warnf("OPCUAMapper %s: 订阅重建连接失败（%v），将在操作时重试", m.deviceName, err)
+		return
+	}
+	ch, err := m.client.Subscribe(nodes, 0)
+	if err != nil {
+		log.Warnf("OPCUAMapper %s: 订阅重建失败（%v）", m.deviceName, err)
+		return
+	}
+	go m.subscriptionLoop(ch)
+	log.Infof("OPCUAMapper %s 订阅已重建", m.deviceName)
+}
+
+// collectFromCache 返回订阅缓存快照（Collect 在订阅模式下的短路路径）。
+func (m *OPCUAMapper) collectFromCache() (map[string]float64, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.subOn {
+		return nil, false
+	}
+	out := make(map[string]float64, len(m.subValues))
+	for k, v := range m.subValues {
+		out[k] = v
+	}
+	return out, true
 }

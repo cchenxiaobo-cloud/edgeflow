@@ -3,6 +3,7 @@ package opcua
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -239,6 +240,8 @@ type SecureChannel struct {
 	tokenId   uint32
 	seq       uint32 // 出站 SequenceNumber（每帧 +1）
 	reqId     uint32 // 出站 RequestId（每请求 +1）
+
+	sendMu sync.Mutex // 串行化“分配 reqId+整帧写”，单请求发送原子性（v0.15.0 泵模式前提）
 }
 
 // OpenSecureChannel 在已握手的 Conn 上执行 OPN 并返回就绪通道。
@@ -343,6 +346,8 @@ func (sc *SecureChannel) recvOPN(timeout time.Duration) error {
 // sendSecure 发送一条 MSG 服务消息（SymmetricSecurityHeader +
 // SequenceHeader + 服务 body），返回本次 RequestId。
 func (sc *SecureChannel) sendSecure(body []byte) (uint32, error) {
+	sc.sendMu.Lock()
+	defer sc.sendMu.Unlock()
 	var e encoder
 	if err := (SymmetricSecurityHeader{TokenID: sc.tokenId}).encodeUA(&e); err != nil {
 		return 0, err

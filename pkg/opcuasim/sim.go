@@ -29,12 +29,23 @@ import (
 	"math"
 	"math/rand"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
 	"edgeflow/pkg/log"
 	"edgeflow/pkg/opcua"
 )
+
+// fmtSscanf 解析字符串开头浮点（dataValueToFloat 用）。
+func fmtSscanf(s string, f *float64) error {
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return err
+	}
+	*f = v
+	return nil
+}
 
 // DefaultPort 是模拟器默认端口。
 const DefaultPort = 14840
@@ -112,6 +123,9 @@ type Simulator struct {
 	connCount int
 	stopping  bool
 
+	sessMu   sync.Mutex
+	sessions map[*connSession]struct{}
+
 	temp     float64
 	hum      float64
 	press    float64
@@ -133,6 +147,7 @@ func New(listenAddr string, opts ...Option) *Simulator {
 		hum:      60,
 		press:    101.3,
 		setpoint: DefaultSetpoint,
+		sessions: make(map[*connSession]struct{}),
 	}
 	for _, o := range opts {
 		o(s)
@@ -232,6 +247,7 @@ func (s *Simulator) fluctuate() {
 			s.press += s.randSigned(rng, pressNoise)
 			s.press = clamp(s.press, 50, 200)
 			s.mu.Unlock()
+			s.notifyPush() // v0.15.0：订阅评估与通知投递
 		}
 	}
 }
@@ -343,6 +359,18 @@ func (s *Simulator) handleConn(c net.Conn) {
 	}
 
 	// MSG 服务循环
+	cs := newConnSession(c, channelID, tokenID)
+	s.sessMu.Lock()
+	s.sessions[cs] = struct{}{}
+	s.sessMu.Unlock()
+	defer func() {
+		s.sessMu.Lock()
+		delete(s.sessions, cs)
+		s.sessMu.Unlock()
+		cs.mu.Lock()
+		cs.closed = true
+		cs.mu.Unlock()
+	}()
 	for {
 		msgType, body, err = readFrame(c)
 		if err != nil {
@@ -352,7 +380,7 @@ func (s *Simulator) handleConn(c net.Conn) {
 		case opcua.MsgCloseSecureChannel:
 			return
 		case opcua.MsgSecureMessage:
-			if !s.handleService(c, channelID, tokenID, body) {
+			if !s.handleService(cs, c, channelID, tokenID, body) {
 				return
 			}
 		default:
@@ -364,7 +392,7 @@ func (s *Simulator) handleConn(c net.Conn) {
 func opnReqSeq() uint32 { return 1 }
 
 // handleService 解析 MSG 帧并分派服务请求。
-func (s *Simulator) handleService(c net.Conn, channelID, tokenID uint32, body []byte) bool {
+func (s *Simulator) handleService(cs *connSession, c net.Conn, channelID, tokenID uint32, body []byte) bool {
 	_, rest, err := opcua.DecodeSymmetricSecurityHeader(body)
 	if err != nil {
 		return false
@@ -441,9 +469,92 @@ func (s *Simulator) handleService(c net.Conn, channelID, tokenID uint32, body []
 		if err != nil {
 			return false
 		}
+		// 关会话时清理本连接订阅（服务端语义：DeleteSubscriptions 随行）
+		cs.mu.Lock()
+		cs.subs = make(map[uint32]*simSubscription)
+		cs.mu.Unlock()
 		return writeResp(out)
 	}
+
+	// ---- v0.15.0 新增分派（顺序：Publish 刚性最短 → CreateSubscription →
+	// CreateMonitoredItems → DeleteSubscriptions → Browse；每级前置形状强校验）----
+	if ok, perr := s.handlePublish(cs, sh, rest, writeResp); ok || perr != nil {
+		return perr == nil
+	}
+	if ok, err := s.handleCreateSubscription(cs, sh, rest, writeResp); ok || err != nil {
+		return err == nil
+	}
+	if ok, err := s.handleCreateMonitoredItems(cs, sh, rest, writeResp); ok || err != nil {
+		return err == nil
+	}
+	if ok, err := s.handleDeleteSubscriptions(cs, sh, rest, writeResp); ok || err != nil {
+		return err == nil
+	}
+	if ok, err := s.handleBrowse(sh, rest, writeResp); ok || err != nil {
+		return err == nil
+	}
 	return false
+}
+
+// handlePublish 悬挂 Publish：登记后尝试即出队；无信封则等通知线程唤醒。
+// 返回 (handled=true 表示本帧是 Publish 且已处理完毕；err 非 nil 表示连接级故障)。
+func (s *Simulator) handlePublish(cs *connSession, sh opcua.SequenceHeader, rest []byte, writeResp func([]byte) bool) (bool, error) {
+	if _, err := opcua.DecodePublishRequest(rest); err != nil {
+		return false, nil // 试解失败：交给下一级
+	}
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if len(cs.pending) > 0 {
+		env := cs.pending[0]
+		cs.pending = cs.pending[1:]
+		env.resp.ResponseHeader = opcua.ResponseHeader{
+			Timestamp:     opcua.DateTimeFromTime(time.Now()),
+			RequestHandle: sh.RequestID,
+			ServiceResult: 0,
+		}
+		out, oerr := opcua.EncodePublishResponse(env.resp)
+		if oerr != nil {
+			return true, oerr
+		}
+		return writeResp(out), nil
+	}
+	// 无积压：登记悬挂窗口（同一时刻仅一个，重复悬挂视为协议错误断连）
+	if cs.pubWaiting {
+		return true, fmt.Errorf("opcua: 双重悬挂 Publish")
+	}
+	cs.pubWaiting = true
+	cs.pubReqID = sh.RequestID
+	// 后台 goroutine 等新信封或超时回 KeepAlive 兑现 Publish 请求
+	go func() {
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		for i := 0; i < 150; i++ { // 最长 30s 窗口
+			<-ticker.C
+			cs.mu.Lock()
+			if !cs.pubWaiting {
+				cs.mu.Unlock()
+				return
+			}
+			if len(cs.pending) > 0 {
+				env := cs.pending[0]
+				cs.pending = cs.pending[1:]
+				env.resp.ResponseHeader = opcua.ResponseHeader{
+					Timestamp:     opcua.DateTimeFromTime(time.Now()),
+					RequestHandle: sh.RequestID,
+					ServiceResult: 0,
+				}
+				cs.pubWaiting = false
+				out, oerr := opcua.EncodePublishResponse(env.resp)
+				if oerr == nil {
+					writeServerFrame(cs.out, opcua.MsgSecureMessage, cs.channelID, cs.tokenID, &cs.nextSeqHdr, sh.RequestID, out)
+				}
+				cs.mu.Unlock()
+				return
+			}
+			cs.mu.Unlock()
+		}
+	}()
+	return true, nil
 }
 
 // readNode 读取节点值（未知节点 → BadNodeIdUnknown DataValue）。

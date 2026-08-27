@@ -1099,6 +1099,34 @@ func (s *EtcdModelStore) GCReleases(ctx context.Context, model string, keep int)
 	return removed, nil
 }
 
+// DeleteRelease etcd 实现（v0.20.0）：内存缓存快照校验（终态守卫与 GC 同源）
+// → 网络删头键 + DeleteRange 子键前缀 → 锁内清缓存。对齐 GCReleases 写序：
+// 先盘后缓——中途失败已删部分键无碍（缓存仍留旧值时下次 watch/加载覆盖；
+// 头删子键残留会被 GC/DeleteRange 兜底）。返回被删前快照供响应体。
+func (s *EtcdModelStore) DeleteRelease(ctx context.Context, id string) (*ModelRelease, error) {
+	s.mu.RLock()
+	r, ok := s.release[id]
+	s.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrReleaseNotFound, id)
+	}
+	if !r.Status.IsTerminal() {
+		return nil, fmt.Errorf("%w: %s (status=%s)", ErrReleaseConflict, id, r.Status)
+	}
+	cp := copyRelease(r)
+	if err := s.kv.Delete(ctx, releaseKey(id)); err != nil {
+		return nil, fmt.Errorf("modelrepo: DeleteRelease 删除 %s 失败: %w", id, err)
+	}
+	if err := s.kv.DeleteRange(ctx, KeyReleasesPrefix+id+"/"); err != nil {
+		return nil, fmt.Errorf("modelrepo: DeleteRelease 删除 %s 子键失败: %w", id, err)
+	}
+	s.mu.Lock()
+	delete(s.release, id)
+	delete(s.nodes, id)
+	s.mu.Unlock()
+	return cp, nil
+}
+
 // ── 加载与 watch（外部模式多副本读一致；设计 §3.5）─────────────────────
 
 // classifyKey 把键分类为 (kind, parts)：kind ∈ {model, version, releaseHead,

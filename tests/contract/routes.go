@@ -23,7 +23,7 @@ type Endpoint struct {
 	Note   string // 契约说明（与文档矩阵口径一致）
 }
 
-// ContractEndpoints 是 cloudcore HTTP 端点契约表（40 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2）。
+// ContractEndpoints 是 cloudcore HTTP 端点契约表（42 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2）。
 //
 // ⚠️ 路径以 cmd/cloudcore/main.go 实际注册为准（任务提示 podsync/pod-sync
 // 存在歧义：grep 确认代码与两份文档均为 /podsync，无连字符）。
@@ -68,6 +68,8 @@ var ContractEndpoints = []Endpoint{
 	{Method: "GET", Path: "/api/v1/models/{modelName}/releases/{releaseID}/snapshot", Note: "发布审计快照（v0.19.0；头含 events+逐节点结果+summary 六计数+generatedAt 只读全景）"},
 	{Method: "GET", Path: "/api/v1/deployments", Note: "全局部署影子查询（v0.18.0；跨模型聚合，model/nodeID 过滤可选）"},
 	{Method: "GET", Path: "/api/v1/releases", Note: "全局发布查询（v0.19.0；跨模型聚合 status 多值过滤 limit≤500 X-Total-Count CreatedAt 降序 tie-break by ID）"},
+	{Method: "POST", Path: "/api/v1/models/{modelName}/releases/{releaseID}/retry", Note: "失败节点重试（v0.20.0；仅终态可重试，克隆新发布 RetryOf 回指原发布，nodeIDs 可选=failed 子集）"},
+	{Method: "DELETE", Path: "/api/v1/models/{modelName}/releases/{releaseID}", Note: "终态发布归档删除（v0.20.0；手动点删单条终态，非终态 409 与 GC 同源在途绝不删）"},
 	{Method: "POST", Path: "/api/v1/models/{modelName}/releases/{releaseID}/cancel", Note: "取消发布（v0.16.0 起 pending/running/paused）"},
 	{Method: "POST", Path: "/api/v1/models/{modelName}/releases/{releaseID}/rollback", Note: "回滚发布（202 异步，逆序批量）"},
 	{Method: "GET", Path: "/api/v1/models/{modelName}/deployments", Note: "部署影子（版本—节点—时间台账）"},

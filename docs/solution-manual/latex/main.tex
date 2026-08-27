@@ -1,5 +1,5 @@
 % =====================================================================
-% EdgeFlow 物联网解决方案手册 v1.13.0
+% EdgeFlow 物联网解决方案手册 v1.14.0
 % 编译方式（见 compile.sh）：
 %   xelatex -interaction=nonstopmode main.tex   （连续执行两遍生成目录）
 % 依赖：TeX Live 2025+（ctexbook、xeCJK、booktabs、longtable、
@@ -51,7 +51,7 @@
   linkcolor=efblack,
   urlcolor=efgray,
   bookmarksnumbered=true,
-  pdftitle={EdgeFlow 物联网解决方案手册 v1.13.0},
+  pdftitle={EdgeFlow 物联网解决方案手册 v1.14.0},
   pdfauthor={EdgeFlow 方案与产品团队}}
 
 % ---------- 页眉页脚 ----------
@@ -59,7 +59,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\small\sffamily EdgeFlow 物联网解决方案手册}
-\fancyhead[R]{\small\sffamily v1.13.0}
+\fancyhead[R]{\small\sffamily v1.14.0}
 \fancyfoot[C]{\small\thepage}
 \renewcommand{\headrulewidth}{0.4pt}
 \renewcommand{\headrule}{\hbox to\headwidth{\color{efblack}\leaders\hrule height \headrulewidth\hfill}}
@@ -114,7 +114,7 @@
 \vspace{3.2cm}
 \begin{tabular}{ll}
 产品版本基线 & EdgeFlow v0.7.0（2026-08-25 发布；事实基线自 v0.1.0 演进，增量见修订记录）\\
-手册版本 & v1.13.0\\
+手册版本 & v1.14.0\\
 密级 & 公开（售前/客户技术交流）\\
 适用范围 & 售前方案设计、客户技术决策、PoC 部署参考\\
 \end{tabular}
@@ -134,7 +134,7 @@
 v1.0.0 & 2026-08-14 & 方案与产品团队 & 首版定稿：四场景 × 五部分结构、数据链路与台账口径、特性-场景映射表\\
 v1.0.1 & 2026-08-16 & 技术团队 & 补强入册：证书吊销闭环（CRL+OCSP）、配置热重载与 edgecore 配置文件、gzip 通道压缩、keadm cert/batch、端点 13$\rightarrow$14、OpenAPI/契约测试；口径修正（F42/F44/F47/F48 拆分）\\
 v1.0.2 & 2026-08-18 & 技术团队 & v0.1.1 发布轮安全加固入册：/ocsp per-IP 限流（默认 10 req/s、超限 429）+ Cache-Control、OCSP 客户端新鲜度校验 API（fail-closed）、CRL 锁降级日志；P2 代码审查遗留闭环\\
-v1.13.0 & 2026-08-27 & 技术团队 & v0.19.0 入册：发布面智能运维第二批——failureBudget 运行中可调（剩余批次刹车线运行中可收紧可关闸）+ 发布审计快照一键取证全景 + 全局发布查询跨模型聚合；HTTP 端点 38→40\\
+v1.14.0 & 2026-08-27 & 技术团队 & v0.19.0 入册：发布面智能运维第二批——failureBudget 运行中可调（剩余批次刹车线运行中可收紧可关闸）+ 发布审计快照一键取证全景 + 全局发布查询跨模型聚合；HTTP 端点 38→40\\
 v1.12.0 & 2026-08-27 & 技术团队 & v0.18.0 入册：发布面智能运维——失败预算自动暂停（达标即刹车人可介入续跑）+ 发布事件时间线（CAS 并发安全审计链）+ 全局部署影子聚合查询；HTTP 端点 37→38\\
 v1.11.0 & 2026-08-27 & 技术团队 & v0.17.0 入册：发布任务运维深化——运行中可调执行参数（PATCH 批边界生效·CAS 安全）+ 发布列表 status 多值过滤 + dryRun 预检（零落盘·TOCTOU 快照口径明示）；HTTP 端点 36→37\\
 v1.10.0 & 2026-08-27 & 技术团队 & v0.16.0 入册：AI 模型管理深化——定时维护窗口发布（notBeforeMs 预约低峰）+ 运行中暂停/恢复（批边界生效·保锁续租）+ 模型目录导出/导入（幂等 upsert·active 直通灾备）；HTTP 端点 32→36\\

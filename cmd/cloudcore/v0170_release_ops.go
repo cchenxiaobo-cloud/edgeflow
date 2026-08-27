@@ -194,7 +194,8 @@ func (a *modelAPI) dryRunCreateRelease(w http.ResponseWriter, r *http.Request, m
 	}
 	pre := &modelrepo.ModelRelease{Model: modelName, Version: req.Version,
 		Target: req.Target, BatchSize: req.BatchSize, PauseBetween: req.PauseBetween,
-		NotBeforeMs: req.NotBeforeMs, FailureBudget: req.FailureBudget}
+		NotBeforeMs: req.NotBeforeMs, FailureBudget: req.FailureBudget,
+		ReleaseNotes: req.ReleaseNotes}
 	if err := pre.ValidateCreate(); err != nil {
 		badRequest(w, "%v", err)
 		return

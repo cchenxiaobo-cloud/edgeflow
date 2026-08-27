@@ -131,6 +131,14 @@ type ModelStore interface {
 	// 失败返回 error，控制器下一轮重试，对齐 sweepGC 模式）。内存实现为
 	// 空操作（guard 语义由互斥锁等价实现，无持久化守卫键）。
 	ReleaseGuard(ctx context.Context, model string) error
+	// DeleteRelease 删除**单条终态**发布（v0.20.0 手动归档清理，L28 的
+	// 点操作补充）：仅 succeeded/failed/canceled/rolled_back 可删；
+	// 非终态/不存在 → 错误（ErrReleaseTerminal 族判定在实现内做——仅终态
+	// 可删与非 GC 语义一致）。双存储同步删除头键 + releases/<id>/ 子键
+	// （nodes 结果；lock 为租约键终态后自灭，DeleteRange 一并兜底）。
+	// etcd 实现为快照校验 → 网络删除 → 缓存清理（对齐 GCReleases 惯例，
+	// 中途失败返回错误由调用方转 500）。
+	DeleteRelease(ctx context.Context, id string) (*ModelRelease, error)
 	// GCReleases 清理终态发布（v0.8.0，L28）：按 CreatedAt 升序保留最近
 	// keep 条终态（succeeded/failed/canceled/rolled_back），删除更旧的
 	// 终态及其逐节点结果；非终态/在途发布绝不删除。返回删除条数。
@@ -847,6 +855,24 @@ func (s *MemoryModelStore) GCReleases(_ context.Context, model string, keep int)
 		removed++
 	}
 	return removed, nil
+}
+
+// DeleteRelease Memory 实现（v0.20.0）：锁内读 → 终态守卫 → 删头 + 删
+// perNode map → 返回被删快照（响应体用）。单锁原子完成，无需多步回滚。
+func (s *MemoryModelStore) DeleteRelease(_ context.Context, id string) (*ModelRelease, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.release[id]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrReleaseNotFound, id)
+	}
+	if !r.Status.IsTerminal() {
+		return nil, fmt.Errorf("%w: %s (status=%s)", ErrReleaseConflict, id, r.Status)
+	}
+	cp := copyRelease(r)
+	delete(s.release, id)
+	delete(s.nodes, id)
+	return cp, nil
 }
 
 // Load 纯内存实现：无可加载的持久化后端，空操作。

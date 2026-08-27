@@ -124,10 +124,12 @@ func (a *modelAPI) Register(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/v1/models/{modelName}/releases", a.listReleases)
 	// v0.17.0：运行中可调参数（PATCH 部分更新语义；非终态可改执行参数）
 	mux.HandleFunc("PATCH /api/v1/models/{modelName}/releases/{releaseID}", a.updateRelease)
+	mux.HandleFunc("DELETE /api/v1/models/{modelName}/releases/{releaseID}", a.handleDeleteRelease) // v0.20.0 终态发布归档删除
 	mux.HandleFunc("GET /api/v1/models/{modelName}/releases/{releaseID}", a.getRelease)
 	mux.HandleFunc("GET /api/v1/models/{modelName}/releases/{releaseID}/snapshot", a.handleReleaseSnapshot) // v0.19.0
 	mux.HandleFunc("GET /api/v1/models/{modelName}/releases/{releaseID}/digest", a.getReleaseDigest)
 	mux.HandleFunc("POST /api/v1/models/{modelName}/releases/{releaseID}/cancel", a.cancelRelease)
+	mux.HandleFunc("POST /api/v1/models/{modelName}/releases/{releaseID}/retry", a.handleRetryRelease) // v0.20.0 失败节点克隆重试
 	mux.HandleFunc("POST /api/v1/models/{modelName}/releases/{releaseID}/pause", a.pauseRelease)
 	mux.HandleFunc("POST /api/v1/models/{modelName}/releases/{releaseID}/resume", a.resumeRelease)
 	mux.HandleFunc("GET /api/v1/models/export", a.exportCatalog)
@@ -397,6 +399,10 @@ type createReleaseRequest struct {
 	// FailureBudget 失败预算（v0.18.0 opt-in）：≥1 启用——批后 failed 计数
 	// 达预算自动 pause；0=缺省=禁用（行为与 v0.17.0 逐字节一致）。
 	FailureBudget int `json:"failureBudget,omitempty"`
+	// ReleaseNotes 发布元数据备注（v0.20.0 opt-in）：≤1024 字节；创建期
+	// 一次性写入、创建后不可变（PATCH 白名单不含——元数据语义与可调执行
+	// 参数区分）。缺省空串 = 行为与 v0.19.0 逐字节一致。
+	ReleaseNotes string `json:"releaseNotes,omitempty"`
 }
 
 // applyDefaults 落设计缺省值（batchSize 缺省 1；failFast 缺省 true）。
@@ -774,7 +780,8 @@ func (a *modelAPI) createRelease(w http.ResponseWriter, r *http.Request) {
 	//    batchSize≥1/pauseBetween≥0/notBeforeMs≥0），via ValidateCreate（设计 §5.2 step3）
 	pre := &modelrepo.ModelRelease{Model: modelName, Version: req.Version,
 		Target: req.Target, BatchSize: req.BatchSize, PauseBetween: req.PauseBetween,
-		NotBeforeMs: req.NotBeforeMs, FailureBudget: req.FailureBudget}
+		NotBeforeMs: req.NotBeforeMs, FailureBudget: req.FailureBudget,
+		ReleaseNotes: req.ReleaseNotes}
 	if err := pre.ValidateCreate(); err != nil {
 		badRequest(w, "%v", err)
 		return
@@ -837,6 +844,7 @@ func (a *modelAPI) createRelease(w http.ResponseWriter, r *http.Request) {
 		FailFast: *req.FailFast, PrevActive: prevActive,
 		NotBeforeMs:   req.NotBeforeMs,
 		FailureBudget: req.FailureBudget,
+		ReleaseNotes:  req.ReleaseNotes,
 	}
 	// v0.18.0：时间线首事件 created（后续流转点由控制器/存储层追加）
 	release.AppendEvent(modelrepo.EventCreated, "created via API", nowCreated)

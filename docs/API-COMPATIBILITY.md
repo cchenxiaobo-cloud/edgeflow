@@ -54,6 +54,8 @@
 | 38 | GET | `/api/v1/deployments` | ✅ 新增（v0.18.0） | Bearer Token | 全局部署影子查询（跨模型聚合，model/nodeID 过滤可选） |
 | 39 | GET | `/api/v1/models/{modelName}/releases/{releaseID}/snapshot` | ✅ 新增（v0.19.0） | Bearer Token | 发布审计快照（头含 events+逐节点结果+summary 六计数+generatedAt 只读全景；另 v0.19.0：PATCH 白名单扩展 failureBudget 运行中可调） |
 | 40 | GET | `/api/v1/releases` | ✅ 新增（v0.19.0） | Bearer Token | 全局发布查询（status 多值过滤 limit≤500 X-Total-Count CreatedAt 降序 tie-break by ID） |
+| 41 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/retry` | 失败节点重试（克隆新发布，RetryOf 回指；nodeIDs 可选 failed 子集） | v0.20.0 |
+| 42 | DELETE | `/api/v1/models/{modelName}/releases/{releaseID}` | 终态发布归档删除（非终态 409；与 GC 同源「在途绝不删」） | v0.20.0 |
 
 > 契约详情见 API-SPEC.md §7（v0.7.0）。
 

@@ -138,10 +138,12 @@ func TestModelAPIRouteCount(t *testing.T) {
 		"POST /api/v1/models/{modelName}/releases",
 		"GET /api/v1/models/{modelName}/releases",
 		"PATCH /api/v1/models/{modelName}/releases/{releaseID}",
+		"DELETE /api/v1/models/{modelName}/releases/{releaseID}",
 		"GET /api/v1/models/{modelName}/releases/{releaseID}",
 		"GET /api/v1/models/{modelName}/releases/{releaseID}/snapshot",
 		"GET /api/v1/models/{modelName}/releases/{releaseID}/digest",
 		"POST /api/v1/models/{modelName}/releases/{releaseID}/cancel",
+		"POST /api/v1/models/{modelName}/releases/{releaseID}/retry",
 		"POST /api/v1/models/{modelName}/releases/{releaseID}/pause",
 		"POST /api/v1/models/{modelName}/releases/{releaseID}/resume",
 		"GET /api/v1/models/export",
@@ -152,7 +154,7 @@ func TestModelAPIRouteCount(t *testing.T) {
 		"GET /api/v1/releases",
 	}
 	if len(reg.patterns) != len(want) {
-		t.Fatalf("路由注册数 = %d, want %d（26 端点，v0.19.0 起 +2：发布审计快照+全局发布查询）；实际: %v", len(reg.patterns), len(want), reg.patterns)
+		t.Fatalf("路由注册数 = %d, want %d（28 端点，v0.20.0 起 +2：retry+终态归档删除）；实际: %v", len(reg.patterns), len(want), reg.patterns)
 	}
 	for i, w := range want {
 		if reg.patterns[i] != w {
@@ -178,8 +180,8 @@ func TestModelAPIRouteCount(t *testing.T) {
 	if versionFamily != 6 {
 		t.Errorf("版本族路由 = %d, want 6", versionFamily)
 	}
-	if releaseFamily != 11 {
-		t.Errorf("发布族路由 = %d, want 11（v0.12.0 +digest、v0.16.0 +pause/resume、v0.17.0 +PATCH、v0.19.0 +snapshot；+1 为 per-model 列表）", releaseFamily)
+	if releaseFamily != 13 {
+		t.Errorf("发布族路由 = %d, want 13（…v0.19.0 +snapshot、v0.20.0 +retry/+DELETE 归档删除）", releaseFamily)
 	}
 	// v0.16.0：export/import 字面路由属模型族（models/export、models/import）
 	if modelFamily != 7 {

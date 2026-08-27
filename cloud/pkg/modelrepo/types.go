@@ -246,6 +246,14 @@ type ModelRelease struct {
 	// 状态流转台账推导，不冗余存储）。
 	PausedAt int64 `json:"pausedAt,omitempty"`
 
+	// ReleaseNotes 发布元数据备注（v0.20.0，opt-in）：创建期一次性写入、
+	// 创建后不可变（PATCH 白名单不含此字段——元数据语义与执行参数区分）；
+	// ≤1024 字节，omitempty 向后兼容。随 list/get/snapshot/global list
+	// 全读取路径透出（头内嵌字段零额外读放大）。
+	ReleaseNotes string `json:"releaseNotes,omitempty"`
+	// RetryOf 重试来源发布 ID（v0.20.0，opt-in）：retry 端点克隆新发布时
+	// 回指原发布（审计链：原发布 → 克隆发布经此字段追溯）；直接创建为空。
+	RetryOf string `json:"retryOf,omitempty"`
 	// FailureBudget 失败预算（v0.18.0，opt-in）：≥1 启用——批完成后 failed
 	// 计数达预算且发布未终态 → 自动 pause（区别于置 failed：人可介入后
 	// resume 续跑）；0 = 缺省 = 禁用，行为与 v0.17.0 逐字节一致。
@@ -296,6 +304,9 @@ const (
 	EventBatchDone         = "batch_done"
 	EventRollbackRequested = "rollback_requested"
 	EventRollbackDone      = "rollback_done"
+
+	// v0.20.0：retry 请求落账时间线（created 之后追加；尽力而为审计面）。
+	EventRetried = "retried"
 )
 
 // MaxReleaseEvents 是单发布时间线的环形上限：超限丢最旧（保最新 32 条）。
@@ -597,6 +608,38 @@ func (r *ModelRelease) ValidateCreate() error {
 	}
 	if r.FailureBudget < 0 {
 		return fmt.Errorf("failureBudget must be >= 0 (0 = disabled), got %d", r.FailureBudget)
+	}
+	if len(r.ReleaseNotes) > MaxReleaseNotesBytes {
+		return fmt.Errorf("releaseNotes must be <= %d bytes, got %d", MaxReleaseNotesBytes, len(r.ReleaseNotes))
+	}
+	if r.RetryOf != "" {
+		if err := ValidateReleaseID(r.RetryOf); err != nil {
+			return fmt.Errorf("retryOf: %w", err)
+		}
+	}
+	return nil
+}
+
+// MaxReleaseNotesBytes 是 releaseNotes 元数据的长度上限（字节）：容纳
+// 变更单号/工单链接级短注记，防头部键被长文本膨胀（etcd 单值建议 ≤1MiB，
+// 头键含 TargetNodes 全量快照须留余量）。
+const MaxReleaseNotesBytes = 1024
+
+// ValidateReleaseID 对发布 ID 做卫生校验：非空、≤128 字符、无空白/控制字符。
+// API 链路生成的 ID 恒为 32 位小写十六进制（newReleaseID 约定），但存储层
+// 直调允许任意形态 ID（legacy/测试种子）——RetryOf 回指是审计线索不是
+// 外键约束（原发布可能已被 GC/归档删除），故只做卫生卡口不做格式强约束。
+func ValidateReleaseID(s string) error {
+	if s == "" {
+		return fmt.Errorf("release id is required")
+	}
+	if len(s) > 128 {
+		return fmt.Errorf("release id too long (%d chars)", len(s))
+	}
+	for _, r := range s {
+		if r <= ' ' || r == 0x7f {
+			return fmt.Errorf("release id must not contain whitespace/control chars")
+		}
 	}
 	return nil
 }

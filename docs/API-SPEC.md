@@ -855,6 +855,39 @@ status:
 
 - 本轮仅自研 mock 对端回环验证（transport_test 真实 TCP 握手）；**未**与第三方 UA 栈（open62541/node-opcua）互操作验证——下一里程碑安排 cross-check。
 
+> **v0.14.0 更新**（2026-08-27，OPC-UA 里程碑第二阶段）：§12.1 导出符号与 §12.2 未实现清单已大幅演进——新增 SecureChannel 层（`Conn.OpenSecureChannel`/`SecureChannel`）、Session 匿名会话与 Read/Write 服务消息、高层 `Open`/`Client` API、`DiagnosticInfo` 位域完整实现、`ParseNodeID`、服务端互操作面（`Encode*/Decode*` 包装）；详情见下节 §13 与 docs/OPCUA-GUIDE.md。"Mapper 层客户端 API（后续里程碑）"已闭环（mappers/opcua 落地）；仍未实现：Browse/Subscription/Sign·SignAndEncrypt 安全策略/第三方栈互操作（登记后续）。
+
+## 13. pkg/opcua 包边界（v0.14.0 第二阶段，端到端协议栈）
+
+> 在 v0.3.0 M1 基础上补齐服务层与客户端 API，零第三方依赖保持；SecurityPolicy None 边界不变。文档：docs/OPCUA-GUIDE.md。
+
+### 13.1 新增导出符号（v0.14.0）
+
+| 类别 | 符号 |
+|------|------|
+| SecureChannel | `(*Conn).OpenSecureChannel(timeout) (*SecureChannel, error)`（OPN→返回就绪通道，channelId 生效）、`SecureChannel.Close()`（CLO+TCP 关闭）、`ChannelID()/TokenID()/RequestID()` |
+| 安全头 | `AsymmetricSecurityHeader` / `SymmetricSecurityHeader` / `SequenceHeader`（Encode/Decode 导出包装于 server_api.go）、`SecurityPolicyNoneURI`、`DefaultRequestedLifetime` |
+| OPN | `OpenSecureChannelRequest/Response`、`ChannelSecurityToken`、`SecurityTokenRequestTypeIssue`（Decode/Encode 导出） |
+| 服务消息 | `CreateSessionRequest/Response`、`ActivateSessionRequest/Response`（匿名：`AnonymousIdentityToken()`）、`CloseSessionRequest/Response`、`ReadValueId`/`ReadRequest/Response`、`WriteValue`/`WriteRequest/Response`、`RequestHeader`/`ResponseHeader`；TypeId 常量 `ServiceCreateSessionRequest`(461) 等（概念标识，不落线上） |
+| 客户端 | `Open(endpoint, timeout) (*Client, error)`（Dial→OPN→CreateSession→ActivateSession 全链路）、`(*Client).Read([]NodeId) ([]DataValue, error)`（批量读，Results 一一对应）、`(*Client).Write(NodeId, Variant) (StatusCode, error)`（单点写）、`(*Client).Close()`（CloseSession→CLO→TCP）、`DefaultClientTimeout`（5s） |
+| 类型补全 | `DiagnosticInfo`（位域完整实现含递归；Variant 内嵌 0x19 保持 ErrUnsupportedType）、`MaxArrayLength` |
+| 配置解析 | `ParseNodeID(s string) (NodeId, error)`（五形式，与 NodeId.String() 互逆；纯数字宽容 ns=0） |
+| 服务状态码 | `StatusBadNodeIdUnknown`/`StatusBadAttributeIdInvalid`/`StatusBadNothingToDo`、`AttributeIdValue`(13) |
+| 服务端互操作面 | server_api.go 的 `Encode*/Decode*` 导出包装（供 pkg/opcuasim/服务器适配使用） |
+
+### 13.2 v0.14.0 行为要点
+
+- Open 全链路任一步失败即清理已建资源并返回错误；传输层失败由上层 Mapper 重连（与 Modbus withConn 同构）
+- Read 结果按请求顺序一一对应；节点不存在返回 BadNodeIdUnknown 的 DataValue（不报错，调用方按 Status 过滤）
+- Write 返回服务端结果状态码；Good=写入被接受（Mapper 另做回读验证）
+- MSG 响应按 SequenceHeader.RequestId 关联（读帧上限 32 防死循环）
+
+### 13.3 设备接入层（mappers/opcua + pkg/opcuasim）
+
+- `mappers/opcua`：`New(endpoint, opts...)`（WithPoints/WithDeviceName/WithNamespace/WithTimeout/WithLedger）、`ParseNodes(s)`（EDGEFLOW_OPCUA_NODES 解析：逗号分隔 name=nodeId，ns= 前缀条目退化为 nodeId 字符串）、Collect 批量读点转换契约（数值/Bool/String-ParseFloat 支持，其余跳过+Warn）、HandleCommand 写点回读验证（容差 1e-6）
+- env opt-in：`EDGEFLOW_OPCUA_ENDPOINT`（非空注册）/`EDGEFLOW_OPCUA_NODES`/`EDGEFLOW_OPCUA_DEVICE_NAME`（默认 opcua-device-01）/`EDGEFLOW_OPCUA_NAMESPACE`
+- `pkg/opcuasim`：模拟服务器（默认 127.0.0.1:14840，6 点位动态模型；入口 hack/opcua-sim；API New/Start/Stop/NodeTable/WithStep/WithSeed/WithMaxConns/WithEndpointURL）
+
 
 ## 7.7 v0.13.0 增量：deployments 分页与节点 DTO 字段
 

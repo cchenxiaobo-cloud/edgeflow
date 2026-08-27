@@ -866,6 +866,7 @@ func (s *EtcdModelStore) RequestRollback(ctx context.Context, id string) error {
 			return fmt.Errorf("%w: release version %s, current active %s（先显式 activate 目标旧版本或发起新发布，设计 L26）", ErrVersionMismatch, r.Version, active)
 		}
 		r.RollbackRequested = true
+		r.AppendEvent(EventRollbackRequested, "rollback requested via API", time.Now().UnixMilli())
 		return nil
 	})
 }
@@ -1016,6 +1017,27 @@ func (s *EtcdModelStore) ListDeployments(_ context.Context, model string) ([]Dep
 		out = append(out, d)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
+	return out, nil
+}
+
+// ListAllDeployments etcd 实现（v0.18.0 全局查询）：读内存缓存两级 map
+// （缓存由 Load/LoadAnchored + watch 应用器维护，与 per-model 读同一一致性
+// 口径），先按 Model 再按 NodeID 排序。
+func (s *EtcdModelStore) ListAllDeployments(_ context.Context) ([]DeploymentState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]DeploymentState, 0)
+	for _, nodes := range s.deploys {
+		for _, d := range nodes {
+			out = append(out, d)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Model != out[j].Model {
+			return out[i].Model < out[j].Model
+		}
+		return out[i].NodeID < out[j].NodeID
+	})
 	return out, nil
 }
 

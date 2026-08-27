@@ -215,3 +215,14 @@
 | RO-A | 发布创建后执行参数不可变——批太大想改小、节奏太密想放慢、失败策略想放宽都只能取消重建（目标节点进度全丢） | ✅ **v0.17.0 闭环**：`PATCH .../releases/{id}` 运行中改 batchSize/pauseBetween/failFast（部分更新语义，未提供字段保持）；控制器 BuildBatches 每轮重切 → 下一批边界生效、不中断在途批、无追溯歧义；pending/running/paused 均可改、终态 409；CAS 并发安全（复用 UpdateReleaseHead 重试 ≤3） | 身份段（Version/Target/TargetNodes）仍不可变（运行期语义清晰优先，变更目标=取消重建） |
 | RO-B | 发布列表只能全量翻页找状态，运维视图需要"只看在途/只看失败"时需客户端过滤 | ✅ **v0.17.0 闭环**：列表 `?status=` 过滤（逗号多值、合法枚举校验 400 族、与 limit/offset 正交、X-Total-Count 报过滤后总数） | 无残余 |
 | RO-C | 创建发布前无预检通道——配错版本/写错节点名只能提交后看 4xx 或等 202 后人工盯 | ✅ **v0.17.0 闭环**：创建请求 `dryRun:true` 全量走真实校验链（模型 404/内容 400/非 active 422/探活阻断/节点物化）+ guard 等价只读判定，返回 200+wouldCreate 摘要（blockReason/inFlightID 可读原因）；**零落盘零 guard 键零 perNode 预写** | 预检结论为 TOCTOU 快照非承诺语义（响应已标注；真实创建以 CreateRelease guard CAS 兜底）——运维不应把 wouldCreate 当预约锁 |
+
+
+## 18. v0.18.0 开发轮闭环登记（2026-08-27，发布面智能运维：失败预算自动暂停 + 发布事件时间线 + 全局部署影子查询）
+
+> 提交：见 git log。契约变更：HTTP 端点 37→**38**（全局部署影子查询）；failureBudget/events 复用既有端点形态不新增路由。守卫测试联动绿。
+
+| 编号 | 问题面 | 闭环说明 | 残余与建议 |
+|---|---|---|---|
+| SO-A | 灰度失败只能靠人盯列表发现——多批长跑发布中途劣化无人知，跑完才看到一片 failed | ✅ **v0.18.0 闭环**：创建参数 `failureBudget`（≥1 启用，0=禁用行为不变）——批完成后 failed 计数达预算且未终态 → **自动 pause**（复用 paused 状态机与 guard 语义），人可介入排查后 resume 续跑剩余批次；head 带 `autoPausedAt` 与 autopause 事件 | 预算只在 failFast=false 跑完判定模式下生效（failFast 首败即中止置 failed，无累计窗口，语义登记）；预算创建后只读（PATCH 三执行参数不变） |
+| SO-B | 发布流转过程是黑盒——暂停过几次、哪批完成、回滚何时请求都靠翻日志拼时间线 | ✅ **v0.18.0 闭环**：`ModelRelease.Events` 时间线——created/paused/resumed/cancelled/terminal/autopause/batch_done/rollback_requested 开放事件集，追加在 UpdateReleaseHead mutate 闭包内 = CAS 保护并发不丢；环形上限 32 条丢最旧保最新；随 release 详情返回、随 export/import 快照迁移 | 高频事件的完整审计长尾依赖外层台账/日志（键值正文不自带 history）；batch_done 为每批一条（长发布最旧事件会被截断，口径登记） |
+| SO-C | 部署影子只能按模型逐个查——"这个节点现在装的是什么版本"这类跨模型问题要循环调 N 个端点 | ✅ **v0.18.0 闭环**：`GET /api/v1/deployments` 全局聚合（Memory 遍历两级 map/Etcd 读 watch 缓存同一口径）；model/nodeID 精确过滤可选；过滤后分页 X-Total-Count 同步；先 Model 再 NodeID 双字典序确定性排序 | 无残余（现有 per-model 端点不动，二者并存） |

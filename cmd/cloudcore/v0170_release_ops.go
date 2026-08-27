@@ -186,7 +186,7 @@ func (a *modelAPI) dryRunCreateRelease(w http.ResponseWriter, r *http.Request, m
 	}
 	pre := &modelrepo.ModelRelease{Model: modelName, Version: req.Version,
 		Target: req.Target, BatchSize: req.BatchSize, PauseBetween: req.PauseBetween,
-		NotBeforeMs: req.NotBeforeMs}
+		NotBeforeMs: req.NotBeforeMs, FailureBudget: req.FailureBudget}
 	if err := pre.ValidateCreate(); err != nil {
 		badRequest(w, "%v", err)
 		return
@@ -257,4 +257,70 @@ func (a *modelAPI) dryRunCreateRelease(w http.ResponseWriter, r *http.Request, m
 	log.Infof("[modelAPI] dryRun 预检（model=%s version=%s target=%s nodes=%d wouldCreate=%v blockReason=%q）",
 		modelName, req.Version, req.Target.Type, len(preview.TargetNodes), preview.WouldCreate, preview.BlockReason)
 	writeJSON(w, http.StatusOK, preview)
+}
+
+// appendEvent 尽力而为地在发布头追加快径事件（v0.18.0 时间线；CAS 闭包内
+// 追加不丢并发事件，终态 head 追加会被状态守卫拒绝——静默跳过不影响主流程）。
+func (a *modelAPI) appendEvent(r *http.Request, releaseID, kind, detail string) {
+	err := a.store.UpdateReleaseHead(r.Context(), releaseID, func(h *modelrepo.ModelRelease) error {
+		if h.Status.IsTerminal() {
+			return errSilent
+		}
+		h.AppendEvent(kind, detail, time.Now().UnixMilli())
+		return nil
+	})
+	if err != nil && !errors.Is(err, errSilent) {
+		log.Warnf("[modelAPI] 写事件 %s 失败（release %s）: %v", kind, releaseID, err)
+	}
+}
+
+// errSilent 是 appendEvent 的静默终止哨兵（事件丢失可容忍：时间线是
+// 尽力而为审计面，非权威台账）。
+var errSilent = errors.New("modelapi: silent skip")
+
+// deploymentFilterList 是全局部署影子列表响应形态。
+type deploymentFilterList struct {
+	Kind       string                      `json:"kind"`
+	APIVersion string                      `json:"apiVersion"`
+	Items      []modelrepo.DeploymentState `json:"items"`
+}
+
+// listAllDeployments 处理 GET /api/v1/deployments（v0.18.0）：跨模型聚合
+// 全部部署影子；可选 query 过滤 model=<name>（精确匹配）、nodeID=<id>（精确
+// 匹配），过滤后分页（X-Total-Count 报过滤后总数）。既有 per-model 端点
+// （/models/{m}/deployments）不动——本端点是聚合视图。
+func (a *modelAPI) listAllDeployments(w http.ResponseWriter, r *http.Request) {
+	pp, err := parsePageParams(r)
+	if err != nil {
+		badRequest(w, "%v", err)
+		return
+	}
+	modelFilter := r.URL.Query().Get("model")
+	if modelFilter != "" {
+		if err := modelrepo.ValidateModelName(modelFilter); err != nil {
+			badRequest(w, "%v", err)
+			return
+		}
+	}
+	nodeFilter := strings.TrimSpace(r.URL.Query().Get("nodeID"))
+	all, err := a.store.ListAllDeployments(r.Context())
+	if err != nil {
+		modelError(w, err)
+		return
+	}
+	filtered := make([]modelrepo.DeploymentState, 0, len(all))
+	for _, d := range all {
+		if modelFilter != "" && d.Model != modelFilter {
+			continue
+		}
+		if nodeFilter != "" && d.NodeID != nodeFilter {
+			continue
+		}
+		filtered = append(filtered, d)
+	}
+	page, total := slicePage(filtered, pp)
+	writePageHeaders(w, total)
+	items := make([]modelrepo.DeploymentState, 0, len(page))
+	items = append(items, page...)
+	writeJSON(w, http.StatusOK, deploymentFilterList{Kind: "DeploymentList", APIVersion: "v1", Items: items})
 }

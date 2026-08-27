@@ -133,6 +133,8 @@ func (a *modelAPI) Register(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/v1/models/import", a.importCatalog)
 	mux.HandleFunc("POST /api/v1/models/{modelName}/releases/{releaseID}/rollback", a.rollbackRelease)
 	mux.HandleFunc("GET /api/v1/models/{modelName}/deployments", a.listDeployments)
+	// v0.18.0：全局部署影子查询（跨模型聚合；model/nodeID 过滤 query 可选）
+	mux.HandleFunc("GET /api/v1/deployments", a.listAllDeployments)
 }
 
 // ── 响应/错误辅助 ──────────────────────────────────────────────────────
@@ -390,6 +392,9 @@ type createReleaseRequest struct {
 	// DryRun 预检模式（v0.17.0 opt-in）：true 时全量执行创建校验链但绝不
 	// 落盘/不占 guard/不预写 perNode；响应 200 + wouldCreate 摘要（非承诺语义）。
 	DryRun bool `json:"dryRun,omitempty"`
+	// FailureBudget 失败预算（v0.18.0 opt-in）：≥1 启用——批后 failed 计数
+	// 达预算自动 pause；0=缺省=禁用（行为与 v0.17.0 逐字节一致）。
+	FailureBudget int `json:"failureBudget,omitempty"`
 }
 
 // applyDefaults 落设计缺省值（batchSize 缺省 1；failFast 缺省 true）。
@@ -767,7 +772,7 @@ func (a *modelAPI) createRelease(w http.ResponseWriter, r *http.Request) {
 	//    batchSize≥1/pauseBetween≥0/notBeforeMs≥0），via ValidateCreate（设计 §5.2 step3）
 	pre := &modelrepo.ModelRelease{Model: modelName, Version: req.Version,
 		Target: req.Target, BatchSize: req.BatchSize, PauseBetween: req.PauseBetween,
-		NotBeforeMs: req.NotBeforeMs}
+		NotBeforeMs: req.NotBeforeMs, FailureBudget: req.FailureBudget}
 	if err := pre.ValidateCreate(); err != nil {
 		badRequest(w, "%v", err)
 		return
@@ -821,14 +826,18 @@ func (a *modelAPI) createRelease(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// 6) guard + release 头键 + perNode pending 预写（存储层；202 返回）
+	nowCreated := time.Now().UnixMilli()
 	release := &modelrepo.ModelRelease{
 		MirrorDigest: digest,
 		ID:           newReleaseID(), Model: modelName, Version: req.Version,
 		Target: req.Target, TargetNodes: targetNodes,
 		BatchSize: req.BatchSize, PauseBetween: req.PauseBetween,
 		FailFast: *req.FailFast, PrevActive: prevActive,
-		NotBeforeMs: req.NotBeforeMs,
+		NotBeforeMs:   req.NotBeforeMs,
+		FailureBudget: req.FailureBudget,
 	}
+	// v0.18.0：时间线首事件 created（后续流转点由控制器/存储层追加）
+	release.AppendEvent(modelrepo.EventCreated, "created via API", nowCreated)
 	if err := a.store.CreateRelease(r.Context(), release); err != nil {
 		modelError(w, err)
 		return
@@ -1065,6 +1074,7 @@ func (a *modelAPI) cancelRelease(w http.ResponseWriter, r *http.Request) {
 		modelError(w, err)
 		return
 	}
+	a.appendEvent(r, releaseID, modelrepo.EventCancelled, "cancelled via API")
 	release, err := a.store.GetRelease(r.Context(), releaseID)
 	if err != nil {
 		modelError(w, err)
@@ -1085,6 +1095,7 @@ func (a *modelAPI) pauseRelease(w http.ResponseWriter, r *http.Request) {
 		modelError(w, err)
 		return
 	}
+	a.appendEvent(r, releaseID, modelrepo.EventPaused, "paused via API")
 	release, err := a.store.GetRelease(r.Context(), releaseID)
 	if err != nil {
 		modelError(w, err)
@@ -1105,6 +1116,7 @@ func (a *modelAPI) resumeRelease(w http.ResponseWriter, r *http.Request) {
 		modelError(w, err)
 		return
 	}
+	a.appendEvent(r, releaseID, modelrepo.EventResumed, "resumed via API")
 	release, err := a.store.GetRelease(r.Context(), releaseID)
 	if err != nil {
 		modelError(w, err)

@@ -244,10 +244,24 @@ type ModelRelease struct {
 	// PausedAt 最近一次进入 paused 的时刻（v0.16.0；omitempty：非暂停态省略，
 	// 向后兼容）。恢复时不清零——保留最近暂停时刻供审计（暂停累计时长可由
 	// 状态流转台账推导，不冗余存储）。
-	PausedAt   int64 `json:"pausedAt,omitempty"`
-	CreatedAt  int64 `json:"createdAt"`
-	StartedAt  int64 `json:"startedAt"`
-	FinishedAt int64 `json:"finishedAt"`
+	PausedAt int64 `json:"pausedAt,omitempty"`
+
+	// FailureBudget 失败预算（v0.18.0，opt-in）：≥1 启用——批完成后 failed
+	// 计数达预算且发布未终态 → 自动 pause（区别于置 failed：人可介入后
+	// resume 续跑）；0 = 缺省 = 禁用，行为与 v0.17.0 逐字节一致。
+	// failFast=true 时无累计窗口（首败即中止置 failed），预算只在
+	// failFast=false 的跑完判定模式下生效（语义登记见设计稿）。
+	FailureBudget int `json:"failureBudget,omitempty"`
+	// AutoPausedAt 最近一次因失败预算触发自动暂停的时刻（omitempty；
+	// 与手动 pause 共用 paused 状态机，仅观测字段）。
+	AutoPausedAt int64 `json:"autoPausedAt,omitempty"`
+	// Events 发布事件时间线（v0.18.0，opt-in；环形上限 32 条，超限丢最旧。
+	// 追加发生在 UpdateReleaseHead mutate 闭包内 = CAS 保护下追加，并发
+	// 不丢事件；export/import 快照含 Events——审计链随目录迁移）。
+	Events     []ReleaseEvent `json:"events,omitempty"`
+	CreatedAt  int64          `json:"createdAt"`
+	StartedAt  int64          `json:"startedAt"`
+	FinishedAt int64          `json:"finishedAt"`
 }
 
 // DeploymentState 是部署影子（云端 Desired 语义的派生台账，设计 §6.3）：
@@ -260,6 +274,42 @@ type DeploymentState struct {
 	Mirror    string `json:"mirror"`
 	ReleaseID string `json:"releaseID"`
 	UpdatedAt int64  `json:"updatedAt"`
+}
+
+// ReleaseEvent 是发布事件时间线的一条记录（v0.18.0）。Kind 取值：
+// created/paused/resumed/cancelled/terminal/autopause/batch_done/
+// rollback_requested/rollback_done（开放集合——消费方对未知 Kind 容忍）。
+type ReleaseEvent struct {
+	At     int64  `json:"at"`               // Unix 毫秒
+	Kind   string `json:"kind"`             // 机器可读事件类型
+	Detail string `json:"detail,omitempty"` // 人类可读补充（失败原因/批次序号等）
+}
+
+// EventKinds 是时间线 Kind 的建议取值（非封闭枚举；消费方对未知值容忍）。
+const (
+	EventCreated           = "created"
+	EventPaused            = "paused"
+	EventResumed           = "resumed"
+	EventCancelled         = "cancelled"
+	EventTerminal          = "terminal"
+	EventAutoPause         = "autopause"
+	EventBatchDone         = "batch_done"
+	EventRollbackRequested = "rollback_requested"
+	EventRollbackDone      = "rollback_done"
+)
+
+// MaxReleaseEvents 是单发布时间线的环形上限：超限丢最旧（保最新 32 条）。
+// 口径：截断只丢最旧、保最新；审计长尾依赖外层台账/日志，不入键值正文。
+const MaxReleaseEvents = 32
+
+// AppendEvent 追加一条事件到时间线并应用环形截断（在 UpdateReleaseHead
+// 的 mutate 闭包内调用 = CAS 保护下追加，并发不丢；h.Events 为 nil 时惰性
+// 初始化）。截断见 MaxReleaseEvents。
+func (r *ModelRelease) AppendEvent(kind, detail string, at int64) {
+	r.Events = append(r.Events, ReleaseEvent{At: at, Kind: kind, Detail: detail})
+	if len(r.Events) > MaxReleaseEvents {
+		r.Events = r.Events[len(r.Events)-MaxReleaseEvents:]
+	}
 }
 
 // ── 错误哨兵（导出，供 API 映射与控制器判定；设计 WBS-1）───────────────
@@ -544,6 +594,9 @@ func (r *ModelRelease) ValidateCreate() error {
 	}
 	if r.NotBeforeMs < 0 {
 		return fmt.Errorf("notBeforeMs must be >= 0, got %d", r.NotBeforeMs)
+	}
+	if r.FailureBudget < 0 {
+		return fmt.Errorf("failureBudget must be >= 0 (0 = disabled), got %d", r.FailureBudget)
 	}
 	return nil
 }

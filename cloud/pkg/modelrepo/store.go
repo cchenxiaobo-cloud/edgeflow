@@ -120,6 +120,10 @@ type ModelStore interface {
 	SetDeployment(ctx context.Context, model, nodeID string, d DeploymentState) error
 	// ListDeployments 返回模型下全部部署影子（按 NodeID 排序）。
 	ListDeployments(ctx context.Context, model string) ([]DeploymentState, error)
+	// ListAllDeployments 返回全部模型的部署影子（v0.18.0 全局查询；先按
+	// Model 再按 NodeID 字典序排序）。内存实现遍历两级 map；etcd 实现按
+	// deployments 前缀 Get。供 GET /api/v1/deployments 全局端点消费。
+	ListAllDeployments(ctx context.Context) ([]DeploymentState, error)
 	// DeleteModelDeployments 级联删除模型下全部部署影子（模型删除流程内调用）。
 	DeleteModelDeployments(ctx context.Context, model string) error
 
@@ -672,9 +676,17 @@ func (s *MemoryModelStore) RequestRollback(ctx context.Context, id string) error
 		return fmt.Errorf("%w: release version %s, current active %s（先显式 activate 目标旧版本或发起新发布，设计 L26）", ErrVersionMismatch, cp.Version, active)
 	}
 	cp.RollbackRequested = true
+	// v0.18.0：回滚请求事件（存储层写入点=守卫全过后的 CAS 时刻）
+	if cp.Events == nil {
+		cp.Events = make([]ReleaseEvent, 0, 1)
+	}
+	cp.AppendEvent(EventRollbackRequested, "rollback requested via API", nowMs())
 	s.release[id] = cp
 	return nil
 }
+
+// nowMs 是 store 层事件时间戳源（直通 time.Now；单测可注入）。
+func nowMs() int64 { return time.Now().UnixMilli() }
 
 func (s *MemoryModelStore) SetNodeResult(_ context.Context, releaseID, nodeID string, r *NodeReleaseResult) error {
 	if r == nil {
@@ -775,6 +787,26 @@ func (s *MemoryModelStore) ListDeployments(_ context.Context, model string) ([]D
 		out = append(out, copyDeployment(&d))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
+	return out, nil
+}
+
+// ListAllDeployments 实现 ModelStore（v0.18.0 全局查询）：遍历两级 map，
+// 先按 Model 再按 NodeID 字典序排序（跨模型聚合的确定性口径）。
+func (s *MemoryModelStore) ListAllDeployments(_ context.Context) ([]DeploymentState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]DeploymentState, 0)
+	for _, nodes := range s.deploys {
+		for _, d := range nodes {
+			out = append(out, copyDeployment(&d))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Model != out[j].Model {
+			return out[i].Model < out[j].Model
+		}
+		return out[i].NodeID < out[j].NodeID
+	})
 	return out, nil
 }
 

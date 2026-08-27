@@ -51,6 +51,7 @@
 | 35 | GET | `/api/v1/models/export` | ✅ 新增（v0.16.0） | Bearer Token | 模型目录导出（全量快照 JSON） |
 | 36 | POST | `/api/v1/models/import` | ✅ 新增（v0.16.0） | Bearer Token | 模型目录导入（幂等 upsert） |
 | 37 | PATCH | `/api/v1/models/{modelName}/releases/{releaseID}` | ✅ 新增（v0.17.0） | Bearer Token | 发布运行中可调参数（batchSize/pauseBetween/failFast 部分更新，批边界生效；另 v0.17.0：发布列表 +status 过滤、创建 +dryRun 预检，均不新增端点） |
+| 38 | GET | `/api/v1/deployments` | ✅ 新增（v0.18.0） | Bearer Token | 全局部署影子查询（跨模型聚合，model/nodeID 过滤可选；另 v0.18.0：失败预算 failureBudget 自动暂停、发布事件时间线 events，均不新增端点） |
 
 > 契约详情见 API-SPEC.md §7（v0.7.0）。
 

@@ -147,9 +147,10 @@ func TestModelAPIRouteCount(t *testing.T) {
 		"POST /api/v1/models/import",
 		"POST /api/v1/models/{modelName}/releases/{releaseID}/rollback",
 		"GET /api/v1/models/{modelName}/deployments",
+		"GET /api/v1/deployments",
 	}
 	if len(reg.patterns) != len(want) {
-		t.Fatalf("路由注册数 = %d, want %d（23 端点，v0.17.0 起 +1：PATCH 运行中可调参数）；实际: %v", len(reg.patterns), len(want), reg.patterns)
+		t.Fatalf("路由注册数 = %d, want %d（24 端点，v0.18.0 起 +1：全局部署影子查询）；实际: %v", len(reg.patterns), len(want), reg.patterns)
 	}
 	for i, w := range want {
 		if reg.patterns[i] != w {
@@ -182,8 +183,8 @@ func TestModelAPIRouteCount(t *testing.T) {
 	if modelFamily != 7 {
 		t.Errorf("模型族路由 = %d, want 7（5 基础 + export + import）", modelFamily)
 	}
-	if deployFamily != 1 {
-		t.Errorf("部署影子路由 = %d, want 1", deployFamily)
+	if deployFamily != 2 {
+		t.Errorf("部署影子路由 = %d, want 2（per-model + v0.18.0 全局）", deployFamily)
 	}
 }
 

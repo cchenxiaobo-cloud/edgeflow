@@ -273,6 +273,9 @@ func (c *Controller) claim(ctx context.Context, r *modelrepo.ModelRelease) {
 		}
 		h.Status = modelrepo.ReleaseStatusRunning
 		h.StartedAt = now
+		// v0.18.0：认领即启动事件（首个非 created 事件；created 由 API 层
+		// 创建时写入。直置 store 的老数据无 created 也无妨——开放集合容忍缺序）。
+		h.AppendEvent(modelrepo.EventCreated, "claimed by controller", now)
 		return nil
 	})
 	if err != nil {
@@ -415,6 +418,17 @@ func (c *Controller) advance(ctx context.Context, id string) {
 		c.abortFailFast(ctx, id, h, failNode, failReason, byNode)
 		return
 	}
+	// v0.18.0：批次完成事件（时间线，环形截断随 AppendEvent；无失败时
+	// Detail 记成功计数）。事件写入失败不阻断发布（尽力而为）。
+	if err := c.store.UpdateReleaseHead(ctx, id, func(hh *modelrepo.ModelRelease) error {
+		if hh.Status != modelrepo.ReleaseStatusRunning {
+			return errHeadChanged
+		}
+		hh.AppendEvent(modelrepo.EventBatchDone, fmt.Sprintf("batch %d/%d done", bi+1, len(batches)), now)
+		return nil
+	}); err != nil && !errors.Is(err, errHeadChanged) {
+		log.Warnf("[modelrelease] 写 batch_done 事件失败（release %s）: %v", id, err)
+	}
 	if bi == len(batches)-1 {
 		// 最后一批完成（无失败或 failFast=false 已排除中止）：读最新
 		// perNode（含本轮写入）判定终态
@@ -424,6 +438,34 @@ func (c *Controller) advance(ctx context.Context, id string) {
 		}
 		c.finish(ctx, h, done)
 		return
+	}
+	// v0.18.0：失败预算检查（failFast=false 跑完判定模式下有累计窗口；
+	// 预算禁用时零开销——Len(results)==0 同义跳过）。达标且未终态 → 自动
+	// 暂停（复用 paused 状态机，人可介入排查后 resume 续跑）；置 AutoPausedAt
+	// + autopause 事件。预算派生自 perNode 事实源（ ListNodeResults 实时读），
+	// 不持久化计数避免双写漂移。
+	if h.FailureBudget >= 1 {
+		latest, err := c.store.ListNodeResults(ctx, id)
+		if err == nil && SummarizeNodes(latest).Failed >= h.FailureBudget {
+			if perr := c.store.UpdateReleaseHead(ctx, id, func(hh *modelrepo.ModelRelease) error {
+				if hh.Status != modelrepo.ReleaseStatusRunning || hh.RollbackRequested {
+					return errHeadChanged
+				}
+				nowAP := c.nowMs()
+				hh.Status = modelrepo.ReleaseStatusPaused
+				hh.AutoPausedAt = nowAP
+				hh.PausedAt = nowAP
+				nap := SummarizeNodes(latest).Failed
+				hh.AppendEvent(modelrepo.EventAutoPause,
+					fmt.Sprintf("failure budget %d reached (failed=%d); manual resume to continue", hh.FailureBudget, nap), nowAP)
+				return nil
+			}); perr != nil && !errors.Is(perr, errHeadChanged) {
+				log.Warnf("[modelrelease] 失败预算自动暂停写 head 失败（release %s，下轮重查）: %v", id, perr)
+			} else if perr == nil {
+				log.Infof("[modelrelease] release %s 触发失败预算自动暂停（budget=%d），等待人工 resume", id, h.FailureBudget)
+				return // 本轮终止推进；resume 后继续剩余批次
+			}
+		}
 	}
 	// 批间节奏持久化（跨接管保留；N-3 登记：本写与批完成之间存在崩溃窗口，
 	// 崩溃后接管读到旧 NextBatchAt（过去时刻）→ 下一批立即开跑，该次
@@ -505,6 +547,12 @@ func (c *Controller) setTerminal(ctx context.Context, id string, st modelrepo.Re
 		h.Status = st
 		h.FailureReason = reason
 		h.FinishedAt = c.nowMs()
+		// v0.18.0：终态事件（reason 直带入 Detail，含 D8 不变式失败文本）
+		detail := reason
+		if detail == "" {
+			detail = string(st)
+		}
+		h.AppendEvent(modelrepo.EventTerminal, detail, h.FinishedAt)
 		return nil
 	})
 	if err != nil {

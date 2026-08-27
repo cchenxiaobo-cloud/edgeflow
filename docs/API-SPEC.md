@@ -63,7 +63,7 @@
 | PATCH | `/api/v1/models/{modelName}/releases/{releaseID}` | **发布运行中可调参数（v0.17.0：batchSize/pauseBetween/failFast 部分更新批边界生效；v0.19.0 起白名单扩展 failureBudget=0 即关闸）** | 200 / 400 / 404 / 409 |
 | DELETE | `/api/v1/models/{modelName}/releases/{releaseID}` | **终态发布归档删除（v0.20.0：手动点删单条 succeeded/failed/canceled/rolled_back；非终态 409 与 GC 同源「在途绝不删」）** | 200 / 404 / 409 |
 | GET | `/api/v1/deployments` | **全局部署影子查询（v0.18.0：跨模型聚合，model/nodeID 过滤可选，过滤后分页）** | 200 / 400 |
-| GET | `/api/v1/models/{modelName}/releases/{releaseID}/snapshot` | **发布审计快照（v0.19.0：头含 events + 逐节点结果 + summary 六计数 + generatedAt 只读全景）** | 200 / 404 |
+| GET | `/api/v1/models/{modelName}/releases/{releaseID}/snapshot` | **发布审计快照（v0.19.0：头含 events + 逐节点结果 + summary 五计数 + generatedAt 只读全景）** | 200 / 404 |
 | GET | `/api/v1/releases` | **全局发布查询（v0.19.0：跨模型聚合，status 多值过滤，limit≤500/offset 分页，X-Total-Count，CreatedAt 降序 tie-break by ID）** | 200 / 400 |
 | GET | `/api/v1/models/export` | **模型目录导出（v0.16.0：models+versions 全量快照 JSON，schemaVersion=1）** | 200 |
 | POST | `/api/v1/models/import` | **模型目录导入（v0.16.0：幂等 upsert；同 version 跳过、active 直通灾备语义）** | 200 / 400 |
@@ -648,7 +648,7 @@ pending ─▶ running ─┬─ 全部 deployed ──────────�
 
 | 端点 | 语义 |
 |------|------|
-| `GET /api/v1/models/{modelName}/releases/{releaseID}/snapshot` | 发布审计快照：kind=ReleaseSnapshot + generatedAt + release 头（含 events）+ summary 六计数实时现算 + nodes 恒非 nil；非承诺语义（generatedAt 后写入不在内）；跨模型引用 404 |
+| `GET /api/v1/models/{modelName}/releases/{releaseID}/snapshot` | 发布审计快照：kind=ReleaseSnapshot + generatedAt + release 头（含 events）+ summary 五计数实时现算（total/deployed/failed/skipped/pending） + nodes 恒非 nil；非承诺语义（generatedAt 后写入不在内）；跨模型引用 404 |
 | `GET /api/v1/releases` | 全局发布查询：跨模型聚合；`status=` 七态逗号多值过滤（非法 400）；`limit=` 缺省 100 上限 500、`offset=`≥0；X-Total-Count 报过滤后总数；CreatedAt 降序 tie-break by ID |
 
 **既有端点增量**：

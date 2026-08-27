@@ -235,8 +235,8 @@
 | 编号 | 问题面 | 闭环说明 | 残余与建议 |
 |---|---|---|---|
 | SI-A | 失败预算创建后只读——预算设大了跑完才发现刹不住，只能重发一个发布 | ✅ **v0.19.0 闭环**：PATCH 白名单扩展 `failureBudget`（剩余执行面参数，与 batchSize/pauseBetween/failFast 同动线）；批边界生效语义同既有三参数——改小后下一批后立即适用，`=0` 运行中关闸（禁用自动暂停）；值域 [0,10000] 与创建校验同量级护栏；终态仍 409 | AutoPause 判定读的是当前 head 预算+派生 failed 计数，无持久计数器——改动的起算口径="自当下起的剩余批次"（非全程回溯），登记在案 |
-| SI-B | 发布全景要调 N 个端点拼装——头 + 逐节点结果 + events 分开拉，审计取证繁琐且有时序缝隙 | ✅ **v0.19.0 闭环**：`GET .../releases/{id}/snapshot` 审计快照一次拉全（kind=ReleaseSnapshot / generatedAt / release 头含 events 时间线 / summary 六计数实时现算 / nodes 恒非 nil）；跨模型引用钉 head.Model 一律 404 防目录穿越式枚举；GetModel(404) 先行与 v0.17.0 C-4 同链序纪律 | **非承诺语义**（generatedAt 后的写入不在快照内）；超大发布节点结果以分页列表为准（快照不带分页，口径登记） |
-| SI-C | 跨模型发布运维难——"现在有几个 running 发布""最近失败的三条"这类全局问题要循环 N 个模型的列表端点 | ✅ **v0.19.0 闭环**：`GET /api/v1/releases` 全局聚合（与 v0.18.0 /api/v1/deployments 对偶）；status 七态逗号多值过滤复用 v0.17.0 枚举；limit 缺省 100 上限 500 + offset≥0，X-Total-Count 报过滤后总数；CreatedAt 降序稳定 tie-break by ID | 无残余（per-model 列表端点不动，二者并存）；etcd 侧走 ListReleases("") 同一前缀读路径 |
+| SI-B | 发布全景要调 N 个端点拼装——头 + 逐节点结果 + events 分开拉，审计取证繁琐且有时序缝隙 | ✅ **v0.19.0 闭环**：`GET .../releases/{id}/snapshot` 审计快照一次拉全（kind=ReleaseSnapshot / generatedAt / release 头含 events 时间线 / summary 五计数实时现算 total/deployed/failed/skipped/pending / nodes 恒非 nil）；跨模型引用钉 head.Model 一律 404 防目录穿越式枚举；GetModel(404) 先行与 v0.17.0 C-4 同链序纪律 | **非承诺语义**（generatedAt 后的写入不在快照内）；超大发布节点结果以分页列表为准（快照不带分页，口径登记）；**currentBatch 未纳入 summary**（设计评审 P0-2 登记：范围稿曾定六计数，实装以 NodeSummary 五计数交付，currentBatch 由消费方按 nodes 派生抽） |
+| SI-C | 跨模型发布运维难——"现在有几个 running 发布""最近失败的三条"这类全局问题要循环 N 个模型的列表端点 | ✅ **v0.19.0 闭环**：`GET /api/v1/releases` 全局聚合（与 v0.18.0 /api/v1/deployments 对偶）；status 七态逗号多值过滤复用 v0.17.0 枚举；limit 缺省 100 上限 500 + offset≥0，X-Total-Count 报过滤后总数；CreatedAt 降序稳定 tie-break by ID | 响应为裸 `{"items":[…]}` 无 kind/apiVersion 信封（设计评审 P1-1 登记：与仓库 List 风格差异，已发布不回改，留待触碰该端点时收敛）；per-model 列表端点不动二者并存 |
 
 ## 20. v0.20.0 开发轮闭环登记（2026-08-27，发布生命周期收口：失败节点重试 + 终态发布归档删除 + 发布元数据）
 

@@ -13,7 +13,7 @@
 - 起算口径登记：AutoPause 判定读当前 head 预算+派生 failed 计数，"自当下起的剩余批次"非全程回溯
 
 ### 2. 发布审计快照（SI-B）
-- `GET /api/v1/models/{m}/releases/{id}/snapshot`：一次拉全 kind=ReleaseSnapshot + generatedAt + release 头（含 events 时间线）+ summary 六计数实时现算 + nodes 恒非 nil
+- `GET /api/v1/models/{m}/releases/{id}/snapshot`：一次拉全 kind=ReleaseSnapshot + generatedAt + release 头（含 events 时间线）+ summary 五计数实时现算 + nodes 恒非 nil
 - 校验链 GetModel(404) 先行 → GetRelease(404) → 跨模型引用钉 head.Model 防目录穿越式枚举
 - 明示非承诺语义：generatedAt 后写入不在快照内
 

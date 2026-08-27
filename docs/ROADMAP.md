@@ -42,7 +42,7 @@
 | WBS 2 | CloudCore 开发 | 63 | WBS 1、WBS 4（⚠️ CloudHub 需消息协议与连接管理） | 🟨 主体完成；2.8 NodeJob 已决策关闭（v0.1.0 范围外，协议占位标注，audit-m35 G7）；2.9 可观测性完成（合并 10.1，commit `4c5b9c6`） |
 | WBS 3 | EdgeCore 开发 | 65 | WBS 1、WBS 4（⚠️ EdgeHub 需消息协议与连接管理） | 🟨 主体完成；3.7 ServiceBus 决策关闭（Phase 3 范围外）；3.8 可观测性完成（合并 10.1） |
 | WBS 4 | 云边通信层 | 28 | WBS 1（协议定义在 WebSocket 通道之前，计划 §7.4 关键路径） | ✅ 完成（4.4 gzip 压缩 2026-08-15 完成、Protobuf 编码延后；4.5 实际在 M4 完成） |
-| WBS 5 | 设备映射器框架 | 22 | WBS 1（CRD）、WBS 2.2、WBS 3.5/3.6（⚠️ 数据流：DeviceTwin ← EventBus ← MetaManager） | ✅ 主体完成（v0.2.0 补 5.1 EventBus 装配开关 commit `238b0cc` + Modbus ns 解析 commit `566aff9`）；5.2 OPC-UA 🟨 独立立项已启动（v0.3.0 M1：pkg/opcua UA Binary 协议栈核心交付，2026-08-19）；5.3 控制器决策关闭（§8） |
+| WBS 5 | 设备映射器框架 | 22 | WBS 1（CRD）、WBS 2.2、WBS 3.5/3.6（⚠️ 数据流：DeviceTwin ← EventBus ← MetaManager） | ✅ 主体完成（v0.2.0 补 5.1 EventBus 装配开关 commit `238b0cc` + Modbus ns 解析 commit `566aff9`）；5.2 OPC-UA ✅ 第二阶段完成（v0.3.0 M1 协议栈核心 + **v0.14.0 端到端 Mapper v1**：SecureChannel/Session/Read/Write 服务层+Client API+模拟器+Mapper 云边闭环，2026-08-27）；5.3 控制器决策关闭（§8） |
 | WBS 6 | 应用管理 | 20 | WBS 3（⚠️ Edged/MetaManager 就绪后） | ✅ 完成（v0.2.0 补齐 6.5 资源调度基础）；6.4 镜像漂移检测+重建（commit `a0a4344`）；6.5 调度基础 P2 全量（commits `5cb7336`/`d3f09fe`） |
 | WBS 7 | 安全与认证 | 18 | WBS 1；7.4 依赖 WBS 4.5（⚠️） | ✅ 7.1 证书管理（mTLS）+7.2 Token 认证+7.3 设备认证（2026-08-15 闭环）+7.4+7.5 审计台账完成；吊销闭环完成（CRL 离线 + OCSP 在线，2026-08-16） |
 | WBS 8 | 测试与部署 | 30 | 随各模块并行；8.5 依赖 WBS 2 产物；8.6 依赖 WBS 4 协议（⚠️） | 🟨 8.1/8.2/8.3/8.5 完成（E2E 三用例 commit `a0a4344`）；8.4 压测基线完成（10 节点 100%，PERFORMANCE-BASELINE.md）；8.6 基础+升级回滚（实际在 M4） |

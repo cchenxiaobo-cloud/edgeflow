@@ -105,3 +105,10 @@
 | `GET .../deployments` 新增 `limit`/`offset` query 参数 + `X-Total-Count` 响应头 | 零破坏：缺省全量（旧行为逐字节一致）；非法参数才 400（旧客户端不传）；列表形态不变 |
 | `/api/v1/nodes`（`offlineAt`）、`/api/v1/edgenodes`（`status.lastOfflineTime`）新增可选响应字段 | 零破坏：JSON 宽容（老客户端忽略未知字段；新客户端读旧数据缺省省略）；瞬态内存数据不落盘 |
 | `DeleteModel` 在 GC 显式开启时级联清理该模型全部终态发布 | 默认关闭（GC-off）= L31 审计口径零变化；仅运维已开启 GC 时行为扩展（既有 GC 开启后口径变更的既定分支） |
+
+
+### v0.14.0
+
+- 端点：零新增（总数维持 32）；`/api/v1/devices` 对 OPC-UA 设备自然扩展。
+- 新增 env（4 个，边缘侧 opt-in）：EDGEFLOW_OPCUA_ENDPOINT/NODES/DEVICE_NAME/NAMESPACE（见 DEPLOYMENT §14）。
+- 升级零迁移；老边缘零动作；零新依赖。

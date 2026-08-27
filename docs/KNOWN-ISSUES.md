@@ -164,4 +164,18 @@
 |---|---|---|---|
 | A′ | 部署影子列表（ListDeployments 端点）无分页（L28 同族、v0.8.0 漏网） | ✅ **v0.13.0 闭环**：`GET .../deployments` 增加 `limit`(1-1000)/`offset`(≥0) 与响应头 `X-Total-Count`，缺省全量（零破坏），与 releases/versions/models 既有分页完全同构；分页在 API 层完成（存储层 ListDeployments 已按 NodeID 排序）；单测 8 边界 + E2E S1 实测（total=2/limit 切片/4 非法参数 400） | 无 |
 | B | 模型删除级联收官（L25）：已删模型的终态发布在 GC 开启下永不可回收（控制器 gcIfEnabled 只对活模型触发） | ✅ **v0.13.0 闭环**：`WithReleaseGC` store 选项（variadic 向后兼容）+ DeleteModel 在 GC 显式开启时级联清理该模型全部终态发布（头键 + releases/<id>/ 前缀含 nodes/lock + 内存缓存；etcd deleteModelReleases best-effort 失败仅 Warn）；GC-off 默认 = L31 审计口径零变化；**零新增 env**（复用 RELEASE_GC_*）；单测 5 例 + E2E S3（GC-on 删模型后重建同名模型 releases 空）/S4（GC-off 回归） | 非事务级联崩溃窗口仍存在（原子化需 etcd 跨前缀 txn，登记后续候选）；GC-on 下审计痕迹随删除清除（运维以 ops 台账为凭，文档明示） |
-| C | 节点台账无 offlineAt（L16 残余 DTO 部分） | ✅ **v0.13.0 闭环**：`NodeInfo.offlineAt`(毫秒,omitempty) + `EdgeNode status.lastOfflineTime`(RFC3339,omitempty) 双视图外露；Get/List/ListEdgeNodes 三入口一致填充（ListEdgeNodes 先填内部 0 值再映射）；三模式统一（wrapper 均委托内存 Registry）；在线/未知 = 字段省略；重复 MarkOffline 不刷新（首离时刻）；JSON 宽容论证推翻原登记担忧（瞬态内存不落盘）；单测 4 例 + E2E S2 实测三态（在线无字段/断开出现/恢复消失） | 精确"最后在线"需持久化（后续候选）；Seed 播种后 Unknown 节点 offlineAt=启动时刻（如实反映重启重置） |
+| C | 节点台账无 offlineAt（L16 残余 DTO 部分） | ✅ **v0.13.0 闭环**：`NodeInfo.offlineAt`(毫秒,omitempty) + `EdgeNode status.lastOfflineTime`(RFC3339,omitempty) 双视图外露；Get/List/ListEdgeNodes 三入口一致填充（ListEdgeNodes 先填内部 0 值再映射）；三模式统一（wrapper 均委托内存 Registry）；在线/未知 = 字段省略；重复 MarkOffline 不刷新（首离时刻）；JSON 宽容论证推翻原登记担忧（瞬态内存不落盘）；单测 4 例 + E2E S2 实测三态（在线无字段/断开出现/恢复消失） | 精确"最后在线"需持久化（**v0.14.0 设计评估后登记后续候选（v0.15.0）**，需 registry 持久化改造，独立运维主题）；Seed 播种后 Unknown 节点 offlineAt=启动时刻（如实反映重启重置） |
+
+
+## 14. v0.14.0 开发轮闭环登记（2026-08-27，OPC-UA 里程碑第二阶段：端到端 Mapper v1）
+
+> 提交：413ddb6。设计 Agent 定稿 design.md（566 行六节；实测勘察 pkg/opcua 四缺口：SecureChannel/服务层/DiagnosticInfo/Mapper Client API）。
+
+| 编号 | 问题面 | 闭环说明 | 残余与建议 |
+|---|---|---|---|
+| OPC-A | pkg/opcua 无 SecureChannel/Session/Read 服务，Mapper 层无客户端 API——UA Binary 协议栈仅编解码/HEL/ACK，无法接入真实设备（WBS 5.2 第二阶段核心缺口） | ✅ **v0.14.0 闭环**：SecureChannel 层（OPN/CLO、Asymmetric/Symmetric 安全头、SequenceHeader 序列号与 RequestId 响应关联；OPN 后 conn.channelId 生效，既有导出 API 零变更）+ Session 匿名会话（CreateSession/ActivateSession/CloseSession）+ Read/Write 服务 + Client API（Open 全链路握手→Read 批量读→Write 写点→Close 有序关闭）+ DiagnosticInfo 位域补全（ResponseHeader 必需；Variant 内嵌 0x19 保持不支持）+ ParseNodeID 配置解析（与 NodeId.String() 互逆）+ server_api.go 服务端互操作导出面 | Browse 节点发现 / Subscription 订阅推送 / Sign-SignAndEncrypt 安全策略排除登记后续（点位显式配置即可用；明文策略延续 doc.go 既有边界）；第三方 UA 栈互操作 cross-check 待环境就绪（node-opcua/open62541） |
+| OPC-B | OPC-UA 设备采集到云端属性可见的完整链路缺失（Mapper 框架协议无关但无 OPC-UA 实现） | ✅ **v0.14.0 闭环**：`pkg/opcuasim` 自研模拟服务器（6 点位表：温度收敛/humidity/pressure 游走/setpoint 可写，回环绑定默认 14840）+ `mappers/opcua` Mapper（Collect 批量读点转换 Variant→float64 契约 + HandleCommand 写点回读验证 + 台账 + 断线重连）+ edgecore env opt-in 装配（4 个 `EDGEFLOW_OPCUA_*` 登记）；云侧零改动（DeviceReport→devicestatus→/api/v1/devices 既有链路自然扩展） | Variant→float64 转换边界：数值/Boolean/String(ParseFloat) 支持，DateTime/Guid/ByteString/NodeId/StatusCode/QualifiedName/LocalizedText/ExtensionObject/数组不支持（跳过+Warn，文档明示） |
+| OPC-C | OPC-UA Mapper 无写点能力（与 Modbus 双向能力不对齐） | ✅ **v0.14.0 闭环**（Phase B）：pkg/opcua 补 Write 服务；Mapper HandleCommand 命中点位名→Write(Double)→回读验证（容差 1e-6）→台账 down；只读节点写入被服务端拒绝（BadNotWritable）正确透传为 502 | 无 |
+| E2E-BASE | tests/e2e 基建缺陷：cloudcore 嵌入式 etcd 数据目录为相对 cwd 共享路径（data/etcd），跨用例/跨运行残留旧台账导致注册与在线判定串台（TestOPCUADeviceE2E 排障发现，影响全部 e2e 用例的稳定性） | ✅ **v0.14.0 修复**：cloudEnv 为每个用例注入独立 `EDGEFLOW_CLOUDCORE_ETCD_DATA_DIR`（t.TempDir 下），同用例重启场景共享目录保持台账恢复语义；既有语义（autonomy 断连恢复依赖影子恢复）不受影响 | 无 |
+
+> §13 B 残余（非事务级联崩溃窗口）同样经 v0.14.0 设计评估后**登记后续候选（v0.15.0）**（涉及 etcdstore 跨前缀事务接口 + DeleteModel 重构，独立运维主题，与 OPC-UA 大主题纪律冲突）。

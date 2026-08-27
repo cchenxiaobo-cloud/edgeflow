@@ -847,3 +847,47 @@ curl http://<cloudcore>:8080/api/v1/models/mnist/releases/<releaseID>/digest
 - `EDGEFLOW_CLOUDCORE_RELEASE_GC_ENABLED=1`（显式开启）时，`DeleteModel` 级联清理该模型的全部终态发布（头键 + 逐节点/lock 前缀 + 内存缓存）——审计痕迹随之清除，运维以 ops 台账/文档为凭；
 - 默认（GC-off）= 删除模型保留其终态发布（L31 审计口径不变）；
 - 零新增 env；deployments 列表分页与节点 offlineAt 字段见 API-SPEC。
+
+
+## 14. OPC-UA 设备接入（v0.14.0）
+
+OPC-UA Mapper 为**边缘侧显式 opt-in**：`EDGEFLOW_OPCUA_ENDPOINT` 非空即注册（缺省不启用，存量部署行为不变）。
+
+### 14.1 环境变量
+
+| 变量 | 默认 | 语义 |
+|---|---|---|
+| `EDGEFLOW_OPCUA_ENDPOINT` | 空（不启用） | OPC-UA 端点 `opc.tcp://host:port`；非空即注册 Mapper |
+| `EDGEFLOW_OPCUA_NODES` | 空 | 点位表，逗号分隔 `name=nodeId`（如 `temperature=ns=2;i=1001,humidity=ns=2;i=1002,setpoint=ns=2;i=3001`）；解析失败仅告警跳过注册 |
+| `EDGEFLOW_OPCUA_DEVICE_NAME` | `opcua-device-01` | 设备名（云端 /api/v1/devices 可见） |
+| `EDGEFLOW_OPCUA_NAMESPACE` | `default` | 设备命名空间 |
+
+### 14.2 快速开始（自研模拟器联调）
+
+```bash
+# 终端 1：起模拟器（默认 127.0.0.1:14840）
+go run ./hack/opcua-sim
+
+# 终端 2：起 edgecore（指向模拟器）
+EDGEFLOW_OPCUA_ENDPOINT=opc.tcp://127.0.0.1:14840 \
+EDGEFLOW_OPCUA_NODES="temperature=ns=2;i=1001,humidity=ns=2;i=1002,setpoint=ns=2;i=3001" \
+./bin/edgecore
+```
+
+云端验证：`curl http://127.0.0.1:8080/api/v1/devices` 应见 opcua-device-01 的 temperature/humidity/setpoint 属性；下发指令：
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/nodes/<nodeID>/device-command \
+  -H 'Content-Type: application/json' \
+  -d '{"deviceName":"opcua-device-01","namespace":"default","property":"setpoint","value":200}'
+```
+
+写后 Mapper 回读验证一致（容差 1e-6），操作记录进边缘台账（op_ledger）。
+
+### 14.3 安全边界
+
+SecurityPolicy None 明文传输且无认证（与 pkg/opcua 既有边界一致），**仅限可信隔离网络（本机模拟/封闭 OT 段）**；生产暴露需等待 Sign/SignAndEncrypt 里程碑。模拟器默认只绑 127.0.0.1。
+
+### 14.4 接真实设备
+
+将 `EDGEFLOW_OPCUA_ENDPOINT` 指向真实服务器地址、按设备实际点位改 `EDGEFLOW_OPCUA_NODES` 即可——客户端协议栈已实现 UA Binary 完整读链路（HEL→OPN→CreateSession→ActivateSession→Read）。注意真实服务器若要求签名加密策略将握手失败（v1 边界）。

@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 )
@@ -16,9 +17,12 @@ type joinOptions struct {
 	CloudCoreIP string
 	// CloudCorePort 是 CloudHub 端口（NodePort 部署时为节点端口，默认 10000）。
 	CloudCorePort string
-	// Token 是接入令牌（必填；edgecore 注册时携带，云端 EDGEFLOW_CLOUDCORE_NODE_TOKEN
-	// 启用时校验，见 WBS 7.3 设备认证）。
+	// Token 是接入令牌（--token 直接传值或 --token-file 从文件读取，二选一；
+	// edgecore 注册时携带，云端 EDGEFLOW_CLOUDCORE_NODE_TOKEN 启用时校验，见 WBS 7.3 设备认证）。
 	Token string
+	// TokenFile 是接入令牌文件路径（SEC-03，v0.23.0）：从文件读取 token，
+	// 避免 token 经 ps / shell history 明文暴露。与 --token 同给时 --token-file 优先。
+	TokenFile string
 	// NodeID 是边缘节点 ID（默认 edge-<主机名>，与 edgehub.DefaultNodeID 约定一致）。
 	NodeID string
 	// TLS 是否启用云边 mTLS（edgecore 侧注入 EDGEFLOW_EDGECORE_TLS=on，地址升级 wss://）。
@@ -56,7 +60,8 @@ func runJoin(args []string, stdout, stderr io.Writer) int {
 	}
 	fs.StringVar(&opts.CloudCoreIP, "cloudcore-ip", "", "云端 CloudHub 节点 IP（必填，支持 IPv4/IPv6）")
 	fs.StringVar(&opts.CloudCorePort, "cloudcore-port", opts.CloudCorePort, "CloudHub 端口（NodePort 部署时填节点端口）")
-	fs.StringVar(&opts.Token, "token", "", "接入令牌（必填；edgecore 注册携带，云端启用时校验，WBS 7.3）")
+	fs.StringVar(&opts.Token, "token", "", "接入令牌（edgecore 注册携带，云端启用时校验，WBS 7.3；生产建议 --token-file）")
+	fs.StringVar(&opts.TokenFile, "token-file", "", "接入令牌文件路径（SEC-03，v0.23.0：从文件读 token，避免 ps/history 明文；与 --token 同给时本参数优先）")
 	fs.StringVar(&opts.NodeID, "node-id", opts.NodeID, "边缘节点 ID（默认 edge-<主机名>）")
 	fs.BoolVar(&opts.TLS, "tls", false, "启用云边 mTLS（edgecore 注入 TLS env，地址使用 wss://）")
 	fs.StringVar(&opts.OutputDir, "output-dir", opts.OutputDir, "产物输出目录")
@@ -66,6 +71,26 @@ func runJoin(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() > 0 {
 		_, _ = fmt.Fprintf(stderr, "错误: join 不接受位置参数 %q\n", fs.Arg(0))
 		return exitUsage
+	}
+
+	// 端口与 token 来源处理（顺序：先校验后读文件，均在使用参数前完成）：
+	// SEC-08（v0.23.0）：--cloudcore-port 非空时必须为 1-65535 数字，非法拒绝；
+	// SEC-03（v0.23.0）：--token-file 提供时读文件内容（去首尾空白）作为 token，
+	// 与 --token 同给时 --token-file 优先（显式选择更安全的传参方式）。
+	if err := validateCloudCorePort(opts.CloudCorePort); err != nil {
+		_, _ = fmt.Fprintf(stderr, "错误: %v\n", err)
+		return exitUsage
+	}
+	if opts.TokenFile != "" {
+		b, err := os.ReadFile(opts.TokenFile)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "错误: 读取 --token-file=%s 失败: %v\n", opts.TokenFile, err)
+			return exitUsage
+		}
+		if t := strings.TrimSpace(string(b)); t != "" {
+			opts.Token = t
+		}
+		// 空文件/纯空白文件视为未提供：回落到 --token（validate 统一报缺参）。
 	}
 
 	// 参数校验：IP 合法、token 非空、node-id 非空无空白。
@@ -159,6 +184,21 @@ func (o joinOptions) validate() error {
 			return fmt.Errorf("--node-id=%q 含非法字符 %q（仅允许字母/数字/连字符/下划线，如 edge-worker-01）",
 				o.NodeID, r)
 		}
+	}
+	return nil
+}
+
+// validateCloudCorePort 校验 --cloudcore-port（SEC-08，v0.23.0）：非空时必须为
+// 1-65535 的十进制数字，否则返回错误（join/batch 共用；空值由调用方默认值兜底）。
+func validateCloudCorePort(port string) error {
+	if port == "" {
+		return nil
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		return fmt.Errorf("--cloudcore-port=%q 不是合法端口号（必须为 1-65535 的数字）", port)
+	}
+	if p, _ := strconv.Atoi(port); p < 1 || p > 65535 {
+		return fmt.Errorf("--cloudcore-port=%q 超出范围（必须为 1-65535）", port)
 	}
 	return nil
 }
@@ -341,6 +381,19 @@ func installCertDirLine(o joinOptions) string {
 	return "# 未启用 mTLS，跳过证书目录创建"
 }
 
+// desensitizeToken 对 token 做展示脱敏（SEC-03，v0.23.0）：README.md 等
+// 宽权限（0644）产物不再留存 token 明文，保留前 2 位 + 固定掩码，空值保持空。
+// 注意：edgecore.env（0600）仍是 token 明文的唯一落盘产物（运行时注入所需）。
+func desensitizeToken(token string) string {
+	if token == "" {
+		return ""
+	}
+	if len(token) <= 2 {
+		return "******"
+	}
+	return token[:2] + "******"
+}
+
 // renderJoinReadme 生成 README.md：接入步骤说明与手动安装片段（供无脚本环境参考）。
 func renderJoinReadme(o joinOptions) []byte {
 	tlsLine := ""
@@ -387,12 +440,12 @@ func renderJoinReadme(o joinOptions) []byte {
 - 节点 ID: %s
 - 云端地址: %s
 - 元数据库: %s
-- 接入令牌: %s（WBS 7.3 设备认证：edgecore 注册携带，云端启用时校验）
+- 接入令牌: %s（WBS 7.3 设备认证：edgecore 注册携带，云端启用时校验；已脱敏，明文仅存于 edgecore.env 0600）
 
 ## 排障
 
 - edgecore 起不来：journalctl -u edgecore -e 查看；确认网络可达 %s。
 - 想更换节点 ID：改 /etc/edgeflow/edgecore.env 后 systemctl restart edgecore。
 - 想卸载：systemctl disable --now edgecore && rm /etc/systemd/system/edgecore.service /etc/edgeflow/edgecore.env
-`, o.cloudAddr(), tlsLine, o.NodeID, o.cloudAddr(), edgeDBPath, o.Token, o.CloudCoreIP))
+`, o.cloudAddr(), tlsLine, o.NodeID, o.cloudAddr(), edgeDBPath, desensitizeToken(o.Token), o.CloudCoreIP))
 }

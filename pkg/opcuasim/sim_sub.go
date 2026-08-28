@@ -64,23 +64,39 @@ type connSession struct {
 	channelID  uint32
 	tokenID    uint32
 
-	nextSeqHdr  uint32        // 出站 SequenceNumber（MSG 序列头）
-	nextSubID   uint32        // 下一个 subscriptionId
-	lastCreated uint32        // 最近创建的订阅 id（CreateMonitoredItems 归属）
-	wake        chan struct{} // 队列有新信封信号（容量1）
-	closed      bool
+	nextSeqHdr         uint32        // 出站 SequenceNumber（MSG 序列头）
+	nextSubID          uint32        // 下一个 subscriptionId
+	lastCreated        uint32        // 最近创建的订阅 id（CreateMonitoredItems 归属）
+	wake               chan struct{} // 队列有新信封信号（容量1）
+	done               chan struct{} // PRT-23：连接退出信号（悬挂 publish goroutine 监听）
+	publishingInterval time.Duration // PRT-23：KeepAlive 兑现周期（随订阅修订）
+	closed             bool
 }
 
 func newConnSession(out net.Conn, channelID, tokenID uint32) *connSession {
 	return &connSession{
-		subs:       make(map[uint32]*simSubscription),
-		out:        out,
-		channelID:  channelID,
-		tokenID:    tokenID,
-		nextSeqHdr: 2, // OPNF 用了 seq=1
-		nextSubID:  100,
-		wake:       make(chan struct{}, 1),
+		subs:               make(map[uint32]*simSubscription),
+		out:                out,
+		channelID:          channelID,
+		tokenID:            tokenID,
+		nextSeqHdr:         2, // OPNF 用了 seq=1
+		nextSubID:          100,
+		wake:               make(chan struct{}, 1),
+		done:               make(chan struct{}),
+		publishingInterval: 5 * time.Second, // 默认 KeepAlive 兑现周期（订阅创建时修订）
 	}
+}
+
+// closeSession 关闭会话：置 closed 标志并广播 done（悬挂 publish goroutine 退出）。
+func (cs *connSession) closeSession() {
+	cs.mu.Lock()
+	if cs.closed {
+		cs.mu.Unlock()
+		return
+	}
+	cs.closed = true
+	close(cs.done)
+	cs.mu.Unlock()
 }
 
 // signalWake 非阻塞唤醒发布泵。
@@ -312,6 +328,10 @@ func (s *Simulator) handleCreateSubscription(cs *connSession, sh opcua.SequenceH
 	}
 	// 记录最近创建的订阅，供 CreateMonitoredItems 归属（单请求创建后紧随）
 	cs.lastCreated = subID
+	// PRT-23：KeepAlive 兑现周期随订阅修订值刷新（下限 200ms 防零值/过小）
+	if iv := time.Duration(interval) * time.Millisecond; iv >= 200*time.Millisecond {
+		cs.publishingInterval = iv
+	}
 	cs.mu.Unlock()
 
 	resp, err := opcua.EncodeCreateSubscriptionResponse(opcua.CreateSubscriptionResponse{

@@ -472,3 +472,22 @@
 | T-11 吊销链可配收紧 | SEC-04 | ✅ 全部完成 | CRL 严格/OCSP 新鲜度双开关（默认关）；LoadTLSConfigWithOptions 接线；SECURITY.md 部署建议 |
 | 行为修复配套 | 审计纪律 | ✅ 逐条明示 | e2e 辅助函数 mnist 硬编码依赖旧归属缺陷→新增显式模型名 helper（v0170/v0180 共 3 处切换）；其余既有测试零改动 |
 | 验证 | — | ✅ 全绿 | build/vet/单测全绿；contract 全绿（42 端点守卫）；e2e 全量 190s 绿 |
+
+
+## 18. v0.23.0 开发轮处置登记（2026-08-28）
+
+> 依据：.cluster/edgeflow-audit/tasklist-audit.csv P2 批次（T-12~T-19，8 项 / 24 人日）+ T-20 收官勾稽 + .cluster/edgeflow-v0230/plan.md。状态：✅ 已完成（P2 全闭环 + 台账 71 条全量勾稽：55 ✅ / 14 📌 登记 / 2 🗑️ 撤销，零悬挂）。
+
+| 项 | 对应审计编号 | 处置 | 结论/理由 |
+|---|---|---|---|
+| T-12 观测面补齐 | CHN-14/19/20、CLD-13 | ✅ 闭环 | 丢事件计数/续约队列水位 metrics/listFailed 告警 env（默认关）/paused kind 日志/Grafana 面板随仓库交付（deploy/grafana/） |
+| T-13 锁序工程化 | CHN-11/23 | ✅ 闭环 | lease_registry 文件头权威段 + LOCK ORDER 断言 6 处 + ARCHITECTURE §13；26 个 Lock() 调用点核对无嵌套持有 |
+| T-14 契约口径统一 | CLD-07/08/10/12 | ✅ 闭环 | summary 恒现 / releases 列表信封化（唯一破坏性变更，COMPATIBILITY 登记）/ errors.Is(io.EOF) / 422 文案细分；§7.12 错误码映射表 |
+| T-15 输入卫生 | CLD-11、PRT-24、CHN-15/16、SEC-06 | ✅ 闭环 | mirror 预检+编码三重收敛（短形式宽松裁决）；CRD 11 处标记；Validate Version 格式校验；rand 失败即报错（OPC-UA nonce + newID + newReleaseID 三落点统一）；CRLF 消毒（cloudcore+cloudhub） |
+| T-16 OPC-UA 健壮性 | PRT-05~23 族 | ✅ 闭环 | 13 修 2 登记（PRT-11/12 建议级 §23.2）；含 mappers 域 PRT-19/20/21 接手（锁外重连/Stop 快照/预算门）；-race 全绿 |
+| T-17 keadm token 卫生 | SEC-03 | ✅ 闭环 | env 0600 钉死 + --token-file（file 优先）+ README 脱敏 + KEADM §2.1；目录 0700 登记不修（§23.1） |
+| T-18 云端安全面 | SEC-05/07/08 | ✅ 闭环 | CheckOrigin 白名单（缺 Origin 放行语义）；Helm existingSecret（互斥 fail 守卫）；--cloudcore-port 1-65535 |
+| T-19 测试增强 | CHN-17/08 | ✅ 闭环 | nextBackoff 边界 16 子例（实现零改动）；CHN-08 文档标注裁决（DEPLOYMENT §2.5，SetReadDeadline 留待 RTT 基线） |
+| T-20 勾稽收官 | 台账 71 条 | ✅ 闭环 | 勾稽总表 55✅+14📌+2🗑️=71；主线直接实施 CHN-13（eventbus 等待有界化）与 CHN-16 pkg/protocol 落点（删时间戳兜底）；encodeUA 基线缺陷修复 |
+
+> 残余票与登记项：见 docs/KNOWN-ISSUES.md §23（登记不修 14 条理由与重估触发条件 + 域外残余票 R-1~R-4）。

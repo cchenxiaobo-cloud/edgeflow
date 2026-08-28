@@ -224,6 +224,20 @@ curl http://127.0.0.1:8080/healthz
      edgeflow/edgecore:v0.1.0
    ```
 
+3. **经 LB / 反向代理暴露 CloudHub 时的读超时要求（CHN-08，v0.23.0 登记）**：
+
+   服务端 `readLoop` 无逐读 SetReadDeadline（活性判定依赖 90s 心跳监控扫描）
+   ，半开连接清理窗口跨公网部署偏大；经 LB/代理暴露时，LB/代理的空闲/读
+   超时必须大于云端心跳超时（默认 90s，env
+   `EDGEFLOW_CLOUDCORE_HEARTBEAT_TIMEOUT` 可调），否则空闲边缘连接会被 LB
+   先行切断、触发无谓重连振荡：
+
+   - **空闲/读超时 ≥ 120s（推荐 150s，约 1.5× 心跳超时）**；
+   - WebSocket 连接需支持长连接不中断（禁用强制短连接回收、禁用逐请求
+     代理）；Nginx 示例：`proxy_read_timeout 150s;` + `proxy_send_timeout 150s;`；
+   - 云边之间不建议插入会改写 `Upgrade`/`Connection` 头的代理（TLS 终结型
+     LB 需透传 WebSocket 升级）。
+
 ---
 
 ## 3. keadm 安装（离线产物生成）
@@ -293,6 +307,26 @@ bash hack/gen-certs.sh --help
 ```
 
 ---
+
+## 4.2 可观测性部署（v0.23.0 起：Grafana 面板 + 边缘告警 env）
+
+- **Grafana 面板一键导入**：仓库随附 `deploy/grafana/edgeflow-overview.json`
+  （uid=`edgeflow-overview`）。Grafana → Dashboards → Import → 上传该 JSON，
+  数据源选择位 `${DS_PROMETHEUS}` 变量（导入时选择你的 Prometheus 数据源）。
+  面板内容：节点/Pod/设备/活跃连接四 stat、续约队列水位（80%/90% 阈值色）与
+  丢弃速率（CHN-19）、租约续约失败与心跳重建速率（L12/L12+）、发送缓冲内存
+  （CHN-02）、HTTP 请求速率、以及边缘侧观测说明文本面板。
+- **边缘侧观测（无独立 /metrics，按设计走日志/env）**：
+  - `EDGEFLOW_LISTFAILED_ALERT_ROUNDS`（默认 0=关闭，行为不变）：edgecore
+    list 连续失败轮次达到阈值时输出 distinct `Edged ALERT:` 告警日志并重置
+    计数（CHN-20）。日志采集侧建议配 `Edged ALERT` 规则路由到告警通道。
+  - 订阅丢事件计数（CHN-14）为 edgecore 内部访问器（无独立暴露面），面板
+    文本面板已登记口径；如需采集可经边缘日志/自研探针读取。
+- **Prometheus 采集**：沿用既有 `/metrics` 抓取（见
+  docs/MONITORING-ALERTING-v011.md）；v0.23.0 新增
+  `edgeflow_cloudcore_lease_renew_queue_depth`（gauge，瞬时水位）与
+  `edgeflow_cloudcore_lease_renew_queue_dropped_total`（counter，丢弃累计）
+  两个指标，nil Provider（未启用外部 etcd 租约模式）时不输出。
 
 ## 5. 升级 / 回滚
 

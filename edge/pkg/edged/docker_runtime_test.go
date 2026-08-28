@@ -613,8 +613,8 @@ func TestDockerImageDigest(t *testing.T) {
 	})
 	t.Run("正常查询返回 sha256", func(t *testing.T) {
 		docker := newTestDocker(fakeRunner(
-			[]any{"reg.io/ns/model:v1", nil},                       // inspect Config.Image
-			[]any{`["reg.io/ns/model@` + d + `"]`, nil},            // image inspect RepoDigests
+			[]any{"reg.io/ns/model:v1", nil},            // inspect Config.Image
+			[]any{`["reg.io/ns/model@` + d + `"]`, nil}, // image inspect RepoDigests
 		))
 		got, err := docker.ImageDigest(metamanager.Pod{Namespace: "default", Name: "web"}, 0)
 		if err != nil || got != d {

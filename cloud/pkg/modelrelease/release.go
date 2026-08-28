@@ -219,17 +219,43 @@ func (c *Controller) refreshLoop(ctx context.Context) {
 // refreshActiveLocks 对全部 active release 重绑租约（grant-per-claim）。
 // 返回 false（锁被他副本接管）→ 本副本停止执行该 release（R-2 双执行者
 // 窗口收敛：部署幂等 + perNode CAS，正确性不受损）。
+// CLD-13（v0.23.0）：刷新失败/被接管日志带 kind 标记（paused/running/
+// unknown）区分占锁语义——paused 发布保留 active 身份持续静默续租属
+// 预期行为，审计上不再与 running 推进混淆。
 func (c *Controller) refreshActiveLocks(ctx context.Context) {
 	for _, id := range c.activeSnapshot() {
+		// kind 仅作日志观测面：读状态成本 = 每 refresh 周期（max(5s, TTL/3)）
+		// 每 active release 一次 GetRelease；读失败记 unknown，不阻断续租、
+		// 不参与控制流。
+		kind := c.releaseKindForLog(ctx, id)
 		ok, err := c.locks.TryAcquire(ctx, modelrepo.ReleaseLockKey(id), []byte(id), c.opts.LockTTL)
 		if err != nil {
-			log.Warnf("[modelrelease] 锁刷新失败（release %s，下轮重试）: %v", id, err)
+			log.Warnf("[modelrelease] 锁刷新失败（release %s, kind=%s；占锁保持（发布可能处于 paused），下轮重试）: %v", id, kind, err)
 			continue
 		}
 		if !ok {
-			log.Warnf("[modelrelease] 领跑锁被接管（release %s），本副本停止执行", id)
+			log.Warnf("[modelrelease] 领跑锁被接管（release %s, kind=%s；占锁保持中断），本副本停止执行", id, kind)
 			c.removeActive(id)
 		}
+	}
+}
+
+// releaseKindForLog 返回锁刷新日志的 kind 标记（CLD-13，v0.23.0）：
+// paused/running 按 release head 状态返回；读取失败或其余状态 →
+// "unknown"（读不到状态时日志文案按「占锁保持（发布可能处于 paused）」
+// 语义兜底）。仅日志观测面：返回值不参与任何控制流。
+func (c *Controller) releaseKindForLog(ctx context.Context, id string) string {
+	h, err := c.store.GetRelease(ctx, id)
+	if err != nil || h == nil {
+		return "unknown"
+	}
+	switch h.Status {
+	case modelrepo.ReleaseStatusPaused:
+		return "paused"
+	case modelrepo.ReleaseStatusRunning:
+		return "running"
+	default:
+		return "unknown"
 	}
 }
 

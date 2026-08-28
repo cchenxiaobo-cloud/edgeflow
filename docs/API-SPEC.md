@@ -534,6 +534,8 @@ pending ─▶ running ─┬─ 全部 deployed ──────────�
 
 **GET 列表响应形态**：K8s List 风格（`{"kind":"ModelList","apiVersion":"v1","items":[...]}`；空为 `[]`），对齐 podStatusList/deviceStatusList。**发布详情**额外返回派生汇总：`{"summary":{"total":N,"deployed":N,"failed":N,"pending":N,"skipped":N}}`（现算，非冗余存储）。
 
+> **v0.23.0（CLD-07/08）变更标记**：① summary 自本版起**恒现**于全部发布对象响应（含列表逐条，summary 五计数口径同上；详见 §7.12）；② `GET /api/v1/releases`（§7.9）自裸 items 数组改为 K8s List 包装 `ReleaseList`，兼容性说明见 docs/API-COMPATIBILITY.md v0.23.0 小节。
+
 ### 7.3 错误语义（202/422 为 v0.7.0 新增，其余沿用既有约定）
 
 | 状态码 | 语义 | 场景 |
@@ -649,7 +651,7 @@ pending ─▶ running ─┬─ 全部 deployed ──────────�
 | 端点 | 语义 |
 |------|------|
 | `GET /api/v1/models/{modelName}/releases/{releaseID}/snapshot` | 发布审计快照：kind=ReleaseSnapshot + generatedAt + release 头（含 events）+ summary 五计数实时现算（total/deployed/failed/skipped/pending） + nodes 恒非 nil；非承诺语义（generatedAt 后写入不在内）；跨模型引用 404 |
-| `GET /api/v1/releases` | 全局发布查询：跨模型聚合；`status=` 七态逗号多值过滤（非法 400）；`limit=` 缺省 100 上限 500、`offset=`≥0；X-Total-Count 报过滤后总数；CreatedAt 降序 tie-break by ID |
+| `GET /api/v1/releases` | 全局发布查询：跨模型聚合；`status=` 七态逗号多值过滤（非法 400）；`limit=` 缺省 100 上限 500、`offset=`≥0；X-Total-Count 报过滤后总数；CreatedAt 降序 tie-break by ID。**v0.23.0（CLD-08）响应形态变更**：自裸 `items` 数组改为 K8s List 包装 `{kind: ReleaseList, apiVersion: edgeflow.io/v1alpha1, items:[发布对象…]}`，items 逐条含 summary（见 §7.12；兼容性说明见 API-COMPATIBILITY v0.23.0 小节） |
 
 **既有端点增量**：
 
@@ -688,6 +690,43 @@ pending ─▶ running ─┬─ 全部 deployed ──────────�
   （RequestRollback 同 guard 族）。冲突均在创建/置位瞬间同步返回 409，
   不存在异步竞态窗口。
 
+### 7.12 v0.23.0 增量：响应形态口径统一 / 错误码映射表（CLD-07/08/12 收敛登记）
+
+**响应形态口径统一（CLD-07/08，描述性——零新增端点，端点总数 42 不变）**：
+
+- **summary 恒现（CLD-07）**：`releaseResponse.summary` 去 omitempty，
+  发布对象形态（创建 202 响应 / GET 详情 / cancel / rollback / retry
+  响应 / 列表逐条）统一携 `summary` 五计数（total/pending/running/
+  succeeded/failed）。零值发布（total=0）与字段缺省自此可区分；旧客户端
+  按 JSON 宽容语义忽略新增恒现字段，零破坏。
+- **全局发布列表包装（CLD-08）**：`GET /api/v1/releases` 自裸 `items`
+  数组改为 K8s List 包装 `{"kind":"ReleaseList","apiVersion":
+  "edgeflow.io/v1alpha1","items":[...]}`，items 逐条与发布对象形态统一
+  （含 summary）。分页语义不变（status 过滤 / limit≤500 / X-Total-Count /
+  CreatedAt 降序 tie-break by ID）。老客户端若直接迭代顶层键需适配包装
+  （读 `items` 字段）；分页头与排序语义零变化。
+- **retry 422 文案细分（CLD-12）**：`POST .../releases/{id}/retry` 对
+  终态归档版本的 422 文案携带 `orig.Status`（如
+  `retry of release <id> (status=<orig.Status>): target version ... must be
+  active`）；状态码与校验链序不变。
+
+**错误码映射表（modelError 权威映射，与 `cmd/cloudcore/model_api.go`
+`modelError` 逐条对齐）**：
+
+| HTTP | 触发错误（modelrepo 哨兵/错误类型） | 语义 | 上下文字段 |
+|------|--------------------------------------|------|------------|
+| 404 | `ErrModelNotFound` / `ErrVersionNotFound` / `ErrReleaseNotFound` | 模型/版本/发布不存在（子资源随模型 404；v0.22.0 跨模型引用同语义） | — |
+| 409 | `ReleaseConflictError`（带 InFlight） | 同模型在途发布独占（guard create-if-absent） | `releaseID` = 在途发布 ID |
+| 409 | `ErrModelExists` / `ErrVersionExists` | 模型/版本已存在 | — |
+| 409 | `ErrModelHasActiveVersion` / `ErrVersionActive` / `ErrVersionNotActive` / `ErrVersionNotDraft` | 状态机非法（拒删 active / 激活·归档·删除前置不满足） | — |
+| 409 | `ErrReleaseConflict` / `ErrReleaseTerminal` / `ErrVersionMismatch` / `ErrConcurrentConflict` | 发布冲突族（cancel/rollback 目标态非法、CAS 冲突耗尽、版本被接管/不匹配） | — |
+| 422 | `UnknownNodesError`（带 Nodes） | 白名单含未知节点 | `unknownNodes` = [...] |
+| 422 | `ErrNoReadyNodes` / `ErrNoPrevActive` | 无 Ready 节点 / 无 PrevActive 可回滚 | — |
+| 400 | `ValidateModelName` / `ValidateVersionTag` / `ValidateMirror` / `ValidateSha256` / `ValidateArchs` 等 validate* 纯函数 | 字符集/格式/枚举越界（设计 §8.1） | — |
+| 500 | default 兜底 | 存储/序列化/内部异常（日志含原因，响应体仅 `internal error`）；v0.23.0 起 rand 失败（发布 ID 生成）亦显式 500（CHN-16） | — |
+
+> 映射实现唯一权威：`cmd/cloudcore/model_api.go modelError`；本表为
+> 文档对齐，若表与代码漂移以代码为准并回改本表。
 
 ## A. Group / Version 约定
 

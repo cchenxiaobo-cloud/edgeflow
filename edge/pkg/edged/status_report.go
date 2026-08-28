@@ -184,8 +184,27 @@ func (e *Edged) digestOf(p metamanager.Pod, image string) string {
 // 说明：Absent 终态必须在上报循环的采样窗口内可见（保留 90s），否则云端
 // 删除 Pod 后 /api/v1/pods 会永久显示陈旧状态（M2B 审查 P1 修复）。
 //
+// CHN-20 连续 listFailed 告警（v0.23.0）：每轮 listFailed 仅有一条 per-round
+// Warn，连续失败无聚合视角。listFailedAlertRounds >0 时，本函数兼做告警
+// 判定：连续轮次达到阈值打一条 distinct Warn（含累计轮次）并重置；list
+// 成功轮清零。阈值 =0（默认）时完全 no-op。本函数由 reconcileOnce 在
+// reconcileMu 串行化域内调用，无额外锁（同 CHN-11 串行化兑底边界）。
+//
 // local 是运行时返回的容器实例（含副本序号）；只取 Pod 级 key 判断存在性。
 func (e *Edged) cleanupStatus(desiredKeys map[string]struct{}, local []InstanceRef, listFailed bool) {
+	// CHN-20：先做告警判定（成功清零 / 失败累加+阈值触发重置），再走条目清理。
+	if e.listFailedAlertRounds > 0 {
+		if listFailed {
+			e.listFailedStreak++
+			if e.listFailedStreak >= e.listFailedAlertRounds {
+				log.Warnf("Edged ALERT: List 失败已连续 %d 轮（阈值 %d；容器实际集合不可见，孤儿清理与对账持续跳过，请检查容器运行时）", e.listFailedStreak, e.listFailedAlertRounds)
+				e.listFailedStreak = 0
+			}
+		} else {
+			e.listFailedStreak = 0
+		}
+	}
+
 	localKeys := make(map[string]struct{}, len(local))
 	for _, inst := range local {
 		localKeys[podKey(inst.Namespace, inst.Name)] = struct{}{}

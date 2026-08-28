@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	// 驱动注册：modernc.org/sqlite 是纯 Go 实现的 SQLite（无 CGO），
@@ -70,6 +71,12 @@ type Store struct {
 	subMu       sync.Mutex
 	subscribers map[int]*subscriber // 订阅 ID → 订阅者（nil 表示尚未有任何订阅）
 	nextSubID   int                 // 订阅 ID 自增分配
+
+	// droppedEvents 累计「订阅者通道满而被丢弃的事件数」（CHN-14 观测锚点）。
+	// 原子计数，仅在 notify 的 select default 分支自增（丢事件即 +1），
+	// 读取走 DroppedEvents() 访问器。此前该丢弃是静默的，无法评估背压
+	// 策略的实际影响面；计数只增不清零（进程生命周期累计值）。
+	droppedEvents atomic.Uint64
 }
 
 // NodeInfo 是落盘的节点注册信息（以 JSON 字符串存入 meta_kv，

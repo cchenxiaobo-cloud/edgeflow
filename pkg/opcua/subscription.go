@@ -343,6 +343,12 @@ func decodeNotificationBody(d *decoder) (NotificationMessage, error) {
 	if err != nil {
 		return m, err
 	}
+	// PRT-13：负长度未拒绝会跳过解码循环致游标错位，垃圾数据被当
+	// 通知投递应用；对齐 decodeVariant/decodeStringList 语义：仅 -1
+	// （null 数组）放行为空通知，其余负值一律拒绝。
+	if n < 0 && n != -1 {
+		return m, fmt.Errorf("%w: negative notificationData length %d", ErrInvalidEncoding, n)
+	}
 	if n > MaxArrayLength {
 		return m, fmt.Errorf("%w: notificationData length %d exceeds limit", ErrTooLong, n)
 	}
@@ -373,6 +379,10 @@ func decodeNotificationExtObj(ext ExtensionObject) (NotificationData, error) {
 		n, err := dd.i32()
 		if err != nil {
 			return nd, err
+		}
+		// PRT-13：monitoredItems 负长度拒绝（对齐 notificationData 顶层语义）。
+		if n < 0 && n != -1 {
+			return nd, fmt.Errorf("%w: negative monitoredItems length %d", ErrInvalidEncoding, n)
 		}
 		if n > MaxArrayLength {
 			return nd, fmt.Errorf("%w: monitoredItems length %d exceeds limit", ErrTooLong, n)
@@ -416,6 +426,9 @@ func decodeNotificationExtObj(ext ExtensionObject) (NotificationData, error) {
 					return nd, err
 				}
 			}
+		} else if dn < -1 {
+			// PRT-13：StatusChange diagnosticInfos 负长度拒绝（-1=null 放行）。
+			return nd, fmt.Errorf("%w: negative diagnosticInfos length %d", ErrInvalidEncoding, dn)
 		}
 		return nd, nil
 	case NewNodeID(0, TypeIdEventNotificationList).String():
@@ -714,10 +727,12 @@ func (r CreateMonitoredItemsResponse) encodeUA(e *encoder) error {
 		return err
 	}
 	e.i32(int32(len(r.Results)))
-	for i := int32(0); i < int32(len(r.Results)); i++ {
-		_ = i // 服务端编码：statusCode u32 + monitoredItemId u32 + revised f64/u32 + filter ExtObj(null)
-		e.u32(0)
-		e.u32(0)
+	// v0.23.0 修复（主线，B 路新测试暴露）：逐项编码结果结构体实际值——
+	// 原实现无视输入硬编码 0（statusCode/itemId 恒 Good/0），服务端侧
+	// 永远无法表达 Bad 结果；revised 参数与 filter 仍按占位零值编码。
+	for _, res := range r.Results {
+		e.u32(uint32(res.StatusCode))
+		e.u32(res.MonitoredItemId)
 		e.f64(0)
 		e.u32(0)
 		err := (ExtensionObject{TypeId: NewNodeID(0, 0), Encoding: ExtensionObjectEncodingNone}).encodeUA(e)

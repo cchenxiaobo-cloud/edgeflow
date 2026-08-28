@@ -57,9 +57,18 @@ const (
 	// DefaultConnectRetryInterval 是首次建连失败后的重试间隔
 	// （broker 可能晚于 EdgeCore 启动，按 1s 重试可快速恢复）。
 	DefaultConnectRetryInterval = 1 * time.Second
+	// DefaultWaitTimeout 是 Publish/Subscribe/Unsubscribe 等待 broker 确认的超时
+	// （CHN-13，v0.23.0）：QoS1 半死 broker（TCP 活着但不回 PUBACK/SUBACK）下，
+	// 无界 Wait() 会让调用方阻塞至 paho 内部写超时（约 10~20s），Mapper 采集
+	// 周期被拉长；统一收敛为 WaitTimeout(5s)。
+	DefaultWaitTimeout = 5 * time.Second
 	// disconnectQuiesce 是 Disconnect 时等待在途消息冲刷的时间（毫秒）。
 	disconnectQuiesce = 250
 )
+
+// waitTimeout 是上述三原语的确认等待超时（包级变量仅为测试可注入短值，
+// 生产路径恒为 DefaultWaitTimeout，勿在产品代码中改写）。
+var waitTimeout = DefaultWaitTimeout
 
 // 主题前缀与层级（写入主题的命名空间/设备名/模块名不得包含
 // '/'、'+'、'#'，防止主题注入与跨设备串扰，见 validateSegment）。
@@ -301,7 +310,11 @@ func (b *EventBus) Publish(topic string, payload []byte) error {
 		return fmt.Errorf("eventbus: 未连接，无法发布到 %q", topic)
 	}
 	token := b.client.Publish(topic, 1, false, payload)
-	token.Wait()
+	// CHN-13：确认等待有界化——半死 broker 不再拖死发布方（超时报错，
+	// 调用方按采集周期重试；连接健康时 PUBACK 远快于超时值，行为不变）。
+	if !token.WaitTimeout(waitTimeout) {
+		return fmt.Errorf("eventbus: 发布到 %q 确认超时（%v 内未收到 PUBACK）", topic, waitTimeout)
+	}
 	if err := token.Error(); err != nil {
 		return fmt.Errorf("eventbus: 发布到 %q 失败: %w", topic, err)
 	}
@@ -336,7 +349,10 @@ func (b *EventBus) Unsubscribe(topic string) error {
 		return fmt.Errorf("eventbus: 未订阅 %q", topic)
 	}
 	token := b.client.Unsubscribe(topic)
-	token.Wait()
+	// CHN-13：确认等待有界化（同 Publish）。
+	if !token.WaitTimeout(waitTimeout) {
+		return fmt.Errorf("eventbus: 取消订阅 %q 确认超时（%v 内未收到 UNSUBACK）", topic, waitTimeout)
+	}
 	if err := token.Error(); err != nil {
 		return fmt.Errorf("eventbus: 取消订阅 %q 失败: %w", topic, err)
 	}
@@ -351,7 +367,11 @@ func (b *EventBus) subscribeLocked(topic string) error {
 		return fmt.Errorf("eventbus: 订阅表缺少 %q", topic)
 	}
 	token := b.client.Subscribe(topic, 1, handler)
-	token.Wait()
+	// CHN-13：确认等待有界化（同 Publish）。超时返回错误后订阅表状态由
+	// 调用方（重连恢复遍历/订阅 API）按错误处理，不悬挂持锁协程。
+	if !token.WaitTimeout(waitTimeout) {
+		return fmt.Errorf("eventbus: 订阅 %q 确认超时（%v 内未收到 SUBACK）", topic, waitTimeout)
+	}
 	if err := token.Error(); err != nil {
 		return fmt.Errorf("eventbus: 订阅 %q 失败: %w", topic, err)
 	}

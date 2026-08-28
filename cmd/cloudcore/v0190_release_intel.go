@@ -77,6 +77,18 @@ func (a *modelAPI) handleReleaseSnapshot(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// releaseListAll 是全局发布查询的响应形态（v0.23.0，CLD-08 契约口径
+// 统一）：对齐模型域 K8s List 风格（kind/apiVersion/items）——v0.19.0
+// 为裸 items map，与 GET /api/v1/models/{m}/releases（releaseList）及
+// GET /api/v1/deployments 双口径。items 元素沿用 releaseResponse 形态
+// （字段平铺 + summary 恒输出，CLD-07 同口径）。增量字段：顶层新增
+// kind/apiVersion 两键，items 键名与元素既有字段不变，消费方兼容。
+type releaseListAll struct {
+	Kind       string            `json:"kind"`
+	APIVersion string            `json:"apiVersion"`
+	Items      []releaseResponse `json:"items"`
+}
+
 // handleListAllReleases 处理 GET /api/v1/releases（v0.19.0 全局发布查询，
 // 与 v0.18.0 /api/v1/deployments 对偶）：跨模型聚合全部 release 头；
 // status 逗号多值过滤复用 v0.17.0 parseStatusFilter（七态枚举）；
@@ -128,7 +140,14 @@ func (a *modelAPI) handleListAllReleases(w http.ResponseWriter, r *http.Request)
 		items = items[:limit]
 	}
 	w.Header().Set("X-Total-Count", strconv.Itoa(total))
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	// v0.23.0（CLD-08 + CLD-07）：裸 items map → K8s List 风格包装
+	// （kind/apiVersion 增量字段）；items 逐条现算 summary，与模型域
+	// 发布列表/详情同口径。
+	out := make([]releaseResponse, 0, len(items))
+	for i := range items {
+		out = append(out, a.summaryOfRelease(r.Context(), &items[i]))
+	}
+	writeJSON(w, http.StatusOK, releaseListAll{Kind: "ModelReleaseList", APIVersion: "v1", Items: out})
 }
 
 const maxReleaseListLimit = 500

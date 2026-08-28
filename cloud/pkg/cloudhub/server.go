@@ -9,8 +9,10 @@
 //
 // 认证说明：M1 基础版不校验连接来源（CheckOrigin 全放行）。
 // mTLS（WBS 7.4）已落地：EDGEFLOW_CLOUDCORE_TLS=on 时经 WithTLS 注入
-// tls.Config，监听层强制要求并验证客户端证书（RequireAndVerifyClientCert），
-// CheckOrigin 仍全放行（TLS 层已认证身份，应用层不重复校验）。
+// tls.Config，监听层强制要求并验证客户端证书（RequireAndVerifyClientCert）。
+// v0.23.0（SEC-05）：CheckOrigin 默认仍全放行（行为不变）；可经
+// EDGEFLOW_CLOUDCORE_ALLOWED_ORIGINS（逗号分隔）配置 Origin 白名单，
+// 携带 Origin 的握手必须精确命中（缺失 Origin 放行，边缘主路径不受影响）。
 package cloudhub
 
 import (
@@ -25,6 +27,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -208,6 +211,11 @@ type Server struct {
 	// 不向边缘回带压缩能力（RegisterAck 无 compression 字段），边缘
 	// 经协商自动保持明文——单开关控制双向（见 pkg/protocol/compress.go）。
 	compressEnabled bool
+	// allowedOrigins 是 WebSocket 握手 Origin 白名单（v0.23.0，SEC-05）。
+	// 空/nil = 全放行（默认，历史行为）；非空 = 携带 Origin 头的握手必须
+	// 精确命中列表（缺失 Origin 放行，边缘 Go 客户端不发 Origin）。由
+	// 装配层经 WithAllowedOrigins 注入（env 逗号分隔解析）。
+	allowedOrigins []string
 
 	// stateMu 保护以下启动/停止相关字段。
 	stateMu sync.Mutex
@@ -312,6 +320,39 @@ func WithCompress(enabled bool) Option {
 	}
 }
 
+// WithAllowedOrigins 设置 WebSocket 握手 Origin 白名单（v0.23.0，SEC-05）。
+// 语义（默认行为不变硬约束）：
+//   - 空/nil 切片 = 全放行（默认；不调用本 Option 时行为与 v0.22.0 逐字节一致）；
+//   - 非空 = 握手请求携带 Origin 头时必须与列表某项精确匹配（大小写敏感，
+//     不含路径/通配符），否则升级被拒（websocket 返回 403）；
+//   - 缺失 Origin 头的请求一律放行 —— 边缘侧 Go 原生客户端不发 Origin，
+//     本开关针对的是浏览器发起的跨站 WebSocket 注入面（有 Origin 才校验）。
+func WithAllowedOrigins(origins []string) Option {
+	return func(s *Server) { s.allowedOrigins = origins }
+}
+
+// checkOrigin 是 WebSocket 握手来源校验（v0.23.0，SEC-05）。
+// 空白名单 = 全放行（默认行为）；非空时仅拦截「携带 Origin 头且不在
+// 白名单」的握手 —— 浏览器必然携带 Origin（跨站注入面），非浏览器客户端
+// （边缘 Go 客户端等）通常缺失 Origin，不受影响。
+func (s *Server) checkOrigin(r *http.Request) bool {
+	if len(s.allowedOrigins) == 0 {
+		return true
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		// 非浏览器客户端（边缘接入主路径）：无 Origin 头，无跨站注入面。
+		return true
+	}
+	for _, allowed := range s.allowedOrigins {
+		if origin == allowed {
+			return true
+		}
+	}
+	log.Warnf("WebSocket 握手 Origin 被白名单拒绝: %q（来源 %s）", origin, r.RemoteAddr)
+	return false
+}
+
 // New 创建 CloudHub 服务端，addr 形如 ":10000"。
 func New(addr string, opts ...Option) *Server {
 	s := &Server{
@@ -319,8 +360,10 @@ func New(addr string, opts ...Option) *Server {
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
-			// M1 基础版不做来源校验；WBS 4.5 引入 Token/mTLS 后收紧
-			CheckOrigin: func(_ *http.Request) bool { return true },
+			// CheckOrigin 在 New() 尾部装配为 s.checkOrigin（s 构造完成后；
+			// v0.23.0，SEC-05）：默认全放行，WithAllowedOrigins 白名单非空时
+			// 携带 Origin 的握手必须精确命中（缺失 Origin 放行，边缘主路径
+			// 不受影响）。
 		},
 		heartbeatTimeout: HeartbeatTimeout,
 		serveDone:        make(chan struct{}),
@@ -345,6 +388,9 @@ func New(addr string, opts ...Option) *Server {
 	if s.monitorInterval < 50*time.Millisecond {
 		s.monitorInterval = 50 * time.Millisecond
 	}
+	// v0.23.0（SEC-05）：握手来源校验装配在 s 可用之后（checkOrigin 读
+	// s.allowedOrigins；Options 先行应用，白名单注入完成后挂接）。
+	s.upgrader.CheckOrigin = s.checkOrigin
 	return s
 }
 
@@ -732,7 +778,7 @@ func (s *Server) handleRegister(c *conn, m *protocol.Message) {
 	s.notifyNodeEvent(func(h NodeEvents) { h.OnNodeRegistered(*info) })
 
 	log.Infof("节点 %s 注册成功（ip=%s arch=%s os=%s edgecore=%s）",
-		reg.NodeID, c.remoteIP, reg.Arch, reg.OS, reg.EdgecoreVersion)
+		sanitizeLogField(reg.NodeID), c.remoteIP, sanitizeLogField(reg.Arch), sanitizeLogField(reg.OS), sanitizeLogField(reg.EdgecoreVersion))
 }
 
 // ackCompression 返回 RegisterAck 应回带的压缩能力：仅当本连接已协商
@@ -747,9 +793,22 @@ func (s *Server) ackCompression(c *conn) string {
 	return ""
 }
 
+// sanitizeLogField 剥离边缘可控字段中的 CRLF 与控制字符（v0.23.0，SEC-06）：
+// 仅作用于日志面（<0x20 与 0x7f 一律剥离，含 \t/\r/\n；存储与 API 返回值
+// 不受影响，消费方裁决展示层转义）。伪造日志行（如 PodName 内嵌 \n 写入
+// 攻击者可控行）的污染面由此收敛。
+func sanitizeLogField(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // rejectRegister 回发 RegisterAck（accepted=false）并记录日志。
 func (s *Server) rejectRegister(c *conn, m *protocol.Message, reason string) {
-	log.Warnf("节点 %s 注册被拒绝: %s", m.Source, reason)
+	log.Warnf("节点 %s 注册被拒绝: %s", sanitizeLogField(m.Source), sanitizeLogField(reason))
 	s.sendTo(c, m.Source, protocol.TypeRegisterAck, m.ID,
 		RegisterAckPayload{Accepted: false, Message: reason})
 }
@@ -804,7 +863,7 @@ func (s *Server) handlePodStatus(c *conn, m *protocol.Message) {
 	// payload 缺省/空 nodeID 时以消息 Source 为准（消息来源即权威）
 	ps.NodeID = m.Source
 	s.notifyPodStatus(ps.NodeID, ps)
-	log.Infof("收到节点 %s 的 PodStatus: %s/%s phase=%s", ps.NodeID, ps.Namespace, ps.PodName, ps.Phase)
+	log.Infof("收到节点 %s 的 PodStatus: %s/%s phase=%s", sanitizeLogField(ps.NodeID), sanitizeLogField(ps.Namespace), sanitizeLogField(ps.PodName), sanitizeLogField(ps.Phase))
 }
 
 // handleAck 处理边侧返回的通用 Ack：记录日志，并匹配可靠投递的在途等待者
@@ -815,7 +874,7 @@ func (s *Server) handleAck(c *conn, m *protocol.Message) {
 	if err := m.DecodePayload(&ack); err != nil {
 		log.Infof("收到节点 %s 的 Ack（payload 不可解析: %v）", m.Source, err)
 	} else {
-		log.Infof("收到节点 %s 的 Ack: code=%s message=%q", m.Source, ack.Code, ack.Message)
+		log.Infof("收到节点 %s 的 Ack: code=%s message=%q", sanitizeLogField(m.Source), sanitizeLogField(ack.Code), sanitizeLogField(ack.Message))
 	}
 	s.resolvePending(m)
 }

@@ -35,7 +35,15 @@ var (
 	// ErrChunkingUnsupported is returned for intermediate chunks ('C'):
 	// this milestone is single-chunk only (MaxChunkCount = 1).
 	ErrChunkingUnsupported = errors.New("opcua: intermediate chunks not supported")
+	// ErrPeerAbort 是对端 Abort 帧（'A'）的哨兵错误（PRT-16）：Abort 是
+	// 规范允许的发送方弃报行为，连接可继续，不应视作致命传输错误。
+	ErrPeerAbort = errors.New("opcua: peer abort frame")
 )
+
+// MaxReceiveBufferSize 是客户端可接受的 Acknowledge.ReceiveBufferSize
+// 上限（PRT-09）：防恶意/异常服务器宣告超大接收缓冲，诱使客户端在
+// 大 payload 时按其分配发送缓冲（默认 64KB，上限 16MB）。
+const MaxReceiveBufferSize uint32 = 16 << 20
 
 // Conn is a SecurityPolicy None OPC UA TCP transport.
 //
@@ -160,6 +168,11 @@ func (c *Conn) applyAck(a *Acknowledge) error {
 		return fmt.Errorf("opcua: server buffer sizes too small (recv=%d send=%d, min=%d)",
 			a.ReceiveBufferSize, a.SendBufferSize, MinBufferSize)
 	}
+	// PRT-09：ReceiveBufferSize 上限校验（验收硬指标 ≤16MB）。
+	if a.ReceiveBufferSize > MaxReceiveBufferSize {
+		return fmt.Errorf("opcua: server ReceiveBufferSize %d exceeds limit %d",
+			a.ReceiveBufferSize, MaxReceiveBufferSize)
+	}
 	c.protocolVersion = a.ProtocolVersion
 	// Outbound: we must respect the server's receive buffer and its
 	// maximum accepted message size (0 = unlimited).
@@ -177,7 +190,9 @@ func (c *Conn) applyAck(a *Acknowledge) error {
 }
 
 // readFrame reads one complete frame: 12-byte header (validated),
-// then the body. Intermediate chunks are rejected.
+// then the body. Intermediate chunks are rejected. Abort frames ('A')
+// are read to completion and reported via ErrPeerAbort (PRT-16: abort
+// is a normal protocol event, not a transport failure).
 func (c *Conn) readFrame() (string, []byte, error) {
 	var hdr [HeaderSize]byte
 	if _, err := io.ReadFull(c.netConn, hdr[:]); err != nil {
@@ -186,6 +201,15 @@ func (c *Conn) readFrame() (string, []byte, error) {
 	h, err := DecodeHeader(hdr[:])
 	if err != nil {
 		return "", nil, err
+	}
+	// PRT-16：Abort 帧读完整帧体后以哨兵错误返回，由上层决定“继续读”
+	// 或“洁净收场”；不再当作普通致命错误直接断连。
+	if h.ChunkType == ChunkAbort {
+		body := make([]byte, h.MessageSize-HeaderSize)
+		if _, err := io.ReadFull(c.netConn, body); err != nil {
+			return "", nil, err
+		}
+		return h.MessageType, body, ErrPeerAbort
 	}
 	if h.ChunkType != ChunkFinal {
 		return "", nil, ErrChunkingUnsupported

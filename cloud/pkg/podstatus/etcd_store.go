@@ -53,8 +53,8 @@ func WithKeyPrefix(prefix string) Option {
 // 返回拷贝。写路径（Upsert/Delete）先 etcd 后内存，etcd 失败内存不动。
 type EtcdPodStore struct {
 	mu     sync.Mutex
-	mem    *PodStatusStore   // 读写缓存（读路径唯一事实源）
-	kv     etcdstore.KVStore // 持久化事实源（写穿目标）
+	mem    *PodStatusStore      // 读写缓存（读路径唯一事实源）
+	kv     etcdstore.KVStore    // 持久化事实源（写穿目标）
 	ext    etcdstore.ExtendedKV // 扩展面（watch；非扩展 KV 时为 nil，退化路径）
 	prefix string
 

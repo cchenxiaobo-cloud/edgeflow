@@ -2,6 +2,7 @@ package opcua
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -82,6 +83,10 @@ func Open(endpoint string, timeout time.Duration) (*Client, error) {
 
 // createSession 发送 CreateSession 请求并解析响应。
 func (c *Client) createSession() error {
+	nonce, err := randomNonce(32)
+	if err != nil {
+		return fmt.Errorf("opcua: 生成 ClientNonce 失败: %w", err)
+	}
 	var e encoder
 	req := CreateSessionRequest{
 		RequestHeader: RequestHeader{
@@ -97,7 +102,7 @@ func (c *Client) createSession() error {
 		ServerUri:               c.endpoint,
 		EndpointUrl:             c.endpoint,
 		SessionName:             fmt.Sprintf("edgeflow-%d", time.Now().UnixNano()),
-		ClientNonce:             randomNonce(32),
+		ClientNonce:             nonce,
 		RequestedSessionTimeout: defaultSessionTimeout,
 	}
 	if err := req.encodeUA(&e); err != nil {
@@ -292,20 +297,47 @@ func (c *Client) Close() error {
 }
 
 // randomNonce 生成指定长度的随机字节（32 字节客户端 nonce）。
-func randomNonce(n int) []byte {
+// PRT-06：crypto/rand 失败必须报错中止，禁止降级为时间戳派生
+// （可预测 nonce 在启用加密策略时是严重漏洞，且违反“rand 失败即报错”统一策略）。
+func randomNonce(n int) ([]byte, error) {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
-		// crypto/rand 失败极罕见；退化为时间戳派生（仅影响 nonce 熵）
-		for i := range b {
-			b[i] = byte(time.Now().UnixNano() >> (i * 8 % 63))
-		}
+		return nil, fmt.Errorf("opcua: crypto/rand 读取失败: %w", err)
 	}
-	return b
+	return b, nil
 }
 
 // ---------------------------------------------------------------------
 // 订阅 API（v0.15.0 高层入口）
 // ---------------------------------------------------------------------
+
+// deleteSubBestEffort 尽力删除服务端订阅（PRT-10：Subscribe 失败清理路径
+// 专用）。忽略一切错误：清理失败时订阅随 lifetimeCount 自然过期，
+// 此处不掩盖原始失败原因；探针可观测。
+func (c *Client) deleteSubBestEffort(subId uint32) {
+	if subId == 0 {
+		return
+	}
+	var e encoder
+	req := DeleteSubscriptionsRequest{
+		RequestHeader: RequestHeader{
+			AuthenticationToken: c.authTok,
+			Timestamp:           DateTimeFromTime(time.Now()),
+			RequestHandle:       c.sc.nextReqID(),
+		},
+		SubscriptionIds: []uint32{subId},
+	}
+	if err := req.encodeUA(&e); err != nil {
+		return
+	}
+	if body, err := c.roundTrip(e.buf); err == nil {
+		var d decoder
+		d.b = body
+		if resp, derr := decodeDeleteSubscriptionsResponse(&d); derr == nil && !resp.ServiceResult.IsGood() {
+			clientProbe("deleteSubBestEffort: 订阅 %d 清除服务失败 %s", subId, resp.ServiceResult)
+		}
+	}
+}
 
 // Subscribe 创建订阅并把 nodes 全部登记为 Reporting 的 DataChange 监测项。
 // 返回可直接消费通知的通道（首次调用时启动读泵）。
@@ -366,20 +398,25 @@ func (c *Client) Subscribe(nodes []NodeId, publishingIntervalMs float64) (<-chan
 		ItemsToCreate:      items,
 	}
 	if err := miReq.encodeUA(&me); err != nil {
+		// PRT-10：订阅已建，失败路径必须清理，防孤儿订阅直到 lifetime 过期。
+		c.deleteSubBestEffort(csResp.SubscriptionId)
 		return nil, err
 	}
 	mBody, err := c.roundTrip(me.buf)
 	if err != nil {
+		c.deleteSubBestEffort(csResp.SubscriptionId) // PRT-10
 		return nil, fmt.Errorf("opcua: CreateMonitoredItems: %w", err)
 	}
 	var md decoder
 	md.b = mBody
 	miResp, err := decodeCreateMonitoredItemsResponse(&md)
 	if err != nil {
+		c.deleteSubBestEffort(csResp.SubscriptionId) // PRT-10
 		return nil, fmt.Errorf("opcua: decode CreateMonitoredItems response: %w", err)
 	}
 	for _, r := range miResp.Results {
 		if !r.StatusCode.IsGood() {
+			c.deleteSubBestEffort(csResp.SubscriptionId) // PRT-10
 			return nil, fmt.Errorf("opcua: 监测项创建失败: %s", r.StatusCode)
 		}
 	}
@@ -396,6 +433,7 @@ func (c *Client) Subscribe(nodes []NodeId, publishingIntervalMs float64) (<-chan
 
 	// 悬挂首条 Publish：通知将由泵分发至 pubCh
 	if err := c.sendPublish(); err != nil {
+		c.deleteSubBestEffort(csResp.SubscriptionId) // PRT-10
 		return nil, err
 	}
 	return out, nil
@@ -518,6 +556,9 @@ func (c *Client) roundTrip(body []byte) ([]byte, error) {
 	case <-time.After(c.timeout):
 		c.mu.Lock()
 		delete(c.waiters, reqID)
+		// PRT-17：超时放弃的 waiter 对应 pending 条目顺带清理，
+		// 防兜底表条目滞留至滚动覆盖或 Close。
+		delete(c.pending, reqID)
 		c.mu.Unlock()
 		return nil, fmt.Errorf("opcua: 响应超时（reqID=%d，泵模式）", reqID)
 	}
@@ -605,6 +646,9 @@ func (c *Client) pumpLoop() {
 			}
 			if len(c.pending) < 64 {
 				c.pending[ridge] = append([]byte{}, rbody...)
+			} else {
+				// PRT-07：兑底表满丢弃无主帧必须可观测（跳帧不再静默）。
+				clientProbe("pump: pending 表满，丢弃无主帧 reqID=%d", ridge)
 			}
 			c.mu.Unlock()
 			continue
@@ -624,16 +668,27 @@ func (c *Client) consumePublishFrame(body []byte) {
 		clientProbe("consume 解码失败: %v", err)
 		return
 	}
-	clientProbe("consume 成功 seq=%d items=%d", resp.NotificationMessage.SequenceNumber, len(resp.NotificationMessage.NotificationData))
 	c.mu.Lock()
+	// PRT-07：发布序号防重放——seq==0（非法，序号从 1 起）与
+	// seq<=lastPubSeq（重复/回退：重放或服务器异常）直接丢弃，
+	// 不投递、不生成 ack；lastPubSeq 不回退。
+	seq := resp.NotificationMessage.SequenceNumber
+	if seq == 0 {
+		c.mu.Unlock()
+		clientProbe("consume 丢弃非法序号 seq=0")
+		return
+	}
+	if c.lastPubSeq != 0 && seq <= c.lastPubSeq {
+		c.mu.Unlock()
+		clientProbe("consume 丢弃重复/回退序号 seq=%d last=%d", seq, c.lastPubSeq)
+		return
+	}
 	pr := PublishResult{
 		SubscriptionId: resp.SubscriptionId,
-		SequenceNumber: resp.NotificationMessage.SequenceNumber,
+		SequenceNumber: seq,
 	}
 	gap := pr.SequenceNumber > c.lastPubSeq+1 && c.lastPubSeq != 0
-	if pr.SequenceNumber > c.lastPubSeq {
-		c.lastPubSeq = pr.SequenceNumber
-	}
+	c.lastPubSeq = seq
 	for _, nd := range resp.NotificationMessage.NotificationData {
 		switch nd.Kind {
 		case NotificationDataChange:
@@ -646,7 +701,7 @@ func (c *Client) consumePublishFrame(body []byte) {
 	if len(resp.NotificationMessage.NotificationData) == 0 {
 		pr.KeepAlive = true // 空通知：仅序号推进
 	}
-	c.acks = append(c.acks, SubscriptionAcknowledgement{SubscriptionId: resp.SubscriptionId, SequenceNumber: resp.NotificationMessage.SequenceNumber})
+	c.acks = append(c.acks, SubscriptionAcknowledgement{SubscriptionId: resp.SubscriptionId, SequenceNumber: seq})
 	out := c.pubCh
 	c.mu.Unlock()
 	_ = gap // gap 处理由订阅方（重建订阅）决定；此处仅透传
@@ -671,6 +726,13 @@ func (c *Client) consumePublishFrame(body []byte) {
 func (c *Client) readFrame() (string, []byte, error) {
 	msgType, body, err := c.sc.conn.ReadMessage()
 	if err != nil {
+		// PRT-16：泵路径同样容忍 Abort：跳过该帧继续泵循环，
+		// 不再因对端弃报整条连接退出。返回零值帧让 pumpLoop 走
+		// parseSecureFrame 失败→continue 的既有惯性路径。
+		if errors.Is(err, ErrPeerAbort) {
+			clientProbe("pump: peer abort frame, skip")
+			return "", nil, nil
+		}
 		return "", nil, err
 	}
 	if msgType == MsgError {

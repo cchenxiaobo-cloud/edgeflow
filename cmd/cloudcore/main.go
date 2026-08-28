@@ -58,6 +58,28 @@ func sendQuotaBytes() int64 {
 	return cloudhub.SendQuotaBytesDefault
 }
 
+// allowedOriginsFromEnv 解析 WebSocket Origin 白名单（v0.23.0，SEC-05）：
+// EDGEFLOW_CLOUDCORE_ALLOWED_ORIGINS 逗号分隔（自动去空白、丢空段）；
+// 未设置/空 → nil = 全放行（默认行为不变）。无有效性校验（URL 形态由
+// 部署者负责，精确匹配语义下错误配置只会导致对应 Origin 被拒，可观测）。
+func allowedOriginsFromEnv() []string {
+	v := os.Getenv("EDGEFLOW_CLOUDCORE_ALLOWED_ORIGINS")
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	origins := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			origins = append(origins, t)
+		}
+	}
+	if len(origins) == 0 {
+		return nil
+	}
+	return origins
+}
+
 func main() {
 	// run 返回进程退出码：非 0 表示启动/运行失败
 	if code := run(os.Args[1:], os.Stdout, os.Stderr); code != 0 {
@@ -177,7 +199,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cloudhub.WithCompress(cfg.Compress),
 		// v0.22.0（CHN-02）：单连接发送缓冲字节配额，默认 64MiB；
 		// EDGEFLOW_CLOUDHUB_SEND_QUOTA_BYTES 覆盖（字节数，<=0 关闭计量）。
-		cloudhub.WithSendQuotaBytes(sendQuotaBytes()))
+		cloudhub.WithSendQuotaBytes(sendQuotaBytes()),
+		// v0.23.0（SEC-05）：WebSocket Origin 白名单，EDGEFLOW_CLOUDCORE_ALLOWED_ORIGINS
+		// 逗号分隔；未设置/空 = 全放行（默认行为不变），非空 = 携带 Origin 的
+		// 握手必须精确命中（缺失 Origin 放行，边缘主路径不受影响）。
+		cloudhub.WithAllowedOrigins(allowedOriginsFromEnv()))
 
 	// ── v0.4.0 存储装配：嵌入式 etcd 写穿 vs v0.3.x 纯内存 ────────────────
 	// 配置 fail-fast（与 nodecontroller.DurationsFromEnv 同约定）：
@@ -520,11 +546,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 				log.Errorf("PodStatus handler panic（nodeID=%s）: %v", nodeID, r)
 			}
 		}()
+		// v0.23.0（SEC-06）：PodName/Phase 等边缘可控字段先消毒再进日志
+		// （store 内字段不消毒，保留原始值供 API 消费方自行裁决展示层转义）。
+		safePhase, safePod := sanitizeEdgeField(ps.Phase), sanitizeEdgeField(ps.PodName)
 		// phase 白名单校验（M2B 审查 P2-3）：未知阶段视为脏数据，丢弃并告警
 		switch ps.Phase {
 		case "Running", "Stopped", "Absent", "Error", "Unknown":
 		default:
-			log.Warnf("收到未知 PodStatus phase %q（node=%s pod=%s），丢弃", ps.Phase, nodeID, ps.PodName)
+			log.Warnf("收到未知 PodStatus phase %q（node=%s pod=%s），丢弃", safePhase, nodeID, safePod)
 			return
 		}
 		// Absent = 边缘确认 Pod 已从期望集合删除：清除云端记录，
@@ -678,18 +707,25 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// 其余形态 Provider 为 nil → 指标行不输出（保持 5 项基线输出不变）。
 	var leaseRenewalFailures func() uint64
 	var leaseHBRebuilds func() uint64
+	// CHN-19（v0.23.0）：续约队列水位与丢弃计数，仅外部模式注入
+	var leaseRenewQueueDepth func() int
+	var leaseRenewQueueDropped func() uint64
 	if lr, ok := nodeReg.(*registry.LeaseEtcdRegistry); ok {
 		leaseRenewalFailures = lr.RenewalFailures
 		leaseHBRebuilds = lr.HBRebuildsCount
+		leaseRenewQueueDepth = lr.RenewQueueDepth
+		leaseRenewQueueDropped = lr.RenewQueueDropped
 	}
 	m := metrics.New(metrics.Providers{
-		Nodes:                nodeReg.Count,
-		Pods:                 podStore.Count,
-		Devices:              deviceStore.Count,
-		ActiveConnections:    hub.ConnCount,
-		LeaseRenewalFailures: leaseRenewalFailures,
-		LeaseHBRebuilds:      leaseHBRebuilds,
-		HubSendBufferBytes:   func() int64 { return hub.BroadcastBytesInView() },
+		Nodes:                  nodeReg.Count,
+		Pods:                   podStore.Count,
+		Devices:                deviceStore.Count,
+		ActiveConnections:      hub.ConnCount,
+		LeaseRenewalFailures:   leaseRenewalFailures,
+		LeaseHBRebuilds:        leaseHBRebuilds,
+		LeaseRenewQueueDepth:   leaseRenewQueueDepth,
+		LeaseRenewQueueDropped: leaseRenewQueueDropped,
+		HubSendBufferBytes:     func() int64 { return hub.BroadcastBytesInView() },
 	})
 	mux.HandleFunc("GET /metrics", m.Handler())
 
@@ -739,6 +775,21 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
 	}
+}
+
+// sanitizeEdgeField 剥离边缘上报字段中的 CR/LF 与控制字符（含 DEL），
+// 供日志打印前消毒（v0.23.0 SEC-06）：被入侵/恶意边缘节点可在
+// PodName/Phase/DeviceName 等字段携带 \r\n 伪造日志行、污染安全审计线索。
+// 策略：控制字符（<0x20 含 \t 与 CRLF，及 0x7f DEL）逐一剥离；可打印
+// 字符（含多字节 UTF-8）原样保留——日志可读性优先，不转义。
+// 取值来源为边缘上报，长度已由 CloudHub 报文配额约束，此处不做截断。
+func sanitizeEdgeField(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // logEncodeError 记录响应编码失败（M1B P2-6）：典型场景是客户端已断开

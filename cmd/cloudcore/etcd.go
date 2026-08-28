@@ -14,11 +14,11 @@ import (
 	"edgeflow/cloud/pkg/etcdstore"
 	"edgeflow/cloud/pkg/modelrelease"
 	"edgeflow/cloud/pkg/modelrepo"
+	"edgeflow/cloud/pkg/podstatus"
 	"edgeflow/cloud/pkg/registry"
 	"edgeflow/pkg/httpx"
 	"edgeflow/pkg/log"
 	"edgeflow/pkg/protocol"
-	"edgeflow/cloud/pkg/podstatus"
 )
 
 // nodeRetentionFromEnv 解析 EDGEFLOW_CLOUDCORE_NODE_RETENTION（默认

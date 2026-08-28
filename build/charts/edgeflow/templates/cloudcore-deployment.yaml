@@ -121,8 +121,26 @@ spec:
             - name: EDGEFLOW_CLOUDCORE_ETCD_ALLOW_INSECURE
               value: "1"
               {{- end }}
-              {{- if and .Values.cloudcore.etcd.external.auth.username .Values.cloudcore.etcd.external.auth.password }}
+              {{- /* SEC-07（v0.23.0）：密码注入二选一——existingSecret（secretKeyRef）优先，
+                   否则回落 deprecated 明文 password；同时设置 → 渲染期 fail（二义性拒绝）。 */}}
+              {{- if and .Values.cloudcore.etcd.external.auth.existingSecret .Values.cloudcore.etcd.external.auth.password }}
+              {{- fail "cloudcore.etcd.external.auth: existingSecret 与 password 互斥，请二选一（SEC-07：推荐 existingSecret）" }}
+              {{- end }}
+              {{- if .Values.cloudcore.etcd.external.auth.existingSecret }}
+              {{- if not .Values.cloudcore.etcd.external.auth.username }}
+              {{- fail "cloudcore.etcd.external.auth.username 必填：existingSecret 仅注入密码（secretKeyRef），用户名仍走 EDGEFLOW_CLOUDCORE_ETCD_USERNAME（应用侧要求成对配置）" }}
+              {{- end }}
+            # RBAC 用户名密码鉴权（v0.8.0，L1；v0.23.0 SEC-07）：密码经 Secret 注入（推荐），用户名仍明文 env
+            - name: EDGEFLOW_CLOUDCORE_ETCD_USERNAME
+              value: {{ .Values.cloudcore.etcd.external.auth.username | quote }}
+            - name: EDGEFLOW_CLOUDCORE_ETCD_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.cloudcore.etcd.external.auth.existingSecret | quote }}
+                  key: {{ .Values.cloudcore.etcd.external.auth.secretKey | default "password" | quote }}
+              {{- else if and .Values.cloudcore.etcd.external.auth.username .Values.cloudcore.etcd.external.auth.password }}
             # RBAC 用户名密码鉴权（v0.8.0，L1）：与 TLS/mTLS 正交；只设其一 → 应用启动 fail-fast
+            # ⚠ SEC-07 deprecated：密码明文写 values；生产建议改用 existingSecret（secretKeyRef 注入）
             - name: EDGEFLOW_CLOUDCORE_ETCD_USERNAME
               value: {{ .Values.cloudcore.etcd.external.auth.username | quote }}
             - name: EDGEFLOW_CLOUDCORE_ETCD_PASSWORD

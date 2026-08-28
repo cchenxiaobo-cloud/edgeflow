@@ -3,7 +3,9 @@ package edged
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -75,8 +77,28 @@ type Edged struct {
 	removedRetention time.Duration
 
 	// restartRec 记录每个副本的重启历史（CrashLoopBackOff 输入，P1-2）。
+	// CHN-11 串行化边界（T-13，v0.23.0）：restartRec 的「读-决策-写」横跨
+	// 多个 restartMu 持有段（健康检查读 inBackoff → 放锁决策/重启 → 再取锁
+	// 写 count+1），段间一致性不由 restartMu 保证，依赖 reconcileMu 串行化
+	// 兜底（loop 与测试直调互斥）——并行化 reconcile 前必须把读判定与写
+	// 累加收敛到同一锁域，否则丢失更新竞态（审计台账 CHN-11，
+	// .cluster/edgeflow-audit/ledger-consolidated.md）。
+	// 锁序（T-13）：restartMu 是叶子锁（仅保护 restartRec），不与其他锁嵌套；
+	// 与 e.mu（status）无嵌套关系（setStatus 在 restartMu 持有域之外调用）。
 	restartMu  sync.Mutex
 	restartRec map[string]restartRecord
+
+	// listFailedAlertRounds 是连续 listFailed 告警阈值（CHN-20 观测锚点，
+	// v0.23.0）：EDGEFLOW_LISTFAILED_ALERT_ROUNDS，默认 0 = 行为完全不变
+	// （不加告警）；>0 时连续 listFailed 轮次达到阈值打一条 distinct Warn
+	// 并重置计数（下一轮仍失败则重新累加）。list 成功轮清零。
+	// 访问限于 reconcileMu 串行化域（与 cleanupStatus 同一轮调谐内），
+	// 无需额外锁（同 CHN-11 的串行化兑底边界，见 docs/ARCHITECTURE.md）。
+	listFailedAlertRounds int
+
+	// listFailedStreak 是当前连续 listFailed 轮次（CHN-20；与
+	// listFailedAlertRounds 一起构成告警状态，同在 reconcileMu 串行化域内读写）。
+	listFailedStreak int
 
 	mu     sync.RWMutex // 保护 status 与生命周期字段
 	status map[string]PodStatus
@@ -93,14 +115,31 @@ func New(store *metamanager.Store, rt ContainerRuntime, interval time.Duration) 
 		interval = DefaultReconcileInterval
 	}
 	return &Edged{
-		store:            store,
-		rt:               rt,
-		interval:         interval,
-		status:           make(map[string]PodStatus),
-		triggerCh:        make(chan struct{}, 1),
-		removedRetention: DefaultRemovedRetention,
-		restartRec:       make(map[string]restartRecord),
+		store:                 store,
+		rt:                    rt,
+		interval:              interval,
+		status:                make(map[string]PodStatus),
+		triggerCh:             make(chan struct{}, 1),
+		removedRetention:      DefaultRemovedRetention,
+		restartRec:            make(map[string]restartRecord),
+		listFailedAlertRounds: defaultListFailedAlertRounds(),
 	}
+}
+
+// EnvListFailedAlertRounds 是连续 listFailed 告警阈值的环境变量
+// （CHN-20，v0.23.0）：Edged 构造时读取一次。
+const EnvListFailedAlertRounds = "EDGEFLOW_LISTFAILED_ALERT_ROUNDS"
+
+// defaultListFailedAlertRounds 解析 EDGEFLOW_LISTFAILED_ALERT_ROUNDS：
+// 未设置/非法/负值 → 0（行为完全不变，不加告警）；>0 → 阈值生效。
+// （沿 resources.go 既有 env 回退模式：坏值一律回退默认而非报错。）
+func defaultListFailedAlertRounds() int {
+	if v := os.Getenv(EnvListFailedAlertRounds); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 // Start 启动调谐循环（goroutine），立即执行一轮调谐。
@@ -314,6 +353,10 @@ func (e *Edged) reconcileOnce() error {
 				continue
 			}
 			// 运行异常（停止/未知/缺失）：先查退避状态
+			// CHN-11 串行化边界（T-13）：此读段与下方写段（restartRec[instKey]=
+			// count+1）跨锁域分离，段间决策（EnsureRunning/退避跳过）不在锁内，
+			// 依赖 reconcileMu 串行化兑底（见 restartMu 字段声明处说明），
+			// 不可在未收敛锁域前单独并行化。
 			e.restartMu.Lock()
 			rec := e.restartRec[instKey]
 			inBackoff := rec.count >= maxRestartBeforeBackoff &&
@@ -400,7 +443,8 @@ func (e *Edged) reconcileOnce() error {
 		removed++
 	}
 
-	// 5. 状态表清理（P2-1）：移除已不在期望集合的残留条目（策略见 cleanupStatus）
+	// 5. 状态表清理（P2-1）：移除已不在期望集合的残留条目（策略见 cleanupStatus；
+	// 内含 CHN-20 连续 listFailed 告警判定）
 	e.cleanupStatus(desiredKeys, local, listErr != nil)
 
 	// 6. 摘要日志

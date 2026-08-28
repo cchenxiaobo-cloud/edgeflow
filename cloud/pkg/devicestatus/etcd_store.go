@@ -52,12 +52,12 @@ type KVStore = etcdstore.KVStore
 // 完整快照；旧数据（无 reported 字段）反序列化为零值，兼容无损。
 // 字段名与 DeviceStatus 的 JSON tag 一致（小驼峰）。
 type deviceShadowRecord struct {
-	NodeID        string             `json:"nodeID"`
-	DeviceName    string             `json:"deviceName"`
-	Namespace     string             `json:"namespace"`
-	Desired       map[string]float64 `json:"desired"`
-	Properties    map[string]float64 `json:"properties,omitempty"`
-	LastReportedAt int64             `json:"lastReportedAt,omitempty"`
+	NodeID         string             `json:"nodeID"`
+	DeviceName     string             `json:"deviceName"`
+	Namespace      string             `json:"namespace"`
+	Desired        map[string]float64 `json:"desired"`
+	Properties     map[string]float64 `json:"properties,omitempty"`
+	LastReportedAt int64              `json:"lastReportedAt,omitempty"`
 }
 
 // toDeviceShadowRecord 把内存态设备状态收缩为持久化 DTO（完整快照）。
@@ -123,9 +123,9 @@ var ErrDesiredConflict = errors.New("devicestatus: SetDesired 写冲突（并发
 // 内存存储（自身加锁），不触碰 etcd。
 type EtcdDeviceStore struct {
 	mu     sync.Mutex
-	mem    *DeviceStatusStore  // 读写缓存（读路径唯一事实源）
-	kv     KVStore             // 持久化事实源（写穿目标）
-	ext     etcdstore.ExtendedKV // 扩展面（CAS/watch；非扩展 KV 时为 nil，退化路径）
+	mem    *DeviceStatusStore   // 读写缓存（读路径唯一事实源）
+	kv     KVStore              // 持久化事实源（写穿目标）
+	ext    etcdstore.ExtendedKV // 扩展面（CAS/watch；非扩展 KV 时为 nil，退化路径）
 	prefix string
 
 	watchRev atomic.Int64 // LoadAnchored 返回的锚点（watch 应用器重连/重放用）
@@ -137,7 +137,8 @@ type EtcdDeviceStore struct {
 //
 // 错误：kv 为 nil、或前缀非法（空 / 不以 "/" 开头）时返回 error。
 // 内存缓存从空开始，启动后调用方需先 Load(ctx) 灌回持久化数据再对外服务。
-func NewEtcdDeviceStore(kv KVStore, opts ...Option) (*EtcdDeviceStore, error) {	if kv == nil {
+func NewEtcdDeviceStore(kv KVStore, opts ...Option) (*EtcdDeviceStore, error) {
+	if kv == nil {
 		return nil, fmt.Errorf("devicestatus: NewEtcdDeviceStore 需要非 nil KVStore")
 	}
 	cfg := deviceStoreConfig{prefix: KeyPrefixDeviceStatus}
@@ -153,7 +154,7 @@ func NewEtcdDeviceStore(kv KVStore, opts ...Option) (*EtcdDeviceStore, error) {	
 	return &EtcdDeviceStore{
 		mem:    NewStore(),
 		kv:     kv,
-		ext:     ext,
+		ext:    ext,
 		prefix: strings.TrimSuffix(cfg.prefix, "/"),
 	}, nil
 }

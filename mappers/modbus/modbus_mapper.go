@@ -234,9 +234,19 @@ func (m *ModbusMapper) Stop() error {
 // withConn 保证连接就绪后执行 op；传输层失败时断开重连并重试一次。
 // Modbus 异常应答（*modbus.ModbusError）是设备已应答的业务错误，不重试。
 // 调用方需保证 op 不再次加锁（本方法持有 m.mu）。
+//
+// PRT-21：整体时间预算 = 2×timeout（初始尝试 1× + 重试阶段 1×），
+// 由 deadline 统一约束。goburrow 的单步操作（Connect 拨号、Send 读写）
+// 已各自限在 handler.Timeout（本 Mapper 初始化为 m.timeout），但旧实现
+// 无整体预算：最坏 Connect+op+重连+op 四步串行可达约 4×timeout（20s），
+// 且全程独占 m.mu，采集与指令下发互阻。现在重试阶段开始前检查剩余
+// 预算，耗尽则直接返回原始错误（错误信息含预算值，可观测）。
+// 传输类错误按 goburrow 语义判定：非 *modbus.ModbusError 即重试
+// （含 net.Error 超时）。
 func (m *ModbusMapper) withConn(op func() error) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	deadline := time.Now().Add(m.withConnBudget())
 	if err := m.handler.Connect(); err != nil {
 		return fmt.Errorf("连接 Modbus 设备 %s 失败: %w", m.addr, err)
 	}
@@ -244,6 +254,11 @@ func (m *ModbusMapper) withConn(op func() error) error {
 		var mbErr *modbus.ModbusError
 		if errors.As(err, &mbErr) {
 			return err // 设备异常应答（非法地址/值等）：语义错误，无需重连
+		}
+		// PRT-21：整体时间预算耗尽则放弃重试（放弃的仅是"重试"，
+		// 原始错误照常上抛；下次操作从头开始新预算）。
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("传输层错误后重试预算已耗尽（整体预算 2×timeout=%s），放弃重试（原始错误: %v）", (2 * m.timeout).String(), err)
 		}
 		// 传输层错误：连接可能已失效（设备重启/断网），断开后重连重试一次
 		_ = m.handler.Close()
@@ -255,6 +270,16 @@ func (m *ModbusMapper) withConn(op func() error) error {
 		}
 	}
 	return nil
+}
+
+// withConnBudget 返回 withConn 的整体时间预算（PRT-21）。
+// timeout 非正（未配置/测试注入）时回退 DefaultTimeout，保证预算恒为正值。
+func (m *ModbusMapper) withConnBudget() time.Duration {
+	t := m.timeout
+	if t <= 0 {
+		t = DefaultTimeout
+	}
+	return 2 * t
 }
 
 // Collect 采集设备当前属性值：一次读 0x0000-0x0001（温度/湿度保持寄存器），

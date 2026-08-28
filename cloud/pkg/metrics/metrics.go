@@ -48,6 +48,16 @@ type Providers struct {
 	// （CHN-02，v0.22.0；cloudhub.Server.BroadcastBytesInView）：广播 N 节点
 	// 内存峰值可观测。nil → 指标行不输出；字节计量关闭（配额<=0）时恒 0。
 	HubSendBufferBytes func() int64
+	// LeaseRenewQueueDepth 返回外部 etcd 模式续约队列当前水位
+	// （CHN-19，v0.23.0；lease_registry.RenewQueueDepth）。瞬时 gauge，
+	// 持续逼近容量 4096 说明入队速率高于 worker 消费速率。
+	// 仅外部多副本形态注入，其余形态 nil → 指标行不输出。
+	LeaseRenewQueueDepth func() int
+	// LeaseRenewQueueDropped 返回外部 etcd 模式续约队列满丢弃累计计数
+	// （CHN-19，v0.23.0；lease_registry.RenewQueueDropped）。counter，
+	// 持续增长 = hub 入队速率超过 worker 消费速率（worker 卡死/etcd 变慢）。
+	// 仅外部多副本形态注入，其余形态 nil → 指标行不输出。
+	LeaseRenewQueueDropped func() uint64
 }
 
 // Metrics 是云端指标注册表：持有 gauge Provider 与请求计数，负责渲染
@@ -208,6 +218,19 @@ func (m *Metrics) render() []byte {
 	if m.providers.HubSendBufferBytes != nil {
 		fmt.Fprintf(&b, "# HELP edgeflow_cloudcore_hub_send_buffer_bytes 全部活跃连接发送缓冲在途字节合计（慢客户端积压观测：广播 N 节点内存峰值≈该值；单连接配额默认 64MiB，逼近配额 = 存在慢客户端）。\n# TYPE edgeflow_cloudcore_hub_send_buffer_bytes gauge\n%s %d\n",
 			"edgeflow_cloudcore_hub_send_buffer_bytes", m.providers.HubSendBufferBytes())
+	}
+	// 续约队列水位（CHN-19，v0.23.0）：Provider 注入时始终输出。瞬时 gauge，
+	// 容量 4096（renewQueueCapacity）；持续逼近容量说明入队速率高于消费速率。
+	if m.providers.LeaseRenewQueueDepth != nil {
+		fmt.Fprintf(&b, "# HELP edgeflow_cloudcore_lease_renew_queue_depth 外部 etcd 心跳续约队列当前水位（容量 4096；持续逼近容量 = 入队速率高于 worker 消费速率，配合 dropped 增长率评估队列容量）。\n# TYPE edgeflow_cloudcore_lease_renew_queue_depth gauge\n%s %d\n",
+			"edgeflow_cloudcore_lease_renew_queue_depth", m.providers.LeaseRenewQueueDepth())
+	}
+	// 续约队列丢弃计数（CHN-19，v0.23.0）：Provider 注入时始终输出（0 值也
+	// 有监控意义——面板可基于增长率告警）。持续增长 = worker 卡死/etcd 变慢，
+	// 丢弃走既有背压语义（下次心跳自愈），计数把丢弃从静默变为可观测。
+	if m.providers.LeaseRenewQueueDropped != nil {
+		fmt.Fprintf(&b, "# HELP edgeflow_cloudcore_lease_renew_queue_dropped_total 外部 etcd 心跳续约队列满丢弃累计数（队列满时非阻塞入队丢弃 + 下次心跳自然重入队自愈；持续增长 = worker 卡死/etcd 变慢）。\n# TYPE edgeflow_cloudcore_lease_renew_queue_dropped_total counter\n%s %d\n",
+			"edgeflow_cloudcore_lease_renew_queue_dropped_total", m.providers.LeaseRenewQueueDropped())
 	}
 	return []byte(b.String())
 }

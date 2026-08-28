@@ -17,6 +17,7 @@ package main
 //   - rollback：<output-dir>
 //
 // 示例：
+//   keadm batch --op=join --file=nodes.txt --cloudcore-ip=192.168.1.10 --token-file=/path/token
 //   keadm batch --op=join --file=nodes.txt --cloudcore-ip=192.168.1.10 --token=abc123
 //   keadm batch --op=upgrade --file=dirs.txt --version=v0.2.0
 //   keadm batch --op=upgrade --file=dirs.txt --version=v0.2.0 --batch-size=10 --pause-between=30s
@@ -40,7 +41,8 @@ type batchOptions struct {
 	File          string // 节点清单文件
 	CloudCoreIP   string // join：云端 IP（清单行可覆盖）
 	CloudCorePort string // join：CloudHub 端口
-	Token         string // join：接入令牌
+	Token         string // join：接入令牌（--token 直传；生产建议 --token-file）
+	TokenFile     string // join：接入令牌文件路径（SEC-03，v0.23.0）；与 --token 同给时本参数优先
 	TLS           bool   // join：启用 mTLS
 	OutputDir     string // join：批量产物根目录（每节点 <根>/<node-id>/）；upgrade/rollback 用清单行
 	Version       string // upgrade：目标版本
@@ -61,7 +63,8 @@ func runBatch(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&opts.File, "file", "", "节点清单文件路径（必填；每行一个节点）")
 	fs.StringVar(&opts.CloudCoreIP, "cloudcore-ip", "", "云端 CloudHub 节点 IP（join 必填；清单行可覆盖）")
 	fs.StringVar(&opts.CloudCorePort, "cloudcore-port", opts.CloudCorePort, "CloudHub 端口（join）")
-	fs.StringVar(&opts.Token, "token", "", "接入令牌（join 必填）")
+	fs.StringVar(&opts.Token, "token", "", "接入令牌（join 必填；生产建议 --token-file）")
+	fs.StringVar(&opts.TokenFile, "token-file", "", "接入令牌文件路径（join，SEC-03，v0.23.0：从文件读 token；与 --token 同给时本参数优先）")
 	fs.BoolVar(&opts.TLS, "tls", false, "启用云边 mTLS（join）")
 	fs.StringVar(&opts.OutputDir, "output-dir", opts.OutputDir, "批量产物根目录（join 时每个节点生成 <根>/<node-id>/）")
 	fs.StringVar(&opts.Version, "version", "", "目标版本 vX.Y.Z（upgrade 必填）")
@@ -110,9 +113,27 @@ func runBatch(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "错误: 缺少必填参数 --file（节点清单文件）")
 		return exitUsage
 	}
-	if opts.Op == "join" && strings.TrimSpace(opts.Token) == "" {
-		_, _ = fmt.Fprintln(stderr, "错误: join 批量操作缺少 --token（接入令牌）")
-		return exitUsage
+	// join：端口校验（SEC-08，与 join 单节点同规则）+ token 来源处理
+	// （--token-file 优先读文件，缺省回落 --token，语义与 join 完全一致）。
+	if opts.Op == "join" {
+		if err := validateCloudCorePort(opts.CloudCorePort); err != nil {
+			_, _ = fmt.Fprintf(stderr, "错误: %v\n", err)
+			return exitUsage
+		}
+		if opts.TokenFile != "" {
+			b, err := os.ReadFile(opts.TokenFile)
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "错误: 读取 --token-file=%s 失败: %v\n", opts.TokenFile, err)
+				return exitUsage
+			}
+			if t := strings.TrimSpace(string(b)); t != "" {
+				opts.Token = t
+			}
+		}
+		if strings.TrimSpace(opts.Token) == "" {
+			_, _ = fmt.Fprintln(stderr, "错误: join 批量操作缺少 --token（接入令牌；生产建议 --token-file=<路径>）")
+			return exitUsage
+		}
 	}
 	if opts.Op == "upgrade" && strings.TrimSpace(opts.Version) == "" {
 		_, _ = fmt.Fprintln(stderr, "错误: upgrade 批量操作缺少 --version（目标版本）")

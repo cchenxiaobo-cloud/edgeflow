@@ -11,7 +11,9 @@ package main
 //   - releaseNotes ≤1024 字节，创建期写入后不可变（PATCH 白名单不含）。
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -54,7 +56,9 @@ func (a *modelAPI) handleRetryRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req retryReleaseRequest
-	if err := decodeWriteBody(w, r, &req); err != nil && err.Error() != "EOF" {
+	// v0.23.0（CLD-10）：EOF 判定改 errors.Is（http.MaxBytesReader 包装
+	// 或未来 Decode 换实现时，字符串等值判定会漏配）。
+	if err := decodeWriteBody(w, r, &req); err != nil && !errors.Is(err, io.EOF) {
 		// 空 body 容忍（缺省 nodeIDs=全部 failed 节点）；坏 JSON 才 400
 		badRequest(w, "invalid json body")
 		return
@@ -108,8 +112,12 @@ func (a *modelAPI) handleRetryRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if version.Status != modelrepo.VersionStatusActive {
+		// v0.23.0（CLD-12）：422 文案按 orig.Status 细分（校验链序不变：
+		// 终态检查先行 → 本分支 orig 恒为终态；orig 状态只进文案，
+		// 状态码与 422 语义维持 v0.20.0 不变）。
 		writeErr(w, http.StatusUnprocessableEntity,
-			fmt.Sprintf("retry target version %s/%s must be active (status=%s)", modelName, orig.Version, version.Status), nil)
+			fmt.Sprintf("retry of release %s (status=%s): target version %s/%s must be active (status=%s)",
+				releaseID, orig.Status, modelName, orig.Version, version.Status), nil)
 		return
 	}
 	// 克隆新发布：执行参数全量继承（预算等 opt-in 字段也继承——与"补发
@@ -120,8 +128,14 @@ func (a *modelAPI) handleRetryRelease(w http.ResponseWriter, r *http.Request) {
 	if batchSize < 1 {
 		batchSize = 1 // 旧种子/异常头归一化（缺省 1，与 createRelease applyDefaults 同口径）
 	}
+	// v0.23.0（CHN-16）：rand 失败即报错（500），不再有时间戳兑底 ID。
+	cloneID, err := newReleaseID()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error(), nil)
+		return
+	}
 	rel := &modelrepo.ModelRelease{
-		ID:            newReleaseID(),
+		ID:            cloneID,
 		Model:         modelName,
 		Version:       orig.Version,
 		Target:        modelrepo.ReleaseTarget{Type: "nodeIDs", NodeIDs: target},

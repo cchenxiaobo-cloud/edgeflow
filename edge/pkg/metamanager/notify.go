@@ -103,6 +103,10 @@ func (s *Store) notifyPodDelete(namespace, name string) {
 // notify 向全部订阅者广播事件（非阻塞投递，慢消费者丢弃，见文件头背压策略）。
 // 持有 subMu 期间只做非阻塞通道写（select+default 永不阻塞），
 // 因此广播本身不会阻塞 SavePod/DeletePod 的调用路径。
+//
+// 丢弃观测（CHN-14）：default 分支丢弃时对 droppedEvents 原子自增，
+// 经 DroppedEvents() 暴露。计数器自增不依赖 subMu（原子操作），
+// 放在 select 判定之后不影响投递路径语义。
 func (s *Store) notify(ev Event) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
@@ -110,7 +114,19 @@ func (s *Store) notify(ev Event) {
 		select {
 		case sub.ch <- ev:
 		default:
-			// 通道已满：订阅者消费不及时，丢弃本事件（可被全量对账兜底）
+			// 通道已满：订阅者消费不及时，丢弃本事件（可被全量对账兜底）。
+			// 计数暴露丢弃规模，供诊断背压影响面（不打印日志，
+			// 避免广播路径上的日志风暴；访问器供上层周期性读取）。
+			s.droppedEvents.Add(1)
 		}
 	}
+}
+
+// DroppedEvents 返回累计丢弃的 Pod 变更事件数（CHN-14 观测锚点）。
+// 丢弃发生在订阅者通道缓冲满时（非阻塞投递的背压策略，见 notify.go
+// 文件头）。该值是进程生命周期内的累计值，不清零；边缘端当前无
+// metrics 暴露面，访问器供日志/诊断/未来暴露面复用。
+// 并发安全：原子读取，任意 goroutine 调用均安全。
+func (s *Store) DroppedEvents() uint64 {
+	return s.droppedEvents.Load()
 }

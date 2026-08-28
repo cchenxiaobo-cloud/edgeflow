@@ -16,6 +16,37 @@
 // 应用器只读铁律（设计 §2.2②）：watch 应用器只改内存，绝不发 etcd 写；
 // 「修复性重写」（本副本在服务该节点时 hb 键被删）经续约队列由 worker
 // 执行——应用器本身零写，用 fakeKV 写计数单测锁定。
+//
+// ── 并发与锁序约定（T-13，v0.23.0 工程化）──────────────────────────────
+//
+// 本文件锁清单（全文件唯一权威，改锁结构必须同步此处）：
+//   - contactMu：叶子锁（仅保护 lastContact 单字段，markContact /
+//     EtcdHealthyWithin），绝不与任何其他锁嵌套；
+//   - lm：注册表自身并发结构（localHB / aliveHB / pending /
+//     pendingEvents / retrying / lastQueueWarn / lastReload）；
+//   - reg.mu（内层 Registry 的锁，定义见 registry.go）：内存节点缓存
+//     （nodes / offlineSince / gcEvents）；
+//   - renewCh：channel 自带同步（非阻塞 select），不与任何锁组合。
+//
+// 锁序规则（LOCK ORDER）：
+//  1. 现状不变式：lm 与 reg.mu **永不嵌套持有**——全部跨结构访问都是
+//     「取 A → 用 → 放 A → 取 B → 用 → 放 B」的串行序列（四个双锁点
+//     seedAnchored / upsertFromRecord / gcOnce / gcSweepOne 均如此，
+//     各点有 LOCK ORDER 断言注释）；
+//  2. 若未来演进必须嵌套（不推荐），唯一允许方向是 lm → reg.mu
+//     （外层先取 lm 再取 reg.mu），**禁止反向**（持有 reg.mu 期间取
+//     lm）——reg.mu 属内层 Registry，无法感知 lm，反向嵌套会引入
+//     内→外依赖且与全部已审计路径相悖；
+//  3. lm 持有期间禁止 etcd I/O 与任何可能长时阻塞的调用（grant/
+//     watch/list 均在锁外）；lm 内仅允许内存 map 操作与降频 Warn
+//     （enqueue 的限频日志，快路径）；
+//  4. 原子计数（watchRev / renewalFailures / hbRebuilds /
+//     renewQueueDropped）不依赖任何锁，可与上述任意锁自由组合。
+//
+// 串行化边界（CHN-11 关联）：跨锁域「读-决策-写」序列（读 lm 视角 →
+// 决策 → 写 lm）依赖调用方单 goroutine 串行化兑底（watch 应用器单
+// goroutine / GC 循环单 goroutine），并行化前必须先收敛到单一锁域
+// （理由与边缘侧同型问题见 docs/ARCHITECTURE.md「并发与锁序约定」节）。
 package registry
 
 import (
@@ -95,8 +126,9 @@ type LeaseEtcdRegistry struct {
 	kv   etcdstore.ExtendedKV // 扩展 KV 面（CAS/watch/lease）
 	opts LeaseRegOptions
 
-	// lm 保护以下注册表自身的并发结构（锁序：绝不嵌套持有 reg.mu 再取 lm；
-	// 唯一嵌套方向 reg.mu → lm 也不允许，读取 aliveHB 一律先取 lm 再取 reg.mu）。
+	// lm 保护以下注册表自身的并发结构（锁序权威说明见文件头「并发与锁序
+	// 约定」：lm 与 reg.mu 永不嵌套；若必须嵌套仅允许 lm → reg.mu，禁止
+	// 反向；读取 aliveHB 一律先取 lm 再取 reg.mu——现状为串行两段式）。
 	lm            sync.Mutex
 	localHB       map[string]int64 // nodeID → 本地最近心跳 ts（本副本在服务 = 连接活着）
 	aliveHB       map[string]int64 // etcd 视角 hb 键集合：nodeID → lastSeen
@@ -122,7 +154,17 @@ type LeaseEtcdRegistry struct {
 	// 消费（持续增长 = 租约抖动/键被外部删除，与 renewalFailures 互补）。
 	hbRebuilds atomic.Uint64
 
-	contactMu   sync.Mutex
+	// renewQueueDropped 是续约队列满导致的入队丢弃累计计数（CHN-19 观测
+	// 锚点，v0.23.0）：enqueue 的 select default 分支自增（丢弃即 +1），
+	// 进程生命周期累计、不清零。供 /metrics
+	// edgeflow_cloudcore_lease_renew_queue_dropped_total 消费：持续增长
+	// = hub 读循环入队速率超过续约 worker 消费速率（worker 卡死/etcd 变慢），
+	// 与 RenewQueueDepth 水位搭配判断容量（cap 4096）是否需要调整。
+	renewQueueDropped atomic.Uint64
+
+	contactMu sync.Mutex
+	// 锁序断言（T-13）：contactMu 是叶子锁，仅保护下方 lastContact 单字段，
+	// 绝不与其他锁嵌套（markContact/EtcdHealthyWithin 是仅有的两个持有域）。
 	lastContact time.Time // 最近一次成功的 etcd 接触（healthz 多副本模式用）
 
 	closeCh chan struct{}
@@ -202,6 +244,25 @@ func (r *LeaseEtcdRegistry) HBRebuildsCount() uint64 {
 	return r.hbRebuilds.Load()
 }
 
+// RenewQueueDepth 返回续约队列当前水位（CHN-19 观测锚点，v0.23.0，
+// /metrics 用）：队列中待消费的续约请求数（0..renewQueueCapacity=4096）。
+// 瞬时值 gauge：持续逼近容量说明入队速率持续高于 worker 消费速率
+// （worker 卡死/etcd 变慢），配合 RenewQueueDropped 增长率判断队列
+// 容量是否需要调整。
+// 并发安全：channel len 是瞬时快照读，无需加锁。
+func (r *LeaseEtcdRegistry) RenewQueueDepth() int {
+	return len(r.renewCh)
+}
+
+// RenewQueueDropped 返回续约队列满导致的入队丢弃累计计数（CHN-19，
+// v0.23.0，供 /metrics edgeflow_cloudcore_lease_renew_queue_dropped_total
+// 消费）。丢弃是非阻塞入队的既有背压语义（enqueue：丢弃 + 降频 Warn，
+// 受影响节点租约到期后由下一次心跳自然重入队自愈），本计数暴露丢弃规模。
+// 并发安全：原子读取，任意 goroutine 调用均安全。
+func (r *LeaseEtcdRegistry) RenewQueueDropped() uint64 {
+	return r.renewQueueDropped.Load()
+}
+
 // servingGrace 是「本副本正在服务该节点」的判定窗 = leaseTTL/2：
 //   - 正常断连：hb 到期删除事件距最后一次本地心跳 ≈ TTL > TTL/2 → 判离线 ✓
 //   - 租约抖动（etcd 故障恢复）：本地心跳持续刷新（≤30s）< TTL/2 → 修复性重写 ✓
@@ -237,10 +298,16 @@ func (r *LeaseEtcdRegistry) enqueueRepairRenew(nodeID string) {
 }
 
 // enqueue 入队统一实现。
+// 锁序（T-13）：default 分支持 lm 仅做丢弃计数（原子，锁外语义等价）与
+// 降频 Warn——无 etcd I/O、无 reg.mu 接触，符合文件头锁序规则 3。
 func (r *LeaseEtcdRegistry) enqueue(req renewRequest) {
 	select {
 	case r.renewCh <- req:
 	default:
+		// 队列满：丢弃 + 计数（CHN-19）+ 降频 Warn。丢弃是非阻塞背压语义：
+		// 受影响节点租约到期后由下一次心跳自然重入队（自愈）；计数暴露
+		// 丢弃规模供 /metrics 消费（见 renewQueueDropped 字段注释）。
+		r.renewQueueDropped.Add(1)
 		r.lm.Lock()
 		now := r.opts.now()
 		if now.Sub(r.lastQueueWarn) >= 30*time.Second {
@@ -516,6 +583,10 @@ func (r *LeaseEtcdRegistry) LoadAnchored(ctx context.Context) (int64, error) {
 
 // seedAnchored 整体重建内存（hb 视角三态）：无 hb 的节点保持 Seed 语义
 // （Unknown、LastHeartbeatAt=0、offlineSince=now）。
+//
+// LOCK ORDER（T-13）：reg.mu → 释放 → lm —— 串行两段式，两锁不嵌套
+// （符合文件头锁序规则 1；watchLoop/reloadAll 单 goroutine 调用，
+// CHN-11 串行化边界，见文件头）。若未来改嵌套仅允许 lm → reg.mu。
 func (r *LeaseEtcdRegistry) seedAnchored(nodes []NodeInfo, alive map[string]int64) {
 	since := r.opts.now().UnixMilli()
 	r.reg.mu.Lock()
@@ -663,6 +734,11 @@ func (r *LeaseEtcdRegistry) applyDelete(key string) {
 // upsertFromRecord 台账 upsert（watch 应用器/重放用）：已有节点只更新元数据
 // 字段（RegisteredAt 以 etcd 为准——CAS 保证首见保留），状态字段以 hb 视角
 // 为准；新节点按 aliveHB 判定 Ready/Unknown 插入。
+//
+// LOCK ORDER（T-13）：lm → 释放 → reg.mu —— 串行两段式，两锁不嵌套
+// （符合文件头锁序规则 1；应用器/重放单 goroutine，CHN-11 串行化边界）。
+// 先读 aliveHB（lm 域）拿快照，再进 reg.mu 写节点表；若未来改嵌套仅允许
+// lm → reg.mu（先取 lm 读 aliveHB 再持 reg.mu 写，方向不变）。
 func (r *LeaseEtcdRegistry) upsertFromRecord(rec nodeRecord) {
 	r.lm.Lock()
 	lastSeen, alive := r.aliveHB[rec.NodeID]
@@ -883,6 +959,9 @@ func (r *LeaseEtcdRegistry) CleanupLoop(ctx context.Context, interval time.Durat
 //     （节点**保留在内存**、仍可被 API 读到、状态保持 Offline——v0.5.0 在
 //     保留期后立即消失，现多出 ≤1 扫描周期的「过期但可见」窗口，无感知差异）；
 //   - 阶段二（sweepPending）：对每个 pending 节点做守卫删除（见 gcSweepOne）。
+//
+// LOCK ORDER（T-13）：reg.mu.RLock → 释放 → lm（标记 pending），全部串行
+// 两段式、两锁不嵌套（文件头锁序规则 1；GC 循环单 goroutine，CHN-11 边界）。
 func (r *LeaseEtcdRegistry) gcOnce(ctx context.Context) {
 	now := r.opts.now().UnixMilli()
 	ttlMs := r.opts.OfflineTTL.Milliseconds()
@@ -915,6 +994,11 @@ func (r *LeaseEtcdRegistry) gcOnce(ctx context.Context) {
 //   - rev 不匹配（重注册/他副本重写）→ 放弃删除 + 恢复，零级联事件；
 //   - 网络错误 → 保持 pending，下轮重试（重试自带最新 rev，绝不删错版）；
 //   - CompareAndDelete 成功 → 内存移除 + pendingEvents（级联严格排在其后，R4-2）。
+//
+// LOCK ORDER（T-13）：本函数多处「lm 取用放」与「reg.mu（含 RLock）取用放」
+// 全部串行两段式、两锁不嵌套（符合文件头锁序规则 1；GC 循环单 goroutine，
+// CHN-11 串行化边界）；etcd I/O（Get/GetWithRev/CompareAndDelete）均在
+// 两把锁的持有域之外（文件头锁序规则 3）。
 func (r *LeaseEtcdRegistry) gcSweepOne(ctx context.Context, id string) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

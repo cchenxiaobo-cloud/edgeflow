@@ -108,6 +108,10 @@ func (h Hello) Encode() ([]byte, error) {
 	if h.EndpointUrl == "" {
 		return nil, fmt.Errorf("%w: Hello requires an endpoint URL", ErrInvalidEncoding)
 	}
+	// PRT-15：EndpointUrl 长度上限（服务端一般限 4096；超长视为构造异常）。
+	if len(h.EndpointUrl) > MaxEndpointUrlLength {
+		return nil, fmt.Errorf("%w: Hello EndpointUrl length %d exceeds limit %d", ErrTooLong, len(h.EndpointUrl), MaxEndpointUrlLength)
+	}
 	var e encoder
 	e.u32(h.ProtocolVersion)
 	e.u32(h.ReceiveBufferSize)

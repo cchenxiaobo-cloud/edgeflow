@@ -131,6 +131,10 @@ type Simulator struct {
 	press    float64
 	setpoint float64
 	stopCh   chan struct{}
+
+	// PRT-23：优雅退出——Stop 等待 fluctuate/acceptLoop/全部连接
+	// goroutine 结束，测试频繁启停不再短暂堆积。
+	wg sync.WaitGroup
 }
 
 // New 创建模拟器（未启动）。listenAddr 为空时默认 "127.0.0.1:14840"。
@@ -194,17 +198,28 @@ func (s *Simulator) Start() error {
 		s.realAddr = real
 	}
 	s.stopCh = make(chan struct{})
-	go s.fluctuate()
-	go s.acceptLoop()
+	s.wg.Add(2)
+	go func() {
+		defer s.wg.Done()
+		s.fluctuate()
+	}()
+	go func() {
+		defer s.wg.Done()
+		s.acceptLoop()
+	}()
 	log.Infof("OPC-UA 模拟器已启动（%s，端点 %s，点位 6 个）", s.addr, s.endpointURL)
 	return nil
 }
 
-// Stop 停止监听与波动 goroutine。
+// Stop 停止监听与波动 goroutine，并等待全部后台 goroutine 退出（PRT-23）。
 func (s *Simulator) Stop() error {
 	s.mu.Lock()
+	already := s.stopping
 	s.stopping = true
 	s.mu.Unlock()
+	if already {
+		return nil // 幂等：不重复等待（WaitGroup 复用会 panic）
+	}
 	if s.ln != nil {
 		_ = s.ln.Close()
 	}
@@ -214,6 +229,24 @@ func (s *Simulator) Stop() error {
 		default:
 			close(s.stopCh)
 		}
+	}
+	// 关闭全部存活连接（解除 readFrame 阻塞），连接 goroutine 退出时
+	// 自会从 sessions 删除自身。
+	s.sessMu.Lock()
+	for cs := range s.sessions {
+		_ = cs.out.Close()
+	}
+	s.sessMu.Unlock()
+	// 等待 fluctuate/acceptLoop/连接 goroutine 收敛（带上限防异常悬挂）。
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		log.Infof("opcuasim: Stop 等待 goroutine 退出超时（5s），继续")
 	}
 	return nil
 }
@@ -281,6 +314,8 @@ func (s *Simulator) acceptLoop() {
 
 // handleConn 处理单条连接：HEL→ACK → OPN→OPNF → MSG 服务分派 → CLO。
 func (s *Simulator) handleConn(c net.Conn) {
+	s.wg.Add(1) // PRT-23：Stop 等待全部连接 goroutine
+	defer s.wg.Done()
 	defer func() {
 		s.mu.Lock()
 		s.connCount--
@@ -367,9 +402,7 @@ func (s *Simulator) handleConn(c net.Conn) {
 		s.sessMu.Lock()
 		delete(s.sessions, cs)
 		s.sessMu.Unlock()
-		cs.mu.Lock()
-		cs.closed = true
-		cs.mu.Unlock()
+		cs.closeSession() // PRT-23：广播 done，悬挂 publish goroutine 立即退出
 	}()
 	for {
 		msgType, body, err = readFrame(c)
@@ -524,18 +557,23 @@ func (s *Simulator) handlePublish(cs *connSession, sh opcua.SequenceHeader, rest
 	}
 	cs.pubWaiting = true
 	cs.pubReqID = sh.RequestID
-	// 后台 goroutine 等新信封或超时回 KeepAlive 兑现 Publish 请求
+	// 后台 goroutine 等新信封或连接关闭；PRT-23：不再 200ms 空转轮询
+	// 30s，改 select 监听唤醒信（notifyPush/signalWake）与 done（连接
+	// 退出即回收），并给 KeepAlive 兑现一个上限定时器。
+	done := cs.done
 	go func() {
-		ticker := time.NewTicker(200 * time.Millisecond)
+		ticker := time.NewTicker(cs.publishingInterval)
 		defer ticker.Stop()
-		for i := 0; i < 150; i++ { // 最长 30s 窗口
-			<-ticker.C
-			cs.mu.Lock()
-			if !cs.pubWaiting {
-				cs.mu.Unlock()
+		for {
+			select {
+			case <-done:
 				return
-			}
-			if len(cs.pending) > 0 {
+			case <-cs.wake:
+				cs.mu.Lock()
+				if !cs.pubWaiting || len(cs.pending) == 0 {
+					cs.mu.Unlock()
+					continue
+				}
 				env := cs.pending[0]
 				cs.pending = cs.pending[1:]
 				env.resp.ResponseHeader = opcua.ResponseHeader{
@@ -550,8 +588,28 @@ func (s *Simulator) handlePublish(cs *connSession, sh opcua.SequenceHeader, rest
 				}
 				cs.mu.Unlock()
 				return
+			case <-ticker.C:
+				// KeepAlive 兑现：悬挂超一个发布周期无信封则回空通知
+				cs.mu.Lock()
+				if !cs.pubWaiting {
+					cs.mu.Unlock()
+					return
+				}
+				cs.pubWaiting = false
+				ka := opcua.PublishResponse{
+					ResponseHeader: opcua.ResponseHeader{
+						Timestamp:     opcua.DateTimeFromTime(time.Now()),
+						RequestHandle: sh.RequestID,
+						ServiceResult: 0,
+					},
+				}
+				out, oerr := opcua.EncodePublishResponse(ka)
+				if oerr == nil {
+					writeServerFrame(cs.out, opcua.MsgSecureMessage, cs.channelID, cs.tokenID, &cs.nextSeqHdr, sh.RequestID, out)
+				}
+				cs.mu.Unlock()
+				return
 			}
-			cs.mu.Unlock()
 		}
 	}()
 	return true, nil

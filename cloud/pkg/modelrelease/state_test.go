@@ -135,14 +135,18 @@ func TestNodeResultTransitions_对拍(t *testing.T) {
 	}
 }
 
-// TestNumTransitions 表规模守卫：版本 2 条、发布 9 条、perNode 12 条
+// TestNumTransitions 表规模守卫：版本 2 条、发布 12 条、perNode 12 条
 // （全矩阵 4×3=12，防误删）。任何收缩都需主线知会（状态机是契约面）。
+// v0.23.0 主线同步：v0.22.0 T-06（CLD-01）补齐 paused 族 3 条
+// （running→paused / paused→running / paused→canceled）后表为 12 条，
+// 本守卫期望值漏同步（v0.22.0 集成遗漏，TestNumTransitions 在 55343e2
+// 即红）；按「增长需主线知会」条款由主线裁决同步为 12。
 func TestNumTransitions(t *testing.T) {
 	if len(VersionTransitions) != 2 {
 		t.Fatalf("VersionTransitions 应有 2 条，got %d", len(VersionTransitions))
 	}
-	if len(ReleaseTransitions) != 9 {
-		t.Fatalf("ReleaseTransitions 应有 9 条，got %d", len(ReleaseTransitions))
+	if len(ReleaseTransitions) != 12 {
+		t.Fatalf("ReleaseTransitions 应有 12 条，got %d", len(ReleaseTransitions))
 	}
 	if len(NodeResultTransitions) != 12 {
 		t.Fatalf("NodeResultTransitions 应有 12 条，got %d", len(NodeResultTransitions))

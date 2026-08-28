@@ -41,14 +41,12 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -443,12 +441,12 @@ type deploymentList struct {
 }
 
 // releaseResponse 是发布对象响应形态：内嵌 ModelRelease（字段平铺）+
-// summary 派生汇总（现算，非冗余存储，设计 §4.2）。列表场景不现算
-// summary（omitempty：零值省略；详情/创建/取消/回滚响应必带——创建时
-// total≥1 恒非零）。
+// summary 派生汇总（现算，非冗余存储，设计 §4.2）。v0.23.0（CLD-07
+// 口径统一）：summary 恒输出（去 omitempty）——详情/创建/取消/回滚
+// 响应必带，列表路径逐条现算填充，零值发布（total=0）与缺省可区分。
 type releaseResponse struct {
 	modelrepo.ModelRelease
-	Summary modelrelease.NodeSummary `json:"summary,omitempty"`
+	Summary modelrelease.NodeSummary `json:"summary"`
 }
 
 // summaryOf 现算发布 perNode 汇总（getRelease/cancel/rollback/create 响应共用）。
@@ -460,22 +458,31 @@ func (a *modelAPI) summaryOf(ctx context.Context, id string) modelrelease.NodeSu
 	return modelrelease.SummarizeNodes(results)
 }
 
-// newReleaseID 生成发布 ID（32 位十六进制，等价 128 位随机数；生成方式与
-// protocol.newID 同源——crypto/rand 首选，熵源失败回退时间戳+进程内计数，
-// 设计 §2.3：id 生成方式与 protocol.NewMessage 同源）。
-func newReleaseID() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err == nil {
-		return hex.EncodeToString(b)
-	}
-	var fb [16]byte
-	binary.BigEndian.PutUint64(fb[0:8], uint64(time.Now().UnixNano()))
-	binary.BigEndian.PutUint64(fb[8:16], releaseIDFallback.Add(1))
-	return hex.EncodeToString(fb[:])
+// summaryOfRelease 对已取出的 release 头现算 summary（v0.23.0 CLD-07：
+// 列表路径逐条填充，避免 list/get 双口径）。
+func (a *modelAPI) summaryOfRelease(ctx context.Context, rel *modelrepo.ModelRelease) releaseResponse {
+	return releaseResponse{ModelRelease: *rel, Summary: a.summaryOf(ctx, rel.ID)}
 }
 
-// releaseIDFallback 是 crypto/rand 失败时的进程内兜底计数器。
-var releaseIDFallback atomic.Uint64
+// newReleaseID 生成发布 ID（32 位十六进制，等价 128 位随机数；crypto/rand，
+// 设计 §2.3：id 生成方式与 protocol.NewMessage 同源）。v0.23.0（CHN-16）
+// 签名改为 (string, error)：熵源失败显式报错（API 层 500），删除时间戳兜底。
+func newReleaseID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := releaseIDRandRead(b); err != nil {
+		return "", fmt.Errorf("生成发布 ID 失败（crypto/rand 不可用）: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// v0.23.0（CHN-16）：熵源读取函数包级变量（与 pkg/protocol/id.go 的
+// randRead 同一先例，测试可注入失败路径）。失败语义为「rand 失败即报错」
+// ——不再回退时间戳+进程内计数（时钟跳变/倒退场景可重复，ID 重复会污染
+// 幂等去重键与台账主键），改为显式报错由 API 层返回 500。
+var releaseIDRandRead = rand.Read
+
+// （v0.23.0 CHN-16：原 releaseIDFallback 兜底计数器已删除，改「rand 失败
+// 即报错」语义，熵源注入点见下方 releaseIDRandRead。）
 
 // ── 模型端点（5）──────────────────────────────────────────────────────
 
@@ -836,9 +843,15 @@ func (a *modelAPI) createRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	// 6) guard + release 头键 + perNode pending 预写（存储层；202 返回）
 	nowCreated := time.Now().UnixMilli()
+	// v0.23.0（CHN-16）：rand 失败即报错（500），不再有时间戳兑底 ID。
+	releaseID, ridErr := newReleaseID()
+	if ridErr != nil {
+		writeErr(w, http.StatusInternalServerError, ridErr.Error(), nil)
+		return
+	}
 	release := &modelrepo.ModelRelease{
 		MirrorDigest: digest,
-		ID:           newReleaseID(), Model: modelName, Version: req.Version,
+		ID:           releaseID, Model: modelName, Version: req.Version,
 		Target: req.Target, TargetNodes: targetNodes,
 		BatchSize: req.BatchSize, PauseBetween: req.PauseBetween,
 		FailFast: *req.FailFast, PrevActive: prevActive,
@@ -947,7 +960,9 @@ func (a *modelAPI) listReleases(w http.ResponseWriter, r *http.Request) {
 	writePageHeaders(w, total)
 	items := make([]releaseResponse, 0, len(page))
 	for i := range page {
-		items = append(items, releaseResponse{ModelRelease: page[i]})
+		// v0.23.0（CLD-07）：列表逐条现算 summary，与 get 详情同口径
+		// （恒输出；ListNodeResults 单发布键读，非全表扫描）。
+		items = append(items, a.summaryOfRelease(r.Context(), &page[i]))
 	}
 	writeJSON(w, http.StatusOK, releaseList{Kind: "ModelReleaseList", APIVersion: "v1", Items: items})
 }

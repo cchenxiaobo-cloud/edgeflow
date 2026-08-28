@@ -38,10 +38,15 @@ spec:
               type: object
             spec:
               type: object
+              required:
+                - nodeID
               properties:
                 nodeID:
                   description: 节点唯一标识（由 keadm join 生成，用于云边通信鉴权）
                   type: string
+                  # v0.23.0（PRT-24）：关键 string 字段补校验标记（下同）。
+                  minLength: 1
+                  pattern: "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
                 role:
                   description: 节点角色：edge（默认）或 cloud
                   type: string
@@ -67,6 +72,8 @@ spec:
                       address:
                         description: 地址值，如 "192.168.1.10"
                         type: string
+                        minLength: 1
+                        pattern: "^[a-zA-Z0-9][a-zA-Z0-9.:_-]*$"
             status:
               description: 节点运行时状态（edgecore 上报，云端只读）
               type: object
@@ -90,6 +97,8 @@ spec:
                 version:
                   description: edgecore 版本号
                   type: string
+                  minLength: 1
+                  pattern: "^[a-zA-Z0-9][a-zA-Z0-9._+-]*$"
                 conditions:
                   description: 健康条件列表（如 Ready）
                   type: array
@@ -102,6 +111,8 @@ spec:
                       type:
                         description: 条件类型，如 "Ready"
                         type: string
+                        minLength: 1
+                        pattern: "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
                       status:
                         description: 条件状态：True / False / Unknown
                         type: string
@@ -112,6 +123,8 @@ spec:
                       reason:
                         description: 机器可读原因（如 HeartbeatTimeout）
                         type: string
+                        minLength: 1
+                        pattern: "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
                       message:
                         description: 人类可读说明
                         type: string

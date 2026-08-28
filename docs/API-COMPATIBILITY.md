@@ -128,3 +128,16 @@
 - 端点：零新增（总数维持 32）；`/api/v1/devices` 对 OPC-UA 设备自然扩展。
 - 新增 env（4 个，边缘侧 opt-in）：EDGEFLOW_OPCUA_ENDPOINT/NODES/DEVICE_NAME/NAMESPACE（见 DEPLOYMENT §14）。
 - 升级零迁移；老边缘零动作；零新依赖。
+
+## v0.23.0 兼容性增量（2026-08-28）
+
+本轮为响应形态口径统一轮：端点总数 42 不变，零新增/零删除；全部变化集中在发布对象响应形态，逐条登记如下。
+
+| 变更 | 涉及端点 | 兼容性 |
+|---|---|---|
+| 发布对象 `summary` 五计数恒现（去 omitempty；total/pending/running/succeeded/failed，零值发布输出全零对象而非字段缺省） | `POST .../releases`（202 响应）、`GET .../releases/{id}`、`GET .../releases`（逐条）、`POST .../releases/{id}/cancel`、`POST .../releases/{id}/rollback`、`POST .../releases/{id}/retry`、`PATCH .../releases/{id}`、`GET /api/v1/releases`（逐条） | **向后兼容（加字段）**：新增恒现响应字段，旧客户端按 JSON 宽容语义忽略未知字段；仅依赖「summary 字段缺失=零值发布」这一非承诺语义的客户端需改为判 `summary.total==0`（该语义从未入文档承诺） |
+| `GET /api/v1/releases` 响应自裸 `items` 数组改为 K8s List 包装 `{kind:"ReleaseList", apiVersion:"edgeflow.io/v1alpha1", items:[...]}` | `GET /api/v1/releases` | **破坏性（顶层形态变更）**：直接迭代响应顶层数组的客户端需改为读 `items` 字段；分页语义（status/limit/offset/X-Total-Count/排序）零变化。与模型域既有 K8s List 风格（ModelList/VersionList 等）对齐，属双口径收敛 |
+| `POST .../releases/{id}/retry` 对终态版本 422 文案携带 `orig.Status` | `POST .../releases/{id}/retry` | **零破坏**：状态码（422）与校验链序不变，仅错误文案信息量增加（机器可读解析不受影响，`error` 字段仍为字符串） |
+| `GET .../releases/{id}/snapshot` summary 口径与详情/列表统一（五计数同源） | `GET .../releases/{id}/snapshot` | **零破坏**：字段集不变，数值口径收敛 |
+
+云边协议与 CRD 说明：`pkg/protocol` Validate 新增 Version 宽松格式校验（`^v[0-9]+$`，非空既有契约不变；Timestamp 显式不校验）——NewMessage 产出的信封（Version="v1"）全部通过，旧边缘零改动；CRD `config/crd/*.yaml` 关键 string 字段补 minLength/pattern 校验标记（K8s 准入层拒绝脏对象），apis/ 类型零变化，已存在的合法对象全部兼容。

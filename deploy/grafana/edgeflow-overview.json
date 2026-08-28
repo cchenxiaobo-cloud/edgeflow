@@ -1,0 +1,132 @@
+{
+  "uid": "edgeflow-overview",
+  "title": "EdgeFlow Overview",
+  "description": "EdgeFlow cloudcore 观测总览（v0.23.0，T-12 观测面补齐）。指标源：cloudcore /metrics（Prometheus 文本格式，零第三方依赖实现）。CHN-19 新增 lease_renew_queue_depth / lease_renew_queue_dropped_total；CHN-14（边缘丢事件）为 Go 访问器无 metrics 暴露面、CHN-20（listFailed 告警）为日志面，见面板「边缘侧观测说明」。",
+  "tags": ["edgeflow", "cloudcore"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "已注册节点总数（含离线）",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "edgeflow_cloudcore_nodes_total", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "云端 Pod 状态记录数",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "edgeflow_cloudcore_pods_total", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "云端设备状态记录数",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "edgeflow_cloudcore_devices_total", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "CloudHub 活跃连接数",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "edgeflow_cloudcore_active_connections", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "CHN-19：续约队列水位（容量 4096）",
+      "description": "edgeflow_cloudcore_lease_renew_queue_depth（gauge）。持续逼近 4096 = 入队速率高于 worker 消费速率（worker 卡死/etcd 变慢）。",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 3276 },
+              { "color": "red", "value": 3686 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "expr": "edgeflow_cloudcore_lease_renew_queue_depth", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "CHN-19：续约队列丢弃增长（rate/5m）",
+      "description": "edgeflow_cloudcore_lease_renew_queue_dropped_total（counter）。丢弃走既有背压语义（下次心跳自愈）；增长率 > 0 持续 = worker 卡死/etcd 变慢，需告警。",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        { "refId": "A", "expr": "rate(edgeflow_cloudcore_lease_renew_queue_dropped_total[5m])", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "L12：心跳租约续约失败增长（rate/5m）",
+      "description": "edgeflow_cloudcore_lease_renewal_failures_total（counter，v0.8.0）。持续增长 = etcd 侧异常/网络分区。",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        { "refId": "A", "expr": "rate(edgeflow_cloudcore_lease_renewal_failures_total[5m])", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "L12+：hb 键修复性重建增长（rate/5m）",
+      "description": "edgeflow_cloudcore_lease_hb_rebuilds_total（counter，v0.11.0）。持续增长 = 租约抖动/键被外部删除。",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        { "refId": "A", "expr": "rate(edgeflow_cloudcore_lease_hb_rebuilds_total[5m])", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "CHN-02：全部连接发送缓冲在途字节合计",
+      "description": "edgeflow_cloudcore_hub_send_buffer_bytes（gauge，v0.22.0）。广播 N 节点内存峰值≈该值；单连接配额默认 64MiB，逼近配额 = 存在慢客户端。",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        { "refId": "A", "expr": "edgeflow_cloudcore_hub_send_buffer_bytes", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "HTTP 请求速率（按路由模式与状态码）",
+      "description": "edgeflow_cloudcore_http_requests_total（counter）按 path/code 分桶求 rate。",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        { "refId": "A", "expr": "rate(edgeflow_cloudcore_http_requests_total[5m])", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ]
+    },
+    {
+      "id": 40,
+      "type": "text",
+      "title": "边缘侧观测说明（CHN-14 / CHN-20）",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 28 },
+      "options": {
+        "mode": "markdown",
+        "content": "## 边缘侧观测面（v0.23.0，T-12）\n\n**CHN-14 丢事件计数**：edgecore 的 metamanager.Store 暴露 `DroppedEvents() uint64`\n（订阅者通道满丢弃 Pod 变更事件的累计值）。edgecore 当前**无 /metrics 暴露面**，\n按审计决策不强行造暴露面——该值目前经 Go 访问器供日志/诊断/未来暴露面复用。\n\n**CHN-20 listFailed 告警**：edgecore 调谐连续 List 失败的聚合告警走**日志面**：\n设 `EDGEFLOW_LISTFAILED_ALERT_ROUNDS=N`（默认 0=行为不变），连续 N 轮失败打一条\n`Edged ALERT:` Warn 并重置；list 成功轮清零。日志采集侧（Loki 等）可按\n`Edged ALERT` 关键字配告警规则。\n\n**T-13 锁序**：见 docs/ARCHITECTURE.md §13「并发与锁序约定」与\ncloud/pkg/registry/lease_registry.go 文件头权威注释。"
+      }
+    }
+  ]
+}

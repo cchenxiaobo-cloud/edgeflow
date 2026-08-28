@@ -203,18 +203,25 @@ func (m *OPCUAMapper) Start(_ context.Context) error {
 }
 
 // Stop 停止 Mapper（幂等）：关闭客户端连接。
+// PRT-20：锁内仅做状态翻转与 client 指针快照+置空，Close 移到锁外——
+// 旧实现持锁 Close（最坏 5s），且订阅循环的 PubAck 不持锁读 m.client，
+// 与"置 nil"存在 nil 解引用竞态；先翻转 started/subOn 并置 nil 再 Close，
+// 循环体经锁内快照拿到旧 client（PubAck 对已关连接返回错误，安全吞掉）
+// 或拿到 nil（跳过），不再 panic。
 func (m *OPCUAMapper) Stop() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if !m.started {
+		m.mu.Unlock()
 		return nil
 	}
 	m.started = false
 	m.subOn = false
 	m.subValues = make(map[string]float64)
-	if m.client != nil {
-		_ = m.client.Close() // Close 内含 DeleteSubscriptions=true
-		m.client = nil
+	cl := m.client
+	m.client = nil
+	m.mu.Unlock()
+	if cl != nil {
+		_ = cl.Close() // Close 内含 DeleteSubscriptions=true
 	}
 	log.Infof("OPCUAMapper %s 已停止", m.deviceName)
 	return nil
@@ -235,7 +242,9 @@ func (m *OPCUAMapper) ensureClient() error {
 }
 
 // withClient 保证连接就绪后执行 op；传输层失败时断开重连并重试一次。
-// 调用方需保证 op 不再次加锁（本方法持有 m.mu）。
+// 调用方需保证 op 不再次加锁（本方法持有 m.mu）。重试与连接管理可能
+// 阻塞至多一个超时周期，参见 rebuildSubscription（PRT-19）与
+// ModbusMapper.withConn（PRT-21）的预算约束说明。
 func (m *OPCUAMapper) withClient(op func() error) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -604,7 +613,12 @@ func (m *OPCUAMapper) subscriptionLoop(ch <-chan opcuapkg.PublishResult) {
 			m.subDirty = false
 			m.mu.Unlock()
 		}
-		_ = m.client.PubAck() // 补挂下一条 Publish（维持发布窗口）
+		m.mu.Lock()
+		cl := m.client
+		m.mu.Unlock()
+		if cl != nil {
+			_ = cl.PubAck() // 补挂下一条 Publish（维持发布窗口）
+		}
 	}
 	// 通道关闭：泵异常退出或客户端已 Close。订阅模式仍在开启（subOn）
 	// 时按既有节奏重连重建；Stop 已关订阅则静默收尾。
@@ -619,30 +633,53 @@ func (m *OPCUAMapper) subscriptionLoop(ch <-chan opcuapkg.PublishResult) {
 	log.Infof("OPCUAMapper %s: 订阅通道关闭，订阅已停止", m.deviceName)
 }
 
-// rebuildSubscription 断线/状态变更后重建：删除旧订阅→重连→重新 Subscribe。
+// rebuildSubscription 断线/状态变更后重建：换出死连接→重连→重新 Subscribe。
+// PRT-19：旧实现全程持 m.mu——先在锁内对死连接逐协议清理（每步至多
+// m.timeout，叠加可达 15-20s），再持锁拨号/订阅（黑洞端点再挂 10s），
+// 期间并发 Collect/HandleCommand 全部被阻塞。现在锁内只做缓存复位与
+// client 指针换出；死连接的协议级清理（DeleteSubscription+Close，死 TCP
+// 上快速失败）、重连拨号、重订阅全部在锁外执行，仅最后装填新 client
+// 时短暂持锁。装填时校验 Mapper 仍启用（Stop 已发生则丢弃新连接）且
+// 无人抢先装填（并发 Start/重建 winner check），防泄漏。清理失败只影响
+// 服务端订阅随 lifetimeCount 自然过期，可观测性由探针兜底。
 func (m *OPCUAMapper) rebuildSubscription() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.subValues = make(map[string]float64)
 	m.subDirty = false
-	if m.client != nil {
-		_ = m.client.DeleteSubscription()
-		_ = m.client.Close()
-		m.client = nil
+	dead := m.client
+	m.client = nil
+	m.mu.Unlock()
+	if dead != nil {
+		go func(cl *opcuapkg.Client) {
+			_ = cl.DeleteSubscription()
+			_ = cl.Close()
+		}(dead)
 	}
 	nodes := make([]opcuapkg.NodeId, 0, len(m.points))
 	for _, p := range m.points {
 		nodes = append(nodes, p.NodeID)
 	}
-	if err := m.ensureClient(); err != nil {
+	// 锁外重连（PRT-19）：拨号受传输层超时约束，不再占用 m.mu。
+	c, err := opcuapkg.Open(m.endpoint, m.timeout)
+	if err != nil {
 		log.Warnf("OPCUAMapper %s: 订阅重建连接失败（%v），将在操作时重试", m.deviceName, err)
 		return
 	}
-	ch, err := m.client.Subscribe(nodes, 0)
+	ch, err := c.Subscribe(nodes, 0)
 	if err != nil {
+		_ = c.Close()
 		log.Warnf("OPCUAMapper %s: 订阅重建失败（%v）", m.deviceName, err)
 		return
 	}
+	m.mu.Lock()
+	if !m.started || m.client != nil {
+		// 重建期间发生了 Stop（或并发路径抢先装填）：丢弃新连接防泄漏。
+		m.mu.Unlock()
+		_ = c.Close()
+		return
+	}
+	m.client = c
+	m.mu.Unlock()
 	go m.subscriptionLoop(ch)
 	log.Infof("OPCUAMapper %s 订阅已重建", m.deviceName)
 }

@@ -2,31 +2,25 @@ package protocol
 
 import (
 	"crypto/rand"
-	"encoding/binary"
 	"encoding/hex"
-	"sync/atomic"
-	"time"
+	"fmt"
 )
 
-// randRead 是熵源读取函数（包级变量，测试可注入失败路径，P3-1）。
+// randRead 是熵源读取函数（包级变量，测试可注入失败路径，P3-1 先例保留）。
 var randRead = rand.Read
 
-// fallbackIDCounter 是 crypto/rand 失败时的兜底计数器：进程内单调递增，
-// 与时间戳组合保证同进程内唯一（P3-1）。
-var fallbackIDCounter atomic.Uint64
-
 // newID 生成消息唯一 ID（32 位十六进制随机串，等价于 128 位随机数）。
-// 首选 crypto/rand（分布式环境下不冲突；零依赖原则，不引入第三方 UUID 库）；
-// 熵源失败时（概率极低）回退到「纳秒时间戳 + 进程内递增计数器」——
-// 不 panic、不产出全零 ID，ID 格式不变（32 位十六进制），唯一性从
-// 密码学随机降级为进程内唯一（跨进程碰撞概率可忽略）。
-func newID() string {
+// 首选 crypto/rand（分布式环境下不冲突；零依赖原则，不引入第三方 UUID 库）。
+//
+// v0.23.0（CHN-16，主线裁决）：删除「纳秒时间戳 + 进程内计数器」降级路径，
+// 熵源失败即报错——msg.ID 承载云边信封的去重（dedup_keys）与请求-响应关联
+// （CorrelationID 配对）语义，静默降级为低熵可预测 ID 会放大碰撞与伪造面；
+// 与 OPC-UA nonce（B 路，PRT-06）、发布 ID（C 路，newReleaseID）统一为
+// 「rand 失败即报错」策略。调用方对错误显式处理（NewMessage 直接透传）。
+func newID() (string, error) {
 	b := make([]byte, 16)
-	if _, err := randRead(b); err == nil {
-		return hex.EncodeToString(b)
+	if _, err := randRead(b); err != nil {
+		return "", fmt.Errorf("protocol: crypto/rand 读取失败: %w", err)
 	}
-	var fb [16]byte
-	binary.BigEndian.PutUint64(fb[0:8], uint64(time.Now().UnixNano()))
-	binary.BigEndian.PutUint64(fb[8:16], fallbackIDCounter.Add(1))
-	return hex.EncodeToString(fb[:])
+	return hex.EncodeToString(b), nil
 }

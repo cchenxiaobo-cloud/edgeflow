@@ -40,6 +40,9 @@ spec:
                 protocol:
                   description: 设备通信协议家族，如 modbus / opcua / bluetooth / mqtt
                   type: string
+                  # v0.23.0（PRT-24）：关键 string 字段补校验标记（下同）。
+                  minLength: 1
+                  pattern: "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
                 properties:
                   description: 该型号支持的属性列表
                   type: array
@@ -52,6 +55,8 @@ spec:
                       name:
                         description: 属性名（同一型号内唯一）
                         type: string
+                        minLength: 1
+                        pattern: "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
                       description:
                         description: 属性的人类可读说明
                         type: string
@@ -82,3 +87,5 @@ spec:
                       unit:
                         description: 计量单位，如 celsius
                         type: string
+                        minLength: 1
+                        pattern: "^[a-zA-Z0-9][a-zA-Z0-9._/-]*$"

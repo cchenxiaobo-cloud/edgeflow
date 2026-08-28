@@ -40,3 +40,8 @@ vendor/
 # Agent 工作台（不入库）
 /.cluster/
 /.openclaw/
+
+# go build ./... 在仓库根丢弃的 main 包编译产物（CI 亦不收集）
+/cloudcore
+/edgecore
+/keadm

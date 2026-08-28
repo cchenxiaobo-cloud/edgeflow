@@ -149,13 +149,26 @@ cloudcore:
       # 逃生门：true = 允许「非回环端点 + 无 TLS」启动（默认拒绝，仅限可信内网/开发）；
       # 开启后注入 EDGEFLOW_CLOUDCORE_ETCD_ALLOW_INSECURE=1（应用启动期打大告警）
       allowInsecure: false
-      # RBAC 用户名密码鉴权（v0.8.0 新增，L1）：非空注入 EDGEFLOW_CLOUDCORE_ETCD_USERNAME/PASSWORD
-      # （必须成对设置，只设其一 → 应用启动 fail-fast）；与 TLS/mTLS 正交（可叠加）。
-      # ⚠ 生产建议挂 K8s Secret 后经 envFrom/secretKeyRef 注入，勿明文写 values；
-      # 明文写 values 时请同时开启 etcd 侧最小权限角色（readwrite /edgeflow/）。
+      # RBAC 用户名密码鉴权（v0.8.0 新增，L1；v0.23.0 SEC-07 增加 Secret 引用方式）：
+      # 非空注入 EDGEFLOW_CLOUDCORE_ETCD_USERNAME/PASSWORD（必须成对生效，只设其一 →
+      # 应用启动 fail-fast）；与 TLS/mTLS 正交（可叠加）。
+      # 密码注入二选一（渲染期校验，同时设置 → fail，二义性拒绝）：
+      #   ① existingSecret（推荐，SEC-07）：引用既有 K8s Secret，模板经 valueFrom
+      #      secretKeyRef 注入 EDGEFLOW_CLOUDCORE_ETCD_PASSWORD，密码不落 values/git；
+      #   ② password（deprecated）：明文写 values——仅向后兼容保留；若使用，请同时
+      #      开启 etcd 侧最小权限角色（readwrite /edgeflow/）并限制 values 传播面。
+      # 创建 Secret 示例：
+      #   kubectl -n <ns> create secret generic edgeflow-etcd-auth --from-literal=password='<secret>'
       auth:
+        # existingSecret 是存放 etcd 密码的 K8s Secret 名（非空时启用 Secret 注入，
+        # password 字段被忽略；username 仍以明文 values 传递——应用侧要求成对配置）。
+        existingSecret: ""   # 例：edgeflow-etcd-auth
+        # secretKey 仅在 existingSecret 非空时生效：Secret 中存放密码的键名。
+        secretKey: "password"
+        # ⚠ deprecated（SEC-07，v0.23.0 起）：明文密码随 values/git 留存；保留仅为向后
+        # 兼容，与 existingSecret 同时设置 → 渲染期 fail。生产建议 existingSecret。
         username: ""   # 例：edgeflow
-        password: ""   # 例：<secret>
+        password: ""   # 例：<secret>（deprecated：建议改用 existingSecret）
       # 心跳租约 TTL（v0.6.0 新增，仅外部模式消费）：非空注入 EDGEFLOW_CLOUDCORE_NODE_LEASE_TTL；
       # 空 = 不注入，应用默认 300s（5m，= 10× 边缘心跳周期 30s）。
       # 调参权衡（故障免疫 vs 检测延迟）与校验（<90s Warn；≤0/非法 fail-fast）见 docs/DEPLOYMENT.md §10.8。

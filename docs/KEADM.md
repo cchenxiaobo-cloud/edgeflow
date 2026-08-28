@@ -153,6 +153,38 @@ mTLS 说明：edgecore 首次运行会在 `/etc/edgeflow/certs` 自动生成/加
 CA 签名。云端侧需保证服务端证书 SAN 覆盖边缘节点访问的地址
 （`keadm init --tls-san=IP:<ip>`）。
 
+### 2.1 接入令牌的安全传递（SEC-03，v0.23.0 起）
+
+`--token` 会经命令行参数传递 token：`ps`/`/proc/<pid>/cmdline` 可见、shell
+history 留存，同机其他用户可据此伪造节点注册。生产环境推荐改用文件方式：
+
+```bash
+# 令牌写入仅所有者可读的文件（例）
+umask 077 && echo '<token>' > ./edgeflow-token.txt
+
+# join：从文件读 token（去首尾空白），产物与 --token 方式完全一致
+keadm join --cloudcore-ip=192.168.1.10 --token-file=./edgeflow-token.txt \
+  --node-id=edge-worker-01 --output-dir=./keadm-out
+
+# batch join：同样支持（透传到每个节点的 join）
+keadm batch --op=join --file=nodes.txt --cloudcore-ip=192.168.1.10 \
+  --token-file=./edgeflow-token.txt
+
+# 用后清理
+rm -f ./edgeflow-token.txt
+```
+
+规则与建议：
+
+- `--token-file` 与 `--token` 同时提供时，**`--token-file` 优先**
+  （显式选择了更安全的传参方式），`--token` 值被忽略；
+- 令牌文件权限建议 `0600`（所有者可读写）；内容去首尾空白后作为 token，
+  空文件视同未提供；
+- 产物目录中的 `edgecore.env`（含 token 明文）固定以 `0600` 写入；
+  `README.md` 已脱敏（不回显完整 token，明文仅存于 `edgecore.env`）；
+- 交互式场景可结合 shell 读入：`keadm join ... --token-file=<(read -s t; echo "$t")`
+  （bash process substitution，避免 token 进 history）。
+
 ## 3. 清理（keadm reset）
 
 ```bash

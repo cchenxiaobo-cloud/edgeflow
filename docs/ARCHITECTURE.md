@@ -565,3 +565,61 @@ M4/规模化: Protobuf 编码（信封保留 version 字段） ← 未实现，�
 ---
 
 *本文档为 WBS 9.1 交付物（v1.0，2026-08-15 评审通过），与 docs/ROADMAP.md、docs/API-SPEC.md、docs/DEPLOYMENT.md、docs/CLOSE-OUT-ACTIONS.md 配套使用。数字口径与状态列均以 2026-08-15 代码现状为准。*
+
+---
+
+## 13. 并发与锁序约定（T-13，v0.23.0 工程化）
+
+本节是全仓库锁序纪律的**文档级权威**：审计台账（T1/CHN-11/CHN-23）指出
+「锁序靠注释纪律、跨锁域读写靠串行化兜底」的脆弱模式，本节将锁序从分散
+注释收敛为结构化约定。代码侧权威注释在
+`cloud/pkg/registry/lease_registry.go` 文件头「并发与锁序约定」段（改锁
+结构必须同步两处）。
+
+### 13.1 锁序表
+
+| 锁 | 所在文件 | 保护对象 | 锁序规则 |
+|----|----------|----------|----------|
+| `contactMu` | lease_registry.go | lastContact 单字段 | 叶子锁：绝不与任何其他锁嵌套 |
+| `lm` | lease_registry.go | localHB/aliveHB/pending/pendingEvents/retrying/lastQueueWarn/lastReload | 与 reg.mu 永不嵌套；若必须嵌套仅允许 lm → reg.mu，**禁止反向**；lm 持有期禁 etcd I/O 与长阻塞调用 |
+| `reg.mu`（内层 Registry） | registry.go | nodes/offlineSince/gcEvents | 被 LeaseEtcdRegistry 以「取→用→放→再取」串行方式访问（四个双锁点均有 LOCK ORDER 断言）；持有期禁 etcd I/O |
+| `renewCh` | lease_registry.go | 续约队列 | channel 自带同步，非阻塞 select，不与任何锁组合 |
+| 原子计数（watchRev/renewalFailures/hbRebuilds/renewQueueDropped） | lease_registry.go | 观测计数 | 不依赖锁，可与上述任意锁自由组合 |
+| `subMu` | edge/pkg/metamanager | subscribers 表 | 叶子锁：notify/Unsubscribe/Close 互斥；持有期仅做非阻塞通道写 |
+| `droppedEvents`（原子） | edge/pkg/metamanager | 丢事件计数 | 不依赖锁 |
+| `reconcileMu` | edge/pkg/edged | reconcile 串行化 | 串行化闸（非嵌套节点）；见 13.2 |
+| `restartMu` | edge/pkg/edged | restartRec | 叶子锁：不与其他锁嵌套；其「读-决策-写」跨锁域依赖 reconcileMu（见 13.2） |
+| `e.mu` | edge/pkg/edged | status/生命周期字段 | 与 restartMu 无嵌套（setStatus 在 restartMu 持有域之外调用） |
+| `c.mu` | modelrelease/release.go | active 集合 | 叶子锁：activeSnapshot/isActive/removeActive 短临界区 |
+
+锁序判定原则：两个锁从未在同一 goroutine 上同时持有时即**无序**（现状全
+仓库成立）；一旦引入嵌套，必须在本表登记方向并满足全序（禁止成环）。
+
+### 13.2 CHN-11 跨锁域串行化边界
+
+两处「读-决策-写」序列横跨同一锁的多个持有段，段间一致性不由该锁保证：
+
+1. **edge/pkg/edged/edged.go（restartRec，健康检查重启路径）**：读
+   inBackoff（restartMu 段 1）→ 放锁决策/执行 EnsureRunning → 写
+   count+1（restartMu 段 2）。当前依赖 `reconcileMu` 串行化兜底
+   （reconcile loop 与测试直调互斥）。**并行化约束**：把 reconcile 拆成
+   按 Pod 并行之前，必须把读判定与写累加收敛到同一锁域（或改为
+   CompareAndSwap 语义），否则丢失更新竞态成立（审计台账 CHN-11 一般级）。
+2. **cloud/pkg/registry/lease_registry.go（lm 视角读-决策-写）**：watch
+   应用器、周期重扫、GC 循环各自对 lm 保护的 map 做「读快照 → 决策 →
+   写回」。当前每条链路均为单 goroutine（应用器单 goroutine 铁律 / 重扫
+   与 GC 各自独立 goroutine），串行化由架构形态保证。**并行化约束**：
+   任何把上述循环并行化/合并执行的重构，必须先把相应链路收敛到单一锁域。
+
+串行化兜底是**已知且有意的边界选择**（当前负载下串行成本可忽略，并行化
+收益为零），登记于此防止未来重构无意识地破坏前提。
+
+### 13.3 CLD-13：paused 发布的领跑锁占锁语义
+
+paused（人工暂停/失败预算自动暂停）的发布**保留 active 身份**，领跑锁
+刷新循环（refreshLoop，周期 max(5s, LockTTL/3)）对其**持续续租**——这是
+预期行为而非泄漏：占锁保证暂停期间其他副本不能认领推进，resume 后从原
+节奏继续。代价是暂停数周内锁刷新流量与 running 无异；为此刷新失败/被接管
+日志带 `kind=paused|running|unknown` 标记（v0.23.0，CLD-13），审计上可
+区分「占锁保持（可能 paused）」与「正在推进」。多副本接管竞争语义在
+paused 期间不变（他副本可经正常竞争接管，接管方继承 paused 状态机）。

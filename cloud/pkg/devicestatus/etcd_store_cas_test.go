@@ -3,6 +3,7 @@
 //   - 冲突 → 读最新基准重试（并发写 merge 不丢）
 //   - 冲突耗尽 → ErrDesiredConflict + 内存不动
 //   - create-if-absent（modRev=0）→ 首次指令成功
+//
 // （退化路径在 etcd_store_test.go 既有 fakeKV 覆盖；本文件专测扩展面）
 package devicestatus
 
@@ -20,12 +21,12 @@ import (
 
 // casKV 是测试用内存 ExtendedKV（revision 簿记 + 冲突注入）。
 type casKV struct {
-	mu         sync.Mutex
-	m          map[string]casEntry
-	nextRev    int64
-	conflicts  int // 剩余强制冲突次数（每次 CompareAndPut 消耗 1；>0 时命中即冲突）
-	failRead   bool
-	failWrite  bool
+	mu        sync.Mutex
+	m         map[string]casEntry
+	nextRev   int64
+	conflicts int // 剩余强制冲突次数（每次 CompareAndPut 消耗 1；>0 时命中即冲突）
+	failRead  bool
+	failWrite bool
 }
 
 type casEntry struct {
@@ -163,7 +164,9 @@ func (f *casKV) GuardedDelete(_ context.Context, guardKey, targetKey string) (bo
 
 // ---- LeaseKV ----
 
-func (f *casKV) GrantHeartbeatLease(_ context.Context, _ string, _ []byte, _ time.Duration) error { return nil }
+func (f *casKV) GrantHeartbeatLease(_ context.Context, _ string, _ []byte, _ time.Duration) error {
+	return nil
+}
 
 // ---- WatchKV（测试不启 watch，停摆通道即满足接口） ----
 

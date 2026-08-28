@@ -244,6 +244,10 @@ type SecureChannel struct {
 	sendMu sync.Mutex // 串行化“分配 reqId+整帧写”，单请求发送原子性（v0.15.0 泵模式前提）
 }
 
+// MaxEndpointUrlLength 是 Hello.EndpointUrl 的长度上限（PRT-15）。
+// 服务端一般限 4096；超长 URL 视为构造异常，在编码前拒绝。
+const MaxEndpointUrlLength = 4096
+
 // OpenSecureChannel 在已握手的 Conn 上执行 OPN 并返回就绪通道。
 // OPN 成功后 conn.channelId 被写入，后续 WriteMessage/ReadMessage
 // 自动带上真实 ChannelId（既有导出 API 零变更）。
@@ -325,8 +329,18 @@ func (sc *SecureChannel) recvOPN(timeout time.Duration) error {
 	}
 	var d decoder
 	d.b = body
-	if _, err := decodeAsymmetricSecurityHeader(&d); err != nil {
+	asym, err := decodeAsymmetricSecurityHeader(&d)
+	if err != nil {
 		return fmt.Errorf("opcua: decode OPN asymmetric header: %w", err)
+	}
+	// PRT-08：策略 URI 必须精确匹配 None（客户端仅声明支持 None）。
+	if asym.SecurityPolicyURI != SecurityPolicyNoneURI {
+		return fmt.Errorf("opcua: OPN 响应策略 URI 不符: %q (want %q)", asym.SecurityPolicyURI, SecurityPolicyNoneURI)
+	}
+	// PRT-08：None 策略下证书字段必须为空，非空即中间人/异常服务器。
+	if len(asym.SenderCertificate) != 0 || len(asym.ReceiverCertificateThumbprint) != 0 {
+		return fmt.Errorf("opcua: None 策略下 OPN 响应携带非空证书字段（sender=%d bytes, thumbprint=%d bytes）",
+			len(asym.SenderCertificate), len(asym.ReceiverCertificateThumbprint))
 	}
 	if _, err := decodeSequenceHeader(&d); err != nil {
 		return fmt.Errorf("opcua: decode OPN sequence header: %w", err)
@@ -337,6 +351,11 @@ func (sc *SecureChannel) recvOPN(timeout time.Duration) error {
 	}
 	if !resp.ServiceResult.IsGood() {
 		return fmt.Errorf("opcua: OpenSecureChannel 服务失败: %s", resp.ServiceResult)
+	}
+	// PRT-08：协商出的安全令牌必须可用，RevisedLifetime>0（0 会使
+	// 通道生命周期立即失效，属异常/恶意响应）。
+	if resp.SecurityToken.RevisedLifetime <= 0 {
+		return fmt.Errorf("opcua: OPN 响应 RevisedLifetime=%v 非法（须 > 0）", resp.SecurityToken.RevisedLifetime)
 	}
 	sc.channelId = resp.SecurityToken.ChannelID
 	sc.tokenId = resp.SecurityToken.TokenID
@@ -375,6 +394,11 @@ func (sc *SecureChannel) recvSecure(wantReqID uint32, timeout time.Duration) ([]
 	for i := 0; i < 32; i++ {
 		msgType, body, err := sc.conn.ReadMessage()
 		if err != nil {
+			// PRT-16：Abort 帧是规范允许的发送方弃报行为，连接可继续；
+			// 读到 Abort 跳过继续等期望响应。
+			if errors.Is(err, ErrPeerAbort) {
+				continue
+			}
 			return nil, fmt.Errorf("opcua: read service reply: %w", err)
 		}
 		if msgType == MsgError {

@@ -44,9 +44,14 @@ spec:
                 deviceModelRef:
                   description: 引用的设备型号名称（必填，须与 DeviceModel 同命名空间）
                   type: string
+                  # v0.23.0（PRT-24）：关键 string 字段补校验标记（下同）。
+                  minLength: 1
+                  pattern: "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
                 nodeName:
                   description: 设备绑定的边缘节点名称（必填）
                   type: string
+                  minLength: 1
+                  pattern: "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
                 protocol:
                   description: 设备连接信息（协议名 + 连接参数）
                   type: object
@@ -54,6 +59,8 @@ spec:
                     protocolName:
                       description: 协议名，须与 DeviceModel.Spec.Protocol 一致
                       type: string
+                      minLength: 1
+                      pattern: "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
                     config:
                       description: 协议连接参数（键值对）
                       type: object
@@ -70,6 +77,8 @@ spec:
                       name:
                         description: 属性名（须在 DeviceModel.Spec.Properties 中定义）
                         type: string
+                        minLength: 1
+                        pattern: "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
                       desired:
                         description: 云端下发的期望值（数字孪生 desired 侧）
                         type: object
@@ -99,6 +108,8 @@ spec:
                       propertyName:
                         description: 属性名
                         type: string
+                        minLength: 1
+                        pattern: "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
                       desired:
                         description: 云端下发的期望值
                         type: object

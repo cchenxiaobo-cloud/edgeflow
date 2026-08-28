@@ -1175,6 +1175,17 @@ func decodeVariant(d *decoder) (Variant, error) {
 			if n > 1<<24 {
 				return Variant{}, fmt.Errorf("%w: %d array elements", ErrTooLong, n)
 			}
+			// PRT-01：分配前校验——按元素类型最小编码字节数估算下限：
+			// 声明元素数 × 最小字节数超过剩余缓冲且元素数超过盲分配
+			// 豁免阈值（maxUncheckedArrayElems）时，判定恶意/损坏报文，
+			// 拒绝按声明长度预分配。小规模声明不拦截：预分配至多
+			// 16KB 无害，且截断报文保持既有契约（解码循环内报
+			// ErrUnexpectedEOF，见 TestVariantErrors "truncated array"）。
+			if min, ok := variantMinElemSize(id); ok && n > maxUncheckedArrayElems {
+				if rem := int64(len(d.b) - d.off); int64(n)*int64(min) > rem {
+					return Variant{}, fmt.Errorf("%w: %d array elements of type %d need ≥%d bytes, only %d remain", ErrTooLong, n, id, int64(n)*int64(min), rem)
+				}
+			}
 			if val, err = decodeArrayValue(d, id, int(n)); err != nil {
 				return Variant{}, err
 			}
@@ -1360,6 +1371,42 @@ func decodeArrayValue(d *decoder, id byte, n int) (any, error) {
 		return decodeArrayOf[Variant](d, id, n)
 	}
 	return nil, fmt.Errorf("%w: Variant type id %d", ErrInvalidEncoding, id)
+}
+
+// maxUncheckedArrayElems 是 PRT-01/PRT-14 分配前校验的豁免阈值：元素数
+// 不超过该值的数组按声明预分配至多 16KB（1024×16B Guid 上限），无 OOM
+// 风险，不拦截——保持既有截断报文语义（解码循环内报 ErrUnexpectedEOF）。
+const maxUncheckedArrayElems = 1024
+
+// variantMinElemSize 返回 built-in 类型 id 的数组元素在 UA Binary
+// 中的最小编码字节数（PRT-01 分配前校验用）：任何合法流中每个元素
+// 至少占用这么多字节，故「声明元素数 × 最小字节数 > 剩余缓冲」即可
+// 安全判定报文不完整/恶意，且不会误拒合法流。未知类型返回 false
+// （其解码在 decodeArrayValue/decodeBuiltin 中另行拒绝）。
+func variantMinElemSize(id byte) (int64, bool) {
+	switch id {
+	case VariantBoolean, VariantSByte, VariantByte:
+		return 1, true
+	case VariantInt16, VariantUInt16:
+		return 2, true
+	case VariantInt32, VariantUInt32, VariantStatusCode, VariantFloat:
+		return 4, true
+	case VariantInt64, VariantUInt64, VariantDouble, VariantDateTime:
+		return 8, true
+	case VariantString, VariantByteString, VariantXmlElement:
+		return 4, true // 长度定界符（含 null/-1 形式）
+	case VariantGuid:
+		return 16, true
+	case VariantNodeId, VariantExpandedNodeId:
+		return 3, true // TwoByte 编码下限：标识+ns+identifier
+	case VariantQualifiedName:
+		return 6, true // nsIndex(2) + 长度定界符(4)
+	case VariantLocalizedText, VariantDataValue, VariantVariant, VariantDiagnosticInfo:
+		return 1, true // 各自掩码字节即可成元素
+	case VariantExtensionObject:
+		return 4, true // NodeId 下限(3) + encoding(1)
+	}
+	return 0, false
 }
 
 func decodeArrayOf[T any](d *decoder, id byte, n int) ([]T, error) {

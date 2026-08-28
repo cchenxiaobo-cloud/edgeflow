@@ -70,11 +70,31 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
-          {{- if or (len .Values.cloudcore.env) (len .Values.cloudcore.extraEnv) }}
+          {{- if or (len .Values.cloudcore.env) (len .Values.cloudcore.extraEnv) .Values.cloudcore.auth.enabled .Values.cloudcore.auth.warnOff .Values.cloudcore.cloudhub.nodeToken .Values.cloudcore.cloudhub.requireNodeToken }}
           env:
             {{- range $key, $value := .Values.cloudcore.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}
+            {{- end }}
+            {{- if .Values.cloudcore.auth.enabled }}
+            - name: EDGEFLOW_CLOUDCORE_AUTH
+              value: "on"
+              {{- if .Values.cloudcore.auth.apiToken }}
+            - name: EDGEFLOW_CLOUDCORE_API_TOKEN
+              value: {{ .Values.cloudcore.auth.apiToken | quote }}
+              {{- end }}
+            {{- end }}
+            {{- if .Values.cloudcore.auth.warnOff }}
+            - name: EDGEFLOW_CLOUDCORE_AUTH_WARN
+              value: "off"
+            {{- end }}
+            {{- if .Values.cloudcore.cloudhub.nodeToken }}
+            - name: EDGEFLOW_CLOUDCORE_NODE_TOKEN
+              value: {{ .Values.cloudcore.cloudhub.nodeToken | quote }}
+            {{- end }}
+            {{- if .Values.cloudcore.cloudhub.requireNodeToken }}
+            - name: EDGEFLOW_CLOUDHUB_REQUIRE_NODE_TOKEN
+              value: "on"
             {{- end }}
             {{- if .Values.cloudcore.etcd.enabled }}
               {{- if .Values.cloudcore.etcd.external.enabled }}

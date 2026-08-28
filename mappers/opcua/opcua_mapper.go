@@ -556,6 +556,9 @@ func (m *OPCUAMapper) StartSubscription() error {
 }
 
 // subscriptionLoop 消费推送通知：数据变更→缓存+台账；状态变更/gap→重建。
+// PRT-18：client 泵异常退出/Close 时会关闭 pubCh（v0.21.0 起），
+// 本循环可经 range 感知关闭退出，不再永久阻塞；退出后按既有
+// rebuildSubscription 节奏重建订阅（改动最小方案）。
 func (m *OPCUAMapper) subscriptionLoop(ch <-chan opcuapkg.PublishResult) {
 	for pr := range ch {
 		if pr.IsStatusChange {
@@ -603,6 +606,17 @@ func (m *OPCUAMapper) subscriptionLoop(ch <-chan opcuapkg.PublishResult) {
 		}
 		_ = m.client.PubAck() // 补挂下一条 Publish（维持发布窗口）
 	}
+	// 通道关闭：泵异常退出或客户端已 Close。订阅模式仍在开启（subOn）
+	// 时按既有节奏重连重建；Stop 已关订阅则静默收尾。
+	m.mu.Lock()
+	on := m.subOn
+	m.mu.Unlock()
+	if on {
+		log.Warnf("OPCUAMapper %s: 订阅通道关闭（泵退出/连接断开），重建订阅", m.deviceName)
+		m.rebuildSubscription()
+		return
+	}
+	log.Infof("OPCUAMapper %s: 订阅通道关闭，订阅已停止", m.deviceName)
 }
 
 // rebuildSubscription 断线/状态变更后重建：删除旧订阅→重连→重新 Subscribe。

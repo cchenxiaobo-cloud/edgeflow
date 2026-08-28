@@ -94,6 +94,26 @@ cloudcore:
     # EDGEFLOW_CLOUDCORE_RELEASE_SCAN_INTERVAL: "5s"
     # EDGEFLOW_CLOUDCORE_RELEASE_LOCK_TTL: "60s"
 
+  # ── v0.21.0 安全默认值（SEC-01/SEC-02/CHN-06）───────────────────────────
+  # 默认值与 v0.20.0 行为逐字节一致（均关闭）；生产环境建议全部开启。
+  # 应用侧未开启时启动会输出 WARN 告警（不阻断，可用 AUTH_WARN=off 静默）。
+  auth:
+    # 管理 API Token 认证（SEC-01）：true 注入 EDGEFLOW_CLOUDCORE_AUTH=on；
+    # 必须同时设置 apiToken（应用侧 fail-fast：开启但未配令牌拒绝启动）
+    enabled: false
+    # API 令牌：生产建议经 extraEnv secretKeyRef 注入，勿明文写 values
+    apiToken: ""
+    # 认证关闭告警静默开关：true 注入 EDGEFLOW_CLOUDCORE_AUTH_WARN=off；
+    # 缺省 false = 不注入（应用默认告警开启）
+    warnOff: false
+  cloudhub:
+    # 节点接入令牌（WBS 7.3）：非空注入 EDGEFLOW_CLOUDCORE_NODE_TOKEN
+    # （edgecore 同值）；生产建议 Secret 注入，勿明文写 values
+    nodeToken: ""
+    # 空令牌强制拒绝（SEC-02）：true 注入 EDGEFLOW_CLOUDHUB_REQUIRE_NODE_TOKEN=on
+    # （服务端未配置令牌时拒绝携带令牌的注册，防伪造令牌抢占探测）；默认 false 兼容
+    requireNodeToken: false
+
   # 嵌入式 etcd（v0.4.0：云端状态持久化，写穿 write-through）：
   # 注册元数据 + 设备 Desired 跨重启保留；Pod 状态/上报属性不落盘（重启短暂清空自愈）。
   # 全量环境变量与键空间见 docs/DEPLOYMENT.md §10 / docs/RELEASE-NOTES-v050.md

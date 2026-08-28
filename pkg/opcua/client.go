@@ -38,6 +38,7 @@ type Client struct {
 	acks       []SubscriptionAcknowledgement // 待随下一个 Publish 捎带的确认
 	pubCh      chan PublishResult            // 数据/状态通知出口（缓冲 16）
 	pumpOnce   sync.Once
+	pubChOnce  sync.Once // PRT-04：pubCh 关闭防双关（pumpLoop 收尾与 stopPump 共用）
 	pumping    bool
 	pending    map[uint32][]byte // 无主帧兜底缓冲（RequestId→body，防先到后登记竞态）
 }
@@ -549,8 +550,7 @@ func (c *Client) stopPump() {
 	c.pubCh = nil
 	c.mu.Unlock()
 	if pubCh != nil {
-		defer func() { _ = recover() }() // pumpLoop 可能同时关闭，双关兜底
-		close(pubCh)
+		c.pubChOnce.Do(func() { close(pubCh) }) // sync.Once 防双关（PRT-04）
 	}
 }
 
@@ -563,7 +563,14 @@ func (c *Client) pumpLoop() {
 			close(ch)
 			delete(c.waiters, id)
 		}
+		pubCh := c.pubCh
+		c.pubCh = nil // 置空出口：下次 Subscribe 重建新通道，不复用已关闭通道
 		c.mu.Unlock()
+		// PRT-04：一切退出路径（连接级故障/stopPump）都关闭订阅出口，
+		// 订阅方 range 可感知退出；sync.Once 防与 stopPump 双关。
+		if pubCh != nil {
+			c.pubChOnce.Do(func() { close(pubCh) })
+		}
 	}()
 	for {
 		c.mu.Lock()

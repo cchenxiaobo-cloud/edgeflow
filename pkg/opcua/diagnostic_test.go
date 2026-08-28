@@ -38,7 +38,7 @@ func TestDiagnosticInfoRoundTrip(t *testing.T) {
 			}
 			var d decoder
 			d.b = e.buf
-			got, err := decodeDiagnosticInfo(&d)
+			got, err := decodeDiagnosticInfo(&d, 0)
 			if err != nil {
 				t.Fatalf("decode: %v", err)
 			}
@@ -53,7 +53,7 @@ func TestDiagnosticInfoRoundTrip(t *testing.T) {
 func TestDiagnosticInfoReservedBitRejected(t *testing.T) {
 	var d decoder
 	d.b = []byte{0x80}
-	if _, err := decodeDiagnosticInfo(&d); !errors.Is(err, ErrInvalidEncoding) {
+	if _, err := decodeDiagnosticInfo(&d, 0); !errors.Is(err, ErrInvalidEncoding) {
 		t.Fatalf("保留位应报 ErrInvalidEncoding，got %v", err)
 	}
 }

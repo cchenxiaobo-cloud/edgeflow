@@ -46,6 +46,19 @@
 未设置开关时行为与历史版本完全一致（纯 `ws://`，无 TLS）。两侧开关需**同时**开启：
 云端只开 TLS 会拒绝明文连接；边缘只开 TLS 无法通过明文云端的握手。
 
+### 2.1 认证与安全默认值开关（v0.21.0）
+
+| 环境变量 | 默认 | 生效语义 |
+|----------|------|----------|
+| `EDGEFLOW_CLOUDCORE_AUTH` | off（不设） | 管理 API 认证（Bearer Token）；=on 且配 `EDGEFLOW_CLOUDCORE_API_TOKEN` 生效 |
+| `EDGEFLOW_CLOUDCORE_API_TOKEN` | 空 | 管理 API 令牌值；与 AUTH=on 配套 |
+| `EDGEFLOW_CLOUDCORE_AUTH_WARN` | 开（仅 `=off` 静默） | SEC-01：auth 未启用时启动 WARN 提示（可静默，不影响认证本身；非法值视为开启） |
+| `EDGEFLOW_CLOUDCORE_NODE_TOKEN` | 空 | 节点接入令牌（云端与边缘同值）；非空时注册必须携带相同令牌（既有行为） |
+| `EDGEFLOW_CLOUDHUB_REQUIRE_NODE_TOKEN` | off（不设） | SEC-02 强校验：=on 且服务端未配令牌时拒绝**携带令牌**的注册（防伪造令牌探测抢占）；**无令牌注册仍接受**（裸奔兼容；全面关闸=配 NODE_TOKEN 或 mTLS） |
+| `EDGEFLOW_CLOUDCORE_TLS` | off（不设） | CloudHub mTLS（§2 既有开关）；无 mTLS 且无 NODE_TOKEN 时启动输出 CHN-06 裸奔组合 WARN |
+
+> 三类告警（SEC-01/SEC-02/CHN-06）全部不阻断启动、不改默认行为；完整语义见 [RELEASE-NOTES-v0210.md](RELEASE-NOTES-v0210.md)。Helm 侧对应 `cloudcore.auth.*` / `cloudcore.cloudhub.*`（默认全关）。
+
 证书布局（`ca.crt / ca.key / cloudcore.crt / cloudcore.key / edgecore.crt / edgecore.key`）：
 
 | 文件 | 用途 | 有效期 | 关键属性 |

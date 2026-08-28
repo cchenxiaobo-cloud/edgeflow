@@ -138,7 +138,7 @@ func decodeResponseHeader(d *decoder) (ResponseHeader, error) {
 	} else {
 		h.ServiceResult = StatusCode(v)
 	}
-	if h.ServiceDiagnostics, err = decodeDiagnosticInfo(d); err != nil {
+	if h.ServiceDiagnostics, err = decodeDiagnosticInfo(d, 0); err != nil {
 		return h, err
 	}
 	if h.StringTable, err = decodeStringList(d); err != nil {
@@ -174,6 +174,15 @@ func decodeStringList(d *decoder) ([]string, error) {
 	}
 	if n > MaxArrayLength {
 		return nil, fmt.Errorf("%w: String array length %d exceeds limit %d", ErrTooLong, n, MaxArrayLength)
+	}
+	// PRT-14：分配前校验——声明长度 × 每元素最小字节数（长度定界符
+	// 4B）超过剩余缓冲且元素数超过盲分配豁免阈值（同 PRT-01 的
+	// maxUncheckedArrayElems）时，判定恶意/损坏报文，拒绝按声明长度
+	// 预分配；小规模声明不拦截，截断语义与既有行为一致。
+	if n > maxUncheckedArrayElems {
+		if rem := len(d.b) - d.off; int64(n)*4 > int64(rem) {
+			return nil, fmt.Errorf("%w: String array length %d needs ≥%d bytes, only %d remain", ErrTooLong, n, n*4, rem)
+		}
 	}
 	out := make([]string, 0, n)
 	for i := int32(0); i < n; i++ {

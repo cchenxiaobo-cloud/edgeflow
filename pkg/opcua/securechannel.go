@@ -208,7 +208,7 @@ func decodeOpenSecureChannelResponse(d *decoder) (OpenSecureChannelResponse, err
 	} else {
 		r.ServiceResult = StatusCode(v)
 	}
-	if r.ServiceDiagnostics, err = decodeDiagnosticInfo(d); err != nil {
+	if r.ServiceDiagnostics, err = decodeDiagnosticInfo(d, 0); err != nil {
 		return r, err
 	}
 	if r.StringTable, err = decodeStringList(d); err != nil {

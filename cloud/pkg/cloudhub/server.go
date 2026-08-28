@@ -41,6 +41,10 @@ const (
 	DefaultHubPort = 10000
 	// EnvHubPort 是覆盖 CloudHub 监听端口的环境变量名。
 	EnvHubPort = "EDGEFLOW_CLOUDCORE_HUB_PORT"
+	// EnvRequireNodeToken 是空令牌强制拒绝开关（v0.21.0，SEC-02）：值为 "on" 时
+	// 即使 EDGEFLOW_CLOUDCORE_NODE_TOKEN 为空，注册也一律拒绝（fail-closed）。
+	// 默认关闭（向后兼容，v0.20.0 行为不变）。
+	EnvRequireNodeToken = "EDGEFLOW_CLOUDHUB_REQUIRE_NODE_TOKEN"
 	// PathEdge 是云边 WebSocket 通道的 HTTP 路径。
 	PathEdge = "/v1/edge"
 	// HeartbeatTimeout 是连接失活判定阈值：超过该时长未收到任何消息即断开。
@@ -190,6 +194,12 @@ type Server struct {
 	// nodeToken 是节点接入令牌（WBS 7.3 设备认证）；非空时注册必须携带
 	// 相同 Token，否则拒绝注册。空值向后兼容（不校验）。
 	nodeToken string
+	// requireNodeToken 是携带令牌注册拒绝开关（v0.21.0，SEC-02）：true 且
+	// nodeToken 为空时，拒绝"携带令牌"的注册（防伪造令牌探测抢占同 ID 节点）；
+	// 无令牌注册仍按裸奔兼容接受（全面关闸=配 nodeToken 或 mTLS）。
+	// nodeToken 非空时既有校验本来就会执行，本开关无额外效果。由装配层
+	// 经 Option 注入预解析的 bool，注册热路径不读环境变量。
+	requireNodeToken bool
 	// compressEnabled 是云边通道压缩开关（WBS 4.4）：默认开启；关闭后
 	// 不向边缘回带压缩能力（RegisterAck 无 compression 字段），边缘
 	// 经协商自动保持明文——单开关控制双向（见 pkg/protocol/compress.go）。
@@ -243,6 +253,15 @@ func WithHeartbeatTimeout(d time.Duration) Option {
 // （RegisterAck accepted=false）。空值（默认）保持向后兼容：不校验。
 func WithNodeToken(token string) Option {
 	return func(s *Server) { s.nodeToken = token }
+}
+
+// WithRequireNodeToken 开启携带令牌注册拒绝（v0.21.0，SEC-02）。
+// 语义：nodeToken 为空且本开关开启时，拒绝"携带令牌"的注册（防伪造
+// 令牌探测抢占）；无令牌注册仍按裸奔兼容接受（向后兼容底线）。
+// nodeToken 非空时既有校验本来就会执行，本开关无额外效果。
+// 默认关闭：不调用本 Option 时行为与 v0.20.0 逐字节一致。
+func WithRequireNodeToken(require bool) Option {
+	return func(s *Server) { s.requireNodeToken = require }
 }
 
 // WithTLS 为云边通道启用 mTLS（WBS 7.1/7.4）：
@@ -616,8 +635,17 @@ func (s *Server) handleRegister(c *conn, m *protocol.Message) {
 	}
 	// WBS 7.3 设备认证：nodeToken 非空时校验注册令牌（常数时间比较防时序侧信道）。
 	// 不匹配 → 拒绝注册；nodeToken 为空时向后兼容（不校验，M1-M3 行为）。
-	if s.nodeToken != "" && subtle.ConstantTimeCompare([]byte(reg.Token), []byte(s.nodeToken)) != 1 {
-		s.rejectRegister(c, m, "接入令牌校验失败（token 缺失或不匹配）")
+	// v0.21.0（SEC-02）：requireNodeToken 开启且 nodeToken 为空时，拒绝
+	// "携带令牌"的注册（防伪造令牌探测抢占同 ID 真节点）；无令牌注册仍
+	// 按裸奔兼容接受（默认关闭，行为与 v0.20.0 逐字节一致）。预解析 bool
+	// 在装配时注入，热路径不读环境变量。
+	if s.nodeToken != "" {
+		if subtle.ConstantTimeCompare([]byte(reg.Token), []byte(s.nodeToken)) != 1 {
+			s.rejectRegister(c, m, "接入令牌校验失败（token 缺失或不匹配）")
+			return
+		}
+	} else if s.requireNodeToken && reg.Token != "" {
+		s.rejectRegister(c, m, "服务端未配置令牌且已开启强制校验，拒绝携带令牌的注册")
 		return
 	}
 	// WBS 4.4 压缩协商：边缘声明 gzip 且云端开关开启 → 本连接启用压缩。

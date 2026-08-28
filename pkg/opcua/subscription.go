@@ -390,7 +390,7 @@ func decodeNotificationExtObj(ext ExtensionObject) (NotificationData, error) {
 		} else if dn > 0 && dn <= MaxArrayLength {
 			// DiagnosticInfo 完整解码能力已有：逐个读取以校验结构
 			for i := int32(0); i < dn; i++ {
-				if _, err := decodeDiagnosticInfo(&dd); err != nil {
+				if _, err := decodeDiagnosticInfo(&dd, 0); err != nil {
 					return nd, err
 				}
 			}
@@ -412,7 +412,7 @@ func decodeNotificationExtObj(ext ExtensionObject) (NotificationData, error) {
 			return nd, err
 		} else if dn > 0 && dn <= MaxArrayLength {
 			for i := int32(0); i < dn; i++ {
-				if _, err := decodeDiagnosticInfo(&sd); err != nil {
+				if _, err := decodeDiagnosticInfo(&sd, 0); err != nil {
 					return nd, err
 				}
 			}

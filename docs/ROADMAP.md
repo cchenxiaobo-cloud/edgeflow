@@ -442,3 +442,17 @@
 | 解决方案手册 | 手册 F41/F42 状态翻转 | ✅ 本文档轮完成 | 手册升 v1.1.0：第 4 章重写为正式能力（过渡路径降级为兼容路径）；附录 C 表 C-1 追加 F41/F42、表 C-2 摘除；FAQ A7/术语表/附录 D 同步 |
 | Chart | build/charts/edgeflow | ✅ 本文档轮完成 | version/appVersion → 0.7.0；无新增 values 必填项；helm lint 0 failed + 多场景渲染验证 |
 | 代码实现与 E2E | WBS 1-10（实施清单） | ✅ 已完成（2026-08-25 发布） | 全量 `go test -race ./...` 33 包全绿、vet 干净；契约测试 31 端点；E2E 全链路实测（发布 v1/v2 succeeded→回滚 rolled_back→影子回退→embed 重启恢复）；E2E 发现并修复回滚链缺陷（cf23ee7：ActivateVersion 记录 PrevActive）；12 制品交叉编译 + helm lint/template 通过；验证摘要已回填 RELEASE-NOTES-v070 §七.7.2 |
+
+---
+
+## 16. v0.21.0 开发轮处置登记（2026-08-28）
+
+> 依据：.cluster/edgeflow-audit/{audit-report.md, ledger-consolidated.md, tasklist.csv}（全量审计 71 条台账）+ .cluster/edgeflow-v0210/plan.md。状态：✅ 已完成（P0 批次 4 任务 / 16 人日：T-01 安全默认值包 5pd + T-02 OPC-UA 预分配修复 4pd + T-03 递归深度限制 2pd + T-04 订阅泵修复 4pd + T-18 mapper 自愈随包交付；P1×12 / P2×13 留后续版本）。
+
+| 项 | 对应审计编号 | 处置 | 结论/理由 |
+|----|----------|------|----------|
+| 安全默认值包 | SEC-01 / SEC-02 / CHN-06 | ✅ v0.21.0 已实现 | 只提升可见性不改默认行为：SEC-01 auth 关闭启动 WARN（AUTH_WARN=off 可静默）；SEC-02 `EDGEFLOW_CLOUDHUB_REQUIRE_NODE_TOKEN=on` 拒绝携带令牌注册（防伪造探测，无令牌注册裸奔兼容）；CHN-06 裸奔组合聚合 WARN；Helm `cloudcore.auth.*`/`cloudcore.cloudhub.*` 默认全关。enforce fail-closed 形态（连无令牌注册也拒）经评审判定与裸奔兼容底线冲突，留待维护窗口协商机制（P1 决策异议） |
+| OPC-UA 预分配放大修复 | PRT-01 / PRT-14 | ✅ v0.21.0 已实现 | Variant 数组/StringList 分配前预检（声明×最小元素字节数 vs 剩余缓冲，>1024 元素豁免阈值保持既有截断语义与既有测试零改动）；恶意 20 字节报文内存峰值 O(1) |
+| DiagnosticInfo 递归深度限制 | PRT-03 | ✅ v0.21.0 已实现 | `MaxDiagnosticDepth = 100` 超限拒绝（ErrTooLong）；ResponseHeader/OpenSecureChannelResponse/通知内嵌诊断全调用点传 depth |
+| 订阅泵与 mapper 自愈 | PRT-04 / PRT-18 | ✅ v0.21.0 已实现 | pumpLoop 全退出路径关闭 pubCh（sync.Once 防双关，pubCh 置 nil 防复用已关通道）；mapper 感知通道关闭自动重连重建订阅 |
+| HTTP 端点 | 契约面 | ✅ 保持 42 不变 | 本轮零端点变更（安全面走 env 开关与启动告警，非 REST 面）；tests/contract 路由计数与文档一致性守卫绿 |

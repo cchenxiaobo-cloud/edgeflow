@@ -247,3 +247,17 @@
 | LC-A | 失败发布只能整单重来——3 节点成功 1 节点失败时，重发等于对成功节点再滚一遍 | ✅ **v0.20.0 闭环**：POST .../retry 失败节点克隆重试——仅终态可 retry；克隆新发布（RetryOf 回指原发布），只继承 failed 子集为 TargetNodes（nodeIDs 可选缩围）；版本仍 active 复查防补发已删版本；guard 冲突照常 409 | retry 本身可再次 failed → 可再 retry（链式审计经 RetryOf 回溯）；无深度限制登记 |
 | LC-B | 终态发布永久堆积——GC 是模型级批量且默认关，没有"就删这一条"的运维动作 | ✅ **v0.20.0 闭环**：DELETE .../releases/{id} 单条终态归档删除——非终态 409 与 GC 同源「在途绝不删」语义；双存储同步删头键+子键（对齐 GCReleases 删除路径）；200 返回被删快照供审计 | 无回收站/恢复机制——删除不可逆（快照响应体是唯一落地凭据），依赖 export 备份的口径不变 |
 | LC-C | 发布缺变更注记——哪条发布对应哪个变更单/谁发起的，只能靠外部台账对 | ✅ **v0.20.0 闭环**：releaseNotes 元数据（≤1024 字节 opt-in）创建期一次性写入、创建后不可变（PATCH 白名单不含）；list/get/snapshot/global 全读取路径透出；retry 克隆继承 | 元数据仅自由文本不做结构化字段（变更单号格式不设约——分库直存会引入校验面）；1024 上限外无截断直接 400 |
+
+## 21. v0.21.0 开发轮闭环登记（2026-08-28，安全默认值包 + 协议纵深包：审计 P0 修复——可见性告警 + opt-in 开关 + 报文纵深防御）
+
+> 提交：见 git log。契约变更：**无**（HTTP 端点保持 42；全部开关默认关闭，缺省行为与 v0.20.0 逐字节一致）。守卫测试联动绿。
+
+| 编号 | 问题面 | 闭环说明 | 残余与建议 |
+|---|---|---|---|
+| SD-A | 管理 API 认证默认关闭且启动时无任何提示——生产误配置不可见 | ✅ **v0.21.0 闭环**（SEC-01）：cloudcore 启动时 auth 未启用 → WARN 提示全部 /api/v1/* 端点无差别开放及收紧路径；`EDGEFLOW_CLOUDCORE_AUTH_WARN=off` 可显式静默（缺省/非法值均视为开启）；Helm `cloudcore.auth.{enabled,apiToken,warnOff}` 透传 | WARN 仅可见性不动行为——认证仍需显式开启；告警文案指向的开关与真实 env 名一致（v0.21.0 修正过脱敏符残留） |
+| SD-B | 云边接入未配令牌时任意主机可注册冒充节点并抢占同 ID 真节点——空值=不校验的裸奔面无显式收紧手段 | ✅ **v0.21.0 闭环**（SEC-02）：`EDGEFLOW_CLOUDHUB_REQUIRE_NODE_TOKEN=on` 且服务端未配令牌 → 拒绝**携带令牌**的注册（防伪造令牌探测抢占）；**无令牌注册仍接受**（裸奔兼容底线：全面关闸=配 nodeToken 或 mTLS 任一）；nodeToken 非空时既有校验不变，本开关无额外效果 | enforce=on 时连无令牌注册也拒绝的 fail-closed 形态经评审判定与裸奔兼容底线冲突未采纳（存量无令牌边缘会被锁死）——留待维护窗口协商机制（P1 决策异议）；抢占窗口对无令牌攻击者仍然存在（mTLS/nodeToken 才是根治） |
+| SD-C | 无 mTLS 且无令牌同时成立（双重裸奔）无聚合提示，生产不可见 | ✅ **v0.21.0 闭环**（CHN-06）：hubTLS 为空且 nodeToken 为空 → 启动 WARN 聚合提示注册面与下发面均明文且无认证，仅限可信隔离网络；提示任一收紧路径即消除 | 与 SD-B 告警互补去重：enforce=on 时该维度输出 INFO 避免噪音；告警不阻断启动 |
+| PR-A | OPC-UA 恶意报文声明超大数组 → 按声明长度预分配内存（16M 元素槽）OOM 放大 | ✅ **v0.21.0 闭环**（PRT-01/14）：Variant 数组与 StringList 解码前预检——声明元素数 × 元素最小编码字节数 > 剩余缓冲且 >1024 元素豁免阈值 → 直接 `ErrTooLong` 拒绝，不再按声明预分配；恶意 20 字节报文内存峰值从 16M 槽降为 O(1) | 1024 元素内（≤16KB）不拦截——小规模声明预分配无害且保持既有截断语义（ErrUnexpectedEOF，既有测试零改动）；元素最小编码字节表覆盖内置类型，未知类型仍由解码器拒绝 |
+| PR-B | DiagnosticInfo 内层递归无深度限制——深嵌套报文（如 10 万层）触发深栈消耗 | ✅ **v0.21.0 闭环**（PRT-03）：`MaxDiagnosticDepth = 100`，`decodeDiagnosticInfo` 按 InnerDiagnosticInfo 嵌套深度计数超限拒绝（ErrTooLong）；ResponseHeader/OpenSecureChannelResponse/通知内嵌诊断全部调用点统一传 depth | 深度上限 100 为工程值（合规报文远低于此）；超限报错信息含实际深度与上限，便于定位 |
+| PR-C | 订阅泵异常退出后 pubCh 不关闭——订阅方 for range 永久阻塞，goroutine 泄漏累积 | ✅ **v0.21.0 闭环**（PRT-04）：pumpLoop 一切退出路径（连接级故障/stopPump）在 defer 中关闭 pubCh（sync.Once 防双关），订阅方 range 可退出；退出时 c.pubCh 置 nil，下次 Subscribe 重建新通道不复用已关闭通道 | 白盒测试验证 goroutine 回收至基线；mapper 侧自愈见 PR-D |
+| PR-D | 云边 mapper 依赖的订阅通道泵死后不自愈——需重启进程恢复采集 | ✅ **v0.21.0 闭环**（PRT-18）：OPC-UA mapper 感知 pubCh 关闭（泵异常退出）→ 自动重连并重建订阅，采集无需人工干预 | 自愈依赖重连成功；若端点持续不可达则按既有重连退避节奏持续尝试并告警 |

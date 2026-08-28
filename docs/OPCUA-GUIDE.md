@@ -133,3 +133,12 @@ go test -v -timeout 20m ./tests/e2e/ -run TestOPCUADeviceE2E
 ## 9. 安全边界（重要）
 
 SecurityPolicy None **明文传输且无认证**，仅限可信隔离网络（本机模拟、封闭 OT 段）。生产环境暴露前必须等待安全策略里程碑（Sign/SignAndEncrypt）。模拟器默认只绑定回环地址。
+
+### 9.1 报文纵深防御（v0.21.0）
+
+协议栈解码层对恶意/损坏报文的防御能力（不影响合法报文解析）：
+
+- **数组预分配放大防御**：Variant 数组与 StringList 解码前按「声明元素数 × 元素最小编码字节数」对照剩余缓冲预检——声明超过 1024 元素豁免阈值且需求超剩余缓冲时直接拒绝（`ErrTooLong`），不再按声明长度预分配内存（如 20 字节报文声明 16M 元素 Boolean 数组即被拒绝）。小规模声明（≤1024 元素）不拦截，截断报文保持既有 `io.ErrUnexpectedEOF` 语义。
+- **DiagnosticInfo 递归深度上限**：`MaxDiagnosticDepth = 100`，超过（InnerDiagnosticInfo 深嵌套）即拒绝解码，封堵深栈消耗攻击面。
+- 错误统一经 `errors.Is(err, ErrTooLong)` 判定，错误信息携带量化上下文（声明值/需求字节数/剩余缓冲/实际深度）。
+- 传输加密（Sign/SignAndEncrypt）仍未实现（见 §9）：本节防御仅覆盖解码面，不改变明文传输边界。

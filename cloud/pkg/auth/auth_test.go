@@ -91,3 +91,43 @@ func TestEnvParsing(t *testing.T) {
 		t.Errorf("TokenFromEnv = %q，期望 t0ken", got)
 	}
 }
+
+// ── v0.21.0（SEC-01）：认证关闭告警开关 ──────────────────────────────────
+
+// WarnEnabledFromEnv 默认开（未设置 → true）；显式 off → false；任意其他取值一律视为开
+// （与 auth 开关「非 on 即关」的宽松约定对称——告警面宁可误报也不静默）。
+func TestWarnEnabledFromEnv(t *testing.T) {
+	cases := []struct {
+		name string
+		val  string
+		set  bool
+		want bool
+	}{
+		{"未设置_默认开", "", false, true},
+		{"显式on_开", "on", true, true},
+		{"显式off_关", "off", true, false},
+		{"任意其他取值_视为开", "yes", true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.set {
+				t.Setenv(EnvAuthWarn, c.val)
+			}
+			if got := WarnEnabledFromEnv(); got != c.want {
+				t.Fatalf("WarnEnabledFromEnv() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// 向后兼容回归：EnabledFromEnv 语义零变化（v0.1.0 起约定：仅 == "on" 启用）。
+func TestEnabledFromEnvUnchanged(t *testing.T) {
+	t.Setenv(EnvAuth, "off")
+	if EnabledFromEnv() {
+		t.Fatal("off 不应启用认证")
+	}
+	t.Setenv(EnvAuth, "on")
+	if !EnabledFromEnv() {
+		t.Fatal("on 必须启用认证")
+	}
+}

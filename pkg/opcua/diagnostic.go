@@ -49,6 +49,11 @@ const (
 const diagValidMask byte = diagSymbolicIDMask | diagNamespaceURIMask | diagLocaleMask |
 	diagLocalizedTextMask | diagAdditionalInfoMask | diagInnerStatusMask | diagInnerDiagnosticMask
 
+// MaxDiagnosticDepth 是 DiagnosticInfo 内层递归（InnerDiagnosticInfo，
+// 掩码 bit6）允许的最大嵌套深度。超过即判定为恶意/损坏报文并拒绝
+// 解码（PRT-03：无限制递归可被 200 层级嵌套报文触发深栈消耗）。
+const MaxDiagnosticDepth = 100
+
 // MaxArrayLength 是服务层数组字段的最大元素数（防御性上限，
 // 与 Variant 数组的 1<<24 上限同数量级安全边界）。
 const MaxArrayLength = 1 << 24
@@ -105,8 +110,12 @@ func (d DiagnosticInfo) encodeUA(e *encoder) error {
 }
 
 // decodeDiagnosticInfo 从字节流解码一个 DiagnosticInfo。保留位
-// （bit7）被拒绝；每个掩码位按规范逐个解码，bit6 递归。
-func decodeDiagnosticInfo(d *decoder) (DiagnosticInfo, error) {
+// （bit7）被拒绝；每个掩码位按规范逐个解码，bit6 递归。depth 为
+// 当前递归深度（顶层调用传 0），超过 MaxDiagnosticDepth 拒绝。
+func decodeDiagnosticInfo(d *decoder, depth int) (DiagnosticInfo, error) {
+	if depth > MaxDiagnosticDepth {
+		return DiagnosticInfo{}, fmt.Errorf("%w: DiagnosticInfo nesting depth %d exceeds limit %d", ErrTooLong, depth, MaxDiagnosticDepth)
+	}
 	mask, err := d.u8()
 	if err != nil {
 		return DiagnosticInfo{}, err
@@ -159,7 +168,7 @@ func decodeDiagnosticInfo(d *decoder) (DiagnosticInfo, error) {
 		di.InnerStatusCode = &st
 	}
 	if mask&diagInnerDiagnosticMask != 0 {
-		inner, err := decodeDiagnosticInfo(d)
+		inner, err := decodeDiagnosticInfo(d, depth+1)
 		if err != nil {
 			return DiagnosticInfo{}, err
 		}
@@ -186,7 +195,7 @@ func decodeDiagnosticInfoList(d *decoder) ([]DiagnosticInfo, error) {
 	}
 	out := make([]DiagnosticInfo, 0, n)
 	for i := int32(0); i < n; i++ {
-		di, err := decodeDiagnosticInfo(d)
+		di, err := decodeDiagnosticInfo(d, 0)
 		if err != nil {
 			return nil, err
 		}

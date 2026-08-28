@@ -44,7 +44,6 @@ import (
 	"edgeflow/pkg/version"
 )
 
-
 func main() {
 	// run 返回进程退出码：非 0 表示启动/运行失败
 	if code := run(os.Args[1:], os.Stdout, os.Stderr); code != 0 {
@@ -150,7 +149,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	hub := cloudhub.New(fmt.Sprintf(":%d", cfg.HubPort), cloudhub.WithTLS(hubTLS),
 		// WBS 7.3 设备认证：EDGEFLOW_CLOUDCORE_NODE_TOKEN 非空时启用节点接入
 		// 令牌校验（edgecore 注册必须携带相同 token）；未设置保持向后兼容。
+		// v0.21.0（SEC-02）：EDGEFLOW_CLOUDHUB_REQUIRE_NODE_TOKEN=on时，
+		// 即使服务端未配置令牌也拒绝携带令牌的注册（防伪造令牌抢占探测），
+		// 默认关闭（行为与 v0.20.0 逐字节一致）。
 		cloudhub.WithNodeToken(os.Getenv("EDGEFLOW_CLOUDCORE_NODE_TOKEN")),
+		cloudhub.WithRequireNodeToken(os.Getenv("EDGEFLOW_CLOUDHUB_REQUIRE_NODE_TOKEN") == "on"),
 		// WBS 4.4 云边通道 gzip 压缩：配置 compress（缺省 true 默认开启）。
 		// 协商式兼容：旧边缘不声明能力 → 云端对其保持明文下发，互操作不受影响。
 		cloudhub.WithCompress(cfg.Compress))
@@ -407,12 +410,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		relCtrl, err = modelrelease.NewController(modelStore, deploy, &modelrelease.NoopLockKV{}, modelrelease.Options{
-			ScanInterval:   releaseScan,
-			LockTTL:        releaseLockTTL,
-			GCEnabled:      releaseGCEnabled,
-			GCKeep:         releaseGCKeep,
-			BatchParallel:  releaseBatchParallel,
-			DigestLookup:   podstatus.NodeDigestOf(podStore),
+			ScanInterval:  releaseScan,
+			LockTTL:       releaseLockTTL,
+			GCEnabled:     releaseGCEnabled,
+			GCKeep:        releaseGCKeep,
+			BatchParallel: releaseBatchParallel,
+			DigestLookup:  podstatus.NodeDigestOf(podStore),
 		})
 		if err != nil {
 			log.Errorf("[modelrelease] 发布控制器装配失败: %v", err)
@@ -572,6 +575,32 @@ func run(args []string, stdout, stderr io.Writer) int {
 		log.Infof("API 认证未启用（默认关闭，向后兼容；%s=on 开启）", auth.EnvAuth)
 	}
 
+	// ── v0.21.0 安全默认值告警（SEC-01/SEC-02/CHN-06）：只提升可见性，不改行为 ──
+	// 三条告警全部不阻断启动、不改变任何默认行为：
+	//   ① 管理 API 认证关闭（SEC-01）：auth.WarnEnabledFromEnv 可显式关闭；
+	//   ② 云边接入未配令牌（SEC-02）：nodeToken 为空即向任意主机开放注册
+	//     （EDGEFLOW_CLOUDHUB_REQUIRE_NODE_TOKEN=on 时上方 WithRequireNodeToken
+	//      已开启携带令牌注册拒绝，此处提示生效中）；
+	//   ③ 裸奔组合（CHN-06）：无 mTLS + 无 nodeToken 同时成立 → 聚合大告警。
+	if !authEnabled && auth.WarnEnabledFromEnv() {
+		log.Warnf("[安全默认值] 管理 API 认证未启用：所有 /api/v1/* 端点（节点台账/设备指令/模型发布）对可达者无差别开放；"+
+			"生产环境建议设置 %s=on 且配置 %s=<token>；本告警可用 %s=off 关闭",
+			auth.EnvAuth, auth.EnvToken, auth.EnvAuthWarn)
+	}
+	if os.Getenv("EDGEFLOW_CLOUDCORE_NODE_TOKEN") == "" {
+		if os.Getenv("EDGEFLOW_CLOUDHUB_REQUIRE_NODE_TOKEN") == "on" {
+			log.Infof("[安全默认值] 云边接入强制校验已开启（%s=on）：携带令牌的注册将被拒绝（服务端未配置令牌）", "EDGEFLOW_CLOUDHUB_REQUIRE_NODE_TOKEN")
+		} else {
+			log.Warnf("[安全默认值] 云边接入未配置节点令牌（%s 为空）：任意可达 %s:%d 的主机均可注册冒充节点并抢占同 ID 真节点；"+
+				"生产环境建议设置 EDGEFLOW_CLOUDCORE_NODE_TOKEN=<token>（与 edgecore 同值），或开启 mTLS（%s=on）",
+				"EDGEFLOW_CLOUDCORE_NODE_TOKEN", "<hub-addr>", cfg.HubPort, "EDGEFLOW_CLOUDCORE_TLS")
+		}
+	}
+	if hubTLS == nil && os.Getenv("EDGEFLOW_CLOUDCORE_NODE_TOKEN") == "" {
+		log.Warnf("[安全默认值] 裸奔组合：云边通道无 mTLS 且未配置节点令牌——注册面与下发面均明文且无认证，仅限可信隔离网络使用；" +
+			"任一维度收紧即可消除本告警（mTLS：EDGEFLOW_CLOUDCORE_TLS=on；令牌：EDGEFLOW_CLOUDCORE_NODE_TOKEN）")
+	}
+
 	// 注册路由：/healthz 健康检查 + 节点查询 API（两个视角并存）：
 	//   /api/v1/nodes      → NodeInfo 视图（运行视角：CPU/内存/IP 等）
 	//   /api/v1/edgenodes  → EdgeNode 视图（CRD 对象视角，对标 K8s Node）
@@ -633,12 +662,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		leaseHBRebuilds = lr.HBRebuildsCount
 	}
 	m := metrics.New(metrics.Providers{
-		Nodes:                 nodeReg.Count,
-		Pods:                  podStore.Count,
-		Devices:               deviceStore.Count,
-		ActiveConnections:     hub.ConnCount,
-		LeaseRenewalFailures:  leaseRenewalFailures,
-		LeaseHBRebuilds:       leaseHBRebuilds,
+		Nodes:                nodeReg.Count,
+		Pods:                 podStore.Count,
+		Devices:              deviceStore.Count,
+		ActiveConnections:    hub.ConnCount,
+		LeaseRenewalFailures: leaseRenewalFailures,
+		LeaseHBRebuilds:      leaseHBRebuilds,
 	})
 	mux.HandleFunc("GET /metrics", m.Handler())
 

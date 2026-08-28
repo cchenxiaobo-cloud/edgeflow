@@ -36,3 +36,7 @@ vendor/
 
 # 测试运行时数据
 /cmd/cloudcore/data/
+
+# Agent 工作台（不入库）
+/.cluster/
+/.openclaw/

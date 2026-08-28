@@ -28,6 +28,9 @@ const (
 	EnvAuth = "EDGEFLOW_CLOUDCORE_AUTH"
 	// EnvToken 是 API 令牌环境变量名：启用认证时必须设置，否则启动报错（fail-fast）。
 	EnvToken = "EDGEFLOW_CLOUDCORE_API_TOKEN"
+	// EnvAuthWarn 是认证关闭告警开关（v0.21.0，SEC-01）：默认开（告警输出），
+	// 值为 "off" 时显式关闭告警。告警不阻断启动，仅提升可见性。
+	EnvAuthWarn = "EDGEFLOW_CLOUDCORE_AUTH_WARN"
 )
 
 // IdentityToken 是持有有效 API 令牌的调用方在审计日志中的身份标识。
@@ -37,6 +40,13 @@ const IdentityToken = "token"
 // EnabledFromEnv 读取认证开关：EDGEFLOW_CLOUDCORE_AUTH=on 视为启用。
 func EnabledFromEnv() bool {
 	return os.Getenv(EnvAuth) == "on"
+}
+
+// WarnEnabledFromEnv 读取认证关闭告警开关（v0.21.0）：默认开启（true），
+// 仅当 EDGEFLOW_CLOUDCORE_AUTH_WARN=off 时返回 false。非法取值一律视为开启，
+// 与 auth 开关"非 on 即关"的宽松约定对称——告警面宁可误报也不静默。
+func WarnEnabledFromEnv() bool {
+	return os.Getenv(EnvAuthWarn) != "off"
 }
 
 // TokenFromEnv 读取 API 令牌（EDGEFLOW_CLOUDCORE_API_TOKEN）。

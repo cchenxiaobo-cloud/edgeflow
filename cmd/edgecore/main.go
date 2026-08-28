@@ -146,6 +146,22 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 		log.Infof("操作台账已就绪（保留 %d 天，后台每 24h 清理）", metamanager.LedgerRetentionDays)
 	}
 
+	// 幂等去重键持久化（CHN-03 / v0.22.0）：EdgeHub 下发去重键落到 MetaManager
+	// SQLite——重启后去重窗口不丢，云端对「已成功处理但 Ack 未达」的消息按
+	// QoS 1 重试（同 ID）时被直接去重（回 Ack 不重复执行）。构造失败降级为
+	// 纯内存去重（v0.21.0 行为，重启后窗口清空），不阻断 edgecore 启动。
+	dedupStore, err := metamanager.NewDedupStore(store)
+	if err != nil {
+		log.Warnf("持久去重初始化失败（降级为纯内存去重，重启后去重窗口丢失）: %v", err)
+	} else {
+		opts.DedupStore = dedupStore
+		dedupCtx, dedupCancel := context.WithCancel(context.Background())
+		defer dedupCancel()
+		go dedupStore.RunMaintenanceLoop(dedupCtx)
+		log.Infof("持久去重已装配（TTL %v，上限 %d 条，后台每 %v 清理）",
+			metamanager.DedupTTL, metamanager.DedupMaxKeys, metamanager.DedupCleanupInterval)
+	}
+
 	// 启动日志：展示已持久化的节点元数据条数——重启后数据仍在的直观证明
 	if infos, err := store.ListNodes(); err != nil {
 		log.Warnf("MetaManager 读取节点元数据失败: %v", err)

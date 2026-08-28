@@ -28,6 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"edgeflow/edge/pkg/metamanager"
 	"edgeflow/pkg/log"
 	"edgeflow/pkg/protocol"
 	"edgeflow/pkg/version"
@@ -167,6 +168,11 @@ type Dialer interface {
 
 // Options 是 EdgeHub 客户端的配置项；零值字段由 New 填充默认值。
 type Options struct {
+	// DedupStore 是持久化幂等去重键存储（CHN-03，可选）：非 nil 时去重
+	// 判定与记录写入 SQLite（重启不丢，TTL 24h）；nil 时退化纯内存缓存
+	//（行为与 v0.21.0 一致，兼容未装配场景）。装配方式见 cmd/edgecore/main.go
+	//（metamanager.NewDedupStore 后经 NewDedupAdapter 注入）。
+	DedupStore *metamanager.DedupStore
 	// CloudAddr 是云端 CloudHub 地址，如 ws://127.0.0.1:10000（缺省自动补 /v1/edge）。
 	CloudAddr string
 	// NodeID 是边缘节点 ID，注册与消息 Source 使用。
@@ -195,6 +201,17 @@ type Options struct {
 	Token string
 }
 
+// downlinkDedup 是下发主路径（handleDownlink）使用的幂等去重接口：
+// 生产实现是 metamanager.DedupStore（持久化到 SQLite，重启不丢，CHN-03），
+// 测试可注入内存实现。接口只暴露查询/记录两方法，避免 edgehub 依赖
+// metamanager 的维护面（TTL 清理、容量淘汰、统计）。
+type downlinkDedup interface {
+	// IsProcessed 报告消息 ID 是否已成功处理过（且未过 TTL）。
+	IsProcessed(msgID string) bool
+	// MarkProcessed 记录消息 ID 为已成功处理（持久化实现写入即展期）。
+	MarkProcessed(msgID string) bool
+}
+
 // Client 是 EdgeHub WebSocket 客户端。
 //
 // 并发模型（gorilla/websocket 不允许并发写，必须串行化）：
@@ -221,6 +238,11 @@ type Client struct {
 
 	// 幂等去重缓存（自动 Ack 用）：记录已成功处理的消息 ID，
 	// 云端重发同 ID 时直接回 Ack 不重复执行（WBS 4.6 QoS 1）。
+	// Dedup 非 nil（持久化装配，CHN-03）时判定/记录以 SQLite 为准，
+	// 内存缓存退化为加速层：IsProcessed 内存未命中时回源查询，
+	// markProcessed 双写——SQLite 是去重语义的持久权威，内存只是
+	// 重启后的热身缓存（重启后从空开始，逐步重建热集）。
+	dedup      downlinkDedup // 持久化去重存储（可 nil，纯内存退化）
 	procMu     sync.Mutex
 	processed  map[string]struct{} // ID → 已处理标记
 	processedQ []string            // FIFO 顺序，超上限时淘汰最旧
@@ -279,6 +301,7 @@ func New(opts Options) *Client {
 	}
 	return &Client{
 		opts:   opts,
+		dedup:  newDedupAdapter(opts.DedupStore), // nil 时适配器返回 false，纯内存退化
 		stopCh: make(chan struct{}),
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -43,6 +44,19 @@ import (
 	"edgeflow/pkg/resource"
 	"edgeflow/pkg/version"
 )
+
+// sendQuotaBytes 解析单连接发送缓冲字节配额（v0.22.0，CHN-02）：
+// EDGEFLOW_CLOUDHUB_SEND_QUOTA_BYTES 覆盖（字节数）；未设置/非法 → 默认 64MiB；
+// 显式 <=0 → 关闭字节计量（行为与 v0.21.0 一致，仅消息数上限）。
+func sendQuotaBytes() int64 {
+	if v := os.Getenv("EDGEFLOW_CLOUDHUB_SEND_QUOTA_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+		log.Warnf("EDGEFLOW_CLOUDHUB_SEND_QUOTA_BYTES=%q 非法（需十进制字节数），使用默认配额", v)
+	}
+	return cloudhub.SendQuotaBytesDefault
+}
 
 func main() {
 	// run 返回进程退出码：非 0 表示启动/运行失败
@@ -140,11 +154,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 			log.Errorf("cloudcore 服务端证书初始化失败: %v", err)
 			return 1
 		}
-		if hubTLS, err = certs.LoadTLSConfig(certDir, true); err != nil {
+		// v0.22.0（SEC-04 吊销链收紧开关，默认全关 = v0.21.0 行为逐字节一致）：
+		// EDGEFLOW_CLOUDCORE_CRL_STRICT=on → CRL 缺失时 mTLS 握手 fail-closed；
+		// EDGEFLOW_CLOUDCORE_OCSP_FRESH=on → OCSP 查询启用 nextUpdate 新鲜度校验。
+		revOpts := revocationOptionsFromEnv()
+		if hubTLS, err = certs.LoadTLSConfigWithOptions(certDir, true, revOpts); err != nil {
 			log.Errorf("加载 TLS 配置失败: %v", err)
 			return 1
 		}
-		log.Infof("CloudHub TLS 已启用（certDir=%s, mTLS: 强制要求并验证客户端证书）", certDir)
+		log.Infof("CloudHub TLS 已启用（certDir=%s, mTLS: 强制要求并验证客户端证书, CRL 严格=%v, OCSP 新鲜度=%v）", certDir, revOpts.CRLStrict, revOpts.OCSPFreshCheck)
 	}
 	hub := cloudhub.New(fmt.Sprintf(":%d", cfg.HubPort), cloudhub.WithTLS(hubTLS),
 		// WBS 7.3 设备认证：EDGEFLOW_CLOUDCORE_NODE_TOKEN 非空时启用节点接入
@@ -156,7 +174,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cloudhub.WithRequireNodeToken(os.Getenv("EDGEFLOW_CLOUDHUB_REQUIRE_NODE_TOKEN") == "on"),
 		// WBS 4.4 云边通道 gzip 压缩：配置 compress（缺省 true 默认开启）。
 		// 协商式兼容：旧边缘不声明能力 → 云端对其保持明文下发，互操作不受影响。
-		cloudhub.WithCompress(cfg.Compress))
+		cloudhub.WithCompress(cfg.Compress),
+		// v0.22.0（CHN-02）：单连接发送缓冲字节配额，默认 64MiB；
+		// EDGEFLOW_CLOUDHUB_SEND_QUOTA_BYTES 覆盖（字节数，<=0 关闭计量）。
+		cloudhub.WithSendQuotaBytes(sendQuotaBytes()))
 
 	// ── v0.4.0 存储装配：嵌入式 etcd 写穿 vs v0.3.x 纯内存 ────────────────
 	// 配置 fail-fast（与 nodecontroller.DurationsFromEnv 同约定）：
@@ -668,6 +689,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		ActiveConnections:    hub.ConnCount,
 		LeaseRenewalFailures: leaseRenewalFailures,
 		LeaseHBRebuilds:      leaseHBRebuilds,
+		HubSendBufferBytes:   func() int64 { return hub.BroadcastBytesInView() },
 	})
 	mux.HandleFunc("GET /metrics", m.Handler())
 

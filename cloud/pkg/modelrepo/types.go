@@ -304,6 +304,10 @@ const (
 	EventBatchDone         = "batch_done"
 	EventRollbackRequested = "rollback_requested"
 	EventRollbackDone      = "rollback_done"
+	// v0.22.0（CLD-02）：digest 复核失败时间线事件（推进期/终态复核路径
+	// 写入，Detail 记 node 与 expected/got；与 perNode failed 同一事实源，
+	// 失败预算经 SummarizeNodes 同源判定）。
+	EventDigestMismatch = "digest_mismatch"
 
 	// v0.20.0：retry 请求落账时间线（created 之后追加；尽力而为审计面）。
 	EventRetried = "retried"

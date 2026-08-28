@@ -112,6 +112,10 @@ func (a *modelAPI) updateRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	releaseID := r.PathValue("releaseID")
+	if _, err := a.ownedRelease(r, r.PathValue("modelName")); err != nil {
+		modelError(w, err)
+		return
+	}
 	err := a.store.UpdateReleaseHead(r.Context(), releaseID, func(h *modelrepo.ModelRelease) error {
 		if h.Status.IsTerminal() {
 			return modelrepo.ErrReleaseTerminal

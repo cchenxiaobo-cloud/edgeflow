@@ -65,6 +65,10 @@ const (
 const (
 	// sendBufferSize 是每个连接的发送缓冲（消息数），防慢客户端阻塞写方。
 	sendBufferSize = 64
+	// SendQuotaBytesDefault 是单连接发送缓冲的默认字节配额（CHN-02，v0.22.0）：
+	// 64MiB——显著高于既有隐式水位（64 条 × ≤1MiB 上限的理论 64MiB 一致，
+	// 实际缓冲未满不触发丢弃，默认路径行为与 v0.21.0 保持一致）。
+	SendQuotaBytesDefault = int64(64) << 20
 	// writeTimeout 是单条消息的写出超时。
 	writeTimeout = 10 * time.Second
 	// maxMessageBytes 是单条消息的大小上限（1 MiB），防内存耗尽。
@@ -234,6 +238,14 @@ type Server struct {
 	ackMu sync.Mutex
 	// pending 是在途可靠消息表：msgID → 等待项（ReliableSend 注册、handleAck 匹配）。
 	pending map[string]*pendingEntry
+
+	// sendQuotaBytes 是单连接发送缓冲的字节配额（CHN-02，v0.22.0）：
+	// 默认 SendQuotaBytesDefault（64MiB），经 WithSendQuotaBytes 可配；
+	// <=0 表示不启用字节计量（退化为仅消息数上限，行为与 v0.21.0 一致）。
+	sendQuotaBytes int64
+	// broadcastBytesProvider 由装配层注入到 metrics（广播 N 节点在途内存峰值），
+	// 这里仅保存自视图；计量本体在各 conn.sendBytes。
+	broadcastBytes atomic.Int64
 }
 
 // Option 是 Server 的构造选项。
@@ -286,6 +298,14 @@ func WithTLS(tlsConfig *tls.Config) Option {
 // 字段），已协商连接之外的边缘经协商自动回落明文——单开关控双向，
 // 与旧版本（v1.0）互操作不受影响（协商式兼容，见 pkg/protocol/compress.go）。
 // 注意：配置变更需重启生效（与 hubPort 同策略，热重载时保持旧值）。
+// WithSendQuotaBytes 设置单连接发送缓冲的字节配额（CHN-02，v0.22.0）。
+// quota <= 0 关闭字节计量（仅消息数上限，行为与 v0.21.0 一致）；
+// 默认 SendQuotaBytesDefault（64MiB）。入队前检查：配额满则丢弃新消息
+// 并关闭连接（与消息数满同策略），保证慢客户端内存占用有界可配。
+func WithSendQuotaBytes(quota int64) Option {
+	return func(s *Server) { s.sendQuotaBytes = quota }
+}
+
 func WithCompress(enabled bool) Option {
 	return func(s *Server) {
 		s.compressEnabled = enabled
@@ -312,6 +332,7 @@ func New(addr string, opts ...Option) *Server {
 		// 默认开启的兼容性由协商机制保证：旧边缘不声明能力 → 明文；
 		// 旧云端不回带能力 → 新边缘保持明文。
 		compressEnabled: true,
+		sendQuotaBytes:  SendQuotaBytesDefault,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -476,7 +497,7 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ws.SetReadLimit(maxMessageBytes)
-	c := newConn(ws, remoteIP(r.RemoteAddr))
+	c := newConn(ws, remoteIP(r.RemoteAddr), s.sendQuotaBytes)
 	if !s.trackConn(c) {
 		// Shutdown 已开始：本连接不在 closeAllConns 快照内，
 		// 立即关闭，不启动任何连接 goroutine（wg 计数未被占用）。
@@ -522,6 +543,9 @@ func (c *conn) writeLoop() {
 	for {
 		select {
 		case data := <-c.send:
+			if c.quota > 0 {
+				c.sendBytes.Add(-int64(len(data)))
+			}
 			if err := c.write(data); err != nil {
 				c.close()
 				return
@@ -692,7 +716,16 @@ func (s *Server) handleRegister(c *conn, m *protocol.Message) {
 		s.mu.Unlock()
 	}
 
-	// 节点生命周期事件（锁外调用，见 notifyNodeEvent 注释）
+	// v0.22.0（CHN-07 验收 1）：先回 RegisterAck 再做登记类事件通知——
+	// cloudcore 故障窗口内（事件回调阻塞/下游注册表写抖动）边缘侧已持有
+	// ack 可立即进入心跳循环，不会因等待云端同步登记而堆积重试注册，
+	// 消除「注册失败→重连→再注册」的自我放大风暴。
+	s.sendTo(c, reg.NodeID, protocol.TypeRegisterAck, m.ID,
+		RegisterAckPayload{Accepted: true, NodeName: reg.NodeID, Message: "注册成功",
+			Compression: s.ackCompression(c)})
+
+	// 节点生命周期事件（锁外调用，见 notifyNodeEvent 注释）。
+	// 事件顺序约束（T-05）：换 ID 场景仍保持先断开(old)后注册(new)。
 	if evicted != "" {
 		s.notifyNodeEvent(func(h NodeEvents) { h.OnNodeDisconnected(evicted) })
 	}
@@ -700,9 +733,6 @@ func (s *Server) handleRegister(c *conn, m *protocol.Message) {
 
 	log.Infof("节点 %s 注册成功（ip=%s arch=%s os=%s edgecore=%s）",
 		reg.NodeID, c.remoteIP, reg.Arch, reg.OS, reg.EdgecoreVersion)
-	s.sendTo(c, reg.NodeID, protocol.TypeRegisterAck, m.ID,
-		RegisterAckPayload{Accepted: true, NodeName: reg.NodeID, Message: "注册成功",
-			Compression: s.ackCompression(c)})
 }
 
 // ackCompression 返回 RegisterAck 应回带的压缩能力：仅当本连接已协商
@@ -965,6 +995,20 @@ func (s *Server) notifyNodeEvent(call func(NodeEvents)) {
 	}
 }
 
+// BroadcastBytesInView 返回全部活跃连接发送缓冲的在途字节合计
+// （CHN-02，v0.22.0 验收 3）：广播 N 节点的内存峰值≈该值，由装配层注入
+// metrics 暴露（edgeflow_cloudcore_hub_send_buffer_bytes）。字节计量关闭
+// （配额<=0）时连接不累计，本视图恒 0——此时无计量即无监控语义。
+func (s *Server) BroadcastBytesInView() int64 {
+	var total int64
+	s.connsMu.Lock()
+	for c := range s.conns {
+		total += c.sendBytes.Load()
+	}
+	s.connsMu.Unlock()
+	return total
+}
+
 // NodeCount 返回当前已注册的节点数。
 func (s *Server) NodeCount() int {
 	s.mu.RLock()
@@ -1015,6 +1059,10 @@ type conn struct {
 	remoteIP string
 	// send 是发送缓冲 channel，写循环从中取消息写出。
 	send chan []byte
+	// sendBytes 是本连接发送缓冲的当前在途字节计量（CHN-02，v0.22.0）：
+	// 入队时累加 data 长度，writeLoop 取出后扣减；配额满时新消息在入队前
+	// 被丢弃（trySendBytes），使慢客户端的内存占用有界且可观测、可配。
+	sendBytes atomic.Int64
 	// closed 在连接关闭时关闭，用于唤醒写循环/心跳监控。
 	closed chan struct{}
 	// closeOnce 保证 close 只执行一次。
@@ -1029,6 +1077,8 @@ type conn struct {
 	registered atomic.Bool
 	// dead 表示已被新连接抢占，禁止再注册。
 	dead atomic.Bool
+	// quota 是本连接发送缓冲字节配额（<=0 表示不启用字节计量）。
+	quota int64
 	// compression 表示本连接是否已协商 gzip 压缩（WBS 4.4）：
 	// 注册时由 handleRegister 写入（云端开关开启 && 边缘声明 gzip），
 	// 决定下发编码走 EncodeCompressed 还是明文 Encode。
@@ -1036,12 +1086,20 @@ type conn struct {
 }
 
 // newConn 创建连接视图，并初始化 lastSeen 为当前时间。
-func newConn(ws *websocket.Conn, remoteIP string) *conn {
+// newConn 创建连接视图。quota 可变参：生产路径传 s.sendQuotaBytes；
+// 既有测试直接调用 newConn(ws, ip) 不传配额 → 0 = 不启用字节计量，
+// 行为与 v0.21.0 一致（既有测试零改动）。
+func newConn(ws *websocket.Conn, remoteIP string, quota ...int64) *conn {
+	q := int64(0)
+	if len(quota) > 0 {
+		q = quota[0]
+	}
 	c := &conn{
 		ws:       ws,
 		remoteIP: remoteIP,
 		send:     make(chan []byte, sendBufferSize),
 		closed:   make(chan struct{}),
+		quota:    q,
 	}
 	c.nodeID.Store("")
 	c.lastSeen.Store(time.Now().UnixMilli())
@@ -1049,10 +1107,13 @@ func newConn(ws *websocket.Conn, remoteIP string) *conn {
 }
 
 // close 关闭连接：通知写循环/心跳监控退出，并关闭底层 WebSocket。
+// ws 允许为 nil（v0220 单测直接构造 conn 视图验证配额语义，不经 WS 握手）。
 func (c *conn) close() {
 	c.closeOnce.Do(func() {
 		close(c.closed)
-		_ = c.ws.Close()
+		if c.ws != nil {
+			_ = c.ws.Close()
+		}
 	})
 }
 
@@ -1071,13 +1132,38 @@ func (c *conn) write(data []byte) error {
 //   - 连接已关闭：返回 false
 //   - 缓冲已满：视为慢客户端，关闭连接并返回 false
 func (c *conn) trySend(data []byte) bool {
+	// 字节计量（CHN-02，v0.22.0）：配额开启时入队前检查——本条消息放进去
+	// 后是否超配额；超了直接丢弃并关闭连接（与消息数满同策略），内存峰值
+	// 因此有界且可配。CAS 累计，与 writeLoop 的扣减并发安全。
+	if c.quota > 0 {
+		n := int64(len(data))
+		for {
+			cur := c.sendBytes.Load()
+			if cur+n > c.quota {
+				log.Warnf("发送缓冲字节配额已满（%d+%d > %d），丢弃消息并关闭慢客户端连接 ip=%s",
+					cur, n, c.quota, c.remoteIP)
+				c.close()
+				return false
+			}
+			if c.sendBytes.CompareAndSwap(cur, cur+n) {
+				break
+			}
+		}
+	}
 	select {
 	case <-c.closed:
+		// 关闭竞态：回滚本次计量，防止计数虚高
+		if c.quota > 0 {
+			c.sendBytes.Add(-int64(len(data)))
+		}
 		return false
 	case c.send <- data:
 		return true
 	default:
-		// 对端消费过慢，发送缓冲已满：丢弃连接，避免阻塞写方
+		// 对端消费过慢，消息数缓冲已满：丢弃连接，避免阻塞写方
+		if c.quota > 0 {
+			c.sendBytes.Add(-int64(len(data)))
+		}
 		c.close()
 		return false
 	}

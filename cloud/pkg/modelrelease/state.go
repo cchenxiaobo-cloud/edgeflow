@@ -16,7 +16,12 @@ package modelrelease
 //     AllNodesDeployed（D8：succeeded 转换前断言全部 TargetNodes perNode
 //     终态 deployed 且无 failed，内存计数 O(1)）、SummarizeNodes。
 
-import "edgeflow/cloud/pkg/modelrepo"
+import (
+	"errors"
+	"fmt"
+
+	"edgeflow/cloud/pkg/modelrepo"
+)
 
 // VersionTransitions 是版本三态（draft/active/archived）全量合法转换对
 // （设计 §2.4：draft─activate▶active─archive▶archived；archived 不可再
@@ -41,6 +46,9 @@ var ReleaseTransitions = [][2]modelrepo.ReleaseStatus{
 	{modelrepo.ReleaseStatusRunning, modelrepo.ReleaseStatusFailed},       // fail-fast 中止/跑完有失败
 	{modelrepo.ReleaseStatusRunning, modelrepo.ReleaseStatusCanceled},     // cancel（批次边界生效）
 	{modelrepo.ReleaseStatusRunning, modelrepo.ReleaseStatusRolledBack},   // rollback 执行完成
+	{modelrepo.ReleaseStatusRunning, modelrepo.ReleaseStatusPaused},       // v0.16.0 暂停（v0.22.0 补齐：判定函数已有，表漏同步）
+	{modelrepo.ReleaseStatusPaused, modelrepo.ReleaseStatusRunning},       // v0.16.0 恢复（v0.22.0 补齐）
+	{modelrepo.ReleaseStatusPaused, modelrepo.ReleaseStatusCanceled},      // v0.16.0 暂停中被 cancel（v0.22.0 补齐）
 	{modelrepo.ReleaseStatusSucceeded, modelrepo.ReleaseStatusRolledBack}, // 回滚（终态可回滚）
 	{modelrepo.ReleaseStatusFailed, modelrepo.ReleaseStatusRolledBack},    // 回滚（终态可回滚）
 	{modelrepo.ReleaseStatusCanceled, modelrepo.ReleaseStatusRolledBack},  // 回滚（终态可回滚）
@@ -81,6 +89,40 @@ func CanTransitRelease(from, to modelrepo.ReleaseStatus) bool {
 // CanTransitNodeResult 报告逐节点结果转换是否合法（委托 modelrepo 权威判定）。
 func CanTransitNodeResult(from, to modelrepo.NodeRelStatus) bool {
 	return modelrepo.CanTransitionNodeResult(from, to)
+}
+
+// ── 终态写点接线面（T-06 / CLD-01，v0.22.0）────────────────────────────
+//
+// 修复 CLD-01"权威状态机判定生产路径零调用"：控制器全部 release 终态
+// 写点（setTerminal / runRollback / abortRollback）在 CAS mutate 闭包内
+// 统一经 assertReleaseTransition 断言后落库——状态机不再只是测试对拍
+// 表，而是生产写点的硬守卫。断言违例返回哨兵 errIllegalTransition，
+// 写点按既有 errHeadChanged 同款容错（放弃本轮、下轮收敛），缺省路径
+// 可观测行为不变（合法转换零拦截）。
+
+// errIllegalTransition 是终态写点状态机断言违例的守卫哨兵（T-06/CLD-01）：
+// mutate 闭包拒绝非法 release 状态转换落库。与 errHeadChanged 同风格、
+// 同款容错路径（写点 errors.Is 判别后放弃本轮，warn 日志）。
+var errIllegalTransition = errors.New("modelrelease: illegal release state transition")
+
+// assertReleaseTransition 是终态写点接线的统一断言面（权威判定委托
+// modelrepo.CanTransitionRelease 单一事实源；表驱动 ReleaseTransitions
+// 由 state_test.go 逐对对拍锁定）。自转换放行（幂等收敛写点：同终态
+// 重入不视为违例），其余非表内转换 → errIllegalTransition。
+func assertReleaseTransition(from, to modelrepo.ReleaseStatus) error {
+	if from == to || modelrepo.CanTransitionRelease(from, to) {
+		return nil
+	}
+	return fmt.Errorf("%w: %s → %s", errIllegalTransition, from, to)
+}
+
+// terminalWriteDetail 是终态写点断言违例的观测记录（ObserveTerminalWrite
+// 注入点收数；默认 nil = 仅 log.Warnf，零额外依赖）。
+type terminalWriteDetail struct {
+	ReleaseID string
+	From      modelrepo.ReleaseStatus
+	To        modelrepo.ReleaseStatus
+	Reason    string
 }
 
 // ── 控制器/API 共享的不变式与派生汇总（纯函数）────────────────────────

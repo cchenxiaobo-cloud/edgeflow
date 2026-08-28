@@ -370,6 +370,16 @@ func (e *Edged) reconcileOnce() error {
 			errCount++
 			continue
 		}
+		// v0.22.0（CHN-05 验收 1）迁移复核：EnsureStopped 返回成功后 Inspect
+		// 复核容器确已消失——外部 docker 干预（容器被重建/手工拉起同名容器）
+		// 可能令「删除成功」的返回与实际状态背离；复核失败按 Unknown 记账，
+		// 不误杀调谐（下一轮会再次尝试迁移）。
+		if st, ierr := e.rt.Inspect(inst.Pod(), inst.Index); ierr != nil || st != StateAbsent {
+			e.setStatus(key, StateUnknown, fmt.Errorf("迁移复核未通过: state=%s err=%v", st, ierr), now)
+			log.Errorf("Edged reconcile: 旧命名容器 %s 迁移复核未通过（state=%s err=%v），下轮重试", key, st, ierr)
+			errCount++
+			continue
+		}
 		log.Infof("Edged reconcile: 已迁移旧命名容器 %s（重建为规范副本命名）", key)
 		removed++
 	}

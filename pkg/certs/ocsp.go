@@ -44,6 +44,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -593,6 +594,22 @@ func (p FreshnessPolicy) clockSkew() time.Duration {
 // （校验开启 + 5 分钟时钟偏差容忍）。
 func DefaultFreshnessPolicy() FreshnessPolicy {
 	return FreshnessPolicy{CheckFreshness: true, ClockSkew: defaultOCSPClockSkew}
+}
+
+// EnvOCSPFreshCheck 是 OCSP 客户端新鲜度校验开关环境变量（v0.22.0，SEC-04）：
+// 值为 "on" 时 FreshnessPolicyFromEnv 返回 fail-closed 策略（nextUpdate 过期
+// 拒绝、未来时间拒绝）；默认空/其他值 = 零值策略（不校验，v0.21.0 行为
+// 逐字节兼容）。非法取值一律视为关闭（宽松解析，与 cloud::auth 开关约定
+// 对称——缺省行为宁可兼容也不误拒）。
+const EnvOCSPFreshCheck = "EDGEFLOW_CLOUDCORE_OCSP_FRESH"
+
+// FreshnessPolicyFromEnv 按 EDGEFLOW_CLOUDCORE_OCSP_FRESH 返回生效的新鲜度
+// 策略（OCSP 客户端入口 OCSPStatusAtWithPolicy 的装配辅助；默认关闭）。
+func FreshnessPolicyFromEnv() FreshnessPolicy {
+	if os.Getenv(EnvOCSPFreshCheck) == "on" {
+		return DefaultFreshnessPolicy()
+	}
+	return FreshnessPolicy{}
 }
 
 // ParseOCSPResponseWithFreshness 同 ParseOCSPResponse，并额外按 policy

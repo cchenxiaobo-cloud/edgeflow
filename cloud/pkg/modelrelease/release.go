@@ -126,6 +126,29 @@ type Controller struct {
 
 	mu     sync.Mutex
 	active map[string]struct{} // 本副本正在执行（已持有领跑锁）的 release ID
+
+	// observeTerminalWrite 是终态写点断言违例的观测面（T-06/CLD-01，
+	// 可选注入；nil = 仅日志。违例 = 非法状态转换被断言拦截，属实现
+	// 缺陷信号，生产可接告警）。
+	observeTerminalWrite func(terminalWriteDetail)
+}
+
+// SetTerminalObserver 注入终态写点断言违例观测回调（T-06/CLD-01；非
+// NewController 签名变更，既有构造调用零影响；装配层可选接线）。
+func (c *Controller) SetTerminalObserver(fn func(terminalWriteDetail)) {
+	c.observeTerminalWrite = fn
+}
+
+// reportIllegalTransition 上报一次终态写点断言违例（log.Warnf + 可选
+// 观测回调；回调 panic 隔离——观测面故障不得影响发布主流程）。
+func (c *Controller) reportIllegalTransition(id string, from, to modelrepo.ReleaseStatus, reason string) {
+	log.Warnf("[modelrelease] 状态机断言违例：release %s 拒绝转换 %s → %s（%s）；写点已回滚放弃，下轮按最新状态收敛", id, from, to, reason)
+	if c.observeTerminalWrite != nil {
+		func() {
+			defer func() { _ = recover() }() // 观测面 panic 隔离
+			c.observeTerminalWrite(terminalWriteDetail{ReleaseID: id, From: from, To: to, Reason: reason})
+		}()
+	}
 }
 
 // NewController 构造控制器。store/deploy/locks 均必填（nil → error，
@@ -370,32 +393,12 @@ func (c *Controller) advance(ctx context.Context, id string) {
 	for _, nr := range results {
 		byNode[nr.NodeID] = nr
 	}
-	// 推进期 digest 复查（v0.11.0，R-1+ 接入点②）：对已 deployed 节点复核
-	// 上报 digest 与发布头期望一致；mismatch 已由 digestMismatch 写 perNode
-	// failed——failFast 下中止（后续批次 skipped），否则继续（终态按失败
-	// 计数判定）。
-	for _, nodeID := range h.TargetNodes {
-		nr, ok := byNode[nodeID]
-		if !ok || nr.Status != modelrepo.NodeRelDeployed {
-			continue
-		}
-		if ok, reason := c.digestMismatch(ctx, id, h, nodeID); ok {
-			log.Warnf("[modelrelease] 推进期 digest 复核失败（release %s, node %s）: %s", id, nodeID, reason)
-			if h.FailFast {
-				c.abortFailFast(ctx, id, h, nodeID, reason, byNode)
-				return
-			}
-		}
-	}
-	batches := BuildBatches(h.TargetNodes, h.BatchSize)
-	bi := firstUnexecutedBatch(batches, byNode)
-	if bi < 0 {
-		c.finish(ctx, h, results) // 全部批次已执行 → 判定终态（D8 不变式）
-		return
-	}
 	// 批次边界复查（cancel 语义 = 批次边界生效，设计 §5.4/§2.4：暂停期间
 	// 被 cancel → 本处读取到 canceled → 取消生效，剩余 pending 由
-	// cancelRemainder 补写 skipped）
+	// cancelRemainder 补写 skipped）。v0.22.0（T-06/CLD-03）：本读前移至
+	// digest 复查之前——fail-fast 中止判定统一取本快照 cur.FailFast
+	//（advance 流程唯一决策点；部署/复查路径不再回读 advance 起点的 h
+	// 指针参数，PATCH 运行中改参在批次边界生效，与 cancel 语义对齐）。
 	cur, err := c.store.GetRelease(ctx, id)
 	if err != nil {
 		return
@@ -408,16 +411,42 @@ func (c *Controller) advance(ctx context.Context, id string) {
 		// 保留 active 身份同上。
 		return
 	}
+	// 推进期 digest 复查（v0.11.0，R-1+ 接入点②）：对已 deployed 节点复核
+	// 上报 digest 与发布头期望一致；mismatch 已由 digestMismatch 写 perNode
+	// failed + 时间线事件（T-06/CLD-02）——failFast 下中止（后续批次
+	// skipped），否则继续（与批次失败同源计入失败预算/终态失败计数）。
+	for _, nodeID := range h.TargetNodes {
+		nr, ok := byNode[nodeID]
+		if !ok || nr.Status != modelrepo.NodeRelDeployed {
+			continue
+		}
+		if ok, reason := c.digestMismatch(ctx, id, h, nodeID); ok {
+			log.Warnf("[modelrelease] 推进期 digest 复核失败（release %s, node %s）: %s", id, nodeID, reason)
+			if cur.FailFast {
+				c.abortFailFast(ctx, id, h, nodeID, reason, byNode)
+				return
+			}
+		}
+	}
+	batches := BuildBatches(h.TargetNodes, h.BatchSize)
+	bi := firstUnexecutedBatch(batches, byNode)
+	if bi < 0 {
+		c.finish(ctx, h, results) // 全部批次已执行 → 判定终态（D8 不变式）
+		return
+	}
 
 	batch := batches[bi]
 	now := c.nowMs()
-	failNode, failReason := c.deployBatchNodes(ctx, id, h, batch, byNode)
+	failNode, failReason := c.deployBatchNodes(ctx, id, h, batch, byNode, cur.FailFast)
 
-	if failNode != "" {
-		// fail-fast：本批剩余与后续全部标 skipped，head 置 failed（§5.4）
+	if failNode != "" && cur.FailFast {
+		// fail-fast：本批剩余与后续全部标 skipped，head 置 failed（§5.4）。
+		// 中止判定只由本流程 cur 快照决策（T-06/CLD-03）。
 		c.abortFailFast(ctx, id, h, failNode, failReason, byNode)
 		return
 	}
+	// failFast=false：首失败不中止——失败节点已写 perNode failed，与批次
+	// 失败同源进入失败预算/终态计数（T-06/CLD-02）。
 	// v0.18.0：批次完成事件（时间线，环形截断随 AppendEvent；无失败时
 	// Detail 记成功计数）。事件写入失败不阻断发布（尽力而为）。
 	if err := c.store.UpdateReleaseHead(ctx, id, func(hh *modelrepo.ModelRelease) error {
@@ -450,6 +479,12 @@ func (c *Controller) advance(ctx context.Context, id string) {
 			if perr := c.store.UpdateReleaseHead(ctx, id, func(hh *modelrepo.ModelRelease) error {
 				if hh.Status != modelrepo.ReleaseStatusRunning || hh.RollbackRequested {
 					return errHeadChanged
+				}
+				// T-06/CLD-01：自动暂停写点接入权威状态机断言（running→paused；
+				// CAS 守卫已保证 from=running，断言为表契约的硬接线证明）。
+				if aerr := assertReleaseTransition(hh.Status, modelrepo.ReleaseStatusPaused); aerr != nil {
+					c.reportIllegalTransition(id, hh.Status, modelrepo.ReleaseStatusPaused, "failure budget autopause")
+					return aerr
 				}
 				nowAP := c.nowMs()
 				hh.Status = modelrepo.ReleaseStatusPaused
@@ -544,6 +579,13 @@ func (c *Controller) setTerminal(ctx context.Context, id string, st modelrepo.Re
 		if h.Status != modelrepo.ReleaseStatusRunning || h.RollbackRequested {
 			return errHeadChanged
 		}
+		// T-06/CLD-01：终态写点接入权威状态机断言（running→终态；违例
+		// = 实现缺陷，拒绝落库并观测上报，写点按 errHeadChanged 同款
+		// 容错放弃本轮）。
+		if aerr := assertReleaseTransition(h.Status, st); aerr != nil {
+			c.reportIllegalTransition(id, h.Status, st, reason)
+			return aerr
+		}
 		h.Status = st
 		h.FailureReason = reason
 		h.FinishedAt = c.nowMs()
@@ -576,9 +618,11 @@ func (c *Controller) setTerminal(ctx context.Context, id string, st modelrepo.Re
 // 仍 pending/缺失才标（missing 表示创建期预写缺失，等同 pending）。
 // deployBatchNodes 部署一批节点（v0.10.0，D6：批内可并行）。
 // parallel = min(BatchParallel, 批大小)；=1 时为逐节点串行（与旧版逐字节
-// 一致）。返回 (首个失败节点, 失败原因)；failFast 下并发版本批在途节点
-// 全部执行完（后续批次由调用方 abortFailFast 中止）。
-func (c *Controller) deployBatchNodes(ctx context.Context, id string, h *modelrepo.ModelRelease, batch []string, byNode map[string]modelrepo.NodeReleaseResult) (string, string) {
+// 一致）。返回 (首个失败节点, 失败原因)；并发版本批在途节点全部执行完
+// （后续批次由调用方按本流程决策 abortFailFast 中止）。failFast 参数由
+// 调用方 advance 流程的 cur 快照传入（T-06/CLD-03：部署路径不回读
+// head 指针参数，中止判定与运行中可变的 head 参数解耦）。
+func (c *Controller) deployBatchNodes(ctx context.Context, id string, h *modelrepo.ModelRelease, batch []string, byNode map[string]modelrepo.NodeReleaseResult, failFast bool) (string, string) {
 	parallel := c.opts.BatchParallel
 	if parallel < 1 {
 		parallel = 1
@@ -589,9 +633,9 @@ func (c *Controller) deployBatchNodes(ctx context.Context, id string, h *modelre
 	if parallel == 1 {
 		// 串行路径（回归锚点：与 v0.7.0-v0.9.0 逐字节一致）
 		for _, nodeID := range batch {
-			failNode, failReason := c.deployBatchNode(ctx, id, h, nodeID, byNode)
+			failNode, failReason := c.deployBatchNode(ctx, id, h, nodeID, byNode, failFast)
 			if failNode != "" {
-				if h.FailFast {
+				if failFast {
 					return failNode, failReason
 				}
 				// failFast=false：记录首个失败继续（与旧版一致，最终按失败计数判定）
@@ -620,8 +664,8 @@ func (c *Controller) deployBatchNodes(ctx context.Context, id string, h *modelre
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			failNode, failReason := c.deployBatchNode(ctx, id, h, n, byNode)
-			if failNode != "" && h.FailFast {
+			failNode, failReason := c.deployBatchNode(ctx, id, h, n, byNode, failFast)
+			if failNode != "" && failFast {
 				recordFail(failNode, failReason)
 			}
 		}(nodeID)
@@ -630,6 +674,11 @@ func (c *Controller) deployBatchNodes(ctx context.Context, id string, h *modelre
 	return firstNode, firstReason
 }
 
+// EventDigestMismatch 是 digest 复核失败时间线事件 Kind（T-06/CLD-02）。
+// EventKinds 为开放枚举（消费方容忍未知值）；modelrepo 域外不可改，
+// 常量暂驻本包，主线后续可在 modelrepo 补同名常量（值已对齐）。
+const EventDigestMismatch = "digest_mismatch"
+
 // digestMismatch 校验节点上报 digest 与发布头期望 digest（v0.11.0，
 // R-1+）。三跳过（任一成立返回 false, ""）：
 //   - 控制器 DigestLookup 未注入（nil）→ 整体关闭（回归锚点）；
@@ -637,7 +686,11 @@ func (c *Controller) deployBatchNodes(ctx context.Context, id string, h *modelre
 //   - 节点上报 digest 空（老边缘/未上报）→ 该节点跳过，不误伤不阻塞。
 //
 // 不一致时写 perNode failed（Reason="digest-mismatch: expected <exp> got
-// <got>"）并返回 (true, reason)。幂等：节点已 failed 后不再被复核查到。
+// <got>"）+ head 时间线事件（T-06/CLD-02：历史只写 perNode，head 台账
+// 无痕——环形 32 条截断随 AppendEvent；事件写失败仅告警，不阻断发布）
+// 并返回 (true, reason)。幂等：节点已 failed 后不再被复核查到。失败
+// 节点与批次失败同源：终态失败计数（finish）与失败预算（advance）
+// 均派生自 ListNodeResults，自动纳入，无额外计数器（防双写漂移）。
 func (c *Controller) digestMismatch(ctx context.Context, id string, h *modelrepo.ModelRelease, nodeID string) (bool, string) {
 	if c.opts.DigestLookup == nil || h.MirrorDigest == "" {
 		return false, ""
@@ -653,11 +706,19 @@ func (c *Controller) digestMismatch(ctx context.Context, id string, h *modelrepo
 	_ = c.store.SetNodeResult(ctx, id, nodeID, &modelrepo.NodeReleaseResult{
 		NodeID: nodeID, Status: modelrepo.NodeRelFailed, Version: h.Version, Reason: reason,
 	})
+	if err := c.store.UpdateReleaseHead(ctx, id, func(hh *modelrepo.ModelRelease) error {
+		hh.AppendEvent(modelrepo.EventDigestMismatch, fmt.Sprintf("node %s: %s", nodeID, reason), c.nowMs())
+		return nil
+	}); err != nil {
+		log.Warnf("[modelrelease] 写 digest-mismatch 事件失败（release %s, node %s）: %v", id, nodeID, err)
+	}
 	return true, reason
 }
 
 // deployBatchNode 部署单节点（返回失败节点与原因；成功返回 "", ""）。
-func (c *Controller) deployBatchNode(ctx context.Context, id string, h *modelrepo.ModelRelease, nodeID string, byNode map[string]modelrepo.NodeReleaseResult) (string, string) {
+// failFast 由调用方 advance 流程快照传入（T-06/CLD-03：不回读 head
+// 指针参数——运行中 PATCH 改参在批次边界生效，中止判定与参数解耦）。
+func (c *Controller) deployBatchNode(ctx context.Context, id string, h *modelrepo.ModelRelease, nodeID string, byNode map[string]modelrepo.NodeReleaseResult, failFast bool) (string, string) {
 	// 接管续跑：已 deployed 跳过（6.1 重试语义：对 failed 节点不自动
 	// 重试——人工决策重新发布或回滚；deployed 判据在 byNode 快照内）
 	if nr, ok := byNode[nodeID]; ok && nr.Status != modelrepo.NodeRelPending {
@@ -671,7 +732,7 @@ func (c *Controller) deployBatchNode(ctx context.Context, id string, h *modelrep
 			NodeID: nodeID, Status: modelrepo.NodeRelFailed, Version: h.Version, Reason: reason,
 		})
 		log.Warnf("[modelrelease] node %s 部署失败（release %s）: %s", nodeID, id, reason)
-		if h.FailFast {
+		if failFast {
 			return nodeID, reason
 		}
 		return "", ""
@@ -682,7 +743,7 @@ func (c *Controller) deployBatchNode(ctx context.Context, id string, h *modelrep
 			NodeID: nodeID, Status: modelrepo.NodeRelFailed, Version: h.Version, Reason: reason,
 		})
 		log.Warnf("[modelrelease] node %s 部署失败（release %s）: %s", nodeID, id, reason)
-		if h.FailFast {
+		if failFast {
 			return nodeID, reason
 		}
 		return "", ""
@@ -692,7 +753,7 @@ func (c *Controller) deployBatchNode(ctx context.Context, id string, h *modelrep
 	// digestMismatch 写成 failed）。
 	if ok, reason := c.digestMismatch(ctx, id, h, nodeID); ok {
 		log.Warnf("[modelrelease] node %s 部署即时 digest 检查失败（release %s）: %s", nodeID, id, reason)
-		if h.FailFast {
+		if failFast {
 			return nodeID, reason
 		}
 		return "", ""
@@ -791,19 +852,18 @@ func (c *Controller) runRollback(ctx context.Context, id string) {
 	}
 	// 推进期 digest 复查（v0.11.0，R-1+ 接入点②）：对已 deployed 节点复核
 	// 上报 digest 与发布头期望一致；mismatch 已由 digestMismatch 写 perNode
-	// failed——failFast 下中止（后续批次 skipped），否则继续（终态按失败
-	// 计数判定）。
+	// failed + 时间线事件（T-06/CLD-02），与批次失败同源（回滚无失败
+	// 预算，仅台账）。v0.22.0（T-06/CLD-03）：移除历史 abortFailFast
+	// 空转调用——RollbackRequested 置位期 setTerminal 的 running-CAS
+	// 必拒，该中止从未实际生效；回滚失败策略本就是 L24 不中止（能回
+	// 多少回多少），与节点失败同源继续，终态由 rollbackAllDone 判定。
 	for _, nodeID := range h.TargetNodes {
 		nr, ok := byNode[nodeID]
 		if !ok || nr.Status != modelrepo.NodeRelDeployed {
 			continue
 		}
 		if ok, reason := c.digestMismatch(ctx, id, h, nodeID); ok {
-			log.Warnf("[modelrelease] 推进期 digest 复核失败（release %s, node %s）: %s", id, nodeID, reason)
-			if h.FailFast {
-				c.abortFailFast(ctx, id, h, nodeID, reason, byNode)
-				return
-			}
+			log.Warnf("[modelrelease] 回滚期 digest 复核失败（release %s, node %s）: %s（L24：不中止，继续回滚）", id, nodeID, reason)
 		}
 	}
 	batches := BuildBatches(h.TargetNodes, h.BatchSize)
@@ -846,9 +906,18 @@ func (c *Controller) runRollback(ctx context.Context, id string) {
 		if !hh.RollbackRequested {
 			return errHeadChanged
 		}
+		// T-06/CLD-01：回滚完成写点接入权威状态机断言（表内前置态：
+		// running/succeeded/failed/canceled；违例拒绝落库同款容错）。
+		if aerr := assertReleaseTransition(hh.Status, modelrepo.ReleaseStatusRolledBack); aerr != nil {
+			c.reportIllegalTransition(id, hh.Status, modelrepo.ReleaseStatusRolledBack, "rollback done")
+			return aerr
+		}
 		hh.Status = modelrepo.ReleaseStatusRolledBack
 		hh.RollbackRequested = false // 必须清零：防下轮按再次回滚重跑
 		hh.FinishedAt = c.nowMs()
+		// v0.22.0：回滚完成事件（T-06/CLD-01 台账补齐——该写点此前不写
+		// 事件，时间线缺回滚完成记录；环形截断随 AppendEvent）。
+		hh.AppendEvent(modelrepo.EventRollbackDone, "rollback done", hh.FinishedAt)
 		return nil
 	})
 	if err != nil {
@@ -901,6 +970,19 @@ func (c *Controller) abortRollback(ctx context.Context, id, reason string) {
 	err := c.store.UpdateReleaseHead(ctx, id, func(h *modelrepo.ModelRelease) error {
 		if !h.RollbackRequested {
 			return errHeadChanged
+		}
+		// T-06/CLD-01：回滚中止写点接入断言，但对 RequestRollback 准入的
+		// 终态（succeeded/canceled）豁免——D2/D4 中止路径将跨终态收敛为
+		// failed（P8 契约锁定，ReleaseTransitions 暂无此对），硬拦截会
+		// 便 head 停留 succeeded 形成台账矛盾。待主线裁决后补表/收口。
+		switch h.Status {
+		case modelrepo.ReleaseStatusSucceeded, modelrepo.ReleaseStatusCanceled:
+			// 豁免：跨终态收敛（见上），不拦截
+		default:
+			if aerr := assertReleaseTransition(h.Status, modelrepo.ReleaseStatusFailed); aerr != nil {
+				c.reportIllegalTransition(id, h.Status, modelrepo.ReleaseStatusFailed, "rollback abort: "+reason)
+				return aerr
+			}
 		}
 		h.Status = modelrepo.ReleaseStatusFailed
 		h.RollbackRequested = false

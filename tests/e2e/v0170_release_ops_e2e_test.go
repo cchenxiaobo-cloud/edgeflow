@@ -124,7 +124,7 @@ func TestV170ReleaseOpsE2E(t *testing.T) {
 	}
 
 	// 4) 到点自动 running → pause → paused 期 PATCH batchSize=3 → resume
-	v160waitReleaseStatus(t, base, relID, 60*time.Second, func(m map[string]any) bool {
+	v160waitReleaseModelStatus(t, base, "rel170m", relID, 60*time.Second, func(m map[string]any) bool {
 		st, _ := m["status"].(string)
 		return st == "running" || st == "succeeded"
 	})
@@ -140,7 +140,7 @@ func TestV170ReleaseOpsE2E(t *testing.T) {
 	}
 
 	// 5) 收敛 succeeded
-	done := v160waitReleaseStatus(t, base, relID, 90*time.Second, func(m map[string]any) bool {
+	done := v160waitReleaseModelStatus(t, base, "rel170m", relID, 90*time.Second, func(m map[string]any) bool {
 		return m["status"] == "succeeded"
 	})
 	if done["status"] != "succeeded" {

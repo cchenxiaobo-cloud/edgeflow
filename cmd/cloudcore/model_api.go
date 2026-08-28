@@ -952,10 +952,35 @@ func (a *modelAPI) listReleases(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, releaseList{Kind: "ModelReleaseList", APIVersion: "v1", Items: items})
 }
 
-// getRelease 处理 GET /api/v1/models/{modelName}/releases/{releaseID}
-// （含 summary 派生汇总）。
-func (a *modelAPI) getRelease(w http.ResponseWriter, r *http.Request) {
+// ownedRelease 是 release 子资源归属校验的统一入口（v0.22.0，CLD-06）：
+// 校验链 模型存在（404 先行，与 v0.19.0 snapshot / v0.20.0 retry/DELETE 的
+// C-4 链序纪律一致）→ release 头存在（404）→ release.Model == modelName
+// （跨模型 URL，如模型 m1 下引用 m2 的 release id，一律 404 且 wrap
+// ErrReleaseNotFound——与"发布不存在"同语义同响应体，防跨模型枚举）。
+// 接入 6 个端点：GET 详情/digest/cancel/pause/resume/rollback；PATCH 见
+// v0170_release_ops.go（同 helper，插在 body 校验后维持"400 早于 404"链序）；
+// snapshot/retry/delete 为 v0.19.0/v0.20.0 既有内联同语义校验（行为一致，
+// 不重复接线）。通过时返回 release 头供 handler 复用，避免二次读取。
+func (a *modelAPI) ownedRelease(r *http.Request, modelName string) (*modelrepo.ModelRelease, error) {
+	if _, err := a.store.GetModel(r.Context(), modelName); err != nil {
+		return nil, err
+	}
 	release, err := a.store.GetRelease(r.Context(), r.PathValue("releaseID"))
+	if err != nil {
+		return nil, err
+	}
+	if release.Model != modelName {
+		return nil, fmt.Errorf("%w: %s", modelrepo.ErrReleaseNotFound, r.PathValue("releaseID"))
+	}
+	return release, nil
+}
+
+// getRelease 处理 GET /api/v1/models/{modelName}/releases/{releaseID}
+// （含 summary 派生汇总）。归属校验（v0.22.0，CLD-06/CLD-04 统一口径）：
+// 模型存在（404 先行）→ release 存在且 release.Model == modelName
+// （跨模型引用一律 404，防目录穿越式枚举）。
+func (a *modelAPI) getRelease(w http.ResponseWriter, r *http.Request) {
+	release, err := a.ownedRelease(r, r.PathValue("modelName"))
 	if err != nil {
 		modelError(w, err)
 		return
@@ -1014,7 +1039,7 @@ func consistencyOf(expected, current string) string {
 // head 聚合：mirrorDigest 空 → skipped；任一节点 inconsistent → inconsistent；
 // 任一节点 unknown → unknown；否则 consistent。
 func (a *modelAPI) getReleaseDigest(w http.ResponseWriter, r *http.Request) {
-	release, err := a.store.GetRelease(r.Context(), r.PathValue("releaseID"))
+	release, err := a.ownedRelease(r, r.PathValue("modelName"))
 	if err != nil {
 		modelError(w, err)
 		return
@@ -1079,6 +1104,10 @@ func (a *modelAPI) getReleaseDigest(w http.ResponseWriter, r *http.Request) {
 // cancelRelease 处理 POST /api/v1/models/{modelName}/releases/{releaseID}/cancel
 // （pending/running → canceled；终态 → 409）。
 func (a *modelAPI) cancelRelease(w http.ResponseWriter, r *http.Request) {
+	if _, err := a.ownedRelease(r, r.PathValue("modelName")); err != nil {
+		modelError(w, err)
+		return
+	}
 	releaseID := r.PathValue("releaseID")
 	if err := a.store.CancelRelease(r.Context(), releaseID); err != nil {
 		modelError(w, err)
@@ -1100,6 +1129,10 @@ func (a *modelAPI) cancelRelease(w http.ResponseWriter, r *http.Request) {
 // （v0.16.0）：running → paused（存储层守卫：仅 running 可暂停，重复幂等；
 // pending/终态 → 409 族）。200 返回最新 release + summary。
 func (a *modelAPI) pauseRelease(w http.ResponseWriter, r *http.Request) {
+	if _, err := a.ownedRelease(r, r.PathValue("modelName")); err != nil {
+		modelError(w, err)
+		return
+	}
 	releaseID := r.PathValue("releaseID")
 	if err := a.store.PauseRelease(r.Context(), releaseID); err != nil {
 		modelError(w, err)
@@ -1121,6 +1154,10 @@ func (a *modelAPI) pauseRelease(w http.ResponseWriter, r *http.Request) {
 // resumeRelease 处理 POST /api/v1/models/{modelName}/releases/{releaseID}/resume
 // （v0.16.0）：paused → running（非 paused → 409）；NextBatchAt 保持原值。
 func (a *modelAPI) resumeRelease(w http.ResponseWriter, r *http.Request) {
+	if _, err := a.ownedRelease(r, r.PathValue("modelName")); err != nil {
+		modelError(w, err)
+		return
+	}
 	releaseID := r.PathValue("releaseID")
 	if err := a.store.ResumeRelease(r.Context(), releaseID); err != nil {
 		modelError(w, err)
@@ -1317,6 +1354,10 @@ func (a *modelAPI) importCatalog(w http.ResponseWriter, r *http.Request) {
 // 409 pending 或已回滚或版本被新发布接管；通过 → 202 + rollbackRequested=true，
 // 控制器下一轮异步逆序执行）。
 func (a *modelAPI) rollbackRelease(w http.ResponseWriter, r *http.Request) {
+	if _, err := a.ownedRelease(r, r.PathValue("modelName")); err != nil {
+		modelError(w, err)
+		return
+	}
 	releaseID := r.PathValue("releaseID")
 	if err := a.store.RequestRollback(r.Context(), releaseID); err != nil {
 		modelError(w, err)

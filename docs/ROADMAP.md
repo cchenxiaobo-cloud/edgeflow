@@ -456,3 +456,19 @@
 | DiagnosticInfo 递归深度限制 | PRT-03 | ✅ v0.21.0 已实现 | `MaxDiagnosticDepth = 100` 超限拒绝（ErrTooLong）；ResponseHeader/OpenSecureChannelResponse/通知内嵌诊断全调用点传 depth |
 | 订阅泵与 mapper 自愈 | PRT-04 / PRT-18 | ✅ v0.21.0 已实现 | pumpLoop 全退出路径关闭 pubCh（sync.Once 防双关，pubCh 置 nil 防复用已关通道）；mapper 感知通道关闭自动重连重建订阅 |
 | HTTP 端点 | 契约面 | ✅ 保持 42 不变 | 本轮零端点变更（安全面走 env 开关与启动告警，非 REST 面）；tests/contract 路由计数与文档一致性守卫绿 |
+
+## 17. v0.22.0 开发轮处置登记（2026-08-28）
+
+> 依据：.cluster/edgeflow-audit/tasklist-audit.csv P1 批次（T-05~T-11，7 项 / 24 人日）+ .cluster/edgeflow-v0220/plan.md。状态：✅ 已完成（P1 全闭环；P2 留后续版本）。
+
+| 项 | 对应审计编号 | 处置 | 结论/理由 |
+|---|---|---|---|
+| T-05 重注册事件顺序+幽灵节点 | CHN-07（验收 2/3） | ✅ 代码既有，测试钉死 | cloudhub 事件序断言 + registry 无幽灵/缺陷签名测试（import 环分域） |
+| T-06 发布状态机契约对齐 | CLD-01/02/04/06 | ✅ 全部完成 | 4 类终态写点接 assertReleaseTransition；digest 失败写事件+同源失败预算；failFast 与 head 解耦；8 新测试 |
+| T-07 边缘下行幂等落盘 | CHN-03 | ✅ 全部完成 | dedup_keys SQLite（TTL 24h/1 万条上限/批量淘汰）；edgehub 双写回源；edgecore 装配降级兼容；重启去重集成测试 |
+| T-08 慢客户端防线+注册风暴 | CHN-02 + CHN-07（验收 1） | ✅ 全部完成 | ack 前置；字节配额默认 64MiB（env 可配）；广播内存 gauge；可选广播闸门 |
+| T-09 API 归属校验收口 | CLD-06 + canary 语义 | ✅ 全部完成 | ownedRelease 7 端点；10 端点行为收敛；API-SPEC §7.11 + §4 404 行；契约测试新文件 |
+| T-10 容器迁移复核+容错 | CHN-05 | ✅ 全部完成（含审计口径修正） | 迁移后 Inspect 复核（主线补）；容错单测 4 用例（R2 交付）；「90s 固化快照」澄清为 Absent 保留窗口 |
+| T-11 吊销链可配收紧 | SEC-04 | ✅ 全部完成 | CRL 严格/OCSP 新鲜度双开关（默认关）；LoadTLSConfigWithOptions 接线；SECURITY.md 部署建议 |
+| 行为修复配套 | 审计纪律 | ✅ 逐条明示 | e2e 辅助函数 mnist 硬编码依赖旧归属缺陷→新增显式模型名 helper（v0170/v0180 共 3 处切换）；其余既有测试零改动 |
+| 验证 | — | ✅ 全绿 | build/vet/单测全绿；contract 全绿（42 端点守卫）；e2e 全量 190s 绿 |

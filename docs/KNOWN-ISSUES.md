@@ -261,3 +261,18 @@
 | PR-B | DiagnosticInfo 内层递归无深度限制——深嵌套报文（如 10 万层）触发深栈消耗 | ✅ **v0.21.0 闭环**（PRT-03）：`MaxDiagnosticDepth = 100`，`decodeDiagnosticInfo` 按 InnerDiagnosticInfo 嵌套深度计数超限拒绝（ErrTooLong）；ResponseHeader/OpenSecureChannelResponse/通知内嵌诊断全部调用点统一传 depth | 深度上限 100 为工程值（合规报文远低于此）；超限报错信息含实际深度与上限，便于定位 |
 | PR-C | 订阅泵异常退出后 pubCh 不关闭——订阅方 for range 永久阻塞，goroutine 泄漏累积 | ✅ **v0.21.0 闭环**（PRT-04）：pumpLoop 一切退出路径（连接级故障/stopPump）在 defer 中关闭 pubCh（sync.Once 防双关），订阅方 range 可退出；退出时 c.pubCh 置 nil，下次 Subscribe 重建新通道不复用已关闭通道 | 白盒测试验证 goroutine 回收至基线；mapper 侧自愈见 PR-D |
 | PR-D | 云边 mapper 依赖的订阅通道泵死后不自愈——需重启进程恢复采集 | ✅ **v0.21.0 闭环**（PRT-18）：OPC-UA mapper 感知 pubCh 关闭（泵异常退出）→ 自动重连并重建订阅，采集无需人工干预 | 自愈依赖重连成功；若端点持续不可达则按既有重连退避节奏持续尝试并告警 |
+
+## 22. v0.22.0 开发轮闭环登记（2026-08-28，P1 缺陷修复包：审计 T-05~T-11 全闭环——云边通道防线 + 边缘幂等落盘 + 发布状态机契约 + API 归属收口 + 吊销链可配）
+
+> 提交：见 git log。契约变更：**无新增端点**（HTTP 端点保持 42）；release 子资源跨模型引用 404 语义收口（原缺陷行为→正确行为，详见 §7.11）；全部新开关默认关闭，缺省行为与 v0.21.0 一致。守卫测试联动绿。
+
+| 编号 | 问题面 | 闭环说明 | 残余与建议 |
+|---|---|---|---|
+| CHN-07 | 换 ID 重注册时事件顺序无验收钉死；注册风暴自我放大面（边缘等云端同步登记才 ack） | ✅ v0.22.0 闭环（T-05+T-08）：事件顺序（先 disconnect(old) 后 register(new)）+ 无幽灵 Ready 节点以测试钉死；handleRegister 改为**先回 RegisterAck 再执行登记类事件回调**——云端故障窗口内边缘立即可心跳，不再堆积重试 | ack 前置后事件回调失败不回滚 ack（边缘已视为注册成功）——依赖心跳/重连自愈，属可接受最终一致 |
+| CHN-02 | 慢客户端发送缓冲只有消息数上限（64 条），无字节计量——大消息积压内存不可控不可观测 | ✅ v0.22.0 闭环（T-08）：单连接字节配额默认 64MiB（入队前丢弃+关连接，与消息数满同策略）；gauge `edgeflow_cloudcore_hub_send_buffer_bytes` 可观测；`WithBroadcastMemLimit` 可选广播内存闸门（默认不启用） | 配额仅云端入站方向；边缘侧接收缓冲（读泵）仍由 websocket 库默认管理——下行大对象建议继续走分片 |
+| CHN-03 | 边缘下行指令去重仅内存——重启后云端重试同 msgID 重复执行 | ✅ v0.22.0 闭环（T-07）：dedup_keys SQLite 持久化（TTL 24h/上限 10000 条/批量淘汰最旧/三重清理时机）；未装配自动退化纯内存（兼容） | e2e 真实进程级重启用例未做（集成测试已覆盖同库两 Client 语义）；表无 compaction 之外的碎片整理——量级上限 1MB 无需 |
+| CHN-05 | Index<0 旧命名容器迁移后无 Inspect 复核——外部 docker 干预可致「删除成功但仍在」误标完成 | ✅ v0.22.0 闭环（T-10）：迁移后 Inspect 复核，失败记 Unknown+下轮重试；外部干预容错单测 7 用例。**审计口径修正**：DockerRuntime.List 本就即时 exec，「90s 固化快照」实为 Absent 保留窗口（DefaultRemovedRetention），验收②语义上已被既有实现满足 | 复核为「删后即查」，极端 TOCTOU 窗口（查后 1ms 内被外部拉起）理论存在——下轮调谐会再次迁移收敛 |
+| CLD-01/02 | 发布终态写点未接权威状态机断言；digest 复核失败不写事件不计失败预算 | ✅ v0.22.0 闭环（T-06）：setTerminal 统一漏斗 + 回滚完成/中止 + autopause 共 4 类写点接 assertReleaseTransition（违例拒落库+观测上报）；digest 失败写 head 事件并与批次失败同源计 failureBudget | 状态机表仅供测试对拍与断言（分散写点不引表跳转）；跨终态收敛（succeeded/canceled→failed 回滚中止豁免）属有意设计 |
+| CLD-04 | canary 独占（同模型单在途）guard 语义只在代码，文档未登记 | ✅ v0.22.0 闭环（T-09）：API-SPEC §7.11 登记 guard create-if-absent CAS 语义 + 409 响应体 releaseID 回指；§4 状态码表 404 行补充 | 无 |
+| CLD-06 | release 子资源端点归属校验不统一（7 端点缺跨模型 404）——可跨模型 id 枚举 | ✅ v0.22.0 闭环（T-09）：ownedRelease helper 统一接入 7 端点，10 端点行为收敛一致（跨模型引用 404 同语义同响应体） | 既有 e2e 辅助硬编码 mnist URL 依赖旧缺陷行为——已配套修复（RELEASE-NOTES §二.1），属审计要求的正确行为收敛 |
+| SEC-04 | CRL 缺失静默放行（fail-open）；OCSP nextUpdate 过期不校验——吊销链不可配收紧 | ✅ v0.22.0 闭环（T-11）：`EDGEFLOW_CLOUDCORE_CRL_STRICT=on` 缺失即拒（fail-closed）+ `EDGEFLOW_CLOUDCORE_OCSP_FRESH=on` 过期拒绝；均默认 off（v0.21.0 行为）；SECURITY.md 部署建议已补 | fail-closed 要求吊销链运维到位（keadm cert revoke 生成 crl.pem）后再开启，否则产线握手误拒 |

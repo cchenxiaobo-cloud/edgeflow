@@ -13,6 +13,7 @@ package edgehub
 import (
 	"strings"
 
+	"edgeflow/edge/pkg/metamanager"
 	"edgeflow/pkg/log"
 	"edgeflow/pkg/protocol"
 )
@@ -21,6 +22,11 @@ import (
 // 超出后按 FIFO 淘汰最旧。量级评估：下发类消息（PodSync/DeviceCommand）
 // 在正常工况下远低于该频率；缓存仅用于"云端重发同 ID"的去重窗口，
 // 而非长期状态存储（Pod 元数据本体由 MetaManager 落盘）。
+//
+// CHN-03 持久化说明：装配了持久去重（Options.DedupStore 非 nil）后，
+// 去重语义的权威在 SQLite（TTL 24h、上限 10000 条，见 metamanager/dedup.go），
+// 本缓存退化为重启后的热身加速层：IsProcessed 内存未命中时回源查库，
+// markProcessed 双写（库 + 缓存）。纯内存模式（未装配）行为与 v0.21.0 一致。
 const maxProcessedIDs = 1000
 
 // maxAckMessageLen 是 Ack 错误信息写入负载的最大长度（避免超长错误文本撑爆负载）。
@@ -80,6 +86,34 @@ func (c *Client) handleDownlink(msg *protocol.Message) {
 	c.sendAck(msg.ID, true, "ok")
 }
 
+// dedupAdapter 把 *metamanager.DedupStore 适配为 downlinkDedup 接口：
+// nil 安全——store 为 nil 时（未装配持久去重）IsProcessed 恒 false、
+// MarkProcessed 恒 false（调用方视为未持久化，纯内存模式不受影响）。
+type dedupAdapter struct {
+	store *metamanager.DedupStore
+}
+
+// newDedupAdapter 构造适配器（允许 nil 输入，纯内存退化路径）。
+func newDedupAdapter(store *metamanager.DedupStore) downlinkDedup {
+	return &dedupAdapter{store: store}
+}
+
+// IsProcessed 实现 downlinkDedup：nil store 恒 false。
+func (a *dedupAdapter) IsProcessed(msgID string) bool {
+	if a == nil || a.store == nil || msgID == "" {
+		return false
+	}
+	return a.store.IsProcessed(msgID)
+}
+
+// MarkProcessed 实现 downlinkDedup：nil store 恒 false（未持久化）。
+func (a *dedupAdapter) MarkProcessed(msgID string) bool {
+	if a == nil || a.store == nil || msgID == "" {
+		return false
+	}
+	return a.store.MarkProcessed(msgID)
+}
+
 // sendAck 回一条 Ack：CorrelationID=被确认消息的 ID，Source=nodeID，Target=cloud。
 // 发送失败只记日志不回抛——Ack 本身是尽力而为，云端超时后按重试协议兜底。
 func (c *Client) sendAck(correlationID string, ok bool, message string) {
@@ -106,15 +140,27 @@ func (c *Client) sendAck(correlationID string, ok bool, message string) {
 }
 
 // isProcessed 报告消息 ID 是否已成功处理过（幂等去重查询）。
+// 持久化装配时内存未命中回源 SQLite（CHN-03：重启后云端重试同 ID 仍被去重）。
 func (c *Client) isProcessed(id string) bool {
 	c.procMu.Lock()
-	defer c.procMu.Unlock()
 	_, ok := c.processed[id]
+	c.procMu.Unlock()
+	if !ok && c.dedup != nil && c.dedup.IsProcessed(id) {
+		// 回源命中：重建内存热身缓存，后续同 ID 查询走内存
+		c.markProcessed(id)
+		return true
+	}
 	return ok
 }
 
 // markProcessed 记录消息 ID 为已成功处理；缓存超过上限时按 FIFO 淘汰最旧。
+// 持久化装配（CHN-03）时同步写入 SQLite（权威层）；持久层写失败不影响
+// 内存标记——消息本身已成功执行，去重是尽力而为的增强（最坏情况：重启后
+// 该条 ID 失去去重保护，云端重试会重新执行，与 v0.21.0 纯内存行为一致）。
 func (c *Client) markProcessed(id string) {
+	if c.dedup != nil {
+		c.dedup.MarkProcessed(id)
+	}
 	c.procMu.Lock()
 	defer c.procMu.Unlock()
 	if c.processed == nil {

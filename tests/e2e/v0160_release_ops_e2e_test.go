@@ -42,11 +42,20 @@ func v160post(t *testing.T, url string, payload map[string]any) (int, map[string
 // v160waitReleaseStatus 轮询发布详情直到谓词成立或超时，返回最终详情。
 func v160waitReleaseStatus(t *testing.T, base, relID string, timeout time.Duration,
 	pred func(m map[string]any) bool) map[string]any {
+	return v160waitReleaseModelStatus(t, base, "mnist", relID, timeout, pred)
+}
+
+// v160waitReleaseModelStatus 是 v160waitReleaseStatus 的显式模型名版本
+// （v0.22.0，T-09 行为修复的配套：release 子资源端点修复跨模型归属校验后，
+// 轮询必须使用与 release 归属一致的模型名；mnist 硬编码版本保留供 v0160
+// 既有调用零改动）。追加辅助函数、既有辅助与既有测试主体零改动。
+func v160waitReleaseModelStatus(t *testing.T, base, model, relID string, timeout time.Duration,
+	pred func(m map[string]any) bool) map[string]any {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	var last map[string]any
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(base + "/api/v1/models/mnist/releases/" + relID)
+		resp, err := http.Get(base + "/api/v1/models/" + model + "/releases/" + relID)
 		if err != nil {
 			time.Sleep(300 * time.Millisecond)
 			continue

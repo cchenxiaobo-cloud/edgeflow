@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"edgeflow/pkg/certs"
+	"edgeflow/pkg/log"
 )
 
 // maxOCSPRequestBytes 是 OCSP 请求体大小上限（16 KiB，标准 CertID 请求
@@ -241,6 +242,42 @@ func clientIP(r *http.Request) string {
 // EDGEFLOW_CLOUDCORE_OCSP_RATE_LIMIT = 每 IP 每秒请求数（默认 10）；
 // burst 取 2×速率（下限 1）；非法值回退默认。零第三方依赖，
 // 便于运维按部署规模调整。
+// EnvCRLStrict / EnvOCSPFresh 是 v0.22.0 吊销策略收紧 env（SEC-04）：
+// EDGEFLOW_CLOUDCORE_CRL_STRICT=on → CRL 产物缺失（含证书目录缺失）时
+// mTLS 握手拒绝（fail-closed；默认 off 放行，向后兼容）；
+// EDGEFLOW_CLOUDCORE_OCSP_FRESH=on → OCSP 客户端查询启用新鲜度校验
+// （nextUpdate 过期拒绝；默认 off，见 pkg/certs FreshnessPolicyFromEnv）。
+const (
+	EnvCRLStrict = "EDGEFLOW_CLOUDCORE_CRL_STRICT"
+	// EnvOCSPFresh 复用 pkg/certs.EnvOCSPFreshCheck（同名常量再声明，
+	// 避免 main 包直接 import 常量名过长）。
+	EnvOCSPFresh = "EDGEFLOW_CLOUDCORE_OCSP_FRESH"
+)
+
+// revocationOptionsFromEnv 读取吊销收紧开关（v0.22.0 SEC-04 装配辅助，
+// 默认全关 = v0.21.0 缺省行为逐字节一致）。主线装配点（main.go 禁触，
+// 由主线落地，一行接线）：
+//
+//	tlsOpts := revocationOptionsFromEnv()
+//	hubTLS, err = certs.LoadTLSConfigWithOptions(certDir, true, tlsOpts)
+//	edgeTLS, err = certs.LoadTLSConfigWithOptions(certDir, false, tlsOpts)
+//
+// OCSP 客户端侧（keadm/运维查询）经 certs.FreshnessPolicyFromEnv 独立生效。
+// 返回值同时供启动日志登记当前收紧面（可见性，SEC-04 部署建议见 SECURITY.md）。
+func revocationOptionsFromEnv() certs.RevocationOptions {
+	opts := certs.RevocationOptions{
+		CRLStrict:      os.Getenv(EnvCRLStrict) == "on",
+		OCSPFreshCheck: os.Getenv(EnvOCSPFresh) == "on",
+	}
+	if opts.CRLStrict {
+		log.Warnf("[security] %s=on：CRL 产物缺失时 mTLS 握手将拒绝（fail-closed）；请确保吊销链已启用（keadm cert revoke 会生成 crl.pem）", EnvCRLStrict)
+	}
+	if opts.OCSPFreshCheck {
+		log.Infof("[security] %s=on：OCSP 客户端查询启用新鲜度校验（过期响应拒绝）", EnvOCSPFresh)
+	}
+	return opts
+}
+
 func ocspRateLimitConfig() (rate float64, burst int) {
 	rate = defaultOCSPRatePerSec
 	if v := os.Getenv("EDGEFLOW_CLOUDCORE_OCSP_RATE_LIMIT"); v != "" {

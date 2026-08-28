@@ -6,7 +6,7 @@ EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备�
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.21.0**（2026-08-28，安全默认值包 + 协议纵深包——审计 P0 修复：认证关闭/裸奔组合启动告警、云边令牌强校验开关（opt-in 默认关）、OPC-UA 报文预分配放大与递归深度防御、订阅泵退出自愈，默认行为零改变零新依赖）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**云端分级持久化（v0.4.0 嵌入式 etcd / v0.5.0 外部 etcd 模式 / v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**、**外部 etcd RBAC 鉴权透传与终态发布 GC（v0.8.0：L1/L28 闭环）+ 续约失败监控指标**。
+> 当前版本：**v0.22.0**（2026-08-28，P1 缺陷修复包——审计 T-05~T-11 全闭环：云边通道慢客户端字节配额+注册 ack 前置防风暴、边缘下行指令去重 SQLite 落盘（重启不丢）、发布状态机终态写点契约对齐、release 子资源跨模型 404 收口、CRL/OCSP 吊销链可配收紧（opt-in 默认关），端点 42 不变默认行为兼容零新依赖）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**云端分级持久化（v0.4.0 嵌入式 etcd / v0.5.0 外部 etcd 模式 / v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**、**外部 etcd RBAC 鉴权透传与终态发布 GC（v0.8.0：L1/L28 闭环）+ 续约失败监控指标**。
 
 ## 目录结构
 
@@ -97,6 +97,7 @@ helm install edgeflow build/charts/edgeflow/
 ## 版本历史
 
 - **v0.21.0**（2026-08-28）：安全默认值包 + 协议纵深包——SEC-01 管理 API 认证关闭启动 WARN（AUTH_WARN=off 可静默）+ SEC-02 云边令牌强校验开关 `EDGEFLOW_CLOUDHUB_REQUIRE_NODE_TOKEN=on`（服务端未配令牌时拒绝携带令牌的注册防伪造探测，无令牌注册裸奔兼容，默认关）+ CHN-06 裸奔组合（无 mTLS 且无令牌）聚合告警 + Helm `cloudcore.auth.*`/`cloudcore.cloudhub.*` 段（默认全关）；协议面 PRT-01/14 数组预分配放大防御（声明×最元素字节数 vs 剩余缓冲预检，>1024 元素豁免阈值保持截断语义）+ PRT-03 DiagnosticInfo 递归深度上限 100 + PRT-04 订阅泵退出关闭 pubCh（sync.Once 防双关）+ PRT-18 mapper 订阅自愈；HTTP 端点保持 42，默认行为与 v0.20.0 逐字节一致；详见 [docs/RELEASE-NOTES-v0210.md](docs/RELEASE-NOTES-v0210.md)
+- **v0.22.0**（2026-08-28）：P1 缺陷修复包（7 项全闭环）——T-05 重注册事件序+无幽灵节点测试钉死 + T-08 慢客户端字节配额（默认 64MiB，EDGEFLOW_CLOUDHUB_SEND_QUOTA_BYTES）+ RegisterAck 前置（注册风暴退避）+ 广播内存 gauge `edgeflow_cloudcore_hub_send_buffer_bytes` + T-07 边缘下行去重 SQLite 持久化（TTL 24h/上限 1 万条/重启不丢）+ T-10 旧命名容器迁移 Inspect 复核 + T-06 发布终态写点接状态机断言/digest 失败同源失败预算/failFast 与 head 解耦 + T-09 release 子资源跨模型 404 统一（ownedRelease 7 端点）+ canary 独占语义登记 §7.11 + T-11 `EDGEFLOW_CLOUDCORE_CRL_STRICT`/`EDGEFLOW_CLOUDCORE_OCSP_FRESH` 吊销收紧开关；HTTP 端点保持 42，默认行为与 v0.21.0 兼容；详见 [docs/RELEASE-NOTES-v0220.md](docs/RELEASE-NOTES-v0220.md)
 - **v0.20.0**（2026-08-27）：发布生命周期收口——POST .../retry 失败节点克隆重发（RetryOf 审计回指）+ DELETE .../releases/{id} 终态归档删除（在途绝不删）+ releaseNotes 元数据创建期定死全路径透出；HTTP 端点 40→42 只增不改；详见 [docs/RELEASE-NOTES-v0120.md](docs/RELEASE-NOTES-v0120.md)
 - **v0.19.0**（2026-08-27）：发布面智能运维第二批——PATCH 白名单扩展 failureBudget（改小/关闸运行中生效）+ GET releases/{id}/snapshot 审计快照一键全景（events+summary+nodes）+ GET /api/v1/releases 全局发布查询（七态过滤·limit≤500·稳定排序）；HTTP 端点 38→40 只增不改；详见 [docs/RELEASE-NOTES-v0119.md](docs/RELEASE-NOTES-v0119.md)
 - **v0.18.0**（2026-08-27）：发布面智能运维——failureBudget 失败预算达标自动暂停（复用 paused 状态机可 resume 续跑）+ Events 发布事件时间线（CAS 并发安全·环形 32 条·随快照迁移）+ GET /api/v1/deployments 全局部署影子聚合查询；HTTP 端点 37→38 只增不改；详见 [docs/RELEASE-NOTES-v0118.md](docs/RELEASE-NOTES-v0118.md)

@@ -541,7 +541,7 @@ pending ─▶ running ─┬─ 全部 deployed ──────────�
 | 200 | 成功（写类端点返回完整对象或 `{"status":"ok"}` 形态） | — |
 | **202** | **已受理（异步执行）**：发布创建 / 回滚置位 | 灰度任务开始执行 |
 | 400 | 请求非法：JSON 解析失败 / 缺必填 / 字符集或枚举越界 / percentage 越界 / batchSize<1 / 请求体超 1MiB（`request body too large`） | 参数错误 |
-| 404 | 模型/版本/发布/部署影子不存在；**模型不存在时其子资源一律 404** | 资源不存在 |
+| 404 | 模型/版本/发布/部署影子不存在；**模型不存在时其子资源一律 404**；v0.22.0 起 **release 子资源跨模型引用（URL 模型名 ≠ release 归属模型）一律 404**（与"发布不存在"同语义同响应体，见 §7.11） | 资源不存在 |
 | 409 | 冲突：模型/版本已存在；删除 active 版本；归档/激活状态机非法；同模型在途发布（含在途 releaseID）；CAS 冲突耗尽；cancel/rollback 目标态不合法；在途发布指向的版本被 archive；回滚被新版本接管 | 状态冲突 |
 | 422 | **语义不可执行**：发布目标版本非 active / 无 Ready 节点 / 白名单含未知节点 / 无 PrevActive | 业务前置不满足 |
 | 500 | 内部错误兜底（存储/序列化异常） | 服务端异常 |
@@ -654,6 +654,40 @@ pending ─▶ running ─┬─ 全部 deployed ──────────�
 **既有端点增量**：
 
 - PATCH 可调参数白名单扩展 `failureBudget`（v0.17.0 端点复用）：批边界生效、改小下一批后立即适用、0=关闸；值域 [0,10000]；终态 409 不变。AutoPause 起算口径="自当下起的剩余批次"。
+
+
+### 7.11 v0.22.0 增量：release 子资源归属校验统一 / 灰度独占（canary）guard 语义登记
+
+**归属校验统一（CLD-06，描述性——零新增端点，端点总数 42 不变）**：
+
+- 全部 10 个 release 子资源端点（`/api/v1/models/{m}/releases/{id}` 及其
+  `/digest`、`/snapshot`、`/cancel`、`/retry`、`/pause`、`/resume`、
+  `/rollback` 子路径，PATCH 与 DELETE 本体）现按同一口径校验归属：
+  URL 模型名 `{m}` 必须与 release 头的 `model` 字段一致，**跨模型引用
+  （模型 m1 的 URL 下引用 m2 的 release id）一律 404**，错误语义与
+  "发布不存在"完全一致（`ErrReleaseNotFound` 同因同响应体）——防止
+  跨模型 id 枚举与误操作。
+- 校验链序：模型存在（404 先行）→ release 头存在（404）→ 归属一致
+  （404）。v0.19.0 snapshot / v0.20.0 retry / v0.20.0 DELETE 三个端点
+  原本即内联该校验；v0.22.0 把 GET 详情、GET digest、cancel、pause、
+  resume、rollback、PATCH 七个端点统一接入同语义 helper（`ownedRelease`），
+  行为收敛后全部 10 端点一致。
+
+**灰度独占（canary）guard 语义（CLD-04，既有行为登记——不改端点不改响应结构）**：
+
+- 同模型**同一时刻至多一个在途发布**（guard create-if-absent CAS 独占：
+  pending/running/paused 均算在途；终态即释放）。这是灰度发布的独占
+  语义：新发布（含 retry 克隆）创建时若同模型已有在途任务 → 409 拒绝，
+  防两条灰度批次并发写同一节点的部署状态。
+- guard 冲突的响应可承载冲突原因：409 响应体统一为
+  `{"error":"<机器可读原因>","releaseID":"<在途发布ID>"}`（§7.3 既定
+  响应体约定，`releaseID` 字段即冲突在途任务回指，运维可直接对其实施
+  cancel/pause 后重试创建）。
+- 相关端点：`POST /api/v1/models/{modelName}/releases`（创建，202 前置
+  guard）、`POST .../releases/{id}/retry`（克隆创建）、rollback 置位
+  （RequestRollback 同 guard 族）。冲突均在创建/置位瞬间同步返回 409，
+  不存在异步竞态窗口。
+
 
 ## A. Group / Version 约定
 

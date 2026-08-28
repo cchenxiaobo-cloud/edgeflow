@@ -587,19 +587,22 @@ func VerifyCertAgainstCRL(certDir string, cert *x509.Certificate) (bool, error) 
 	return VerifyCertAgainstCRLWithPolicy(certDir, cert, CRLVerifyOptions{})
 }
 
-// CRLVerifyOptions 是 VerifyCertAgainstCRLWithPolicy 的策略选项。
-// 零值 = 与 VerifyCertAgainstCRL 完全一致的默认行为（过期仍放行）。
-type CRLVerifyOptions struct {
-	// FailOnExpired 为 true 时，CRL 已过期（now > NextUpdate）且证书未被
-	// 吊销 → 返回错误（fail-closed，拒绝以陈旧 CRL 放行证书）。
-	// 已吊销的证书不受影响（吊销不可逆，仍返回 true, nil）。
-	FailOnExpired bool
+// VerifyCertAgainstCRLWithPolicy 是 VerifyCertAgainstCRL 的策略化版本
+// （v0.22.0 起附带哨兵错误与缺失策略）。
+func VerifyCertAgainstCRLWithPolicy(certDir string, cert *x509.Certificate, opts CRLVerifyOptions) (bool, error) {
+	return verifyCertAgainstCRL(certDir, cert, opts)
 }
 
-// VerifyCertAgainstCRLWithPolicy 是 VerifyCertAgainstCRL 的策略化版本：
-// 行为与 VerifyCertAgainstCRL 一致（含 json↔pem 对账自愈），并额外支持
-// opts.FailOnExpired（过期 CRL fail-closed 拒绝）。
-func VerifyCertAgainstCRLWithPolicy(certDir string, cert *x509.Certificate, opts CRLVerifyOptions) (bool, error) {
+// VerifyCertAgainstCRLWithOptions 是策略化校验的完整形态：同时支持
+// FailOnExpired（过期 CRL fail-closed）与 FailOnMissing（缺失 CRL
+// fail-closed）两个独立开关（v0.22.0，SEC-04；对应 env
+// EDGEFLOW_CLOUDCORE_CRL_STRICT=on 时由装配层双开注入）。
+func VerifyCertAgainstCRLWithOptions(certDir string, cert *x509.Certificate, opts CRLVerifyOptions) (bool, error) {
+	return verifyCertAgainstCRL(certDir, cert, opts)
+}
+
+// verifyCertAgainstCRL 是全部 CRL 校验入口的公共实现。
+func verifyCertAgainstCRL(certDir string, cert *x509.Certificate, opts CRLVerifyOptions) (bool, error) {
 	if cert == nil {
 		return false, errors.New("VerifyCertAgainstCRL: cert 为 nil")
 	}
@@ -608,7 +611,11 @@ func VerifyCertAgainstCRLWithPolicy(certDir string, cert *x509.Certificate, opts
 	f, err := lockCRLFile(certDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// 证书目录不存在 → 无 CRL 可言（向后兼容：视为无吊销）。
+			// 证书目录不存在 → 无 CRL 可言；默认视为无吊销（向后兼容），
+			// strict 模式拒绝（fail-closed）。
+			if opts.FailOnMissing {
+				return false, fmt.Errorf("%w: 证书目录 %s 不存在，无法确认吊销状态", ErrCRLMissing, certDir)
+			}
 			return false, nil
 		}
 		// 无法取得锁（如只读目录无法创建 crl.lock）：降级为无锁校验。
@@ -627,12 +634,84 @@ func VerifyCertAgainstCRLWithPolicy(certDir string, cert *x509.Certificate, opts
 	return verifyCRLUnlocked(certDir, cert, opts)
 }
 
+// CRLVerifyOptions 是 CRL 校验入口（VerifyCertAgainstCRLWithPolicy /
+// VerifyCertAgainstCRLWithOptions）的策略选项。
+// 零值 = 与 VerifyCertAgainstCRL 完全一致的默认行为（缺失放行 + 过期仍
+// 放行，v0.21.0 缺省语义逐字节兼容）。
+type CRLVerifyOptions struct {
+	// FailOnExpired 为 true 时，CRL 已过期（now > NextUpdate）且证书未被
+	// 吊销 → 返回错误（fail-closed，拒绝以陈旧 CRL 放行证书；错误为
+	// ErrCRLExpired 包装链）。
+	// 已吊销的证书不受影响（吊销不可逆，仍返回 true, nil）。
+	FailOnExpired bool
+
+	// FailOnMissing 为 true 时，CRL 产物缺失（crl.pem 或证书目录不存在）
+	// → 返回 ErrCRLMissing（fail-closed：无法确认吊销状态即拒绝，
+	// v0.22.0 SEC-04）；默认 false 放行（无吊销环境向后兼容）。
+	FailOnMissing bool
+}
+
+// RevocationOptions 是装配层（LoadTLSConfigWithOptions / 主线 env 接线）
+// 的统一吊销收紧选项面（v0.22.0 SEC-04）：把 CRL 与 OCSP 两族开关收在
+// 一个结构体，零值 = v0.21.0 缺省行为。
+type RevocationOptions struct {
+	// CRLStrict = true 时：CRL 产物缺失（含证书目录缺失）→ 拒绝
+	// （对应 env EDGEFLOW_CLOUDCORE_CRL_STRICT=on；默认 off 放行）。
+	// CRL 损坏/签名无效本就 fail-closed，不受本开关影响。
+	CRLStrict bool
+
+	// OCSPFreshCheck = true 时：OCSP 客户端查询启用新鲜度校验
+	// （nextUpdate 过期 → ErrOCSPResponseStale 拒绝；对应 env
+	// EDGEFLOW_CLOUDCORE_OCSP_FRESH=on；默认 off 放行）。当前 cloudcore
+	// 的 CRL 握手消费路径不使用 OCSP，本开关经由 OCSPClientOptions 生效。
+	OCSPFreshCheck bool
+}
+
+// WithCRLStrict 返回 CRLStrict=o.CRLStrict 的副本（函数式选项风格，
+// 供装配层可读性组装：opts := certs.WithCRLStrict(base, true)）。
+func WithCRLStrict(o RevocationOptions, strict bool) RevocationOptions {
+	o.CRLStrict = strict
+	return o
+}
+
+// WithOCSPFreshCheck 返回 OCSPFreshCheck=o.OCSPFreshCheck 的副本
+// （函数式选项风格，与 WithCRLStrict 同族）。
+func WithOCSPFreshCheck(o RevocationOptions, check bool) RevocationOptions {
+	o.OCSPFreshCheck = check
+	return o
+}
+
+// OCSPClientOptions 把 RevocationOptions 的 OCSP 族开关映射为
+// FreshnessPolicy（装配层接线用）：OCSPFreshCheck=false → 零值策略
+// （不校验，旧行为）；true → DefaultFreshnessPolicy()（fail-closed，
+// 5 分钟时钟偏差容忍）。
+func OCSPClientOptions(o RevocationOptions) FreshnessPolicy {
+	if o.OCSPFreshCheck {
+		return DefaultFreshnessPolicy()
+	}
+	return FreshnessPolicy{}
+}
+
+// CRL 载荷级哨兵错误（v0.22.0 SEC-04；调用方用 errors.Is 分支处置）。
+var (
+	// ErrCRLMissing 表示 CRL 产物缺失（crl.pem 或证书目录不存在），
+	// 仅在 FailOnMissing/CRLStrict 策略下返回（默认策略下缺失放行）。
+	ErrCRLMissing = errors.New("CRL 缺失（fail-closed）")
+	// ErrCRLExpired 表示 CRL 已过期（NextUpdate 早于当前时间），仅在
+	// FailOnExpired 策略下返回且证书未被吊销时（吊销不可逆仍放行）。
+	ErrCRLExpired = errors.New("CRL 已过期（fail-closed）")
+)
+
 // verifyCRLUnlocked 是锁外/锁内的纯校验逻辑（不涉及锁与对账）：
-// 读取 crl.pem → 解析 → CA 签名校验 → 序列号比对 → 可选过期策略。
+// 读取 crl.pem（缺失按 opts.FailOnMissing 决定放行或 ErrCRLMissing）→
+// 解析 → CA 签名校验 → 序列号比对 → 可选过期策略。
 func verifyCRLUnlocked(certDir string, cert *x509.Certificate, opts CRLVerifyOptions) (bool, error) {
 	crlPEMPath, _ := CRLPaths(certDir)
 	b, err := os.ReadFile(crlPEMPath)
 	if os.IsNotExist(err) {
+		if opts.FailOnMissing {
+			return false, fmt.Errorf("%w: %s 不存在，无法确认吊销状态", ErrCRLMissing, crlPEMPath)
+		}
 		return false, nil // CRL 缺失视为无吊销（向后兼容）
 	}
 	if err != nil {
@@ -656,8 +735,7 @@ func verifyCRLUnlocked(certDir string, cert *x509.Certificate, opts CRLVerifyOpt
 		}
 	}
 	if opts.FailOnExpired && time.Now().After(rl.NextUpdate) {
-		return false, fmt.Errorf("CRL %s 已过期（NextUpdate=%s），fail-closed 拒绝（证书吊销状态无法确认）",
-			crlPEMPath, rl.NextUpdate.Format(time.RFC3339))
+		return false, fmt.Errorf("%w: %s（NextUpdate=%s），证书吊销状态无法确认", ErrCRLExpired, crlPEMPath, rl.NextUpdate.Format(time.RFC3339))
 	}
 	return false, nil
 }
@@ -1071,6 +1149,21 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 // CRL 损坏/签名无效 fail-closed 拒绝（防伪造绕过）。
 // 调用前需先 EnsureCA + EnsureServerCert/EnsureClientCert。
 func LoadTLSConfig(certDir string, isServer bool) (*tls.Config, error) {
+	cfg, err := LoadTLSConfigWithOptions(certDir, isServer, RevocationOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// LoadTLSConfigWithOptions 是 LoadTLSConfig 的策略化版本：opts 按下述
+// 开关收紧吊销校验（零值 = 与 LoadTLSConfig 完全一致的缺省行为，v0.21.0
+// 逐字节兼容）：
+//   - opts.CRLStrict：CRL 文件缺失/证书目录缺失 → 拒绝（fail-closed，
+//     对应 env EDGEFLOW_CLOUDCORE_CRL_STRICT=on）；
+//   - opts.OCSPFreshCheck：为未来 OCSP 消费端预留（当前 CRL 消费路径
+//     不涉及 OCSP 响应；OCSP 客户端新鲜度见 OCSPStatusAtWithPolicy）。
+func LoadTLSConfigWithOptions(certDir string, isServer bool, opts RevocationOptions) (*tls.Config, error) {
 	ca, err := loadCA(certDir)
 	if err != nil {
 		return nil, err
@@ -1089,7 +1182,7 @@ func LoadTLSConfig(certDir string, isServer bool) (*tls.Config, error) {
 			ClientAuth:   tls.RequireAndVerifyClientCert,
 			MinVersion:   tls.VersionTLS12,
 		}
-		withCRLPeerCheck(cfg, certDir)
+		withCRLPeerCheck(cfg, certDir, opts)
 		return cfg, nil
 	}
 
@@ -1102,17 +1195,18 @@ func LoadTLSConfig(certDir string, isServer bool) (*tls.Config, error) {
 		RootCAs:      pool,
 		MinVersion:   tls.VersionTLS12,
 	}
-	withCRLPeerCheck(cfg, certDir)
+	withCRLPeerCheck(cfg, certDir, opts)
 	return cfg, nil
 }
 
 // withCRLPeerCheck 附加对端证书吊销校验（WBS 7.1 CRL 消费端接线）：
 //
 //	在标准证书链验证之外，按本 CA 签发的 CRL 检查对端叶子证书序列号：
-//	  - 无 CRL 文件 → 放行（无吊销环境向后兼容）；
+//	  - 无 CRL 文件 → 默认放行（无吊销环境向后兼容）；opts.CRLStrict 时
+//	    拒绝（fail-closed，吊销产物缺失无法确认对端未吊销）；
 //	  - CRL 存在且对端证书被吊销 → 拒绝握手；
 //	  - CRL 损坏/签名无效/CA 不可加载 → 拒绝（fail-closed，防伪造绕过）。
-func withCRLPeerCheck(cfg *tls.Config, certDir string) {
+func withCRLPeerCheck(cfg *tls.Config, certDir string, opts RevocationOptions) {
 	cfg.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {
 			return nil // 无对端证书（非 mTLS 请求方不会触发回调）
@@ -1121,7 +1215,7 @@ func withCRLPeerCheck(cfg *tls.Config, certDir string) {
 		if err != nil {
 			return fmt.Errorf("解析对端证书失败: %w", err)
 		}
-		revoked, err := VerifyCertAgainstCRL(certDir, leaf)
+		revoked, err := verifyCertAgainstCRL(certDir, leaf, CRLVerifyOptions{FailOnExpired: opts.CRLStrict, FailOnMissing: opts.CRLStrict})
 		if err != nil {
 			return fmt.Errorf("对端证书吊销状态校验失败（fail-closed）: %w", err)
 		}

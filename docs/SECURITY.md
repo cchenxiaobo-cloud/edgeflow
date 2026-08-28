@@ -173,3 +173,16 @@ TLS_SAN="IP:10.0.0.5,DNS:cloudcore.edgeflow.svc" ./hack/gen-certs.sh
 - 边缘侧连接的地址（`EDGEFLOW_EDGECORE_CLOUD_ADDR=wss://<host>:<port>`）必须在服务端证书 SAN 内，否则握手失败。
 - CA 私钥仅文件权限保护（0600）；生产建议离线签发或接入 KMS。
 - 证书轮换自动化：`keadm cert rotate`（2026-08-15：备份先行 + 事务化重签 + 幂等）；吊销已实现（2026-08-16）：`keadm cert revoke`（CRL + OCSP 在线查询，mTLS 握手按 CRL 拒绝）。
+
+### v0.22.0 吊销链收紧开关（SEC-04，opt-in 默认关）
+
+| env | 默认 | 行为 |
+|---|---|---|
+| `EDGEFLOW_CLOUDCORE_CRL_STRICT` | off（放行） | on：CRL 产物缺失（含证书目录缺失）时 mTLS 握手**拒绝**（fail-closed） |
+| `EDGEFLOW_CLOUDCORE_OCSP_FRESH` | off（不校验） | on：OCSP 查询启用 nextUpdate 新鲜度校验，过期响应拒绝 |
+
+**部署建议**：
+1. 先建吊销链基线：`keadm cert revoke` 生成 crl.pem 并纳入证书目录轮换流程；OCSP 部署需可达的 OCSP 响应器。
+2. 灰度环境开启两个开关验证全链路（握手/轮换/过期路径）无误拒后再推产线。
+3. fail-closed 与证书轮换联动：crl.pem 缺失窗口（轮换脚本故障）会导致新握手全拒——务必将 CRL 生成纳入与证书同生命周期的自动化。
+4. 默认 off 的理由：升级零迁移、缺省行为与 v0.21.0 逐字节一致；未建吊销链的部署不被锁死。

@@ -91,7 +91,7 @@ func TestV180ReleaseOpsTimelineE2E(t *testing.T) {
 	t.Logf("时间线事件种类: %v", kinds)
 
 	// 3) 收敛（单节点批次快速完成）
-	done := v160waitReleaseStatus(t, base, relID, 90*time.Second, func(m map[string]any) bool {
+	done := v160waitReleaseModelStatus(t, base, "rel180m", relID, 90*time.Second, func(m map[string]any) bool {
 		return m["status"] == "succeeded" || m["status"] == "failed"
 	})
 	st := done["status"].(string)

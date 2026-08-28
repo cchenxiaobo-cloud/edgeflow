@@ -44,6 +44,10 @@ type Providers struct {
 	// （v0.11.0，L12+；lease_registry.HBRe builds）。仅外部多副本形态注入，
 	// 其余形态 nil → 指标行不输出。
 	LeaseHBRebuilds func() uint64
+	// HubSendBufferBytes 返回全部活跃连接发送缓冲在途字节合计
+	// （CHN-02，v0.22.0；cloudhub.Server.BroadcastBytesInView）：广播 N 节点
+	// 内存峰值可观测。nil → 指标行不输出；字节计量关闭（配额<=0）时恒 0。
+	HubSendBufferBytes func() int64
 }
 
 // Metrics 是云端指标注册表：持有 gauge Provider 与请求计数，负责渲染
@@ -198,6 +202,12 @@ func (m *Metrics) render() []byte {
 	if m.providers.LeaseHBRebuilds != nil {
 		fmt.Fprintf(&b, "# HELP edgeflow_cloudcore_lease_hb_rebuilds_total 外部 etcd 心跳键修复性重建累计数（本副本在服务但 hb 键被删/缺失后由续约 worker 成功重建的次数；持续增长 = 租约抖动/键被外部删除）。\n# TYPE edgeflow_cloudcore_lease_hb_rebuilds_total counter\n%s %d\n",
 			"edgeflow_cloudcore_lease_hb_rebuilds_total", m.providers.LeaseHBRebuilds())
+	}
+	// 发送缓冲在途字节（CHN-02，v0.22.0）：Provider 注入时始终输出。
+	// 广播 N 节点的内存峰值≈该值；逼近配额（默认 64MiB/连接）说明存在慢客户端。
+	if m.providers.HubSendBufferBytes != nil {
+		fmt.Fprintf(&b, "# HELP edgeflow_cloudcore_hub_send_buffer_bytes 全部活跃连接发送缓冲在途字节合计（慢客户端积压观测：广播 N 节点内存峰值≈该值；单连接配额默认 64MiB，逼近配额 = 存在慢客户端）。\n# TYPE edgeflow_cloudcore_hub_send_buffer_bytes gauge\n%s %d\n",
+			"edgeflow_cloudcore_hub_send_buffer_bytes", m.providers.HubSendBufferBytes())
 	}
 	return []byte(b.String())
 }

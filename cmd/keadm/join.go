@@ -34,6 +34,28 @@ type joinOptions struct {
 // joinOutputs 是 keadm join 生成的产物清单（reset 依据此清单清理）。
 var joinOutputs = []string{"edgecore.env", "edgecore.service", "install.sh", "README.md"}
 
+// joinDirModeEnv 是产物目录权限的 opt-in 环境变量名（SEC-03 附，v0.24.0）：
+// 设置后 join 产物目录以该八进制权限创建（如 0700 收紧为仅属主可访问），
+// 未设置时保持历史默认 0755。
+const joinDirModeEnv = "EDGEFLOW_JOIN_DIR_MODE"
+
+// resolveJoinDirMode 解析产物目录权限（SEC-03 附，v0.24.0，join/batch 共用）：
+//   - 未设置（或空值）：返回默认 0o755，与历史行为逐字节一致；
+//   - 设置时：经 strconv.ParseUint(s, 8, 32) 按八进制解析（如 "0700"、"700"）；
+//   - 非法值（非八进制/超 0777）：返回错误，由 join 与 batch 入口 fail-fast，
+//     不产生任何产物目录。
+func resolveJoinDirMode() (os.FileMode, error) {
+	s := os.Getenv(joinDirModeEnv)
+	if s == "" {
+		return 0o755, nil
+	}
+	v, err := strconv.ParseUint(s, 8, 32)
+	if err != nil || v > 0o777 {
+		return 0, fmt.Errorf("环境变量 %s=%q 非法（须为不超过 0777 的八进制字符串，如 0700）", joinDirModeEnv, s)
+	}
+	return os.FileMode(v), nil
+}
+
 // 边缘节点安装的固定路径约定（与 install.sh / edgecore.service 保持一致）。
 const (
 	// edgeConfDir 是边缘配置目录（环境变量文件所在目录）。
@@ -73,6 +95,14 @@ func runJoin(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
+	// 产物目录权限（SEC-03 附，v0.24.0）：EDGEFLOW_JOIN_DIR_MODE opt-in，
+	// 非法值在入口 fail-fast，不创建任何目录。
+	dirMode, err := resolveJoinDirMode()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "错误: %v\n", err)
+		return exitUsage
+	}
+
 	// 端口与 token 来源处理（顺序：先校验后读文件，均在使用参数前完成）：
 	// SEC-08（v0.23.0）：--cloudcore-port 非空时必须为 1-65535 数字，非法拒绝；
 	// SEC-03（v0.23.0）：--token-file 提供时读文件内容（去首尾空白）作为 token，
@@ -99,8 +129,9 @@ func runJoin(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	// 创建输出目录（已存在则复用，保证重复执行幂等）。
-	if err := os.MkdirAll(opts.OutputDir, 0o755); err != nil {
+	// 创建输出目录（已存在则复用，保证重复执行幂等）。目录权限来自
+	// resolveJoinDirMode（默认 0755，可经 EDGEFLOW_JOIN_DIR_MODE opt-in 收紧）。
+	if err := os.MkdirAll(opts.OutputDir, dirMode); err != nil {
 		_, _ = fmt.Fprintf(stderr, "错误: 创建输出目录 %s 失败: %v\n", opts.OutputDir, err)
 		return exitRuntime
 	}

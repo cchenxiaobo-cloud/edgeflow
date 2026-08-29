@@ -184,6 +184,10 @@ rm -f ./edgeflow-token.txt
   `README.md` 已脱敏（不回显完整 token，明文仅存于 `edgecore.env`）；
 - 交互式场景可结合 shell 读入：`keadm join ... --token-file=<(read -s t; echo "$t")`
   （bash process substitution，避免 token 进 history）。
+- 产物目录权限默认 `0755`（v0.24.0 起 opt-in 收紧）：设置环境变量
+  `EDGEFLOW_JOIN_DIR_MODE`（八进制字符串，如 `0700`）后，`join` / `batch join`
+  以该权限创建产物目录（不影响文件权限）；非法值（非八进制或超 `0777`）
+  直接报错退出，不创建任何目录。
 
 ## 3. 清理（keadm reset）
 

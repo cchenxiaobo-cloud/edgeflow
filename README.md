@@ -6,7 +6,7 @@ EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备�
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.23.0**（2026-08-28，P2 缺陷修复包 + 审计收官——T-12~T-20 全闭环，台账 71 条勾稽完毕：观测面补齐（丢事件计数/队列水位/listFailed 告警/Grafana 面板）、锁序工程化（ARCHITECTURE §13）、OPC-UA 报文纵深 13 修（防重放/OPN 校验/16MB 上限/锁外重连/-race 全绿）、API 契约统一（releases 列表信封化——唯一破坏性变更）、keadm --token-file + CheckOrigin 白名单 + Helm Secret 化 + 端口校验，端点 42 不变默认行为兼容零新依赖）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper）、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**云端分级持久化（v0.4.0 嵌入式 etcd / v0.5.0 外部 etcd 模式 / v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**、**外部 etcd RBAC 鉴权透传与终态发布 GC（v0.8.0：L1/L28 闭环）+ 续约失败监控指标**。
+> 当前版本：**v0.24.0**（2026-08-29，MQTT 功能轮——首个功能开发版本：MQTT 3.1.1 协议栈（`pkg/mqtt`，codec+client+通配匹配，-race 绿）、订阅型设备 Mapper（`mappers/mqtt`，EDGEFLOW_MQTT_* 全 opt-in）、进程内测试 broker（`pkg/mqttsim`）+ 真实装配 e2e；另含 §23 残余清理（契约守卫注释口径修正、keadm 产物目录权限 opt-in `EDGEFLOW_JOIN_DIR_MODE` 默认 0755 不变），端点 42 不变零新依赖默认行为兼容）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper，轮询型）、OPC-UA 设备接入（mapper，订阅+轮询）、**MQTT 设备接入（mapper，订阅型，v0.24.0）**、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**MQTT 3.1.1 协议栈（`pkg/mqtt` + `pkg/mqttsim`，v0.24.0）**、**云端分级持久化（v0.4.0 嵌入式 etcd / v0.5.0 外部 etcd 模式 / v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**、**外部 etcd RBAC 鉴权透传与终态发布 GC（v0.8.0：L1/L28 闭环）+ 续约失败监控指标**。
 
 ## 目录结构
 
@@ -95,6 +95,8 @@ helm install edgeflow build/charts/edgeflow/
 | [docs/RELEASE-NOTES-v080.md](docs/RELEASE-NOTES-v080.md) | v0.8.0 发布说明（etcd 鉴权/续约监控/分页与 GC） |
 
 ## 版本历史
+
+- **v0.24.0**（2026-08-29）：MQTT 功能轮——首个功能开发版本：MQTT 3.1.1 协议栈（pkg/mqtt：九种报文 codec + varint/主题双校验 + ErrMalformed 哨兵族 + client 读泵分发/QoS1 PUBACK 等待/KeepAlive/无自动重连由上层负责 + MatchTopic MQTT-4.7 通配；26 测试 -race 绿）+ 订阅型设备 Mapper（mappers/mqtt：EDGEFLOW_MQTT_BROKER/TOPICS/DEVICE_NAME/NAMESPACE/CMD_TOPIC 全 opt-in，payload 三形态容错解析，监管循环断线重连，台账触点全覆盖，9 测试）+ 进程内测试 broker（pkg/mqttsim：CONNECT 校验/SUBACK/分发/PINGREQ/出站队列丢弃计数，9 测试 -race 绿）+ TestMQTTDeviceE2E 真实装配全数据面（e2e 全套 288s 绿）；另含 §23 残余清理（R-1 契约守卫注释口径修正、SEC-03 附 keadm 产物目录权限 opt-in EDGEFLOW_JOIN_DIR_MODE 默认 0755 不变、OPCUA-GUIDE 无漂移确认）；R-5/R-6 残余票登记 KNOWN-ISSUES §24；HTTP 端点保持 42，零新依赖，默认行为与 v0.23.0 兼容；详见 [docs/RELEASE-NOTES-v0240.md](docs/RELEASE-NOTES-v0240.md)
 
 - **v0.21.0**（2026-08-28）：安全默认值包 + 协议纵深包——SEC-01 管理 API 认证关闭启动 WARN（AUTH_WARN=off 可静默）+ SEC-02 云边令牌强校验开关 `EDGEFLOW_CLOUDHUB_REQUIRE_NODE_TOKEN=on`（服务端未配令牌时拒绝携带令牌的注册防伪造探测，无令牌注册裸奔兼容，默认关）+ CHN-06 裸奔组合（无 mTLS 且无令牌）聚合告警 + Helm `cloudcore.auth.*`/`cloudcore.cloudhub.*` 段（默认全关）；协议面 PRT-01/14 数组预分配放大防御（声明×最元素字节数 vs 剩余缓冲预检，>1024 元素豁免阈值保持截断语义）+ PRT-03 DiagnosticInfo 递归深度上限 100 + PRT-04 订阅泵退出关闭 pubCh（sync.Once 防双关）+ PRT-18 mapper 订阅自愈；HTTP 端点保持 42，默认行为与 v0.20.0 逐字节一致；详见 [docs/RELEASE-NOTES-v0210.md](docs/RELEASE-NOTES-v0210.md)
 - **v0.22.0**（2026-08-28）：P1 缺陷修复包（7 项全闭环）——T-05 重注册事件序+无幽灵节点测试钉死 + T-08 慢客户端字节配额（默认 64MiB，EDGEFLOW_CLOUDHUB_SEND_QUOTA_BYTES）+ RegisterAck 前置（注册风暴退避）+ 广播内存 gauge `edgeflow_cloudcore_hub_send_buffer_bytes` + T-07 边缘下行去重 SQLite 持久化（TTL 24h/上限 1 万条/重启不丢）+ T-10 旧命名容器迁移 Inspect 复核 + T-06 发布终态写点接状态机断言/digest 失败同源失败预算/failFast 与 head 解耦 + T-09 release 子资源跨模型 404 统一（ownedRelease 7 端点）+ canary 独占语义登记 §7.11 + T-11 `EDGEFLOW_CLOUDCORE_CRL_STRICT`/`EDGEFLOW_CLOUDCORE_OCSP_FRESH` 吊销收紧开关；HTTP 端点保持 42，默认行为与 v0.21.0 兼容；详见 [docs/RELEASE-NOTES-v0220.md](docs/RELEASE-NOTES-v0220.md)

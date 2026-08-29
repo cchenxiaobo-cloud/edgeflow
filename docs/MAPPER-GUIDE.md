@@ -297,3 +297,60 @@ golangci-lint run ./edge/pkg/mapper/... ./mappers/... ./edge/pkg/eventbus/...
   “已连接”不代表 Mapper 处于 MQTT 模式；
 - **多设备共享 Mapper**：`DeviceNames()` 已支持一台 Mapper 管多台设备，真实接入时
   需为每台设备维护独立状态（map[deviceName]state），MQTT 主题按设备名区分。
+
+## 11. MQTT 设备 Mapper（v0.24.0，订阅型采集）
+
+Modbus/OPC-UA 是**轮询型**：框架定时调 `Collect()` 主动读设备。MQTT Mapper
+（`mappers/mqtt`，基于自研 `pkg/mqtt` 客户端，零第三方依赖）是**订阅型**：
+设备主动把属性上报到 broker，Mapper 订阅数据主题合并进本地快照，
+`Collect()` 只返回快照副本。两者共用同一 `DeviceMapper` 接口与装配路径
+（`cmd/edgecore/device_mapper.go` 的 buildMapperRegistry）。
+
+### 11.1 环境变量
+
+| 环境变量 | 说明 | 默认值 |
+| --- | --- | --- |
+| `EDGEFLOW_MQTT_BROKER` | broker 地址 `host:port`，**非空即注册**（opt-in 开关） | 未设置（不注册） |
+| `EDGEFLOW_MQTT_TOPICS` | 订阅 filter，逗号分隔（如 `demo/+/state,demo/#`） | `devices/+/state` |
+| `EDGEFLOW_MQTT_DEVICE_NAME` | 设备名（注册表路由键） | `mqtt-device-01` |
+| `EDGEFLOW_MQTT_NAMESPACE` | 设备命名空间 | `default` |
+| `EDGEFLOW_MQTT_CMD_TOPIC` | 指令发布主题 | 首个 filter 去掉通配段拼前缀 + `/cmd`；无字面段回退 `edgeflow/mqtt/cmd` |
+
+### 11.2 订阅/命令主题模型
+
+- **数据（设备 → 边缘）**：QoS 0 订阅全部 filter。payload 容错解析：JSON
+  对象的顶层可转数值字段，或 `k=v` 文本（逗号/空白分隔）；解析失败整条跳过
+  （记台账 error，快照不变）。
+- **指令（边缘 → 设备）**：`HandleCommand` 把 `DeviceCommand`（与云边契约
+  同 JSON 字段：`deviceName/namespace/property/value`）发布到 cmd 主题
+  （QoS 0）后返回当前快照；设备执行后把新状态上报数据主题即完成闭环
+  （订阅型无同步回读）。
+- **断连监管**：`pkg/mqtt` Client 无自动重连——Mapper 监管循环每 2s 向
+  `edgeflow/mqtt/health` 发布空消息探测存活，失败即重 Dial + 重订阅
+  （2s 间隔，context 取消即退）。不用 Subscribe 探测：client 对同 filter
+  是 append 语义，反复重订会使 handler 无限累积。
+
+### 11.3 与 modbus/opcua 的差异
+
+| 维度 | modbus/opcua（轮询型） | mqtt（订阅型） |
+| --- | --- | --- |
+| 采集 | `Collect()` 现场读写 | 设备推送 → 快照，`Collect()` 读缓存 |
+| 断连 | 操作时按需重连 | 监管 goroutine 主动探测 + 自动重连 |
+| 指令 | 直写寄存器/节点 + 回读验证 | 发布到 cmd 主题，设备异步执行 |
+
+### 11.4 最小示例
+
+```bash
+# 设备侧：向数据主题上报 JSON 属性（k=v 文本如 "temperature=25.5" 亦可）
+mosquitto_pub -h 127.0.0.1 -t demo/sensor-01/state -m '{"temperature":25.5,"humidity":60}'
+
+# edgecore 侧装配（broker 非空即注册）
+EDGEFLOW_MQTT_BROKER=127.0.0.1:1883 \
+EDGEFLOW_MQTT_TOPICS=demo/+/state \
+EDGEFLOW_MQTT_CMD_TOPIC=demo/cmd \
+./edgecore
+
+# 云端下发指令 → Mapper 发布 {"deviceName":"mqtt-device-01","property":"setpoint","value":42} 到 demo/cmd
+curl -X POST http://<cloud>/api/v1/nodes/<node>/device-command \
+  -d '{"deviceName":"mqtt-device-01","namespace":"default","property":"setpoint","value":42}'
+```

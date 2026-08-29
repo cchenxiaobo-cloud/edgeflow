@@ -25,6 +25,7 @@ import (
 
 	mocksensor "edgeflow/mappers/mock_sensor"
 	modbusmapper "edgeflow/mappers/modbus"
+	mqttmapper "edgeflow/mappers/mqtt"
 	opcuamapper "edgeflow/mappers/opcua"
 )
 
@@ -154,6 +155,25 @@ func buildMapperRegistry(bus *eventbus.EventBus, ledger *metamanager.Ledger) *ma
 				mode = "订阅推送"
 			}
 			log.Infof("OPC-UA Mapper 已注册（endpoint=%s，点位 %d 个，设备 opcua-device-01，模式 %s）", ep, len(nodes), mode)
+		}
+	}
+	// MQTT 设备接入（订阅型采集，v0.24.0，显式 opt-in）：
+	// EDGEFLOW_MQTT_BROKER 非空即注册（默认设备 mqtt-device-01）；订阅
+	// filter EDGEFLOW_MQTT_TOPICS（空则默认一组），指令主题
+	// EDGEFLOW_MQTT_CMD_TOPIC（空则按首个 filter 推导）。broker 未就绪
+	// 不影响注册：Mapper 内部监管循环会持续重连。注册失败仅 Warn（不影响
+	// 其余 Mapper）。
+	if broker := os.Getenv(mqttmapper.EnvBroker); broker != "" {
+		topics := mqttmapper.ParseTopics(os.Getenv(mqttmapper.EnvTopics))
+		if len(topics) == 0 {
+			topics = mqttmapper.DefaultTopics
+		}
+		m := mqttmapper.New(broker, mqttmapper.WithTopics(topics), mqttmapper.WithLedger(ledger))
+		if err := reg.Register(m); err != nil {
+			log.Warnf("注册 MQTT Mapper 失败: %v", err)
+		} else {
+			log.Infof("MQTT Mapper 已注册（broker=%s，订阅 [%s]，设备 %s，cmd=%s）",
+				broker, strings.Join(topics, ","), m.DeviceNames()[0], m.CommandTopic())
 		}
 	}
 	if bus != nil {

@@ -120,6 +120,12 @@ func runBatch(args []string, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintf(stderr, "错误: %v\n", err)
 			return exitUsage
 		}
+		// 产物目录权限（SEC-03 附，v0.24.0）：批量 join 入口同样 fail-fast，
+		// 避免逐节点处理到一半才因非法 EDGEFLOW_JOIN_DIR_MODE 失败。
+		if _, err := resolveJoinDirMode(); err != nil {
+			_, _ = fmt.Fprintf(stderr, "错误: %v\n", err)
+			return exitUsage
+		}
 		if opts.TokenFile != "" {
 			b, err := os.ReadFile(opts.TokenFile)
 			if err != nil {

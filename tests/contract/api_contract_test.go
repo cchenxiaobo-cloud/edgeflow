@@ -24,9 +24,15 @@ package contract
 // 运行时探测采用与 tests/e2e 相同的「真实进程」约定：go build 编译
 // cmd/cloudcore 二进制并以子进程启动（--port + 环境变量覆盖），探测的是真实
 // 装配路径而非 mock。反向断言因 net/http 不暴露路由表，改为两道互补防线：
-//   - 静态解析（组 3）：读 main.go 路由注册行（全仓 grep 确认
-//     HandleFunc/Handle 调用点仅 main.go 一处），定位精确到行号，但只认
-//     字面量注册，路由改为循环/变量注册时会漏报；
+//   - 静态解析（组 3）：读 cmd/cloudcore 路由注册行。注册并非仅 main.go
+//     一处：HandleFunc/Handle 调用点分布在 main.go（既有节点/设备/应用路由
+//     + registerNodeAPIRoutes）与 model_api.go（modelAPI.Register，v0.7.0 起
+//     模型 API 及后续版本扩展），处理器实现进一步分散在 device_api.go /
+//     v0170_release_ops.go / v0200_release_ops.go 等文件；静态解析经
+//     registeredRoutesFromSource 同扫 main.go 与 model_api.go，定位精确到
+//     行号，但只认字面量注册，路由改为循环/变量注册时会漏报。42 条端点
+//     契约守卫以 routes.go（ContractEndpoints）为事实源，运行时守卫见
+//     api_contract_test.go:758（TestDocAPISpecEndpointsMatchContract）；
 //   - 运行时反向探测（组 2）：对保留前缀路径断言 404，直接探测真实 ServeMux
 //     装配结果，能捕获动态注册的契约外路由；代价是只能抽样探测，无法穷举。
 

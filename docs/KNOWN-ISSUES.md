@@ -320,3 +320,31 @@
 | R-2 | cloud/pkg/cloudhub/server.go 尚余 Ack 之外个别日志点可复查消毒覆盖（本轮四个主锚点已覆盖） | 主线 SEC-06 收尾 | 触碰对应日志点时顺手补 |
 | R-3 | SEC-05 白名单精确匹配无子域通配；如需 grafana.*.example.com 类通配需扩展（谨慎：通配重开注入面） | D 路缺口 4 | 出现真实通配需求时 |
 | R-4 | keadm batch 的 --token-file 为「预读后按值透传」语义（与单节点 join 的 join 内读文件结果一致，测试钉死） | D 路缺口 7 | 语义差异造成实际问题时 |
+
+## 24. v0.24.0 开发轮闭环登记（2026-08-29，MQTT 功能轮：协议栈 + 订阅型 Mapper + e2e；含 §23 残余 F-4 清理）
+
+### 24.1 本轮修复闭环（§23 残余票 F-4）
+
+| 票 | 处置 | 落点 |
+|---|---|---|
+| R-1 | 契约守卫静态路由断言文档注释口径修正（漂移实际在 27-31 行；断言零改动，守卫语义不变） | tests/contract/api_contract_test.go |
+| SEC-03 附 | keadm join/batch 产物目录权限 opt-in：`EDGEFLOW_JOIN_DIR_MODE`（8 进制，≤0o777，非法值 fail-fast），默认 0o755 行为不变；`resolveJoinDirMode()` 单点实现 + 11 例测试（含 umask 钉扎） | cmd/keadm/join.go、batch.go |
+| OPCUA-GUIDE 漂移 | 与 v0.23.0 行为变化逐点核查，无漂移（3 处疑似点逐一排除） | — |
+
+### 24.2 实现注记（非缺陷，下轮收敛）
+
+| 票 | 内容 | 现状合理性 | 收敛路径 |
+|---|---|---|---|
+| R-6 | `pkg/mqtt` codec 函数（encodePacket/decodePacket/validateTopicFilter）未导出，`pkg/mqttsim` 内建语义对齐的最小本地 codec（~330 行） | 并行开发期文件域禁触的兌底裁决；重复被封装在 sim 包内部，不污染公共 API，已 -race 验证 | 导出 M1 codec（EncodePacket/DecodePacket/ValidateTopicFilter）+ mqttsim 切换调用，收回重复；下轮或 v0.25.0 |
+
+### 24.3 域外残余票（本轮登记，下轮处理）
+
+| 票 | 内容 | 来源 | 建议归属 |
+|---|---|---|---|
+| R-5 | 契约守卫 TestContractRoutesNoExtraRoutesRegistered（~444 行）文档注释仍写「遍历 main.go」，实测同扫两文件；本轮守卫行域禁触未动 | O 路 O-R2 | 下一轮守卫维护窗口 |
+
+### 24.4 MQTT 轮新增能力边界说明
+
+- MQTT client **无自动重连**：断开后返回 ErrClientClosed，重连由上层 Mapper 监管循环负责（设计裁决，与 opcua mapper 锁外重连同构）。直接使用 `pkg/mqtt.Client` 的调用方需自行处理重连。
+- mqttsim 定位为**测试 broker**：出站队列容量 32、满则丢弃+计数，不承诺生产级投递保证；生产部署使用真实 broker（EMQX/Mosquitto 等）。
+- mapper QoS 仅支持 QoS0/QoS1（QoS2 在 client 层明确拒绝）；CleanSession 恒为 true。

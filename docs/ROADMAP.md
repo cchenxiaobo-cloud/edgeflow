@@ -491,3 +491,16 @@
 | T-20 勾稽收官 | 台账 71 条 | ✅ 闭环 | 勾稽总表 55✅+14📌+2🗑️=71；主线直接实施 CHN-13（eventbus 等待有界化）与 CHN-16 pkg/protocol 落点（删时间戳兜底）；encodeUA 基线缺陷修复 |
 
 > 残余票与登记项：见 docs/KNOWN-ISSUES.md §23（登记不修 14 条理由与重估触发条件 + 域外残余票 R-1~R-4）。
+
+## 19. v0.24.0 开发轮处置登记（2026-08-29，MQTT 功能轮：审计驱动阶段收官后的第一个功能版本）
+
+> 依据：.cluster/edgeflow-v0240/plan.md（范围裁定 F-1~F-4）。状态：✅ 已完成（四项全闭环；端点 42 不变、零新依赖、默认行为不变、既有测试零改动）。
+
+| 项 | 范围 | 处置 | 结论/理由 |
+|---|---|---|---|
+| F-1 MQTT 协议栈 | pkg/mqtt/ | ✅ 闭环 | MQTT 3.1.1 九种报文 codec（varint+主题双校验、ErrMalformed 哨兵族、限量读防 DoS、golden 字节测试）+ client（Dial/Subscribe/Publish/Close、读泵分发、QoS1 PUBACK 等待、KeepAlive、无自动重连由上层负责）+ MatchTopic（MQTT-4.7 通配含 $ 系惯例）；26 测试 -race 绿 |
+| F-2 MQTT Mapper | mappers/mqtt/ + cmd/edgecore | ✅ 闭环 | 订阅型采集（与轮询型 modbus、订阅+轮询 opcua 并列第三种接入）；EDGEFLOW_MQTT_* 五环境变量 opt-in；payload 三形态容错解析；监管循环断线重连；台账触点全覆盖；装配段+测试 9 例 |
+| F-3 测试 broker + e2e | pkg/mqttsim/ + tests/e2e | ✅ 闭环 | 进程内 broker（CONNECT 校验/SUBACK/分发/PINGREQ/出站队列 32 丢弃计数）9 测试 -race 绿；TestMQTTDeviceE2E 真实装配全数据面；e2e 全套 288s 绿 |
+| F-4 §23 残余清理 | contract/keadm/GUIDE | ✅ 闭环 | R-1 注释口径修正（断言零动）；SEC-03 附产物目录 0700 opt-in（EDGEFLOW_JOIN_DIR_MODE 默认 0755 不变）；OPCUA-GUIDE 无漂移确认 |
+
+> 残余票与登记项：见 docs/KNOWN-ISSUES.md §24（R-6 sim 本地 codec 收敛 + R-5 守卫注释 + MQTT 能力边界说明）。下一步候选：R-6 收敛、OPC-UA Basic256Sha256 加密通道、MQTT QoS2/TLS。

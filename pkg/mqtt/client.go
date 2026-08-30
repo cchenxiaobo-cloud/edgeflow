@@ -1,6 +1,7 @@
 package mqtt
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -25,6 +26,11 @@ type Options struct {
 	Username       string
 	Password       string
 	ConnectTimeout time.Duration
+
+	// TLSConfig enables TLS when non-nil (nil = plaintext TCP, the
+	// v0.24.0 behavior). When ServerName is empty, Dial fills it from
+	// the host part of the dial address.
+	TLSConfig *tls.Config
 }
 
 // Handler is invoked for every inbound PUBLISH whose topic matches one of the
@@ -65,7 +71,24 @@ func Dial(addr string, opts Options) (*Client, error) {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+	var (
+		conn net.Conn
+		err  error
+	)
+	if opts.TLSConfig != nil {
+		// TLS path (v0.25.0): clone so the caller's config is never
+		// mutated, and fill ServerName from the dial address host when
+		// unset (crypto/tls would do the same, but be explicit).
+		cfg := opts.TLSConfig.Clone()
+		if cfg.ServerName == "" {
+			if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil && host != "" {
+				cfg.ServerName = host
+			}
+		}
+		conn, err = tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr, cfg)
+	} else {
+		conn, err = net.DialTimeout("tcp", addr, timeout)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -348,3 +348,23 @@
 - MQTT client **无自动重连**：断开后返回 ErrClientClosed，重连由上层 Mapper 监管循环负责（设计裁决，与 opcua mapper 锁外重连同构）。直接使用 `pkg/mqtt.Client` 的调用方需自行处理重连。
 - mqttsim 定位为**测试 broker**：出站队列容量 32、满则丢弃+计数，不承诺生产级投递保证；生产部署使用真实 broker（EMQX/Mosquitto 等）。
 - mapper QoS 仅支持 QoS0/QoS1（QoS2 在 client 层明确拒绝）；CleanSession 恒为 true。
+
+## 25. v0.25.0 开发轮闭环登记（2026-08-30，MQTT 硬化轮：R-5/R-6 残余闭环 + TLS 加密传输全栈）
+
+### 25.1 残余票闭环
+
+| 票 | 处置 | 落点 |
+|---|---|---|
+| R-5 | 契约守卫口径修正：反向断言与背景注释改为「同扫 main.go 与 model_api.go」实际口径；错误信息带来源文件名（registeredRoute 增 file 字段）；断言语义零变化，42 端点守卫全绿 | tests/contract/api_contract_test.go |
+| R-6 | codec 收敛：pkg/mqtt 导出 EncodePacket/DecodePacket/ValidateTopicFilter 薄包装（小写实现与既有测试零动）；mqttsim 删除本地 codec（747→447 行，净 -300）；新增 v0250_export_test.go 4 parity 用例 | pkg/mqtt/packet.go、pkg/mqttsim/sim.go |
+
+### 25.2 R-6 关键裁决：坏客户端 SUBSCRIBE 宽容通道
+
+冻结测试 TestSubscribeSubackEchoAndInvalidFilter 需将非法 filter（"a/#/b"）放上电线并期望 broker 逐 filter 回 SUBACK 0x80 且连接保持；pkg/mqtt 客户端级编解码器对非法 filter 双侧拒绝（对真实客户端是正确行为）。处置：mqttsim 的 encodePacket/decodePacket 垫片对 SUBSCRIBE 分流出最小宽容路径（encodePermissiveSubscribe/decodePermissiveSubscribe + varint 小助手），非 SUBSCRIBE 类型经 MultiReader 原样走 M1 严格管线，严格性零损失。
+
+### 25.3 本轮登记项与能力边界
+
+- **mqttsim TLS 为测试定位**：NewBrokerTLS 单自签证书（IsCA 便于直接充当测试 RootCA，SAN 含 127.0.0.1/localhost），无认证体系；生产 broker（EMQX/Mosquitto 等）TLS 走真实 CA。
+- **EDGEFLOW_MQTT_TLS_INSECURE 仅限开发/测试**：开启时打 WARN 日志；生产禁用。
+- **client mTLS（双向认证）未含**：本轮仅单向 TLS（客户端校验服务端）；登记 ROADMAP §20 下轮候选。
+- mapper TLS 失败语义：CA 文件读失败/非 PEM → connect() fail-fast 报错（不进入无限重试）；ServerName 由 client 层从 addr host 自动回填（IP 直连需证书含 IP SAN，测试证书已含 127.0.0.1）。

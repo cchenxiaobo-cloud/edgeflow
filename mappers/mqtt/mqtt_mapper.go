@@ -32,6 +32,8 @@ package mqtt
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -70,6 +72,13 @@ const (
 	EnvNamespace = "EDGEFLOW_MQTT_NAMESPACE"
 	// EnvCmdTopic 是指令发布主题环境变量（空则按首个订阅 filter 推导）。
 	EnvCmdTopic = "EDGEFLOW_MQTT_CMD_TOPIC"
+	// EnvTLSCA 是 MQTT TLS 根证书 PEM 文件路径环境变量（v0.25.0，opt-in）。
+	// 非空时 connect() 读取并注入 RootCAs（自签/私有 CA 场景）；读失败或
+	// 解析失败 fail-fast 返回错误。
+	EnvTLSCA = "EDGEFLOW_MQTT_TLS_CA"
+	// EnvTLSInsecure 是跳过 TLS 证书校验的环境变量（v0.25.0，opt-in，
+	// 取值 "1"/"true"/"on" 大小写不敏感）。仅建议开发/测试使用。
+	EnvTLSInsecure = "EDGEFLOW_MQTT_TLS_INSECURE"
 
 	// DefaultKeepAlive 是 MQTT KeepAlive（30s，PINGREQ 周期）。
 	DefaultKeepAlive = 30 * time.Second
@@ -160,6 +169,9 @@ type MQTTMapper struct {
 	keepAlive  time.Duration
 	ledger     OpLedger
 
+	tlsCAPath   string // EDGEFLOW_MQTT_TLS_CA（空 = 不注入 RootCAs）
+	tlsInsecure bool   // EDGEFLOW_MQTT_TLS_INSECURE
+
 	props  map[string]float64 // 属性快照（订阅推送合并；Stop 时清空）
 	client *mqtt.Client       // 当前连接（nil = 未连接）
 
@@ -213,6 +225,12 @@ func New(broker string, opts ...Option) *MQTTMapper {
 	}
 	if m.cmdTopic == "" {
 		m.cmdTopic = CmdTopicFromFilter(m.topics[0])
+	}
+	if m.tlsCAPath == "" {
+		m.tlsCAPath = os.Getenv(EnvTLSCA)
+	}
+	if v := strings.ToLower(os.Getenv(EnvTLSInsecure)); v == "1" || v == "true" || v == "on" {
+		m.tlsInsecure = true
 	}
 	return m
 }
@@ -364,6 +382,25 @@ func (m *MQTTMapper) connect() (*mqtt.Client, error) {
 		KeepAlive:      m.keepAlive,
 		CleanSession:   true,
 		ConnectTimeout: DefaultConnectTimeout,
+	}
+	if m.tlsCAPath != "" || m.tlsInsecure {
+		cfg := &tls.Config{}
+		if m.tlsCAPath != "" {
+			pemBytes, err := os.ReadFile(m.tlsCAPath)
+			if err != nil {
+				return nil, fmt.Errorf("读取 MQTT TLS CA %s 失败: %w", m.tlsCAPath, err)
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(pemBytes) {
+				return nil, fmt.Errorf("MQTT TLS CA %s 不是有效 PEM 证书", m.tlsCAPath)
+			}
+			cfg.RootCAs = pool
+		}
+		if m.tlsInsecure {
+			log.Infof("MQTTMapper %s 启用 TLS 跳过证书校验（EDGEFLOW_MQTT_TLS_INSECURE，仅限开发/测试）", m.deviceName)
+			cfg.InsecureSkipVerify = true // #nosec G402 -- opt-in dev/test escape hatch
+		}
+		opts.TLSConfig = cfg
 	}
 	cl, err := mqtt.Dial(m.broker, opts)
 	if err != nil {

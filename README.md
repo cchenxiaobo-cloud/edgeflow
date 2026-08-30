@@ -6,7 +6,7 @@ EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备�
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.24.0**（2026-08-29，MQTT 功能轮——首个功能开发版本：MQTT 3.1.1 协议栈（`pkg/mqtt`，codec+client+通配匹配，-race 绿）、订阅型设备 Mapper（`mappers/mqtt`，EDGEFLOW_MQTT_* 全 opt-in）、进程内测试 broker（`pkg/mqttsim`）+ 真实装配 e2e；另含 §23 残余清理（契约守卫注释口径修正、keadm 产物目录权限 opt-in `EDGEFLOW_JOIN_DIR_MODE` 默认 0755 不变），端点 42 不变零新依赖默认行为兼容）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper，轮询型）、OPC-UA 设备接入（mapper，订阅+轮询）、**MQTT 设备接入（mapper，订阅型，v0.24.0）**、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**MQTT 3.1.1 协议栈（`pkg/mqtt` + `pkg/mqttsim`，v0.24.0）**、**云端分级持久化（v0.4.0 嵌入式 etcd / v0.5.0 外部 etcd 模式 / v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**、**外部 etcd RBAC 鉴权透传与终态发布 GC（v0.8.0：L1/L28 闭环）+ 续约失败监控指标**。
+> 当前版本：**v0.25.0**（2026-08-30，MQTT 硬化轮：R-6 codec 收敛（pkg/mqtt 导出 EncodePacket/DecodePacket/ValidateTopicFilter 薄包装，mqttsim 删除本地 codec 747→447 行共享单一实现，坏客户端 SUBSCRIBE 宽容通道保留冻结负向测试语义）+ R-5 契约守卫口径修正（同扫两文件口径注释、错误信息带来源文件，断言零变化）+ MQTT TLS 加密传输全栈（client Options.TLSConfig：tls.DialWithDialer + ServerName 自动回填 + Clone 防突变；mqttsim NewBrokerTLS；mapper EDGEFLOW_MQTT_TLS_CA / EDGEFLOW_MQTT_TLS_INSECURE 全 opt-in fail-fast；TestMQTTTLSDeviceE2E 全环 TLS 闭环），端点 42 不变零新依赖默认行为兼容）。核心能力包括：完整 mTLS（证书签发/CRL/OCSP）、设备 Token 认证、`edgenodes`/`devices`/`devicemodels` CRD、Modbus 设备接入（mapper，轮询型）、OPC-UA 设备接入（mapper，订阅+轮询）、**MQTT 设备接入（mapper，订阅型，v0.24.0）**、可靠消息投递、弱网重连退避、OPC-UA UA Binary 协议栈（`pkg/opcua`，v0.3.0，明文仅限可信网络）、**MQTT 3.1.1 协议栈（`pkg/mqtt` + `pkg/mqttsim`，v0.24.0）**、**云端分级持久化（v0.4.0 嵌入式 etcd / v0.5.0 外部 etcd 模式 / v0.6.0 真多活多副本）**、**模型仓库/版本管理/灰度发布（v0.7.0：模型 API 17 端点，总 HTTP 端点 14→31）**、**外部 etcd RBAC 鉴权透传与终态发布 GC（v0.8.0：L1/L28 闭环）+ 续约失败监控指标**。
 
 ## 目录结构
 
@@ -95,6 +95,8 @@ helm install edgeflow build/charts/edgeflow/
 | [docs/RELEASE-NOTES-v080.md](docs/RELEASE-NOTES-v080.md) | v0.8.0 发布说明（etcd 鉴权/续约监控/分页与 GC） |
 
 ## 版本历史
+
+- **v0.25.0**（2026-08-30）：MQTT 硬化轮——R-6 codec 收敛（pkg/mqtt 导出 EncodePacket/DecodePacket/ValidateTopicFilter 薄包装；mqttsim 删除本地 codec，sim.go 747→447 行净减 300，客户端/broker/测试共享单一 wire 实现；坏客户端 SUBSCRIBE 宽容通道保留冻结负向测试语义，v0250_export_test.go 4 parity 用例）+ R-5 契约守卫口径修正（反向断言/背景注释改同扫 main.go 与 model_api.go 实际口径，错误信息带来源文件 file 字段，断言零变化）+ MQTT TLS 加密传输全栈（pkg/mqtt Options.TLSConfig：tls.DialWithDialer + ServerName 自动回填 + Clone 防突变；pkg/mqttsim NewBrokerTLS（TLS 终止于 listener，broker 其余路径逐字不变）；mappers/mqtt EDGEFLOW_MQTT_TLS_CA（PEM 文件路径，读/解析失败 fail-fast）与 EDGEFLOW_MQTT_TLS_INSECURE（"1"/"true"/"on"，WARN，开发/测试逃生通道）全 opt-in；TestMQTTTLSDeviceE2E 全环 TLS 闭环：上报→云端属性→指令下发→cmd 主题→Desired 收敛→回发收敛；TLS 增量 12 测试全绿含 -race）；HTTP 端点保持 42，零新依赖（crypto/* 标准库），默认行为与 v0.24.0 兼容；详见 [docs/RELEASE-NOTES-v0250.md](docs/RELEASE-NOTES-v0250.md)
 
 - **v0.24.0**（2026-08-29）：MQTT 功能轮——首个功能开发版本：MQTT 3.1.1 协议栈（pkg/mqtt：九种报文 codec + varint/主题双校验 + ErrMalformed 哨兵族 + client 读泵分发/QoS1 PUBACK 等待/KeepAlive/无自动重连由上层负责 + MatchTopic MQTT-4.7 通配；26 测试 -race 绿）+ 订阅型设备 Mapper（mappers/mqtt：EDGEFLOW_MQTT_BROKER/TOPICS/DEVICE_NAME/NAMESPACE/CMD_TOPIC 全 opt-in，payload 三形态容错解析，监管循环断线重连，台账触点全覆盖，9 测试）+ 进程内测试 broker（pkg/mqttsim：CONNECT 校验/SUBACK/分发/PINGREQ/出站队列丢弃计数，9 测试 -race 绿）+ TestMQTTDeviceE2E 真实装配全数据面（e2e 全套 288s 绿）；另含 §23 残余清理（R-1 契约守卫注释口径修正、SEC-03 附 keadm 产物目录权限 opt-in EDGEFLOW_JOIN_DIR_MODE 默认 0755 不变、OPCUA-GUIDE 无漂移确认）；R-5/R-6 残余票登记 KNOWN-ISSUES §24；HTTP 端点保持 42，零新依赖，默认行为与 v0.23.0 兼容；详见 [docs/RELEASE-NOTES-v0240.md](docs/RELEASE-NOTES-v0240.md)
 

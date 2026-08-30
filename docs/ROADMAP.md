@@ -504,3 +504,13 @@
 | F-4 §23 残余清理 | contract/keadm/GUIDE | ✅ 闭环 | R-1 注释口径修正（断言零动）；SEC-03 附产物目录 0700 opt-in（EDGEFLOW_JOIN_DIR_MODE 默认 0755 不变）；OPCUA-GUIDE 无漂移确认 |
 
 > 残余票与登记项：见 docs/KNOWN-ISSUES.md §24（R-6 sim 本地 codec 收敛 + R-5 守卫注释 + MQTT 能力边界说明）。下一步候选：R-6 收敛、OPC-UA Basic256Sha256 加密通道、MQTT QoS2/TLS。
+
+## 20. v0.25.0 开发轮处置登记（2026-08-30，MQTT 硬化轮：残余闭环 + TLS 加密传输）
+
+| 子任务 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| F-1 R-6 codec 收敛 | pkg/mqtt + pkg/mqttsim | ✅ 闭环 | 导出三函数薄包装（EncodePacket/DecodePacket/ValidateTopicFilter）；sim 747→447 行共享单一实现；坏客户端 SUBSCRIBE 宽容通道（KNOWN-ISSUES §25.2）；pkg/mqtt 35 + mqttsim 11 测试全绿（含 -race） |
+| F-2 R-5 守卫口径 | tests/contract | ✅ 闭环 | 注释同扫两文件口径 + 错误信息带来源文件（file 字段）；断言零变化，42 端点绿 |
+| F-3 MQTT TLS 全栈 | pkg/mqtt + pkg/mqttsim + mappers/mqtt + tests/e2e | ✅ 闭环 | client Options.TLSConfig（tls.DialWithDialer + ServerName 自动回填 + Clone 防突变）；NewBrokerTLS；EDGEFLOW_MQTT_TLS_CA / EDGEFLOW_MQTT_TLS_INSECURE 全 opt-in（fail-fast）；TestMQTTTLSDeviceE2E 全环 TLS 闭环；TLS 增量 12 测试全绿（含 -race） |
+
+> 残余票与登记项：见 docs/KNOWN-ISSUES.md §25（mqttsim TLS 测试定位、INSECURE 边界、client mTLS 未含）。下一步候选：MQTT QoS2、client mTLS（双向认证）、OPC-UA Basic256Sha256 加密通道、mapper 配置文件化。

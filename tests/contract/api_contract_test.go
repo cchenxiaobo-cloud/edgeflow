@@ -382,6 +382,7 @@ type registeredRoute struct {
 	method string // "GET"/"POST"/"ANY"（无方法限制）/"PREFIX"（前缀挂载）
 	path   string
 	line   int
+	file   string // 来源文件基名（main.go / model_api.go），用于错误定位
 }
 
 // registeredRoutesFromSource 静态解析 cmd/cloudcore 的路由注册。
@@ -406,6 +407,7 @@ func scanRouteFile(t *testing.T, file string) []registeredRoute {
 		t.Fatalf("打开 %s 失败: %v", file, err)
 	}
 	defer f.Close()
+	base := filepath.Base(file)
 
 	var routes []registeredRoute
 	sc := bufio.NewScanner(f)
@@ -427,7 +429,7 @@ func scanRouteFile(t *testing.T, file string) []registeredRoute {
 			if !ok {
 				method, path = "ANY", pattern
 			}
-			routes = append(routes, registeredRoute{method: method, path: path, line: lineNo})
+			routes = append(routes, registeredRoute{method: method, path: path, line: lineNo, file: base})
 			continue
 		}
 		// 前缀挂载：mux.Handle("/api/v1/", apiHandler)
@@ -438,7 +440,7 @@ func scanRouteFile(t *testing.T, file string) []registeredRoute {
 			if end < 0 {
 				t.Fatalf("%s 第 %d 行 Handle 模式解析失败: %q", file, lineNo, line)
 			}
-			routes = append(routes, registeredRoute{method: "PREFIX", path: rest[:end], line: lineNo})
+			routes = append(routes, registeredRoute{method: "PREFIX", path: rest[:end], line: lineNo, file: base})
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -447,7 +449,8 @@ func scanRouteFile(t *testing.T, file string) []registeredRoute {
 	return routes
 }
 
-// TestContractRoutesNoExtraRoutesRegistered（反向断言）遍历 cmd/cloudcore/main.go
+// TestContractRoutesNoExtraRoutesRegistered（反向断言）遍历 cmd/cloudcore
+// 路由注册源文件（main.go 与 model_api.go，同 registeredRoutesFromSource 口径）
 // 实际注册的路由表，断言不存在契约表之外的方法+路径组合。
 //
 // 已知内部路径白名单（已逐一确认）：
@@ -475,7 +478,7 @@ func TestContractRoutesNoExtraRoutesRegistered(t *testing.T) {
 		if allow, ok := internal[r.method]; ok && allow == r.path {
 			continue
 		}
-		unexpected = append(unexpected, fmt.Sprintf("main.go 第 %d 行: %s", r.line, key))
+		unexpected = append(unexpected, fmt.Sprintf("%s 第 %d 行: %s", filepath.Base(r.file), r.line, key))
 	}
 	if len(unexpected) > 0 {
 		t.Errorf("发现契约表之外的已注册路由 %d 条:\n%s", len(unexpected), strings.Join(unexpected, "\n"))
@@ -552,7 +555,7 @@ var contractProbePaths = []contractProbe{
 // 未注册/保留前缀路径发起真实请求，断言一律返回 404，作为「无契约外路由」的
 // 运行时补充断言。
 //
-// 背景：TestContractRoutesNoExtraRoutesRegistered 只解析 main.go 的字面
+// 背景：TestContractRoutesNoExtraRoutesRegistered 静态解析 main.go 与 model_api.go 的字面
 // HandleFunc/Handle 调用，路由改为循环/变量注册时会漏报（动态注册的契约外
 // 路由不可见）。本测试探测真实 ServeMux 装配结果，动态注册的路由（尤其是
 // 挂在保留段上的字面路由）会在此暴露；两者并存，静态解析仍是第一道防线

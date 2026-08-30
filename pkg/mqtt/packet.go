@@ -585,3 +585,22 @@ func decodeSuback(d *decoder) (*Suback, error) {
 	}
 	return &Suback{PacketID: id, Codes: codes}, nil
 }
+
+// ---------------------------------------------------------------------------
+// Exported codec surface (v0.25.0 R-6 consolidation).
+//
+// Thin wrappers over the unexported implementations in this file, exported
+// so pkg/mqttsim and external test brokers reuse the single wire codec
+// instead of carrying private copies. The unexported functions stay as-is:
+// existing in-package tests and call sites are untouched.
+// ---------------------------------------------------------------------------
+
+// EncodePacket serialises one MQTT packet to w using the 3.1.1 wire format.
+func EncodePacket(w io.Writer, p Packet) error { return encodePacket(w, p) }
+
+// DecodePacket reads exactly one MQTT packet from r and returns it.
+func DecodePacket(r io.Reader) (Packet, error) { return decodePacket(r) }
+
+// ValidateTopicFilter reports whether filter is a legal 3.1.1 subscription
+// filter ('+'/'#' wildcard placement rules).
+func ValidateTopicFilter(filter string) error { return validateTopicFilter(filter) }

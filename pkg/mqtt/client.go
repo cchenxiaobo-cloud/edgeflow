@@ -14,9 +14,14 @@ import (
 // been closed, or after the underlying connection has dropped.
 var ErrClientClosed = errors.New("mqtt: client closed or disconnected")
 
-// ackTimeout bounds how long Publish (QoS1) and Subscribe wait for the
-// matching PUBACK/SUBACK from the broker.
-const ackTimeout = 10 * time.Second
+// ackTimeout bounds how long Publish (QoS1/QoS2) and Subscribe wait for the
+// matching ack from the broker. It is a var so tests can shorten it; the
+// production default stays 10s.
+var ackTimeout = ackTimeoutDefault
+
+const (
+	ackTimeoutDefault = 10 * time.Second
+)
 
 // Options configures Dial.
 type Options struct {
@@ -31,6 +36,11 @@ type Options struct {
 	// v0.24.0 behavior). When ServerName is empty, Dial fills it from
 	// the host part of the dial address.
 	TLSConfig *tls.Config
+
+	// EnableQoS2 opts in to MQTT QoS 2 (EXACTLY ONCE) support (v0.26.0).
+	// When false (the default), Publish rejects QoS 2 before the wire —
+	// byte-for-byte the v0.24.0/v0.25.0 behavior.
+	EnableQoS2 bool
 }
 
 // Handler is invoked for every inbound PUBLISH whose topic matches one of the
@@ -56,6 +66,10 @@ type Client struct {
 
 	pendingMu   sync.Mutex
 	pendingAcks map[uint16]chan Packet // packet id -> PUBACK/SUBACK waiter
+
+	pendingDownQoS2 map[uint16]*Publish // inbound QoS2 parked awaiting PUBREL (v0.26.0)
+
+	enableQoS2 bool // gate for the QoS2 code paths (Options.EnableQoS2)
 
 	closeOnce sync.Once
 	done      chan struct{} // closed by the read pump on exit (disconnected)
@@ -93,10 +107,12 @@ func Dial(addr string, opts Options) (*Client, error) {
 		return nil, err
 	}
 	c := &Client{
-		conn:        conn,
-		handlers:    make(map[string][]Handler),
-		pendingAcks: make(map[uint16]chan Packet),
-		done:        make(chan struct{}),
+		conn:            conn,
+		handlers:        make(map[string][]Handler),
+		pendingAcks:     make(map[uint16]chan Packet),
+		pendingDownQoS2: make(map[uint16]*Publish),
+		enableQoS2:      opts.EnableQoS2,
+		done:            make(chan struct{}),
 	}
 
 	keepSecs := int64(opts.KeepAlive / time.Second)
@@ -209,12 +225,15 @@ func (c *Client) Subscribe(topic string, qos byte, h Handler) error {
 }
 
 // Publish sends a PUBLISH. QoS 0 is fire-and-forget; QoS 1 waits up to
-// ackTimeout for the broker's PUBACK. QoS 2 is not supported.
+// ackTimeout for the broker's PUBACK; QoS 2 (v0.26.0) runs the full
+// PUBLISH→PUBREC→PUBREL→PUBCOMP handshake and waits for each leg, but only
+// when the client was dialed with Options.EnableQoS2 — otherwise QoS 2 is
+// rejected before it ever reaches the wire (the v0.24.0 contract).
 func (c *Client) Publish(topic string, qos byte, payload []byte) error {
 	if err := validateTopicName(topic); err != nil {
 		return err
 	}
-	if qos > 1 {
+	if qos > 2 || (qos == 2 && !c.enableQoS2) {
 		return fmt.Errorf("mqtt: unsupported QoS %d", qos)
 	}
 	if err := c.ensureOpen(); err != nil {
@@ -230,12 +249,36 @@ func (c *Client) Publish(topic string, qos byte, payload []byte) error {
 	if err := c.write(pk); err != nil {
 		return err
 	}
-	ack, err := c.waitAck(ch)
+	if qos == 1 {
+		ack, err := c.waitAck(ch)
+		if err != nil {
+			return err
+		}
+		if _, ok := ack.(*Puback); !ok {
+			return fmt.Errorf("mqtt: expected PUBACK for packet id %d", pk.PacketID)
+		}
+		return nil
+	}
+	// QoS 2: PUBLISH→PUBREC→PUBREL→PUBCOMP. Both legs wait on the same
+	// buffered channel (registered once for this packet id): the waiter
+	// drains the PUBREC delivery before blocking again, so the PUBCOMP
+	// from resolveAck lands in the same slot.
+	rec, err := c.waitAck(ch)
 	if err != nil {
 		return err
 	}
-	if _, ok := ack.(*Puback); !ok {
-		return fmt.Errorf("mqtt: expected PUBACK for packet id %d", pk.PacketID)
+	if _, ok := rec.(*Pubrec); !ok {
+		return fmt.Errorf("mqtt: expected PUBREC for packet id %d", pk.PacketID)
+	}
+	if err := c.write(&Pubrel{PacketID: pk.PacketID}); err != nil {
+		return err
+	}
+	comp, err := c.waitAck(ch)
+	if err != nil {
+		return err
+	}
+	if _, ok := comp.(*Pubcomp); !ok {
+		return fmt.Errorf("mqtt: expected PUBCOMP for packet id %d", pk.PacketID)
 	}
 	return nil
 }
@@ -271,10 +314,38 @@ func (c *Client) readPump() {
 				// QoS1 inbound must be acknowledged so the broker does not resend.
 				_ = c.write(&Puback{PacketID: pv.PacketID})
 			}
+			if pv.QoS == 2 {
+				// QoS2 inbound (v0.26.0): ack PUBLISH with PUBREC and park the
+				// message until the broker's PUBREL; delivery happens only
+				// after the release leg, exactly once. The broker must send
+				// PUBREL for the exchange to complete (MQTT 3.1.1 §4.3.3).
+				c.pendingMu.Lock()
+				c.pendingDownQoS2[pv.PacketID] = pv
+				c.pendingMu.Unlock()
+				_ = c.write(&Pubrec{PacketID: pv.PacketID})
+				continue
+			}
 			for _, h := range c.matchHandlers(pv.Topic) {
 				h(pv.Topic, pv.Payload)
 			}
+		case *Pubrel:
+			// Release leg of an inbound QoS2 exchange: deliver the parked
+			// PUBLISH exactly once, then acknowledge with PUBCOMP.
+			c.pendingMu.Lock()
+			parked := c.pendingDownQoS2[pv.PacketID]
+			delete(c.pendingDownQoS2, pv.PacketID)
+			c.pendingMu.Unlock()
+			if parked != nil {
+				for _, h := range c.matchHandlers(parked.Topic) {
+					h(parked.Topic, parked.Payload)
+				}
+			}
+			_ = c.write(&Pubcomp{PacketID: pv.PacketID})
 		case *Puback:
+			c.resolveAck(pv.PacketID, pv)
+		case *Pubrec:
+			c.resolveAck(pv.PacketID, pv)
+		case *Pubcomp:
 			c.resolveAck(pv.PacketID, pv)
 		case *Suback:
 			c.resolveAck(pv.PacketID, pv)

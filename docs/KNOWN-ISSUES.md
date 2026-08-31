@@ -368,3 +368,21 @@
 - **EDGEFLOW_MQTT_TLS_INSECURE 仅限开发/测试**：开启时打 WARN 日志；生产禁用。
 - **client mTLS（双向认证）未含**：本轮仅单向 TLS（客户端校验服务端）；登记 ROADMAP §20 下轮候选。
 - mapper TLS 失败语义：CA 文件读失败/非 PEM → connect() fail-fast 报错（不进入无限重试）；ServerName 由 client 层从 addr host 自动回填（IP 直连需证书含 IP SAN，测试证书已含 127.0.0.1）。
+
+## 26. v0.26.0 开发轮闭环登记（2026-08-31，MQTT QoS2 ＋ client mTLS ＋ mapper 配置文件化）
+
+### 26.1 本轮登记项与能力边界
+
+- **QoS2 为进程内 exactly-once**：client 与 sim broker 的 QoS2 状态机保证握手完整性（PUBLISH→PUBREC→PUBREL→PUBCOMP）与 handler 恰好一次分发；不做跨进程/重启级去重持久化（无 in-flight 落盘），进程崩溃后仍可能重复，与 MQTT 3.1.1 QoS2 语义一致（网络层恰好一次，端到端仍需业务幂等）。
+- **EnableQoS2 默认关闭**：`Options.EnableQoS2=false`（默认）时 client 行为与 v0.24.0/v0.25.0 逐字一致（Publish qos=2 仍拒绝）；opt-in 后开启四次握手。门控与 v0250 TLS opt-in 模式同构。
+- **mqttsim mTLS 为测试定位**：NewBrokerTLS 接受任意 tls.Config（本轮零新 API）；RequireAndVerifyClientCert 严格模式仅存在于测试装配。生产 broker mTLS 走真实 CA 体系。
+- **mapper 证书对必须成对**：EDGEFLOW_MQTT_TLS_CERT 与 _TLS_KEY 只给其一 → connect() fail-fast；文件不存在/坏 PEM 同样 fail-fast（不进入重试循环）。
+- **测试 CA 的 EKU 嵌套陷阱（排障遗产）**：Go x509 要求 CA 的 ExtKeyUsage 覆盖叶子用途；CA 带 `ExtKeyUsage:[ServerAuth]` 会使 ClientAuth 叶子链校验失败（`tls: bad certificate`），且该 TLS alert 会被 MQTT 解码层表现为 `malformed packet: fixed header`。自签测试 CA 不应设 EKU 约束。本轮排障记录见 RELEASE-NOTES-v0260 §2。
+- **OPC-UA Basic256Sha256 未含**：按 v0.26.0 范围裁定移交下一轮（ROADMAP §21）。
+
+### 26.2 复核轮修复与遗留说明（2026-08-31 独立复核）
+
+- **P1 已修（连接级隔离）**：sim 端 pendingQoS2 初版以 PacketID 为 broker 全局键，多客户端并发同 id QoS2 会互相覆盖/误释放。已改为 `map[*simClient]map[uint16]*mqtt.Publish` 按连接隔离，`unregister` 时清理该连接的全部 parked 交换；新增回归测试 TestV0260SimQoS2PerConnIsolation（两连接同 PacketID 并发，各恰好投递一次）。
+- **inbound QoS2 不跨连接（P2，文档级）**：client 与 sim 的 QoS2 暂存均为内存态，连接断开即丢失；重连后 broker 的迟到 PUBREL 会被当作未匹配报文丢弃（不再投递）。与进程内 exactly-once 边界（§26.1 第一条）一致，生产跨重连语义需 broker 会话恢复（MQTT 5.0 / 持久会话）。
+- **出站 QoS2 超时重试可能重复消费（P2，文档级）**：Publish QoS2 在等 PUBREC 超时返回错误后，broker 侧仍可能完成后续握手并投递；调用方重试会造成下游重复。exactly-once 的「恰好一次」以握手完成为准，端到端去重仍需业务幂等或消息级去重 id（未暴露给上层）。
+- **ackTimeout 包级 var（P2）**：为测试可缩超时而由 const 改 var；并行测试若并发改写会互相污染，当前测试串行使用无影响，后续可注入化。

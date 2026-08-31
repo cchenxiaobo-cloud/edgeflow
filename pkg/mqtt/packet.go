@@ -126,7 +126,9 @@ func fixedByte1(p Packet) (byte, error) {
 		return base | (pkt.Dup&1)<<3 | pkt.QoS<<1 | boolByte(pkt.Retain), nil
 	case *Subscribe:
 		return base | 0x02, nil // fixed flags 0b0010
-	case *Connect, *Connack, *Puback, *Suback, *Pingreq, *Pingresp, *Disconnect:
+	case *Pubrel:
+		return base | 0x02, nil // PUBREL fixed flags 0b0010 (MQTT 3.1.1 §2.3.1)
+	case *Connect, *Connack, *Puback, *Pubrec, *Pubcomp, *Suback, *Pingreq, *Pingresp, *Disconnect:
 		return base, nil
 	default:
 		return 0, ErrMalformed
@@ -248,6 +250,21 @@ func (p *Publish) encodeUA(e *encoder) error {
 }
 
 func (p *Puback) encodeUA(e *encoder) error {
+	writeU16(e, p.PacketID)
+	return nil
+}
+
+func (p *Pubrec) encodeUA(e *encoder) error {
+	writeU16(e, p.PacketID)
+	return nil
+}
+
+func (p *Pubrel) encodeUA(e *encoder) error {
+	writeU16(e, p.PacketID)
+	return nil
+}
+
+func (p *Pubcomp) encodeUA(e *encoder) error {
 	writeU16(e, p.PacketID)
 	return nil
 }
@@ -387,6 +404,15 @@ func decodePacket(r io.Reader) (Packet, error) {
 			return nil, ErrMalformedFixedHeader
 		}
 		return decodePuback(d)
+	case PacketTypePUBREC, PacketTypePUBREL, PacketTypePUBCOMP:
+		if ptype == PacketTypePUBREL {
+			if flags != 0x02 {
+				return nil, ErrMalformedFixedHeader // PUBREL fixed flags 0b0010
+			}
+		} else if flags != 0 {
+			return nil, ErrMalformedFixedHeader
+		}
+		return decodePubRelID(ptype, d)
 	case PacketTypeSUBSCRIBE:
 		if flags != 0x02 {
 			return nil, ErrMalformedFixedHeader
@@ -535,6 +561,26 @@ func decodePuback(d *decoder) (*Puback, error) {
 		return nil, ErrMalformed
 	}
 	return &Puback{PacketID: id}, nil
+}
+
+// decodePubRelID decodes the shared body shape of PUBREC/PUBREL/PUBCOMP:
+// a two-byte packet identifier followed by nothing else (v0.26.0).
+func decodePubRelID(ptype byte, d *decoder) (Packet, error) {
+	id, err := d.readUint16()
+	if err != nil {
+		return nil, err
+	}
+	if d.remaining() != 0 {
+		return nil, ErrMalformed
+	}
+	switch ptype {
+	case PacketTypePUBREC:
+		return &Pubrec{PacketID: id}, nil
+	case PacketTypePUBREL:
+		return &Pubrel{PacketID: id}, nil
+	default:
+		return &Pubcomp{PacketID: id}, nil
+	}
 }
 
 func decodeSubscribe(d *decoder) (*Subscribe, error) {

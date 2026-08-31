@@ -514,3 +514,15 @@
 | F-3 MQTT TLS 全栈 | pkg/mqtt + pkg/mqttsim + mappers/mqtt + tests/e2e | ✅ 闭环 | client Options.TLSConfig（tls.DialWithDialer + ServerName 自动回填 + Clone 防突变）；NewBrokerTLS；EDGEFLOW_MQTT_TLS_CA / EDGEFLOW_MQTT_TLS_INSECURE 全 opt-in（fail-fast）；TestMQTTTLSDeviceE2E 全环 TLS 闭环；TLS 增量 12 测试全绿（含 -race） |
 
 > 残余票与登记项：见 docs/KNOWN-ISSUES.md §25（mqttsim TLS 测试定位、INSECURE 边界、client mTLS 未含）。下一步候选：MQTT QoS2、client mTLS（双向认证）、OPC-UA Basic256Sha256 加密通道、mapper 配置文件化。
+
+## 21. v0.26.0 开发轮处置登记（2026-08-31，MQTT QoS2 ＋ client mTLS ＋ mapper 配置文件化）
+
+> 依据：.cluster/edgeflow-v0260/plan.md（范围裁定：QoS2 + mTLS + mapper 配置文件化三维；OPC-UA Basic256Sha256 体量大留 v0.27.0）。状态：✅ 已完成（端点 42 不变、零新依赖、默认行为与 v0.25.0 逐字兼容、既有测试零改动）。
+
+| 子任务 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| F-1 MQTT QoS2 | pkg/mqtt + pkg/mqttsim | ✅ 闭环 | PUBREC/PUBREL/PUBCOMP codec（PUBREL flags=0x02 字节级规范）；client Options.EnableQoS2 门控（默认 false 冻结一致）+ 上行四次握手状态机 + readPump 下行 QoS2（pendingDownQoS2 暂存，handler 恰好一次）；sim pendingQoS2（PUBREL 确认后才 fanout）；v0260 测试 7 例（含 -race） |
+| F-2 client mTLS | mappers/mqtt + pkg/mqttsim | ✅ 闭环 | EDGEFLOW_MQTT_TLS_CERT/_TLS_KEY（成对 fail-fast）+ env→file 回退链 + connect() 证书对注入；sim 零新 API（NewBrokerTLS 接受任意 tls.Config）；mTLS 全链路 + fail-fast 五例 + 无证书拒绝 |
+| F-3 mapper 配置文件化 | mappers/mqtt/config.go | ✅ 闭环 | EDGEFLOW_MQTT_CONFIG（.yaml/.yml/.json 手写 parser 零依赖）；优先级 With>env>file>默认；坏文件软失败（log.Errorf 继续）；B-R2 worker 产出主线验收保留 |
+
+> 残余票与登记项：见 docs/KNOWN-ISSUES.md §26（QoS2 进程内 exactly-once 边界、mqttsim mTLS 测试定位、测试 CA EKU 嵌套陷阱、OPC-UA Basic256Sha256 未含）。下一步候选：OPC-UA Basic256Sha256 加密通道、QoS2 会话恢复（in-flight 持久化）、MQTT 5.0 特性评估。

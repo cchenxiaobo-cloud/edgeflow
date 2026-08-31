@@ -36,6 +36,15 @@ type Broker struct {
 	received  []mqtt.Publish
 	pingCount int
 	dropCount int
+
+	// pendingQoS2 parks upstream QoS2 PUBLISH packets until the sender's
+	// PUBREL arrives; delivery happens only after the release leg (v0.26.0).
+	// Keyed per connection (*simClient) then per PacketID: MQTT packet
+	// identifiers are only unique within a single connection, so a global
+	// PacketID map would let concurrent clients clobber each other's
+	// in-flight exchanges.
+	pendingQoS2 map[*simClient]map[uint16]*mqtt.Publish
+
 	closeOnce sync.Once
 	closed    bool
 }
@@ -81,8 +90,9 @@ func NewBrokerTLS(tlsCfg *tls.Config) (*Broker, error) {
 // listener and starts the accept loop.
 func newBrokerFromListener(ln net.Listener) *Broker {
 	b := &Broker{
-		ln:      ln,
-		clients: make(map[*simClient]struct{}),
+		ln:          ln,
+		clients:     make(map[*simClient]struct{}),
+		pendingQoS2: make(map[*simClient]map[uint16]*mqtt.Publish),
 	}
 	go b.acceptLoop()
 	return b
@@ -139,6 +149,7 @@ func (b *Broker) acceptLoop() {
 func (b *Broker) unregister(c *simClient) {
 	b.mu.Lock()
 	delete(b.clients, c)
+	delete(b.pendingQoS2, c) // drop any QoS2 exchanges parked by this connection
 	b.mu.Unlock()
 }
 
@@ -305,11 +316,40 @@ func (c *simClient) serve() {
 			c.mu.Unlock()
 			c.br.enqueue(c, &mqtt.Suback{PacketID: p.PacketID, Codes: codes})
 		case *mqtt.Publish:
+			if p.QoS == 2 {
+				// QoS2 upstream (v0.26.0): park the PUBLISH, ack with
+				// PUBREC; delivery waits for the sender's PUBREL. Parked
+				// per connection so concurrent clients may reuse the same
+				// packet id without interference.
+				c.br.mu.Lock()
+				perConn := c.br.pendingQoS2[c]
+				if perConn == nil {
+					perConn = make(map[uint16]*mqtt.Publish)
+					c.br.pendingQoS2[c] = perConn
+				}
+				perConn[p.PacketID] = &mqtt.Publish{Dup: p.Dup, QoS: 2, PacketID: p.PacketID, Topic: p.Topic, Payload: append([]byte(nil), p.Payload...)}
+				c.br.mu.Unlock()
+				c.br.enqueue(c, &mqtt.Pubrec{PacketID: p.PacketID})
+				continue
+			}
 			c.br.recordPublish(p)
 			if p.QoS == 1 {
 				c.br.enqueue(c, &mqtt.Puback{PacketID: p.PacketID})
 			}
 			c.br.fanout(p.Topic, p.Payload)
+		case *mqtt.Pubrel:
+			// Release leg: deliver exactly once, then PUBCOMP. Only this
+			// connection's parked exchange can complete here.
+			c.br.mu.Lock()
+			perConn := c.br.pendingQoS2[c]
+			parked := perConn[p.PacketID]
+			delete(perConn, p.PacketID)
+			c.br.mu.Unlock()
+			if parked != nil {
+				c.br.recordPublish(parked)
+				c.br.fanout(parked.Topic, parked.Payload)
+			}
+			c.br.enqueue(c, &mqtt.Pubcomp{PacketID: p.PacketID})
 		case *mqtt.Pingreq:
 			c.br.mu.Lock()
 			c.br.pingCount++

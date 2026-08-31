@@ -72,6 +72,11 @@ const (
 	EnvNamespace = "EDGEFLOW_MQTT_NAMESPACE"
 	// EnvCmdTopic 是指令发布主题环境变量（空则按首个订阅 filter 推导）。
 	EnvCmdTopic = "EDGEFLOW_MQTT_CMD_TOPIC"
+	// EnvConfig 是 MQTT Mapper 配置文件路径环境变量（v0.26.0，可选）。
+	// 指向 .yaml/.yml/.json 文件，为字段回退链增加「配置文件」层：
+	// With 选项 > 环境变量 > 配置文件 > 默认值。加载失败（不存在、
+	// 格式不支持）仅记日志并忽略文件，不影响装配（软失败）。
+	EnvConfig = "EDGEFLOW_MQTT_CONFIG"
 	// EnvTLSCA 是 MQTT TLS 根证书 PEM 文件路径环境变量（v0.25.0，opt-in）。
 	// 非空时 connect() 读取并注入 RootCAs（自签/私有 CA 场景）；读失败或
 	// 解析失败 fail-fast 返回错误。
@@ -79,6 +84,12 @@ const (
 	// EnvTLSInsecure 是跳过 TLS 证书校验的环境变量（v0.25.0，opt-in，
 	// 取值 "1"/"true"/"on" 大小写不敏感）。仅建议开发/测试使用。
 	EnvTLSInsecure = "EDGEFLOW_MQTT_TLS_INSECURE"
+	// EnvTLSCert 是 MQTT mTLS 客户端证书 PEM 文件路径环境变量（v0.26.0，
+	// opt-in）。与 EnvTLSKey 成对使用：两者都非空时 connect() 加载证书对
+	// 注入 TLSConfig.Certificates，读失败/解析失败 fail-fast 返回错误。
+	EnvTLSCert = "EDGEFLOW_MQTT_TLS_CERT"
+	// EnvTLSKey 是 MQTT mTLS 客户端私钥 PEM 文件路径环境变量（v0.26.0）。
+	EnvTLSKey = "EDGEFLOW_MQTT_TLS_KEY"
 
 	// DefaultKeepAlive 是 MQTT KeepAlive（30s，PINGREQ 周期）。
 	DefaultKeepAlive = 30 * time.Second
@@ -171,6 +182,8 @@ type MQTTMapper struct {
 
 	tlsCAPath   string // EDGEFLOW_MQTT_TLS_CA（空 = 不注入 RootCAs）
 	tlsInsecure bool   // EDGEFLOW_MQTT_TLS_INSECURE
+	tlsCertPath string // EDGEFLOW_MQTT_TLS_CERT（空 = 不做客户端证书认证）
+	tlsKeyPath  string // EDGEFLOW_MQTT_TLS_KEY（与 tlsCertPath 成对）
 
 	props  map[string]float64 // 属性快照（订阅推送合并；Stop 时清空）
 	client *mqtt.Client       // 当前连接（nil = 未连接）
@@ -180,21 +193,37 @@ type MQTTMapper struct {
 	done    chan struct{}      // 监管 goroutine 退出信号（Start 时创建）
 }
 
-// New 创建 MQTT Mapper（未启动）。broker 为空时回退 EnvBroker；
-// topics/设备名/命名空间/命令主题的解析优先级均为：With 选项 >
-// 环境变量 > 默认值（命令主题 EnvCmdTopic 优先，其次按首个订阅 filter
-// 推导，见 CmdTopicFromFilter）。broker 允许为空串构造（注册门控由
-// 装配层负责；空 broker 只会让监管循环持续重试告警）。
+// New 创建 MQTT Mapper（未启动）。broker 为空时依次回退 EnvBroker、
+// 配置文件（EnvConfig 指向的文件，存在时）的 broker 键；topics/设备名/
+// 命名空间/keepAlive/命令主题/TLS 项的回退链统一为：With 选项 >
+// 环境变量 > 配置文件 > 默认值（命令主题 EnvCmdTopic 优先，其次配置
+// 文件 cmd_topic，再次按首个订阅 filter 推导，见 CmdTopicFromFilter）。
+// 配置文件加载失败仅记日志并忽略（软失败）；broker 允许为空串构造
+// （注册门控由装配层负责；空 broker 只会让监管循环持续重试告警）。
 func New(broker string, opts ...Option) *MQTTMapper {
+	// v0.26.0：配置文件层 —— EnvConfig 非空时尝试加载，失败软处理
+	//（记日志继续），成功则作为环境变量之下的回退层。
+	var fileVals fileValues
+	if cfgPath := os.Getenv(EnvConfig); cfgPath != "" {
+		fv, err := loadConfigFile(cfgPath)
+		if err != nil {
+			log.Errorf("MQTT 配置文件 %s 加载失败（忽略文件继续）: %v", cfgPath, err)
+		} else {
+			fileVals = fv
+		}
+	}
 	if broker == "" {
-		broker = os.Getenv(EnvBroker)
+		if v := os.Getenv(EnvBroker); v != "" {
+			broker = v
+		} else if fileVals != nil {
+			if v, ok := fileVals["broker"]; ok {
+				broker = v
+			}
+		}
 	}
 	m := &MQTTMapper{
-		broker:     broker,
-		keepAlive:  DefaultKeepAlive,
-		deviceName: DefaultDeviceName,
-		namespace:  DefaultNamespace,
-		props:      make(map[string]float64),
+		broker: broker,
+		props:  make(map[string]float64),
 	}
 	for _, o := range opts {
 		o(m)
@@ -202,11 +231,17 @@ func New(broker string, opts ...Option) *MQTTMapper {
 	if m.namespace == "" {
 		m.namespace = os.Getenv(EnvNamespace)
 	}
+	if m.namespace == "" && fileVals != nil {
+		m.namespace = fileVals["namespace"]
+	}
 	if m.namespace == "" {
 		m.namespace = DefaultNamespace
 	}
 	if m.deviceName == "" {
 		m.deviceName = os.Getenv(EnvDeviceName)
+	}
+	if m.deviceName == "" && fileVals != nil {
+		m.deviceName = fileVals["device_name"]
 	}
 	if m.deviceName == "" {
 		m.deviceName = DefaultDeviceName
@@ -214,14 +249,28 @@ func New(broker string, opts ...Option) *MQTTMapper {
 	if len(m.topics) == 0 {
 		m.topics = ParseTopics(os.Getenv(EnvTopics))
 	}
+	if len(m.topics) == 0 && fileVals != nil {
+		m.topics = ParseTopics(fileVals["topics"])
+	}
 	if len(m.topics) == 0 {
 		m.topics = append([]string(nil), DefaultTopics...)
 	}
 	if m.keepAlive <= 0 {
-		m.keepAlive = DefaultKeepAlive
+		// keepAlive 无既有 env 项：With 选项 > 配置文件 > 默认值。
+		if fileVals != nil && fileVals["keep_alive_seconds"] != "" {
+			if sec, err := strconv.Atoi(fileVals["keep_alive_seconds"]); err == nil && sec > 0 {
+				m.keepAlive = time.Duration(sec) * time.Second
+			}
+		}
+		if m.keepAlive <= 0 {
+			m.keepAlive = DefaultKeepAlive
+		}
 	}
 	if m.cmdTopic == "" {
 		m.cmdTopic = os.Getenv(EnvCmdTopic)
+	}
+	if m.cmdTopic == "" && fileVals != nil {
+		m.cmdTopic = fileVals["cmd_topic"]
 	}
 	if m.cmdTopic == "" {
 		m.cmdTopic = CmdTopicFromFilter(m.topics[0])
@@ -229,8 +278,29 @@ func New(broker string, opts ...Option) *MQTTMapper {
 	if m.tlsCAPath == "" {
 		m.tlsCAPath = os.Getenv(EnvTLSCA)
 	}
+	if m.tlsCAPath == "" && fileVals != nil {
+		m.tlsCAPath = fileVals["tls_ca_path"]
+	}
 	if v := strings.ToLower(os.Getenv(EnvTLSInsecure)); v == "1" || v == "true" || v == "on" {
 		m.tlsInsecure = true
+	}
+	if m.tlsCertPath == "" {
+		m.tlsCertPath = os.Getenv(EnvTLSCert)
+	}
+	if m.tlsKeyPath == "" {
+		m.tlsKeyPath = os.Getenv(EnvTLSKey)
+	}
+	if m.tlsCertPath == "" && fileVals != nil {
+		m.tlsCertPath = fileVals["tls_cert_path"]
+	}
+	if m.tlsKeyPath == "" && fileVals != nil {
+		m.tlsKeyPath = fileVals["tls_key_path"]
+	}
+	if !m.tlsInsecure && fileVals != nil {
+		switch strings.ToLower(fileVals["tls_insecure"]) {
+		case "1", "true", "on":
+			m.tlsInsecure = true
+		}
 	}
 	return m
 }
@@ -383,7 +453,7 @@ func (m *MQTTMapper) connect() (*mqtt.Client, error) {
 		CleanSession:   true,
 		ConnectTimeout: DefaultConnectTimeout,
 	}
-	if m.tlsCAPath != "" || m.tlsInsecure {
+	if m.tlsCAPath != "" || m.tlsInsecure || (m.tlsCertPath != "" && m.tlsKeyPath != "") {
 		cfg := &tls.Config{}
 		if m.tlsCAPath != "" {
 			pemBytes, err := os.ReadFile(m.tlsCAPath)
@@ -399,6 +469,24 @@ func (m *MQTTMapper) connect() (*mqtt.Client, error) {
 		if m.tlsInsecure {
 			log.Infof("MQTTMapper %s 启用 TLS 跳过证书校验（EDGEFLOW_MQTT_TLS_INSECURE，仅限开发/测试）", m.deviceName)
 			cfg.InsecureSkipVerify = true // #nosec G402 -- opt-in dev/test escape hatch
+		}
+		if m.tlsCertPath != "" && m.tlsKeyPath != "" {
+			// mTLS（v0.26.0）：客户端证书对注入，broker 侧以 ClientAuth 校验。
+			certPEM, err := os.ReadFile(m.tlsCertPath)
+			if err != nil {
+				return nil, fmt.Errorf("读取 MQTT 客户端证书 %s 失败: %w", m.tlsCertPath, err)
+			}
+			keyPEM, err := os.ReadFile(m.tlsKeyPath)
+			if err != nil {
+				return nil, fmt.Errorf("读取 MQTT 客户端私钥 %s 失败: %w", m.tlsKeyPath, err)
+			}
+			cert, err := tls.X509KeyPair(certPEM, keyPEM)
+			if err != nil {
+				return nil, fmt.Errorf("MQTT 客户端证书对解析失败（cert=%s key=%s）: %w", m.tlsCertPath, m.tlsKeyPath, err)
+			}
+			cfg.Certificates = []tls.Certificate{cert}
+		} else if m.tlsCertPath != "" || m.tlsKeyPath != "" {
+			return nil, fmt.Errorf("mTLS 配置不完整：EDGEFLOW_MQTT_TLS_CERT 与 EDGEFLOW_MQTT_TLS_KEY 必须成对提供（cert=%q key=%q）", m.tlsCertPath, m.tlsKeyPath)
 		}
 		opts.TLSConfig = cfg
 	}

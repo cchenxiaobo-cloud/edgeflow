@@ -11,6 +11,9 @@ const (
 	PacketTypeCONNACK    byte = 2
 	PacketTypePUBLISH    byte = 3
 	PacketTypePUBACK     byte = 4
+	PacketTypePUBREC     byte = 5
+	PacketTypePUBREL     byte = 6
+	PacketTypePUBCOMP    byte = 7
 	PacketTypeSUBSCRIBE  byte = 8
 	PacketTypeSUBACK     byte = 9
 	PacketTypePINGREQ    byte = 12
@@ -67,6 +70,30 @@ type Puback struct {
 
 // Type implements Packet.
 func (p *Puback) Type() byte { return PacketTypePUBACK }
+
+// Pubrec is the MQTT PUBREC packet (QoS 2, first acknowledgement).
+type Pubrec struct {
+	PacketID uint16
+}
+
+// Type implements Packet.
+func (p *Pubrec) Type() byte { return PacketTypePUBREC }
+
+// Pubrel is the MQTT PUBREL packet (QoS 2, sender release).
+type Pubrel struct {
+	PacketID uint16
+}
+
+// Type implements Packet.
+func (p *Pubrel) Type() byte { return PacketTypePUBREL }
+
+// Pubcomp is the MQTT PUBCOMP packet (QoS 2, final acknowledgement).
+type Pubcomp struct {
+	PacketID uint16
+}
+
+// Type implements Packet.
+func (p *Pubcomp) Type() byte { return PacketTypePUBCOMP }
 
 // TopicFilter is one subscription entry of a SUBSCRIBE packet.
 type TopicFilter struct {

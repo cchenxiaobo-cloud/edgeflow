@@ -45,6 +45,18 @@ type Broker struct {
 	// in-flight exchanges.
 	pendingQoS2 map[*simClient]map[uint16]*mqtt.Publish
 
+	// persistDir is the broker-side QoS2 record directory (v0.27.0).
+	// Empty (the default) = disabled, v0.26.0 behavior unchanged. Set via
+	// NewBrokerWithOptions before the first connection.
+	persistDir string
+
+	// orphanQoS2 holds records loaded from persistDir at startup (v0.27.0):
+	// parked messages whose sender connection died with the previous broker
+	// process. A later release leg for the same packet id (from any
+	// connection) completes the delivery exactly once and drops the
+	// orphan. Per-connection parks always win over orphans.
+	orphanQoS2 map[uint16]*mqtt.Publish
+
 	closeOnce sync.Once
 	closed    bool
 }
@@ -84,6 +96,20 @@ func NewBrokerTLS(tlsCfg *tls.Config) (*Broker, error) {
 		return nil, err
 	}
 	return newBrokerFromListener(tls.NewListener(raw, tlsCfg)), nil
+}
+
+// NewBrokerWithOptions starts a plaintext listener with v0.27.0 options
+// (persistDir: QoS2 parked-message record directory; "" = disabled, the
+// v0.26.0 behavior). Existing NewBroker/NewBrokerTLS keep their signatures
+// and semantics.
+func NewBrokerWithOptions(persistDir string) (*Broker, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	b := newBrokerFromListener(ln)
+	b.brokerSetPersistDir(persistDir)
+	return b, nil
 }
 
 // newBrokerFromListener wires up the broker around an already-created
@@ -322,6 +348,7 @@ func (c *simClient) serve() {
 				// per connection so concurrent clients may reuse the same
 				// packet id without interference.
 				c.br.mu.Lock()
+				persistDir := c.br.persistDir
 				perConn := c.br.pendingQoS2[c]
 				if perConn == nil {
 					perConn = make(map[uint16]*mqtt.Publish)
@@ -329,6 +356,9 @@ func (c *simClient) serve() {
 				}
 				perConn[p.PacketID] = &mqtt.Publish{Dup: p.Dup, QoS: 2, PacketID: p.PacketID, Topic: p.Topic, Payload: append([]byte(nil), p.Payload...)}
 				c.br.mu.Unlock()
+				// v0.27.0: record the parked message (soft-fail; the
+				// protocol reply below must not depend on disk health).
+				_ = brokerQoS2Save(persistDir, p.PacketID, p)
 				c.br.enqueue(c, &mqtt.Pubrec{PacketID: p.PacketID})
 				continue
 			}
@@ -339,17 +369,27 @@ func (c *simClient) serve() {
 			c.br.fanout(p.Topic, p.Payload)
 		case *mqtt.Pubrel:
 			// Release leg: deliver exactly once, then PUBCOMP. Only this
-			// connection's parked exchange can complete here.
+			// connection's parked exchange can complete here; if no
+			// per-connection park matches (e.g. the sender reconnected to a
+			// restarted broker), fall back to the startup-loaded orphan
+			// table (v0.27.0 restart recovery).
 			c.br.mu.Lock()
+			persistDir := c.br.persistDir
 			perConn := c.br.pendingQoS2[c]
 			parked := perConn[p.PacketID]
 			delete(perConn, p.PacketID)
+			if parked == nil && c.br.orphanQoS2 != nil {
+				parked = c.br.orphanQoS2[p.PacketID]
+				delete(c.br.orphanQoS2, p.PacketID)
+			}
 			c.br.mu.Unlock()
 			if parked != nil {
 				c.br.recordPublish(parked)
 				c.br.fanout(parked.Topic, parked.Payload)
 			}
 			c.br.enqueue(c, &mqtt.Pubcomp{PacketID: p.PacketID})
+			// Exchange complete: drop the record (no-op when disabled).
+			_ = brokerQoS2Remove(persistDir, p.PacketID)
 		case *mqtt.Pingreq:
 			c.br.mu.Lock()
 			c.br.pingCount++

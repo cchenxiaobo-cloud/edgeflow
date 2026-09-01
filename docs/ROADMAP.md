@@ -526,3 +526,15 @@
 | F-3 mapper 配置文件化 | mappers/mqtt/config.go | ✅ 闭环 | EDGEFLOW_MQTT_CONFIG（.yaml/.yml/.json 手写 parser 零依赖）；优先级 With>env>file>默认；坏文件软失败（log.Errorf 继续）；B-R2 worker 产出主线验收保留 |
 
 > 残余票与登记项：见 docs/KNOWN-ISSUES.md §26（QoS2 进程内 exactly-once 边界、mqttsim mTLS 测试定位、测试 CA EKU 嵌套陷阱、OPC-UA Basic256Sha256 未含）。下一步候选：OPC-UA Basic256Sha256 加密通道、QoS2 会话恢复（in-flight 持久化）、MQTT 5.0 特性评估。
+
+## 22. v0.27.0 开发轮处置登记（2026-09-01，QoS2 会话恢复：in-flight 持久化 + MQTT 5.0 评估）
+
+> 依据：.cluster/edgeflow-v0270/plan.md（范围裁定：QoS2 持久化为代码主体 + MQTT 5.0 评估为文档 + OPC-UA Basic256Sha256 留 v0.28——避免单轮叠加证书/ASN.1 高风险面）。状态：✅ 已完成（端点 42 不变、零新依赖、PersistenceDir 默认空 = v0.26.0 行为逐字一致、冻结测试零改动）。
+
+| 子任务 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| F-1 client QoS2 持久化 | pkg/mqtt/persistence.go | ✅ 闭环 | Options.PersistenceDir 门控（默认禁用）；上行 Phase1/Phase2 记录（temp+rename 原子写）+ PUBCOMP 清记录；下行 park 记录 + release 清记录；Resume()/ResumePending()/ResumeComplete() 回放 API（Phase1 重发 PUBLISH(Dup=1)、Phase2 仅 PUBREL）；坏记录删除跳过；v0270 测试 8 例（含 -race，含计数器快进回归） |
+| F-2 broker QoS2 持久化 | pkg/mqttsim/persistence.go | ✅ 闭环 | NewBrokerWithOptions(persistDir)（既有入口签名不变）；park 落盘 + PUBREL 清记录 + 断连不删；重启孤儿表 orphanQoS2 装载 + release leg 回退查表完成恰好一次投递；BrokerResumePending() 导出；client 侧外来记录跳过且保留；v0270 测试 4 例（含重启恢复全链路） |
+| F-3 MQTT 5.0 评估 | docs/MQTT5-EVALUATION.md | ✅ 闭环 | 七项特性逐条价值判断；「QoS2 按连接隔离 → 会话级隔离」为最大改造面；结论 = 本轮不实现；分期草案（非承诺）v0.29.0 版本参数化+原因码+流控 → v0.30.0 会话解耦+共享订阅；唯一外部依据 = OASIS 官方规范 |
+
+> 残余票与登记项：见 docs/KNOWN-ISSUES.md §27（3.1.1 无跨连接会话边界、broker 恢复依赖 release leg、记录目录信任域、Resume 非并发安全约束）。下一步候选：OPC-UA Basic256Sha256 加密通道（v0.28.0 首选）、MQTT 5.0 第一阶段（版本参数化+原因码，评估文档 §6.2 草案）、mapper 自动 Resume 接线。

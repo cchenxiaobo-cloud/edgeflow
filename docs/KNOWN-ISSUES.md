@@ -386,3 +386,12 @@
 - **inbound QoS2 不跨连接（P2，文档级）**：client 与 sim 的 QoS2 暂存均为内存态，连接断开即丢失；重连后 broker 的迟到 PUBREL 会被当作未匹配报文丢弃（不再投递）。与进程内 exactly-once 边界（§26.1 第一条）一致，生产跨重连语义需 broker 会话恢复（MQTT 5.0 / 持久会话）。
 - **出站 QoS2 超时重试可能重复消费（P2，文档级）**：Publish QoS2 在等 PUBREC 超时返回错误后，broker 侧仍可能完成后续握手并投递；调用方重试会造成下游重复。exactly-once 的「恰好一次」以握手完成为准，端到端去重仍需业务幂等或消息级去重 id（未暴露给上层）。
 - **ackTimeout 包级 var（P2）**：为测试可缩超时而由 const 改 var；并行测试若并发改写会互相污染，当前测试串行使用无影响，后续可注入化。
+
+### 27 QoS2 持久化边界（v0.27.0）
+
+- **3.1.1 无跨连接会话（协议边界）**：client 端下行 parked 记录（Kind 'i'）保存的是「等 broker PUBREL」的凭据；若 broker 重启或永不重发 PUBREL，该交换无法完成。记录保留在盘、不影响新交换（同 PacketID 新记录会覆盖旧文件）；只有升级到 MQTT 5.0 会话语义（Session Expiry）才能根治。上行记录可完整自愈（Resume 重发）。
+- **broker 重启恢复依赖 release leg**：sim broker 重启后把 parked 记录装进孤儿表，但不会自动投递（重启后订阅关系已失，自动 fanout 反而违背订阅语义）；恢复由「发送方重连后以同 PacketID 发 PUBREL」驱动。这是测试 broker 的合理边界，生产 broker 需持久会话支持。
+- **记录目录信任域**：qos2-*.json 为本机明文 JSON（0600），与 v0.26.0 内存态同级信任域；未做加密与多进程并发锁，两端（client/broker）记录不应混放同一目录（混放时 broker 会跳过并保留 client 侧记录，功能不受损但目录语义变脏）。
+- **持久化写失败语义**：client 上行 Publish 路径 fail-fast（宁可报错不可丢凭据）；下行 park 路径软失败（协议应答 PUBREC 不依赖磁盘健康，缺记录只损失恢复能力不损失正确性）。
+- **Resume 非并发安全约束**：Resume() 必须在业务 Publish 开始前（或串行化）调用；与并发 Publish 同跑可能造成 PacketID 混用（回放沿用记录中的原 PacketID，与 nextID 计数器无协同）。上层 mapper 当前未自动调 Resume，属 opt-in API。
+- **Resume 回放 PacketID 与 nextID 的碰撞窗口（缓解措施落地）**：回放沿用记录中的原 PacketID，而新连接的 atomic 计数器从 1 重新计数——若重连后先跑业务 Publish 再调 Resume（或并发），新分配 id 与回放 id 可能撞车（MQTT 3.1.1 中同连接同 id 并发在途属于协议违例，broker 行为未定义）。缓解：v0.27.0 在 Resume() 成功回放 N 条后，把 packetID 计数器快进到已见最大回放 id（atomic Cas 以单调推进），消除「回放后撞车」方向；「先 Publish 后 Resume」顺序仍可能撞（KNOWN-ISSUES 上条已约束 Resume 时序）。根治需 MQTT 5.0 会话语义（见 docs/MQTT5-EVALUATION.md §6）。

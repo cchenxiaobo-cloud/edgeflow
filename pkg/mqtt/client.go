@@ -41,6 +41,15 @@ type Options struct {
 	// When false (the default), Publish rejects QoS 2 before the wire —
 	// byte-for-byte the v0.24.0/v0.25.0 behavior.
 	EnableQoS2 bool
+
+	// PersistenceDir enables QoS2 in-flight persistence (v0.27.0, opt-in).
+	// Empty (the default) keeps the v0.26.0 in-memory behavior byte-for-
+	// byte. When set, unfinished QoS2 exchanges (upstream awaiting
+	// PUBREC/PUBCOMP, downstream parked awaiting PUBREL) are recorded as
+	// JSON files under this directory; ResumePending replays them after a
+	// reconnect. Records are removed as soon as the exchange completes
+	// (PUBCOMP received / PUBREL delivered).
+	PersistenceDir string
 }
 
 // Handler is invoked for every inbound PUBLISH whose topic matches one of the
@@ -68,6 +77,8 @@ type Client struct {
 	pendingAcks map[uint16]chan Packet // packet id -> PUBACK/SUBACK waiter
 
 	pendingDownQoS2 map[uint16]*Publish // inbound QoS2 parked awaiting PUBREL (v0.26.0)
+
+	persistDir string // QoS2 record directory ("" = disabled, v0.26.0 behavior)
 
 	enableQoS2 bool // gate for the QoS2 code paths (Options.EnableQoS2)
 
@@ -111,6 +122,7 @@ func Dial(addr string, opts Options) (*Client, error) {
 		handlers:        make(map[string][]Handler),
 		pendingAcks:     make(map[uint16]chan Packet),
 		pendingDownQoS2: make(map[uint16]*Publish),
+		persistDir:      opts.PersistenceDir,
 		enableQoS2:      opts.EnableQoS2,
 		done:            make(chan struct{}),
 	}
@@ -259,6 +271,12 @@ func (c *Client) Publish(topic string, qos byte, payload []byte) error {
 		}
 		return nil
 	}
+	// QoS 2 (v0.27.0): record the outbound exchange before waiting, so a
+	// crash/disconnect between legs leaves a replayable record. Removed on
+	// PUBCOMP. Persistence disabled (dir "") = no-op.
+	if err := qos2Save(c.persistDir, qos2Record{Kind: 'o', Phase: 1, PktID: pk.PacketID, Topic: topic, Payload: payload}); err != nil {
+		return fmt.Errorf("mqtt: persist qos2 outbound: %w", err)
+	}
 	// QoS 2: PUBLISH→PUBREC→PUBREL→PUBCOMP. Both legs wait on the same
 	// buffered channel (registered once for this packet id): the waiter
 	// drains the PUBREC delivery before blocking again, so the PUBCOMP
@@ -270,6 +288,10 @@ func (c *Client) Publish(topic string, qos byte, payload []byte) error {
 	if _, ok := rec.(*Pubrec); !ok {
 		return fmt.Errorf("mqtt: expected PUBREC for packet id %d", pk.PacketID)
 	}
+	// Phase 2: advance the record before sending PUBREL.
+	if err := qos2Save(c.persistDir, qos2Record{Kind: 'o', Phase: 2, PktID: pk.PacketID, Topic: topic, Payload: payload}); err != nil {
+		return fmt.Errorf("mqtt: persist qos2 outbound phase 2: %w", err)
+	}
 	if err := c.write(&Pubrel{PacketID: pk.PacketID}); err != nil {
 		return err
 	}
@@ -279,6 +301,10 @@ func (c *Client) Publish(topic string, qos byte, payload []byte) error {
 	}
 	if _, ok := comp.(*Pubcomp); !ok {
 		return fmt.Errorf("mqtt: expected PUBCOMP for packet id %d", pk.PacketID)
+	}
+	// Exchange complete: drop the record (no-op when disabled).
+	if err := qos2Remove(c.persistDir, pk.PacketID); err != nil {
+		return fmt.Errorf("mqtt: clear qos2 record: %w", err)
 	}
 	return nil
 }
@@ -319,9 +345,17 @@ func (c *Client) readPump() {
 				// message until the broker's PUBREL; delivery happens only
 				// after the release leg, exactly once. The broker must send
 				// PUBREL for the exchange to complete (MQTT 3.1.1 §4.3.3).
+				// v0.27.0: park is also persisted so a broker PUBREL on a
+				// later connection can still complete the delivery.
 				c.pendingMu.Lock()
 				c.pendingDownQoS2[pv.PacketID] = pv
 				c.pendingMu.Unlock()
+				if err := qos2Save(c.persistDir, qos2Record{Kind: 'i', Phase: 1, PktID: pv.PacketID, Topic: pv.Topic, Payload: pv.Payload}); err != nil {
+					// Persist failure must not block the protocol reply: the
+					// exchange continues in memory; the record gap is logged
+					// by the upper layer via ResumePending absence.
+					// (Deliberate soft-fail: delivery semantics stay intact.)
+				}
 				_ = c.write(&Pubrec{PacketID: pv.PacketID})
 				continue
 			}
@@ -341,6 +375,8 @@ func (c *Client) readPump() {
 				}
 			}
 			_ = c.write(&Pubcomp{PacketID: pv.PacketID})
+			// Exchange complete: drop the record (no-op when disabled).
+			_ = qos2Remove(c.persistDir, pv.PacketID)
 		case *Puback:
 			c.resolveAck(pv.PacketID, pv)
 		case *Pubrec:

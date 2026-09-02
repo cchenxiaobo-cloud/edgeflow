@@ -538,3 +538,16 @@
 | F-3 MQTT 5.0 评估 | docs/MQTT5-EVALUATION.md | ✅ 闭环 | 七项特性逐条价值判断；「QoS2 按连接隔离 → 会话级隔离」为最大改造面；结论 = 本轮不实现；分期草案（非承诺）v0.29.0 版本参数化+原因码+流控 → v0.30.0 会话解耦+共享订阅；唯一外部依据 = OASIS 官方规范 |
 
 > 残余票与登记项：见 docs/KNOWN-ISSUES.md §27（3.1.1 无跨连接会话边界、broker 恢复依赖 release leg、记录目录信任域、Resume 非并发安全约束）。下一步候选：OPC-UA Basic256Sha256 加密通道（v0.28.0 首选）、MQTT 5.0 第一阶段（版本参数化+原因码，评估文档 §6.2 草案）、mapper 自动 Resume 接线。
+
+
+## 23. v0.28.0 开发轮登记（2026-09-01，OPC-UA 安全策略框架：Basic256Sha256 分段第一段）
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| F-1 安全策略选项与门禁 | pkg/opcua OpenSecureChannelOptions/OpenWithOptions | ✅ 闭环 | 零值=逐字兼容；B256 三字段一致性；未知策略本地拒绝 |
+| F-2 Basic256Sha256 密码学原语 | pkg/opcua/security_basic256sha256.go | ✅ 闭环 | 派生/RSA-OAEP-SHA1/AES-128-CBC/HMAC-SHA1/SHA-1 指纹，纯标准库 |
+| F-3 OPN 非对称头协商与响应校验 | securechannel.go sendOPN/recvOPN/sendCLO | ✅ 闭环 | None 语义逐字保留；B256 pin+thumbprint 强校验 |
+| F-4 sim 服务端策略守卫 | pkg/opcuasim/sim.go | ✅ 闭环 | 非 None → ERR Bad_SecurityPolicyRejected，不静默降级 |
+| F-5 OPN 体加密（RequestHeader/ClientNonce/MSM 扩展） | — | ⏳ v0.28.1 | 线上格式扩展，需与冻结测试协调 |
+| F-6 MSG 对称加密签名 + Renew | — | ⏳ v0.29.0 | 全帧 AES-128-CBC + HMAC-SHA1 覆盖 |
+| 测试 | pkg/opcua v0280_security_test.go + v0280_security_e2e_test.go | ✅ 15 例 | 含 sim 拒绝链路 e2e；冻结带零改动 |

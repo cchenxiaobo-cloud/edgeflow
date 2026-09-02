@@ -395,3 +395,12 @@
 - **持久化写失败语义**：client 上行 Publish 路径 fail-fast（宁可报错不可丢凭据）；下行 park 路径软失败（协议应答 PUBREC 不依赖磁盘健康，缺记录只损失恢复能力不损失正确性）。
 - **Resume 非并发安全约束**：Resume() 必须在业务 Publish 开始前（或串行化）调用；与并发 Publish 同跑可能造成 PacketID 混用（回放沿用记录中的原 PacketID，与 nextID 计数器无协同）。上层 mapper 当前未自动调 Resume，属 opt-in API。
 - **Resume 回放 PacketID 与 nextID 的碰撞窗口（缓解措施落地）**：回放沿用记录中的原 PacketID，而新连接的 atomic 计数器从 1 重新计数——若重连后先跑业务 Publish 再调 Resume（或并发），新分配 id 与回放 id 可能撞车（MQTT 3.1.1 中同连接同 id 并发在途属于协议违例，broker 行为未定义）。缓解：v0.27.0 在 Resume() 成功回放 N 条后，把 packetID 计数器快进到已见最大回放 id（atomic Cas 以单调推进），消除「回放后撞车」方向；「先 Publish 后 Resume」顺序仍可能撞（KNOWN-ISSUES 上条已约束 Resume 时序）。根治需 MQTT 5.0 会话语义（见 docs/MQTT5-EVALUATION.md §6）。
+
+
+## 28. v0.28.0 开发轮处置登记（2026-09-01，OPC-UA 安全策略框架：Basic256Sha256 分段第一段）
+
+- **SHA-1 使用边界**: Basic256Sha256 策略由 OPC-UA Part 6/7 规范强制绑定 SHA-1（指纹/签名/HMAC/密钥派生）。实现仅限规范要求路径，`//nolint:gosec` 逐处标注；协议外的现代场景应避免 SHA-1。登记为「规范强制的已知弱算法」，后续若 OPC-UA 生态全面转向 Sha256 系策略（Basic256Sha256 之外的 #Aes256_Sha256_RsaPss 等），在 v0.30.0+ 增补新策略而非替换本实现。
+- **B256 通道未达端到端可用（分段边界，非缺陷）**: v0.28.0 仅交付策略框架；OPN 体加密（RequestHeader/ClientNonce/MessageSecurityMode 扩展）留 v0.28.1，MSG 对称覆盖留 v0.29.0。sim 对非 None 策略显式回 ERR Bad_SecurityPolicyRejected（0x80550000），不静默降级。
+- **pin 校验语义**: B256 响应校验要求服务端证书与 OpenSecureChannelOptions.ServerCert 逐字节一致（严格 pin）。真实服务器证书轮换时需同步更新 pin——证书热加载/轮换机制待排（与 v0.27 轮凭证轮换自动化缺口同源）。
+- **deriveKeys 与规范差异**: 密钥派生按 Part 6 §6.7.5.2 链式 SHA-1 近似实现（标准库无 HKDF）；段长/截断/补零按 Basic256Sha256 参数。与真实服务器互通前（v0.28.1 端到端）需按 OPC 基金会互操作样例向量复核一次。
+- **SecurityPolicyBasic256（SHA1 系）未实现**: 与 Basic256Sha256 是不同策略，显式拒绝；如需支持在缺口清单登记。

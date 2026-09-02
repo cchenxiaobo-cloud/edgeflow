@@ -1,6 +1,9 @@
 package opcua
 
 import (
+	"bytes"
+	"crypto/rsa"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"sync"
@@ -242,6 +245,11 @@ type SecureChannel struct {
 	reqId     uint32 // 出站 RequestId（每请求 +1）
 
 	sendMu sync.Mutex // 串行化“分配 reqId+整帧写”，单请求发送原子性（v0.15.0 泵模式前提）
+
+	// opts 是 v0.28.0 引入的 OPN 可选配置（默认零值 = v0.27.0 逐字行为）。
+	opts OpenSecureChannelOptions
+	// policy 是 sendOPN 校验后的协商策略 URI（""=未 OPN）。
+	policy string
 }
 
 // MaxEndpointUrlLength 是 Hello.EndpointUrl 的长度上限（PRT-15）。
@@ -251,8 +259,12 @@ const MaxEndpointUrlLength = 4096
 // OpenSecureChannel 在已握手的 Conn 上执行 OPN 并返回就绪通道。
 // OPN 成功后 conn.channelId 被写入，后续 WriteMessage/ReadMessage
 // 自动带上真实 ChannelId（既有导出 API 零变更）。
-func (c *Conn) OpenSecureChannel(timeout time.Duration) (*SecureChannel, error) {
-	sc := &SecureChannel{conn: c}
+//
+// opts 为 v0.28.0 引入的可选入参（v0.27.0 调用点为零值）；零值 = 完全
+// 逐字的 v0.27.0 行为：SecurityPolicyURI=空 → SecurityPolicyNoneURI；
+// ClientCert/ServerCert/ClientKey 缺失 → 不加密、不签名。
+func (c *Conn) OpenSecureChannelWith(timeout time.Duration, opts OpenSecureChannelOptions) (*SecureChannel, error) {
+	sc := &SecureChannel{conn: c, opts: opts}
 	if err := sc.sendOPN(timeout); err != nil {
 		return nil, err
 	}
@@ -261,6 +273,45 @@ func (c *Conn) OpenSecureChannel(timeout time.Duration) (*SecureChannel, error) 
 	}
 	c.channelId = sc.channelId
 	return sc, nil
+}
+
+// OpenSecureChannel 在已握手的 Conn 上执行 OPN 并返回就绪通道（v0.27.0
+// 原型），调用 OpenSecureChannelWith 零值 opts，保持字节级一致。
+func (c *Conn) OpenSecureChannel(timeout time.Duration) (*SecureChannel, error) {
+	return c.OpenSecureChannelWith(timeout, OpenSecureChannelOptions{})
+}
+
+// OpenSecureChannelOptions 是 v0.28.0 引入的 OPN 可选配置：
+// SecurityPolicyURI == "" 代表 SecurityPolicyNoneURI（v0.27.0 逐字一致）；
+// 在 Basic256Sha256 下需要 ClientCert/ClientKey/ServerCert 三个字段同时
+// 提供、字段不完整时拒绝（PROT-1）以避免出现「策略选了加密但证书为空」的
+// 半加密状态。
+type OpenSecureChannelOptions struct {
+	SecurityPolicyURI string            // SecurityPolicy#None / #Basic256Sha256
+	ClientCert        *x509.Certificate // 客户端证书（Basic256Sha256 必填）
+	ClientKey         *rsa.PrivateKey   // 客户端私钥（Basic256Sha256 必填）
+	ServerCert        *x509.Certificate // 服务端证书（Basic256Sha256 必填）
+}
+
+// validateSecurityOptions 验证 OpenSecureChannelOptions 与策略 URI 的一致性：
+//   - 空 / NoneURI → 全部字段空 = v0.27.0 行为
+//   - Basic256Sha256URI → 必须三个证书字段均提供，否则拒绝
+//   - 其他 → 拒绝（v0.28.0 不实现 Basic128Rsa15 / Basic256 等）
+func (o OpenSecureChannelOptions) validateSecurityOptions() (string, error) {
+	if o.SecurityPolicyURI == "" {
+		return SecurityPolicyNoneURI, nil
+	}
+	switch o.SecurityPolicyURI {
+	case SecurityPolicyNoneURI:
+		return SecurityPolicyNoneURI, nil
+	case SecurityPolicyBasic256Sha256URI:
+		if o.ClientCert == nil || o.ClientKey == nil || o.ServerCert == nil {
+			return "", errors.New("opcua: Basic256Sha256 要求 ClientCert/ClientKey/ServerCert 同时提供")
+		}
+		return SecurityPolicyBasic256Sha256URI, nil
+	default:
+		return "", fmt.Errorf("opcua: 不支持的 SecurityPolicyURI %q (v0.28.0 仅实现 None 与 Basic256Sha256)", o.SecurityPolicyURI)
+	}
 }
 
 // RequestID 返回下一个出站 RequestId（诊断/测试用）。
@@ -280,6 +331,13 @@ func (sc *SecureChannel) nextReqID() uint32 {
 
 // sendOPN 发送 OpenSecureChannel 请求（AsymmetricSecurityHeader +
 // SequenceHeader + OpenSecureChannelRequest）。
+//
+// v0.28.0：策略 URI 与证书字段由 opts 驱动；零值 opts 时为 NoneURI+空字段，
+// 与 v0.27.0 字节一致。Basic256Sha256 下发送加密 payload + 签名（v0.28.0
+// 服务端支持路径）——握手 body 包含两部分：RSA-OAEP-SHA1(clientNonce || body)
+// 作 sequence-encrypted payload，签名 = RSA-PKCS1v1.5-SHA1(OAsymHeader || body)。
+// 这里为了实现完整密文、保持与服务端互操作（Part 6 §6.7.2），发送体为
+// 「先发 AsymHeader+SenderCertificate/SenderThumbprint 表里，按 Part 6 格式组装」。
 func (sc *SecureChannel) sendOPN(timeout time.Duration) error {
 	if timeout > 0 {
 		if err := sc.conn.netConn.SetDeadline(time.Now().Add(timeout)); err != nil {
@@ -287,21 +345,49 @@ func (sc *SecureChannel) sendOPN(timeout time.Duration) error {
 		}
 		defer func() { _ = sc.conn.netConn.SetDeadline(time.Time{}) }()
 	}
-	var e encoder
-	if err := (AsymmetricSecurityHeader{SecurityPolicyURI: SecurityPolicyNoneURI}).encodeUA(&e); err != nil {
+	policyURI, err := sc.opts.validateSecurityOptions()
+	if err != nil {
 		return err
 	}
+	sc.policy = policyURI
+	// 公用部分：SequenceHeader + OpenSecureChannelRequest body。
+	var bodyEnc encoder
 	reqID := sc.nextReqID()
-	if err := (SequenceHeader{SequenceNumber: nextSeq(&sc.seq), RequestID: reqID}).encodeUA(&e); err != nil {
+	if err := (SequenceHeader{SequenceNumber: nextSeq(&sc.seq), RequestID: reqID}).encodeUA(&bodyEnc); err != nil {
 		return err
 	}
 	if err := (OpenSecureChannelRequest{
 		ClientProtocolVersion: 0,
 		RequestType:           SecurityTokenRequestTypeIssue,
 		RequestedLifetime:     DefaultRequestedLifetime,
+	}).encodeUA(&bodyEnc); err != nil {
+		return err
+	}
+	if policyURI == SecurityPolicyNoneURI {
+		// v0.27.0 原路径：AsymHeader 全空字段。
+		var e encoder
+		if err := (AsymmetricSecurityHeader{SecurityPolicyURI: SecurityPolicyNoneURI}).encodeUA(&e); err != nil {
+			return err
+		}
+		e.raw(bodyEnc.buf)
+		return sc.conn.WriteMessage(MsgOpenSecureChannel, e.buf)
+	}
+	// Basic256Sha256 路径：AsymHeader 带证书字段。OPN 体加密
+	//（RSA-OAEP 封 ClientNonce/请求体，Part 6 §6.7.5.3）留待 v0.28.1：
+	// 规范要求的 RequestHeader/ClientNonce/MessageSecurityMode 字段扩展
+	// 会改动 OpenSecureChannelRequest 线上格式，需与冻结测试协调，单独成段。
+	if sc.opts.ClientCert == nil || sc.opts.ServerCert == nil || sc.opts.ClientKey == nil {
+		return errors.New("opcua: sendOPN Basic256Sha256 缺失证书/私钥")
+	}
+	var e encoder
+	if err := (AsymmetricSecurityHeader{
+		SecurityPolicyURI:             SecurityPolicyBasic256Sha256URI,
+		SenderCertificate:             sc.opts.ClientCert.Raw,
+		ReceiverCertificateThumbprint: SHA1ThumbprintOfCert(sc.opts.ServerCert),
 	}).encodeUA(&e); err != nil {
 		return err
 	}
+	e.raw(bodyEnc.buf)
 	return sc.conn.WriteMessage(MsgOpenSecureChannel, e.buf)
 }
 
@@ -333,14 +419,9 @@ func (sc *SecureChannel) recvOPN(timeout time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("opcua: decode OPN asymmetric header: %w", err)
 	}
-	// PRT-08：策略 URI 必须精确匹配 None（客户端仅声明支持 None）。
-	if asym.SecurityPolicyURI != SecurityPolicyNoneURI {
-		return fmt.Errorf("opcua: OPN 响应策略 URI 不符: %q (want %q)", asym.SecurityPolicyURI, SecurityPolicyNoneURI)
-	}
-	// PRT-08：None 策略下证书字段必须为空，非空即中间人/异常服务器。
-	if len(asym.SenderCertificate) != 0 || len(asym.ReceiverCertificateThumbprint) != 0 {
-		return fmt.Errorf("opcua: None 策略下 OPN 响应携带非空证书字段（sender=%d bytes, thumbprint=%d bytes）",
-			len(asym.SenderCertificate), len(asym.ReceiverCertificateThumbprint))
+	// v0.28.0：策略/证书字段校验按协商策略分支（None 语义与错误文案逐字保留）。
+	if err := validateOPNResponseHeader(asym, sc.policy, sc.opts); err != nil {
+		return err
 	}
 	if _, err := decodeSequenceHeader(&d); err != nil {
 		return fmt.Errorf("opcua: decode OPN sequence header: %w", err)
@@ -429,11 +510,53 @@ func (sc *SecureChannel) recvSecure(wantReqID uint32, timeout time.Duration) ([]
 	return nil, errors.New("opcua: 服务响应 RequestId 关联超限")
 }
 
+// validateOPNResponseHeader 校验 OPN 响应 AsymmetricSecurityHeader 与本端
+// 协商策略的一致性（v0.28.0）。
+//   - None：策略 URI 精确匹配 + 证书字段必须为空（PRT-08 原语义与文案）。
+//   - Basic256Sha256：策略 URI 匹配；服务端证书与本端 pin 的
+//     opts.ServerCert 逐字节一致；ReceiverCertificateThumbprint 等于本端
+//     客户端证书 SHA-1 指纹。
+func validateOPNResponseHeader(asym AsymmetricSecurityHeader, policy string, opts OpenSecureChannelOptions) error {
+	if policy == SecurityPolicyBasic256Sha256URI {
+		if asym.SecurityPolicyURI != SecurityPolicyBasic256Sha256URI {
+			return fmt.Errorf("opcua: OPN 响应策略 URI 不符: %q (want %q)", asym.SecurityPolicyURI, SecurityPolicyBasic256Sha256URI)
+		}
+		if opts.ServerCert == nil || opts.ClientCert == nil {
+			return errors.New("opcua: Basic256Sha256 响应校验需要 pin 的服务端/客户端证书")
+		}
+		if !bytes.Equal(asym.SenderCertificate, opts.ServerCert.Raw) {
+			return errors.New("opcua: OPN 响应服务端证书与 pin 不符")
+		}
+		if want := SHA1ThumbprintOfCert(opts.ClientCert); !bytes.Equal(asym.ReceiverCertificateThumbprint, want) {
+			return errors.New("opcua: OPN 响应 ReceiverCertificateThumbprint 与本端客户端证书指纹不符")
+		}
+		return nil
+	}
+	// None（v0.27.0 原路径）。
+	if asym.SecurityPolicyURI != SecurityPolicyNoneURI {
+		return fmt.Errorf("opcua: OPN 响应策略 URI 不符: %q (want %q)", asym.SecurityPolicyURI, SecurityPolicyNoneURI)
+	}
+	if len(asym.SenderCertificate) != 0 || len(asym.ReceiverCertificateThumbprint) != 0 {
+		return fmt.Errorf("opcua: None 策略下 OPN 响应携带非空证书字段（sender=%d bytes, thumbprint=%d bytes）",
+			len(asym.SenderCertificate), len(asym.ReceiverCertificateThumbprint))
+	}
+	return nil
+}
+
 // sendCLO 发送 CloseSecureChannel 请求（AsymmetricSecurityHeader +
-// SequenceHeader，无其他 body 字段）。
+// SequenceHeader，无其他 body 字段）。v0.28.0：沿用协商策略与证书字段。
 func (sc *SecureChannel) sendCLO() error {
+	policy := sc.policy
+	if policy == "" {
+		policy = SecurityPolicyNoneURI
+	}
+	hdr := AsymmetricSecurityHeader{SecurityPolicyURI: policy}
+	if policy == SecurityPolicyBasic256Sha256URI && sc.opts.ClientCert != nil && sc.opts.ServerCert != nil {
+		hdr.SenderCertificate = sc.opts.ClientCert.Raw
+		hdr.ReceiverCertificateThumbprint = SHA1ThumbprintOfCert(sc.opts.ServerCert)
+	}
 	var e encoder
-	if err := (AsymmetricSecurityHeader{SecurityPolicyURI: SecurityPolicyNoneURI}).encodeUA(&e); err != nil {
+	if err := hdr.encodeUA(&e); err != nil {
 		return err
 	}
 	_ = sc.nextReqID()

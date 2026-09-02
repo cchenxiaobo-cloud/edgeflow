@@ -56,6 +56,22 @@ type PublishResult struct {
 
 // Open 连接指定端点并完成全链路握手，返回就绪客户端。
 func Open(endpoint string, timeout time.Duration) (*Client, error) {
+	return open(endpoint, timeout, OpenSecureChannelOptions{})
+}
+
+// OpenWithOptions 是 v0.28.0 引入的安全策略可选 Open：除 OPN 策略协商外
+// 与 Open 行为一致。opts 零值 = Open 的逐字等价（SecurityPolicy None）。
+// Basic256Sha256 下要求 ClientCert/ClientKey/ServerCert 完整，本地校验
+// 失败直接拒绝（不发起网络连接）；未知策略同样拒绝。
+func OpenWithOptions(endpoint string, timeout time.Duration, opts OpenSecureChannelOptions) (*Client, error) {
+	if _, err := opts.validateSecurityOptions(); err != nil {
+		return nil, err
+	}
+	return open(endpoint, timeout, opts)
+}
+
+// open 是 Open/OpenWithOptions 的共享实现（v0.28.0 抽取，None 线上行为不变）。
+func open(endpoint string, timeout time.Duration, opts OpenSecureChannelOptions) (*Client, error) {
 	if timeout <= 0 {
 		timeout = DefaultClientTimeout
 	}
@@ -64,7 +80,7 @@ func Open(endpoint string, timeout time.Duration) (*Client, error) {
 		return nil, err
 	}
 	cleanup := func() { _ = conn.Close() }
-	sc, err := conn.OpenSecureChannel(timeout)
+	sc, err := conn.OpenSecureChannelWith(timeout, opts)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("opcua: OpenSecureChannel: %w", err)

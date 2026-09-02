@@ -355,8 +355,17 @@ func (s *Simulator) handleConn(c net.Conn) {
 	if msgType != opcua.MsgOpenSecureChannel {
 		return
 	}
-	_, rest, err := opcua.DecodeAsymmetricSecurityHeader(body)
+	asymHdr, rest, err := opcua.DecodeAsymmetricSecurityHeader(body)
 	if err != nil {
+		return
+	}
+	// v0.28.0：本模拟器仅支持 SecurityPolicy None；其他策略（含
+	// Basic256Sha256）明确拒绝（ERR Bad_SecurityPolicyRejected），不静默降级。
+	if asymHdr.SecurityPolicyURI != opcua.SecurityPolicyNoneURI {
+		errBody, encErr := opcua.ErrorMessage{ErrorCode: 0x80550000, ErrorReason: "Bad_SecurityPolicyRejected"}.Encode()
+		if encErr == nil {
+			_ = writeFrame(c, opcua.MsgError, 0, stripHeader(errBody))
+		}
 		return
 	}
 	_, rest, err = opcua.DecodeSequenceHeader(rest)

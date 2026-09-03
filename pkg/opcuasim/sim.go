@@ -24,6 +24,10 @@
 package opcuasim
 
 import (
+	"bytes"
+	crand "crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"math"
@@ -109,6 +113,14 @@ func WithEndpointURL(u string) Option {
 	return func(s *Simulator) { s.endpointURL = u }
 }
 
+// WithIdentity 为模拟器注入服务端身份（v0.28.1 opt-in）：配置后模拟器
+// 接受 Basic256Sha256 OPN（解封/验签/密钥派生/加密响应）；不配置时保持
+// v0.28.0 语义——非 None 策略显式拒绝（ERR Bad_SecurityPolicyRejected），
+// v0280 冻结测试零改动。
+func WithIdentity(cert *x509.Certificate, key *rsa.PrivateKey) Option {
+	return func(s *Simulator) { s.serverCert, s.serverKey = cert, key }
+}
+
 // Simulator 是一台 OPC-UA 模拟服务器。
 type Simulator struct {
 	ln          net.Listener
@@ -118,6 +130,11 @@ type Simulator struct {
 	step        time.Duration
 	seed        int64
 	maxConns    int
+
+	// serverCert/serverKey 是 v0.28.1 opt-in 服务端身份（WithIdentity）：
+	// 均非 nil 时启用 Basic256Sha256 OPN 对等处理。
+	serverCert *x509.Certificate
+	serverKey  *rsa.PrivateKey
 
 	mu        sync.Mutex
 	connCount int
@@ -359,9 +376,50 @@ func (s *Simulator) handleConn(c net.Conn) {
 	if err != nil {
 		return
 	}
-	// v0.28.0：本模拟器仅支持 SecurityPolicy None；其他策略（含
-	// Basic256Sha256）明确拒绝（ERR Bad_SecurityPolicyRejected），不静默降级。
-	if asymHdr.SecurityPolicyURI != opcua.SecurityPolicyNoneURI {
+	// v0.28.0/v0.28.1：策略分支处理。
+	//   - None：原路径（逐字保留，v0280 冻结测试零改动）。
+	//   - Basic256Sha256：仅当 WithIdentity 注入服务端身份后接受——解封、
+	//     验签、密钥派生、加密响应；未注入身份时保持 v0.28.0 语义：显式
+	//     拒绝（ERR Bad_SecurityPolicyRejected），不静默降级。
+	switch {
+	case asymHdr.SecurityPolicyURI == opcua.SecurityPolicyNoneURI:
+		// 原 None 路径，见下方既有逻辑。
+	case asymHdr.SecurityPolicyURI == opcua.SecurityPolicyBasic256Sha256URI && s.serverCert != nil && s.serverKey != nil:
+		h, hok := s.handleB256OpenSecureChannel(c, asymHdr, rest)
+		if !hok || h == nil {
+			return
+		}
+		// B256 通道建立后的 MSG 循环：本段 MSG 仍为明文对称头（对称覆盖
+		// v0.29.0），会话态携带派生密钥备用（仅存不用，避免 v0.29.0 重复握手）。
+		cs := newConnSession(c, h.channelID, h.tokenID)
+		cs.b256Keys = h.keys
+		s.sessMu.Lock()
+		s.sessions[cs] = struct{}{}
+		s.sessMu.Unlock()
+		defer func() {
+			s.sessMu.Lock()
+			delete(s.sessions, cs)
+			s.sessMu.Unlock()
+			cs.closeSession()
+		}()
+		for {
+			var mt string
+			mt, body, err = readFrame(c)
+			if err != nil {
+				return
+			}
+			switch mt {
+			case opcua.MsgCloseSecureChannel:
+				return
+			case opcua.MsgSecureMessage:
+				if !s.handleService(cs, c, cs.channelID, cs.tokenID, body) {
+					return
+				}
+			default:
+				return
+			}
+		}
+	default:
 		errBody, encErr := opcua.ErrorMessage{ErrorCode: 0x80550000, ErrorReason: "Bad_SecurityPolicyRejected"}.Encode()
 		if encErr == nil {
 			_ = writeFrame(c, opcua.MsgError, 0, stripHeader(errBody))
@@ -432,6 +490,132 @@ func (s *Simulator) handleConn(c net.Conn) {
 }
 
 func opnReqSeq() uint32 { return 1 }
+
+// b256Handshake 是一次 Basic256Sha256 握手产物（per-conn，经函数返回值
+// 传递，无共享状态；密钥不落盘）。
+type b256Handshake struct {
+	keys      *opcua.DerivedKeys
+	channelID uint32
+	tokenID   uint32
+}
+
+// clientCertPub 从 DER 证书解析 RSA 公钥（验签用）。
+func clientCertPub(der []byte) (*rsa.PublicKey, bool) {
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, false
+	}
+	pub, ok := cert.PublicKey.(*rsa.PublicKey)
+	return pub, ok && pub != nil
+}
+
+// handleB256OpenSecureChannel 是 v0.28.1 服务端 Basic256Sha256 OPN 对等处理：
+// 解封（RSA-OAEP-SHA1 本端私钥）→ 验签（客户端证书公钥）→ 解析 legacyBody
+// → 派生密钥（ClientNonce+ServerNonce+双证书，与客户端同函数同输入）
+// → 回送加密 OPN 响应。返回 false 表示已回 ERR/断开。
+//
+// 线格式（与客户端 sendOPN/recvOPN 镜像，见 securechannel.go 注释）：
+//
+//	请求剩余 = SignatureData{alg, sig(AsymHeader线编码||legacyBody)} +
+//	           EncryptedData(RSA-OAEP(serverPub, ClientNonce(32B)||legacyBody))
+//	legacyBody = SequenceHeader + 旧三字段 OpenSecureChannelRequest
+//	响应体   = AsymHeader(策略+ServerCert+ClientCertThumbprint) + SignatureData
+//	           + EncryptedData(RSA-OAEP(clientPub, ServerNonce(32B)||inner))
+//	inner    = SequenceHeader + OpenSecureChannelResponse(ServerNonce=同前缀)
+func (s *Simulator) handleB256OpenSecureChannel(c net.Conn, asymHdr opcua.AsymmetricSecurityHeader, rest []byte) (*b256Handshake, bool) {
+	sendErr := func(code uint32, reason string) (*b256Handshake, bool) {
+		errBody, encErr := opcua.ErrorMessage{ErrorCode: opcua.StatusCode(code), ErrorReason: reason}.Encode()
+		if encErr == nil {
+			_ = writeFrame(c, opcua.MsgError, 0, stripHeader(errBody))
+		}
+		return nil, false
+	}
+	// 身份一致性：ReceiverCertificateThumbprint 必须指向本端证书。
+	if !bytes.Equal(asymHdr.ReceiverCertificateThumbprint, opcua.SHA1Thumbprint(s.serverCert.Raw)) {
+		return sendErr(0x80130000, "Bad_SecurityChecksFailed")
+	}
+	sd, tail, err := opcua.DecodeSignatureData(rest)
+	if err != nil {
+		return sendErr(0x80070000, "Bad_DecodeError")
+	}
+	plain, err := opcua.UnwrapOPNBody(s.serverKey, tail)
+	if err != nil {
+		return sendErr(0x80130000, "BadSecurityChecksFailed")
+	}
+	if len(plain) < opcua.B256NonceLen {
+		return sendErr(0x80070000, "Bad_DecodeError")
+	}
+	clientNonce, legacyBody := plain[:opcua.B256NonceLen], plain[opcua.B256NonceLen:]
+	clientPub, ok := clientCertPub(asymHdr.SenderCertificate)
+	if !ok {
+		return sendErr(0x80130000, "BadSecurityChecksFailed")
+	}
+	asymWire, err := opcua.EncodeAsymmetricSecurityHeader(asymHdr)
+	if err != nil {
+		return sendErr(0x80070000, "Bad_DecodeError")
+	}
+	if !opcua.VerifyOPNBody(clientPub, asymWire, legacyBody, sd.Signature) {
+		return sendErr(0x80130000, "BadApplicationSignatureInvalid")
+	}
+	_, lbRest, err := opcua.DecodeSequenceHeader(legacyBody)
+	if err != nil {
+		return sendErr(0x80070000, "Bad_DecodeError")
+	}
+	opnReq, err := opcua.DecodeOpenSecureChannelRequest(lbRest)
+	if err != nil {
+		return sendErr(0x80070000, "Bad_DecodeError")
+	}
+	if opnReq.RequestType != opcua.SecurityTokenRequestTypeIssue {
+		return sendErr(0x800A0000, "BadNothingToDo")
+	}
+	serverNonce := make([]byte, opcua.B256NonceLen)
+	if _, err := crand.Read(serverNonce); err != nil {
+		return sendErr(0x80020000, "Bad_InternalError")
+	}
+	keys := opcua.DeriveKeys(clientNonce, serverNonce, asymHdr.SenderCertificate, s.serverCert.Raw)
+	channelID, tokenID := uint32(rand.Int31n(1<<31-1)+1), uint32(rand.Int31n(1<<31-1)+1)
+	hs := &b256Handshake{keys: keys, channelID: channelID, tokenID: tokenID}
+	resp, err := opcua.EncodeOpenSecureChannelResponse(opcua.OpenSecureChannelResponse{
+		Timestamp:             opcua.DateTimeFromTime(time.Now()),
+		ServiceResult:         0,
+		ServerProtocolVersion: 0,
+		SecurityToken:         opcua.ChannelSecurityToken{ChannelID: channelID, TokenID: tokenID, CreatedAt: opcua.DateTimeFromTime(time.Now()), RevisedLifetime: 600000},
+		ServerNonce:           serverNonce,
+	})
+	if err != nil {
+		return sendErr(0x80080000, "BadEncodingError")
+	}
+	seqH, err := opcua.EncodeSequenceHeader(opcua.SequenceHeader{SequenceNumber: 1, RequestID: opnReqSeq()})
+	if err != nil {
+		return sendErr(0x80080000, "BadEncodingError")
+	}
+	inner := append(append(append([]byte{}, serverNonce...), seqH...), resp...)
+	respAsym, err := opcua.EncodeAsymmetricSecurityHeader(opcua.AsymmetricSecurityHeader{
+		SecurityPolicyURI:             opcua.SecurityPolicyBasic256Sha256URI,
+		SenderCertificate:             s.serverCert.Raw,
+		ReceiverCertificateThumbprint: opcua.SHA1Thumbprint(asymHdr.SenderCertificate),
+	})
+	if err != nil {
+		return sendErr(0x80080000, "BadEncodingError")
+	}
+	blob, err := opcua.WrapOPNBody(clientPub, inner)
+	if err != nil {
+		return sendErr(0x80020000, "Bad_InternalError")
+	}
+	respSig, err := opcua.SignOPNBody(s.serverKey, respAsym, inner[opcua.B256NonceLen:])
+	if err != nil {
+		return sendErr(0x80020000, "Bad_InternalError")
+	}
+	sdWire, err := opcua.EncodeSignatureData(opcua.SignatureData{Algorithm: opcua.AsymmetricSignatureAlgorithmRsaSha1, Signature: respSig})
+	if err != nil {
+		return sendErr(0x80080000, "BadEncodingError")
+	}
+	frame := append(append(append([]byte{}, respAsym...), sdWire...), blob...)
+	if err := writeFrame(c, opcua.MsgOpenSecureChannel, channelID, frame); err != nil {
+		return nil, false
+	}
+	return hs, true
+}
 
 // handleService 解析 MSG 帧并分派服务请求。
 func (s *Simulator) handleService(cs *connSession, c net.Conn, channelID, tokenID uint32, body []byte) bool {

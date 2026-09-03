@@ -51,7 +51,7 @@ func DecodeSymmetricSecurityHeader(b []byte) (SymmetricSecurityHeader, []byte, e
 	return h, d.b[d.off:], nil
 }
 
-// EncodeSequenceHeader 编码序列头。
+// EncodeSequenceHeader 编码序列头（server_api 导出层）。
 func EncodeSequenceHeader(h SequenceHeader) ([]byte, error) {
 	var e encoder
 	if err := h.encodeUA(&e); err != nil {
@@ -96,6 +96,26 @@ func DecodeRequestHeader(b []byte) (RequestHeader, []byte, error) {
 		return h, nil, err
 	}
 	return h, d.b[d.off:], nil
+}
+
+// EncodeSignatureData 编码 SignatureData（Part 4 §7.31）。
+func EncodeSignatureData(s SignatureData) ([]byte, error) {
+	var e encoder
+	if err := s.encodeUA(&e); err != nil {
+		return nil, err
+	}
+	return e.buf, nil
+}
+
+// DecodeSignatureData 解码 SignatureData，返回剩余字节（v0.28.1 OPN 体加密）。
+func DecodeSignatureData(b []byte) (SignatureData, []byte, error) {
+	var d decoder
+	d.b = b
+	s, err := decodeSignatureData(&d)
+	if err != nil {
+		return s, nil, err
+	}
+	return s, d.b[d.off:], nil
 }
 
 // EncodeResponseHeader 编码服务响应头。

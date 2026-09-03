@@ -71,6 +71,10 @@ type connSession struct {
 	done               chan struct{} // PRT-23：连接退出信号（悬挂 publish goroutine 监听）
 	publishingInterval time.Duration // PRT-23：KeepAlive 兑现周期（随订阅修订）
 	closed             bool
+
+	// b256Keys 是 v0.28.1 Basic256Sha256 握手派生密钥（WithIdentity 会话；
+	// v0.29.0 MSG 对称覆盖接线用，本段仅持有不使用）。受 mu 保护。
+	b256Keys *opcua.DerivedKeys
 }
 
 func newConnSession(out net.Conn, channelID, tokenID uint32) *connSession {

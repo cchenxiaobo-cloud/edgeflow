@@ -4,7 +4,7 @@ description: EdgeFlow 边缘计算平台 —— 云端 CloudCore 的部署 Chart
 type: application
 
 # Chart 版本号：Chart 本身每次变更递增
-version: 0.28.0
+version: 0.28.1
 
 # 应用版本号：对应被部署应用的版本（与 Makefile VERSION 保持一致）
 appVersion: "v0.25.0"

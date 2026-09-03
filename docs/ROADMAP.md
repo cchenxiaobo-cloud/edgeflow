@@ -551,3 +551,16 @@
 | F-5 OPN 体加密（RequestHeader/ClientNonce/MSM 扩展） | — | ⏳ v0.28.1 | 线上格式扩展，需与冻结测试协调 |
 | F-6 MSG 对称加密签名 + Renew | — | ⏳ v0.29.0 | 全帧 AES-128-CBC + HMAC-SHA1 覆盖 |
 | 测试 | pkg/opcua v0280_security_test.go + v0280_security_e2e_test.go | ✅ 15 例 | 含 sim 拒绝链路 e2e；冻结带零改动 |
+
+
+## 24. v0.28.1 开发轮登记（2026-09-03，OPC-UA OPN 体加密 + Basic256Sha256 端到端互通）
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| F-5a 客户端加密 OPN（RSA-OAEP 封 ClientNonce‖legacyBody + 客户端私钥签名） | securechannel.go sendOPN | ✅ 闭环 | 线格式见 spec 0001；None 路径逐字不变 |
+| F-5b sim 对等解封验签 + 加密响应 | opcuasim WithIdentity + handleB256OpenSecureChannel | ✅ 闭环 | opt-in 语义；无身份保持 v0.28.0 显式拒绝；失败逐路径 ERR |
+| F-5c 客户端响应解封 + ServerNonce 双校验 + pin/thumbprint 复用 | securechannel.go recvOPN | ✅ 闭环 | 加密体前缀与响应字段逐字节一致 |
+| F-5d 密钥协商（六段双侧一致） | DeriveKeys/DerivedKeys 导出 + SecureChannel.keys/connSession.b256Keys | ✅ 闭环 | v0.29.0 MSG 接线用，本段仅存储 |
+| F-6 MSG 对称加密签名 + Renew | — | ⏳ v0.29.0 | 派生密钥已就绪 |
+| 互操作向量比对 | — | ⏳ v0.29.0 | 接真实第三方服务器前必须补 |
+| 测试 | v0281_security_test.go 4 + v0281_security_e2e_test.go 2 | ✅ 6 例 | 含端到端互通与无身份拒绝（冻结语义） |

@@ -2,6 +2,7 @@ package opcua
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"errors"
@@ -250,6 +251,12 @@ type SecureChannel struct {
 	opts OpenSecureChannelOptions
 	// policy 是 sendOPN 校验后的协商策略 URI（""=未 OPN）。
 	policy string
+	// clientNonce/serverNonce 是 v0.28.1 Basic256Sha256 握手的随机数
+	//（B256NonceLen=32B，crypto/rand）；None 路径为空。派生密钥 keys
+	// 仅在双方握手成功后持有（v0.29.0 MSG 对称覆盖接线用）。
+	clientNonce []byte
+	serverNonce []byte
+	keys        *DerivedKeys
 }
 
 // MaxEndpointUrlLength 是 Hello.EndpointUrl 的长度上限（PRT-15）。
@@ -372,22 +379,55 @@ func (sc *SecureChannel) sendOPN(timeout time.Duration) error {
 		e.raw(bodyEnc.buf)
 		return sc.conn.WriteMessage(MsgOpenSecureChannel, e.buf)
 	}
-	// Basic256Sha256 路径：AsymHeader 带证书字段。OPN 体加密
-	//（RSA-OAEP 封 ClientNonce/请求体，Part 6 §6.7.5.3）留待 v0.28.1：
-	// 规范要求的 RequestHeader/ClientNonce/MessageSecurityMode 字段扩展
-	// 会改动 OpenSecureChannelRequest 线上格式，需与冻结测试协调，单独成段。
+	// Basic256Sha256 路径（v0.28.1）：OPN 请求体加密 + 签名（Part 6
+	// §6.7.2/§6.7.5.3）。
+	// 线格式：AsymHeader(策略+SenderCert+ReceiverThumbprint) +
+	// SignatureData{算法URI, 签名} + EncryptedData。
+	//   legacyBody  = SequenceHeader + 旧三字段请求（None 路径同一编码）
+	//   EncryptedData = RSA-OAEP-SHA1(serverPub, ClientNonce(32B) || legacyBody)
+	//   签名         = RSA-PKCS1v15-SHA1(AsymHeader线编码 || legacyBody)
+	// None 路径的旧三字段线上格式逐字不变（冻结带）；加密体内不复用
+	// RequestHeader/MessageSecurityMode 扩展（规范偏差登记 KNOWN-ISSUES §29：
+	// ClientNonce 直接作为加密体前缀，避免双重请求格式）。
 	if sc.opts.ClientCert == nil || sc.opts.ServerCert == nil || sc.opts.ClientKey == nil {
 		return errors.New("opcua: sendOPN Basic256Sha256 缺失证书/私钥")
 	}
-	var e encoder
-	if err := (AsymmetricSecurityHeader{
+	nonce := make([]byte, B256NonceLen)
+	if _, err := rand.Read(nonce); err != nil {
+		return fmt.Errorf("opcua: 生成 ClientNonce 失败: %w", err)
+	}
+	sc.clientNonce = nonce
+	var hdrEnc encoder
+	asymHdr := AsymmetricSecurityHeader{
 		SecurityPolicyURI:             SecurityPolicyBasic256Sha256URI,
 		SenderCertificate:             sc.opts.ClientCert.Raw,
 		ReceiverCertificateThumbprint: SHA1ThumbprintOfCert(sc.opts.ServerCert),
-	}).encodeUA(&e); err != nil {
+	}
+	if err := asymHdr.encodeUA(&hdrEnc); err != nil {
 		return err
 	}
-	e.raw(bodyEnc.buf)
+	asymWire := append([]byte{}, hdrEnc.buf...)
+	sig, err := SignOPNBody(sc.opts.ClientKey, asymWire, bodyEnc.buf)
+	if err != nil {
+		return err
+	}
+	var sdEnc encoder
+	if err := (SignatureData{Algorithm: AsymmetricSignatureAlgorithmRsaSha1, Signature: sig}).encodeUA(&sdEnc); err != nil {
+		return err
+	}
+	inner := append(append([]byte{}, nonce...), bodyEnc.buf...)
+	serverPub, ok := sc.opts.ServerCert.PublicKey.(*rsa.PublicKey)
+	if !ok || serverPub == nil {
+		return errors.New("opcua: 服务端证书公钥不是 RSA（Basic256Sha256 要求 RSA）")
+	}
+	ct, err := WrapOPNBody(serverPub, inner)
+	if err != nil {
+		return err
+	}
+	var e encoder
+	e.raw(asymWire)
+	e.raw(sdEnc.buf)
+	e.raw(ct)
 	return sc.conn.WriteMessage(MsgOpenSecureChannel, e.buf)
 }
 
@@ -422,6 +462,62 @@ func (sc *SecureChannel) recvOPN(timeout time.Duration) error {
 	// v0.28.0：策略/证书字段校验按协商策略分支（None 语义与错误文案逐字保留）。
 	if err := validateOPNResponseHeader(asym, sc.policy, sc.opts); err != nil {
 		return err
+	}
+	// v0.28.1：Basic256Sha256 响应体解封 + 验签 + 密钥派生。
+	// 线格式：AsymHeader + SignatureData + EncryptedData(RSA-OAEP(client pub,
+	// ServerNonce(32B) || inner))；inner = SequenceHeader + OpenSecureChannelResponse；
+	// 签名 = RSA-PKCS1v15-SHA1(AsymHeader线编码 || inner)（服务端私钥）。
+	if sc.policy == SecurityPolicyBasic256Sha256URI {
+		var sd SignatureData
+		if sd, err = decodeSignatureData(&d); err != nil {
+			return fmt.Errorf("opcua: decode OPN SignatureData: %w", err)
+		}
+		ct := d.b[d.off:]
+		plain, decErr := UnwrapOPNBody(sc.opts.ClientKey, ct)
+		if decErr != nil {
+			return fmt.Errorf("opcua: OPN 响应解封失败: %w", decErr)
+		}
+		if len(plain) < B256NonceLen {
+			return fmt.Errorf("opcua: OPN 响应明文过短（%dB）", len(plain))
+		}
+		sc.serverNonce = plain[:B256NonceLen]
+		inner := plain[B256NonceLen:]
+		serverPub, ok := sc.opts.ServerCert.PublicKey.(*rsa.PublicKey)
+		if !ok || serverPub == nil {
+			return errors.New("opcua: pin 的服务端证书公钥不是 RSA（Basic256Sha256 要求 RSA）")
+		}
+		var asymWireEnc encoder
+		if err := asym.encodeUA(&asymWireEnc); err != nil {
+			return err
+		}
+		if !VerifyOPNBody(serverPub, asymWireEnc.buf, inner, sd.Signature) {
+			return errors.New("opcua: OPN 响应签名验证失败")
+		}
+		var id decoder
+		id.b = inner
+		if _, err := decodeSequenceHeader(&id); err != nil {
+			return fmt.Errorf("opcua: decode OPN sequence header: %w", err)
+		}
+		resp, err := decodeOpenSecureChannelResponse(&id)
+		if err != nil {
+			return fmt.Errorf("opcua: decode OPN response: %w", err)
+		}
+		if !resp.ServiceResult.IsGood() {
+			return fmt.Errorf("opcua: OpenSecureChannel 服务失败: %s", resp.ServiceResult)
+		}
+		if resp.SecurityToken.RevisedLifetime <= 0 {
+			return fmt.Errorf("opcua: OPN 响应 RevisedLifetime=%v 非法（须 > 0）", resp.SecurityToken.RevisedLifetime)
+		}
+		if len(resp.ServerNonce) != B256NonceLen {
+			return fmt.Errorf("opcua: OPN 响应 ServerNonce 长度 %d 非 %d", len(resp.ServerNonce), B256NonceLen)
+		}
+		if !bytes.Equal(resp.ServerNonce, sc.serverNonce) {
+			return errors.New("opcua: OPN 响应 ServerNonce 与加密体前缀不一致")
+		}
+		sc.channelId = resp.SecurityToken.ChannelID
+		sc.tokenId = resp.SecurityToken.TokenID
+		sc.keys = DeriveKeys(sc.clientNonce, sc.serverNonce, sc.opts.ClientCert.Raw, sc.opts.ServerCert.Raw)
+		return nil
 	}
 	if _, err := decodeSequenceHeader(&d); err != nil {
 		return fmt.Errorf("opcua: decode OPN sequence header: %w", err)
@@ -545,6 +641,8 @@ func validateOPNResponseHeader(asym AsymmetricSecurityHeader, policy string, opt
 
 // sendCLO 发送 CloseSecureChannel 请求（AsymmetricSecurityHeader +
 // SequenceHeader，无其他 body 字段）。v0.28.0：沿用协商策略与证书字段。
+// v0.28.1：Basic256Sha256 下 CLO 同样按本端签名能力发送（体不加密，
+// 与 v0.28.0 行为一致；MSG/CLO 对称覆盖留 v0.29.0）。
 func (sc *SecureChannel) sendCLO() error {
 	policy := sc.policy
 	if policy == "" {

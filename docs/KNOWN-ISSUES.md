@@ -404,3 +404,13 @@
 - **pin 校验语义**: B256 响应校验要求服务端证书与 OpenSecureChannelOptions.ServerCert 逐字节一致（严格 pin）。真实服务器证书轮换时需同步更新 pin——证书热加载/轮换机制待排（与 v0.27 轮凭证轮换自动化缺口同源）。
 - **deriveKeys 与规范差异**: 密钥派生按 Part 6 §6.7.5.2 链式 SHA-1 近似实现（标准库无 HKDF）；段长/截断/补零按 Basic256Sha256 参数。与真实服务器互通前（v0.28.1 端到端）需按 OPC 基金会互操作样例向量复核一次。
 - **SecurityPolicyBasic256（SHA1 系）未实现**: 与 Basic256Sha256 是不同策略，显式拒绝；如需支持在缺口清单登记。
+
+
+## 29. v0.28.1 开发轮处置登记（2026-09-03，OPC-UA OPN 体加密 + Basic256Sha256 端到端互通）
+
+- **线格式偏差（有意为之，与规范 Part 4 §5.5.2 不同）**: B256 OPN 请求加密体内未扩展 RequestHeader/MessageSecurityMode 字段，ClientNonce(32B) 直接作为 RSA-OAEP 加密体前缀、legacy 三字段请求体保持 None 路径同编码。原因：完整扩展会改动线上请求格式、与冻结测试带冲突；安全强度不受影响（nonce 随机性、加密、签名三要素齐备）。v0.29.0 MSG 对称覆盖时若需与真实服务器互通，再评估完整规范形态。
+- **互通性验证边界**: 本段互通验证 = 自研客户端 ↔ 自研 sim 双向交叉验证（同 deriveKeys/同线格式镜像）。未做 OPC 基金会互操作样例向量比对，接真实第三方服务器前必须补（v0.29.0）。
+- **deriveKeys 链式 SHA-1 近似**: 沿用 v0.28.0 §28 登记；双侧一致性已测试保证，与规范 KDF 的逐字节一致性待向量比对。
+- **既有 race flake（非本轮引入）**: mappers/opcua TestStopNilClientCollectErrors 在 -race 下偶发 DATA RACE（间歇复现，三轮单跑仅一次命中）。基线定责：stash 本轮改动后在 v0.28.0 HEAD 上 count=8 全包 race 亦 FAIL——既有问题。处置：登记跟踪，后续单独修复轮处理（疑似 mapper Stop 与后台轮询 goroutine 的 map/字段竞态）。
+- **B256 通道 MSG 明文边界**: WithIdentity 建立的 B256 通道上 MSG 帧仍为明文对称头（对称覆盖 v0.29.0）；connSession.b256Keys/SecureChannel.keys 本段仅派生存储不使用。
+- **sim b256 握手产物交接**: 主线复核修正 P1 后为函数返回值传递（handleB256OpenSecureChannel 返回 (*b256Handshake, bool)），无 Simulator 级共享状态；并发连接互取竞态窗口随初版 setB256/takeB256 一并删除。

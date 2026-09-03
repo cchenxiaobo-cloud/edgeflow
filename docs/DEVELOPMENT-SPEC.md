@@ -43,7 +43,7 @@ EdgeFlow 是云边协同的边缘计算平台：云端控制面（cloudcore + et
 - **FR-S1-01 设备模型实例化 mapper**：合法 DeviceModel/Device 配置 → mapper 启动并完成一次点位读取上报。锚点：tests/e2e/device_e2e_test.go。✅
 - **FR-S1-02 Modbus TCP 采集**：读点表→上报周期可控。锚点：hack/modbus-e2e。✅
 - **FR-S1-03 OPC-UA 接入**：连接/浏览/读点/订阅（monitored item→publish 通知）。锚点：opcua_e2e、opcua_subscription_e2e。✅
-- **FR-S1-04 OPC-UA 安全通道**：SecurityPolicy 可选（None 默认 / Basic256Sha256 分段实现），非 None 策略下证书字段与指纹校验强制，不支持策略显式拒绝。锚点：pkg/opcua v0280_security_test.go（15 例）。🚧 v0.28.0 框架段完成；OPN 体加密 v0.28.1、MSG 对称覆盖 v0.29.0。
+- **FR-S1-04 OPC-UA 安全通道**：SecurityPolicy 可选（None 默认 / Basic256Sha256 分段实现），非 None 策略下证书字段与指纹校验强制，不支持策略显式拒绝；OPN 体加密与端到端互通（客户端加密 OPN + sim opt-in 对等处理 + 双侧密钥协商）。锚点：pkg/opcua v0280_security_test.go（17 例）+ v0281_security_test.go（4 例）+ v0281_security_e2e_test.go（2 例）。🚧 v0.28.1 OPN 段完成；MSG 对称覆盖 v0.29.0。
 - **FR-S1-05 指令闭环留痕**：device-command 下发→mapper 执行→op-ledger 记账。✅
 - **FR-S1-06 mapper 配置文件化**：mapper 参数走配置文件（v0.26.0）。✅
 
@@ -83,7 +83,7 @@ EdgeFlow 是云边协同的边缘计算平台：云端控制面（cloudcore + et
 
 | 缺口 | 来源 | 归属 | 状态 |
 |---|---|---|---|
-| OPC-UA OPN 体加密（RequestHeader/ClientNonce/MessageSecurityMode 扩展） | FR-S1-04 分段 | v0.28.1 | 规划 |
+| OPC-UA OPN 体加密（RSA-OAEP 封 ClientNonce‖legacyBody + 双端签名/验签 + 加密响应；规范 RequestHeader 扩展偏差登记 §29） | FR-S1-04 分段 | ~~v0.28.1~~ | ✅ 已实现（线格式偏差登记 KNOWN-ISSUES §29） |
 | OPC-UA MSG 对称加密签名（AES-128-CBC + HMAC-SHA1 全帧覆盖） | FR-S1-04 分段 | v0.29.0 | 规划 |
 | MQTT 5.0 阶段一（版本参数化+原因码+流控） | FR-S2-07 | v0.29.0 草案 | 非承诺 |
 | MQTT 5.0 阶段二（会话解耦+共享订阅） | FR-S2-07 | v0.30.0 草案 | 非承诺 |

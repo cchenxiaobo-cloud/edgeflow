@@ -1,17 +1,15 @@
-// security_basic256sha256.go — OPC-UA Basic256Sha256 密码学原语（v0.28.0 第一段）。
+// security_basic256sha256.go — OPC-UA Basic256Sha256 安全策略（v0.28.0 原语层 / v0.28.1 OPN 体加密接线）。
 //
-// 本文件仅交付原语层（v0.28.0 范围）：
-//   - 链式 SHA-1 密钥派生 deriveKeys（Part 6 §6.7.5.2；AES-128 key 16B
-//     截断 + MAC key 32B 补零，确定性）；
-//   - RSA-OAEP-SHA1 封包/解封、RSA-PKCS1v1.5-SHA1 签名验证
-//     （Part 6 §6.7.5.3/§6.7.5.4）；
-//   - AES-128-CBC（PKCS#7）加解密与 HMAC-SHA1 签名/验证（hmac.Equal 常时比较）；
-//   - SHA-1 证书指纹（DER）与策略 URI 常量。
-//
-// 原语在本段无生产调用方；策略门禁/OPN 响应校验已接线（securechannel.go），
-// OPN 体加密与 MSG 对称覆盖按分段计划接线（v0.28.1 / v0.29.0，见
-// RELEASE-NOTES-v0280 §4）。不在范围：密钥续期（Renew）、MSG/CHA 对称覆盖、
-// KMS、HSM、性能基线。
+// 分段交付状态：
+//   - v0.28.0：原语层（派生/RSA-OAEP/AES-CBC/HMAC-SHA1/指纹）+ 策略门禁
+//     + OPN 非对称头证书协商与响应校验（securechannel.go）。
+//   - v0.28.1（本段）：OPN 体加密端到端接通——请求体 RSA-OAEP-SHA1(server pub,
+//     ClientNonce(32B) || legacyBody) + 客户端私钥签名；响应体 RSA-OAEP-SHA1
+//     (client pub, ServerNonce(32B) || plainResp) + 服务端私钥签名；双侧用
+//     ClientNonce/ServerNonce + 双证书派生对称密钥（DerivedKeys，v0.29.0 MSG
+//     对称覆盖接线用）。
+//   - 不在范围：MSG/CHA 对称覆盖、密钥续期（Renew）、KMS、HSM、性能基线
+//     （v0.29.0+，见 RELEASE-NOTES 与 KNOWN-ISSUES §29）。
 //
 // 算法选择（标准库直接对应）：
 //   - RSA-OAEP-SHA1    → crypto/rsa.DecryptOAEP
@@ -42,6 +40,14 @@ const SecurityPolicyBasic256Sha256URI = "http://opcfoundation.org/UA/SecurityPol
 
 // SecurityPolicyBasic128Rsa15URI = 旧策略（v0.28.0 不实现，登记拒绝）。
 const SecurityPolicyBasic128Rsa15URI = "http://opcfoundation.org/UA/SecurityPolicy#Basic128Rsa15"
+
+// AsymmetricSignatureAlgorithmRsaSha1 是 Basic256Sha256 非对称签名算法 URI
+// （Part 6 §6.7.7，对应 RSA-PKCS1v1.5-SHA1）。
+const AsymmetricSignatureAlgorithmRsaSha1 = "http://www.w3.org/2000/09/xmldsig#rsa-sha1"
+
+// B256NonceLen 是 Basic256Sha256 握手 ClientNonce/ServerNonce 的字节长度
+// （Part 6 §6.7.5.2：NonceLength = 32）。
+const B256NonceLen = 32
 
 // 派生密钥长度常量（Part 6 §6.7.5.2，Basic256Sha256）。
 const (
@@ -245,4 +251,70 @@ func hmacSHA1Verify(key, payload, sig []byte) bool {
 // IsBasic256Sha256Policy 判断策略 URI 是否 Basic256Sha256 系列。
 func IsBasic256Sha256Policy(uri string) bool {
 	return uri == SecurityPolicyBasic256Sha256URI
+}
+
+// DerivedKeys 是 Basic256Sha256 会话的对称密钥组（服务端/会话态持有形态，
+// v0.28.1 密钥协商产物；v0.29.0 MSG 对称覆盖接线使用）。
+type DerivedKeys struct {
+	ClientEncryptKey []byte
+	ClientEncryptIV  []byte
+	ClientMACKey     []byte
+	ServerEncryptKey []byte
+	ServerEncryptIV  []byte
+	ServerMACKey     []byte
+}
+
+// DeriveKeys 用与客户端完全相同的链式 SHA-1 函数（deriveKeys）从双侧 nonce
+// 与双侧证书 DER 派生对称密钥组。客户端侧（securechannel 内部）与服务端
+// （opcuasim）各自调用，输入一致则输出逐字节一致（密钥协商）。
+func DeriveKeys(clientNonce, serverNonce, clientCertDER, serverCertDER []byte) *DerivedKeys {
+	k := deriveKeys(clientNonce, serverNonce, clientCertDER, serverCertDER)
+	return &DerivedKeys{
+		ClientEncryptKey: k.ClientEncryptKey,
+		ClientEncryptIV:  k.ClientEncryptIV,
+		ClientMACKey:     k.ClientMACKey,
+		ServerEncryptKey: k.ServerEncryptKey,
+		ServerEncryptIV:  k.ServerEncryptIV,
+		ServerMACKey:     k.ServerMACKey,
+	}
+}
+
+// WrapOPNBody 用接收方证书 RSA 公钥封包 OPN 体（Part 6 §6.7.5.3）。
+// 请求方向：inner = ClientNonce(32B) || legacyBody；响应方向：
+// inner = ServerNonce(32B) || plainResp。nonce 不参与加密输入之外的字段。
+func WrapOPNBody(pub *rsa.PublicKey, inner []byte) ([]byte, error) {
+	return rsaOAEPEncrypt(pub, inner, nil)
+}
+
+// UnwrapOPNBody 用本端 RSA 私钥解封 OPN 体（WrapOPNBody 的逆操作）。
+func UnwrapOPNBody(priv *rsa.PrivateKey, blob []byte) ([]byte, error) {
+	return rsaOAEPDecrypt(priv, blob, nil)
+}
+
+// SignOPNBody 计算非对称签名（Part 6 §6.7.5.4）：
+// RSA-PKCS1v1.5-SHA1(AsymHeader 线编码字节 || 明文体)。
+// 请求方向由客户端私钥签，响应方向由服务端私钥签。
+func SignOPNBody(priv *rsa.PrivateKey, asymHeaderWire, plainBody []byte) ([]byte, error) {
+	if priv == nil {
+		return nil, errors.New("opcua: SignOPNBody: nil private key")
+	}
+	h := sha1.New() //nolint:gosec // Part 6 强制 SHA-1
+	h.Write(asymHeaderWire)
+	h.Write(plainBody)
+	sig, err := rsa.SignPKCS1v15(rand.Reader, priv, crypto.SHA1, h.Sum(nil)) //nolint:gosec // Part 6 强制 SHA-1
+	if err != nil {
+		return nil, fmt.Errorf("opcua: RSA-SHA1 签名失败: %w", err)
+	}
+	return sig, nil
+}
+
+// VerifyOPNBody 验证 SignOPNBody 签名（发送方证书公钥）。
+func VerifyOPNBody(pub *rsa.PublicKey, asymHeaderWire, plainBody, signature []byte) bool {
+	if pub == nil || len(signature) == 0 {
+		return false
+	}
+	h := sha1.New() //nolint:gosec // Part 6 强制 SHA-1
+	h.Write(asymHeaderWire)
+	h.Write(plainBody)
+	return rsa.VerifyPKCS1v15(pub, crypto.SHA1, h.Sum(nil), signature) == nil //nolint:gosec // Part 6 强制 SHA-1
 }

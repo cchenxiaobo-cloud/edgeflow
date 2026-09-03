@@ -340,11 +340,10 @@ func (sc *SecureChannel) nextReqID() uint32 {
 // SequenceHeader + OpenSecureChannelRequest）。
 //
 // v0.28.0：策略 URI 与证书字段由 opts 驱动；零值 opts 时为 NoneURI+空字段，
-// 与 v0.27.0 字节一致。Basic256Sha256 下发送加密 payload + 签名（v0.28.0
-// 服务端支持路径）——握手 body 包含两部分：RSA-OAEP-SHA1(clientNonce || body)
-// 作 sequence-encrypted payload，签名 = RSA-PKCS1v1.5-SHA1(OAsymHeader || body)。
-// 这里为了实现完整密文、保持与服务端互操作（Part 6 §6.7.2），发送体为
-// 「先发 AsymHeader+SenderCertificate/SenderThumbprint 表里，按 Part 6 格式组装」。
+// 与 v0.27.0 字节一致。
+// v0.28.1：Basic256Sha256 路径发送加密体 + 签名（线格式与签名/派生规则见
+// specs/0001-opn-body-encryption/spec.md；服务端镜像实现见
+// opcuasim.handleB256OpenSecureChannel；None 请求体编码逐字不变）。
 func (sc *SecureChannel) sendOPN(timeout time.Duration) error {
 	if timeout > 0 {
 		if err := sc.conn.netConn.SetDeadline(time.Now().Add(timeout)); err != nil {

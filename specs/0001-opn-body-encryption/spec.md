@@ -24,9 +24,9 @@
 ## Requirements
 - FR-1 客户端 OPN 加密体组装（nonce 32B crypto/rand；legacyBody=SequenceHeader+旧三字段请求）
 - FR-2 SignatureData 编码（算法 URI http://www.w3.org/2000/09/xmldsig#rsa-sha1）
-- FR-3 sim 解封验签（私钥=opt-in；失败→ERR BadSecurityChecksFailed 断连）
-- FR-4 双侧 deriveKeys 派生与存储（客户端存 sc.keys；sim 按连接存）
-- FR-5 sim 加密 OPN 响应（serverNonce 32B + AES-CBC+HMAC 覆盖，密钥=serverEncrypt/IV/serverMAC）
+- FR-3 sim 解封验签（私钥=opt-in；失败→ERR Bad_SecurityChecksFailed 断连，错误码风格下划线统一）
+- FR-4 双侧 deriveKeys 派生与存储（客户端存 sc.keys；sim 经函数返回值传递至会话态）
+- FR-5 sim 加密 OPN 响应（serverNonce 32B 前缀 + RSA-OAEP 体加密 + 服务端私钥签名；**偏差登记**：初版 spec 写 AES-CBC+HMAC 对称覆盖，实现裁定为非对称体加密——对称覆盖属 v0.29.0 MSG 段，见 KNOWN-ISSUES §29）
 - FR-6 客户端解密 OPN 响应并复用既有 pin/thumbprint 校验
 - NFR: 零第三方依赖；42 端点不变；SHA-1 限规范强制处（nolint 登记）
 

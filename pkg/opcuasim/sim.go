@@ -540,7 +540,7 @@ func (s *Simulator) handleB256OpenSecureChannel(c net.Conn, asymHdr opcua.Asymme
 	}
 	plain, err := opcua.UnwrapOPNBody(s.serverKey, tail)
 	if err != nil {
-		return sendErr(0x80130000, "BadSecurityChecksFailed")
+		return sendErr(0x80130000, "Bad_SecurityChecksFailed")
 	}
 	if len(plain) < opcua.B256NonceLen {
 		return sendErr(0x80070000, "Bad_DecodeError")
@@ -548,14 +548,14 @@ func (s *Simulator) handleB256OpenSecureChannel(c net.Conn, asymHdr opcua.Asymme
 	clientNonce, legacyBody := plain[:opcua.B256NonceLen], plain[opcua.B256NonceLen:]
 	clientPub, ok := clientCertPub(asymHdr.SenderCertificate)
 	if !ok {
-		return sendErr(0x80130000, "BadSecurityChecksFailed")
+		return sendErr(0x80130000, "Bad_SecurityChecksFailed")
 	}
 	asymWire, err := opcua.EncodeAsymmetricSecurityHeader(asymHdr)
 	if err != nil {
 		return sendErr(0x80070000, "Bad_DecodeError")
 	}
 	if !opcua.VerifyOPNBody(clientPub, asymWire, legacyBody, sd.Signature) {
-		return sendErr(0x80130000, "BadApplicationSignatureInvalid")
+		return sendErr(0x80130000, "Bad_SecurityChecksFailed")
 	}
 	_, lbRest, err := opcua.DecodeSequenceHeader(legacyBody)
 	if err != nil {

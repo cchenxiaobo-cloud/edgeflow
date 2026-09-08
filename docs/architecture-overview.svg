@@ -1,0 +1,159 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1520" height="1040" viewBox="0 0 1520 1040" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="arrUp" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrDown" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7c3aed"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1520" height="1040" fill="#f8fafc"/>
+  <text x="64" y="54" font-size="30" font-weight="700" fill="#0f172a">EdgeFlow 整体功能架构</text>
+  <text x="64" y="82" font-size="15" fill="#475569">云边协同边缘计算平台 · 类 KubeEdge 架构 · v0.29.0（2026-09-08）</text>
+
+  <!-- ═══ Band 1 接入与部署 ═══ -->
+  <rect x="64" y="104" width="1152" height="100" rx="14" fill="#ffffff" stroke="#e2e8f0"/>
+  <circle cx="88" cy="126" r="5" fill="#475569"/>
+  <text x="102" y="132" font-size="17" font-weight="700" fill="#334155">接入与部署</text>
+  <g>
+    <rect x="84" y="144" width="260" height="44" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="100" y="162" font-size="14" font-weight="600" fill="#334155">keadm 安装 CLI</text>
+    <text x="100" y="179" font-size="11.5" fill="#64748b">init · join · batch · cert · 升级回滚</text>
+    <rect x="368" y="144" width="260" height="44" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="384" y="162" font-size="14" font-weight="600" fill="#334155">Helm Chart</text>
+    <text x="384" y="179" font-size="11.5" fill="#64748b">云端一键部署（build/charts）</text>
+    <rect x="652" y="144" width="260" height="44" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="668" y="162" font-size="14" font-weight="600" fill="#334155">CRD &amp; API 定义</text>
+    <text x="668" y="179" font-size="11.5" fill="#64748b">edgenodes · devices · devicemodels</text>
+    <rect x="936" y="144" width="260" height="44" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="952" y="162" font-size="14" font-weight="600" fill="#334155">Docker 交付</text>
+    <text x="952" y="179" font-size="11.5" fill="#64748b">build/docker 镜像产物</text>
+  </g>
+
+  <!-- ═══ Band 2 云端 CloudCore ═══ -->
+  <rect x="64" y="224" width="1152" height="204" rx="14" fill="#ffffff" stroke="#e2e8f0"/>
+  <circle cx="88" cy="246" r="5" fill="#2563eb"/>
+  <text x="102" y="252" font-size="17" font-weight="700" fill="#1d4ed8">云端 CloudCore（cmd/cloudcore）</text>
+  <g>
+    <rect x="84" y="266" width="356" height="64" rx="8" fill="#dbeafe" stroke="#93c5fd"/>
+    <text x="100" y="286" font-size="14" font-weight="600" fill="#1e40af">南向接入 cloudhub</text>
+    <text x="100" y="304" font-size="11.5" fill="#475569">WebSocket · MQTT 云边通道</text>
+    <text x="100" y="320" font-size="11.5" fill="#475569">令牌认证 · 断线重注册</text>
+    <rect x="462" y="266" width="356" height="64" rx="8" fill="#dbeafe" stroke="#93c5fd"/>
+    <text x="478" y="286" font-size="14" font-weight="600" fill="#1e40af">REST API + 鉴权 + 审计</text>
+    <text x="478" y="304" font-size="11.5" fill="#475569">JWT 鉴权 · 设备/模型/发布操作</text>
+    <text x="478" y="320" font-size="11.5" fill="#475569">audit 审计日志（JSONL 追加）</text>
+    <rect x="840" y="266" width="356" height="64" rx="8" fill="#dbeafe" stroke="#93c5fd"/>
+    <text x="856" y="286" font-size="14" font-weight="600" fill="#1e40af">注册与状态 registry</text>
+    <text x="856" y="304" font-size="11.5" fill="#475569">节点注册 · 租约 · 幽灵节点防护</text>
+    <text x="856" y="320" font-size="11.5" fill="#475569">nodecontroller 心跳静默超时</text>
+    <rect x="84" y="342" width="356" height="64" rx="8" fill="#dbeafe" stroke="#93c5fd"/>
+    <text x="100" y="362" font-size="14" font-weight="600" fill="#1e40af">模型仓库与灰度发布 modelrepo · modelrelease</text>
+    <text x="100" y="380" font-size="11.5" fill="#475569">版本管理 · 暂停窗 · 预算控制</text>
+    <text x="100" y="396" font-size="11.5" fill="#475569">镜像校验 mirror_check · digest 锁</text>
+    <rect x="462" y="342" width="356" height="64" rx="8" fill="#dbeafe" stroke="#93c5fd"/>
+    <text x="478" y="362" font-size="14" font-weight="600" fill="#1e40af">分级存储 etcdstore</text>
+    <text x="478" y="380" font-size="11.5" fill="#475569">嵌入式写穿（v040）· 外部 etcd（v050）</text>
+    <text x="478" y="396" font-size="11.5" fill="#475569">真多活多副本（v060）</text>
+    <rect x="840" y="342" width="356" height="64" rx="8" fill="#dbeafe" stroke="#93c5fd"/>
+    <text x="856" y="362" font-size="14" font-weight="600" fill="#1e40af">可观测 metrics</text>
+    <text x="856" y="380" font-size="11.5" fill="#475569">指标暴露 /metrics</text>
+    <text x="856" y="396" font-size="11.5" fill="#475569">etcd 健康检查</text>
+  </g>
+
+  <!-- ═══ Band 3 边缘 EdgeCore ═══ -->
+  <rect x="64" y="448" width="1152" height="124" rx="14" fill="#ffffff" stroke="#e2e8f0"/>
+  <circle cx="88" cy="470" r="5" fill="#059669"/>
+  <text x="102" y="476" font-size="17" font-weight="700" fill="#047857">边缘 EdgeCore（cmd/edgecore）</text>
+  <g>
+    <rect x="84" y="490" width="260" height="64" rx="8" fill="#d1fae5" stroke="#6ee7b7"/>
+    <text x="100" y="510" font-size="14" font-weight="600" fill="#065f46">edged 设备管理</text>
+    <text x="100" y="528" font-size="11.5" fill="#475569">设备生命周期</text>
+    <text x="100" y="544" font-size="11.5" fill="#475569">迁移校验（v220）</text>
+    <rect x="368" y="490" width="260" height="64" rx="8" fill="#d1fae5" stroke="#6ee7b7"/>
+    <text x="384" y="510" font-size="14" font-weight="600" fill="#065f46">edgehub 云边通道</text>
+    <text x="384" y="528" font-size="11.5" fill="#475569">安全连接 · 心跳保活</text>
+    <text x="384" y="544" font-size="11.5" fill="#475569">压缩 · 重连退避</text>
+    <rect x="652" y="490" width="260" height="64" rx="8" fill="#d1fae5" stroke="#6ee7b7"/>
+    <text x="668" y="510" font-size="14" font-weight="600" fill="#065f46">metamanager 元数据</text>
+    <text x="668" y="528" font-size="11.5" fill="#475569">op_ledger SQLite 台账</text>
+    <text x="668" y="544" font-size="11.5" fill="#475569">模型/设备元数据管理</text>
+    <rect x="936" y="490" width="260" height="64" rx="8" fill="#d1fae5" stroke="#6ee7b7"/>
+    <text x="952" y="510" font-size="14" font-weight="600" fill="#065f46">devicetwin + eventbus</text>
+    <text x="952" y="528" font-size="11.5" fill="#475569">设备影子 · 消息契约</text>
+    <text x="952" y="544" font-size="11.5" fill="#475569">采集事件总线</text>
+  </g>
+
+  <!-- ═══ Band 4 协议映射 ═══ -->
+  <rect x="64" y="592" width="1152" height="124" rx="14" fill="#ffffff" stroke="#e2e8f0"/>
+  <circle cx="88" cy="614" r="5" fill="#d97706"/>
+  <text x="102" y="620" font-size="17" font-weight="700" fill="#b45309">协议映射层（mappers/）</text>
+  <g>
+    <rect x="84" y="634" width="356" height="64" rx="8" fill="#fef3c7" stroke="#fcd34d"/>
+    <text x="100" y="654" font-size="14" font-weight="600" fill="#92400e">modbus mapper</text>
+    <text x="100" y="672" font-size="11.5" fill="#475569">工业 PLC 接入</text>
+    <text x="100" y="688" font-size="11.5" fill="#475569">modbussim 仿真联调</text>
+    <rect x="462" y="634" width="356" height="64" rx="8" fill="#fef3c7" stroke="#fcd34d"/>
+    <text x="478" y="654" font-size="14" font-weight="600" fill="#92400e">mqtt mapper</text>
+    <text x="478" y="672" font-size="11.5" fill="#475569">TLS（v250）· mTLS · QoS2（v260）</text>
+    <text x="478" y="688" font-size="11.5" fill="#475569">会话持久化（v270）· 断线自动 Resume</text>
+    <rect x="840" y="634" width="356" height="64" rx="8" fill="#fef3c7" stroke="#fcd34d"/>
+    <text x="856" y="654" font-size="14" font-weight="600" fill="#92400e">opcua mapper</text>
+    <text x="856" y="672" font-size="11.5" fill="#475569">Basic256Sha256 安全栈接入（v290）</text>
+    <text x="856" y="688" font-size="11.5" fill="#475569">订阅消费 · Browse 点位浏览</text>
+  </g>
+
+  <!-- ═══ Band 5 共享库 ═══ -->
+  <rect x="64" y="736" width="1152" height="124" rx="14" fill="#ffffff" stroke="#e2e8f0"/>
+  <circle cx="88" cy="758" r="5" fill="#7c3aed"/>
+  <text x="102" y="764" font-size="17" font-weight="700" fill="#6d28d9">共享库（pkg/）</text>
+  <g>
+    <rect x="84" y="778" width="556" height="64" rx="8" fill="#ede9fe" stroke="#c4b5fd"/>
+    <text x="100" y="798" font-size="14" font-weight="600" fill="#5b21b6">opcua 客户端栈（v0.29.0 端到端安全通道）</text>
+    <text x="100" y="816" font-size="11.5" fill="#475569">HEL/ACK · OPN 体加密（RSA-OAEP-SHA1）</text>
+    <text x="100" y="832" font-size="11.5" fill="#475569">MSG/CLO 对称覆盖（AES-128-CBC + HMAC-SHA1）· Renew · 订阅泵 · Browse · None 逐字冻结</text>
+    <rect x="664" y="778" width="252" height="64" rx="8" fill="#ede9fe" stroke="#c4b5fd"/>
+    <text x="680" y="798" font-size="14" font-weight="600" fill="#5b21b6">mqtt 客户端</text>
+    <text x="680" y="816" font-size="11.5" fill="#475569">QoS2 · 会话持久化</text>
+    <text x="680" y="832" font-size="11.5" fill="#475569">TLS/mTLS 探针</text>
+    <rect x="940" y="778" width="256" height="64" rx="8" fill="#ede9fe" stroke="#c4b5fd"/>
+    <text x="956" y="798" font-size="14" font-weight="600" fill="#5b21b6">certs + 协议仿真器</text>
+    <text x="956" y="816" font-size="11.5" fill="#475569">OCSP/CRL 吊销检查</text>
+    <text x="956" y="832" font-size="11.5" fill="#475569">opcuasim · mqttsim · modbussim</text>
+  </g>
+
+  <!-- ═══ Band 6 质量基建 ═══ -->
+  <rect x="64" y="880" width="1152" height="100" rx="14" fill="#ffffff" stroke="#e2e8f0"/>
+  <circle cx="88" cy="902" r="5" fill="#334155"/>
+  <text x="102" y="908" font-size="17" font-weight="700" fill="#334155">质量基建</text>
+  <g>
+    <rect x="84" y="920" width="260" height="44" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="100" y="938" font-size="14" font-weight="600" fill="#1e293b">契约测试</text>
+    <text x="100" y="955" font-size="11.5" fill="#64748b">REST 42 端点冻结</text>
+    <rect x="368" y="920" width="260" height="44" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="384" y="938" font-size="14" font-weight="600" fill="#1e293b">e2e 端到端</text>
+    <text x="384" y="955" font-size="11.5" fill="#64748b">全仓 39 包 · e2e 356s+</text>
+    <rect x="652" y="920" width="260" height="44" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="668" y="938" font-size="14" font-weight="600" fill="#1e293b">SDD 规范流程</text>
+    <text x="668" y="955" font-size="11.5" fill="#64748b">spec-kit · 宪法八原则 · 冻结带</text>
+    <rect x="936" y="920" width="260" height="44" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="952" y="938" font-size="14" font-weight="600" fill="#1e293b">hack 工具链</text>
+    <text x="952" y="955" font-size="11.5" fill="#64748b">opcua-e2e · modbus-e2e · load-test</text>
+  </g>
+
+  <!-- ═══ 数据流泳道 ═══ -->
+  <text x="1240" y="132" font-size="15" font-weight="700" fill="#334155">数据流</text>
+  <line x1="1288" y1="706" x2="1288" y2="440" stroke="#2563eb" stroke-width="3" marker-end="url(#arrUp)"/>
+  <text x="1276" y="573" font-size="14" font-weight="600" fill="#2563eb" transform="rotate(-90 1276 573)" text-anchor="middle">设备数据上报</text>
+  <text x="1300" y="700" font-size="11" fill="#64748b">mapper 采集</text>
+  <text x="1300" y="440" font-size="11" fill="#64748b">cloudhub · etcd</text>
+  <line x1="1424" y1="440" x2="1424" y2="706" stroke="#7c3aed" stroke-width="3" marker-end="url(#arrDown)"/>
+  <text x="1438" y="573" font-size="14" font-weight="600" fill="#7c3aed" transform="rotate(90 1438 573)" text-anchor="middle">模型分发 · 指令下发</text>
+  <text x="1344" y="428" font-size="11" fill="#64748b">modelrelease 灰度</text>
+  <text x="1352" y="724" font-size="11" fill="#64748b">mapper 应用</text>
+  <text x="1224" y="760" font-size="11.5" fill="#94a3b8">两条流均经 EdgeCore</text>
+  <text x="1224" y="776" font-size="11.5" fill="#94a3b8">中转（edgehub）</text>
+
+  <text x="64" y="1014" font-size="12" fill="#94a3b8">EdgeFlow v0.29.0 · 云边协同边缘计算平台 · 本图随版本更新（docs/architecture-overview.svg）</text>
+</svg>

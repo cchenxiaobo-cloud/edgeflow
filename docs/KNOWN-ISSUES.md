@@ -414,3 +414,14 @@
 - **既有 race flake（非本轮引入）**: mappers/opcua TestStopNilClientCollectErrors 在 -race 下偶发 DATA RACE（间歇复现，三轮单跑仅一次命中）。基线定责：stash 本轮改动后在 v0.28.0 HEAD 上 count=8 全包 race 亦 FAIL——既有问题。处置：登记跟踪，后续单独修复轮处理（疑似 mapper Stop 与后台轮询 goroutine 的 map/字段竞态）。
 - **B256 通道 MSG 明文边界**: WithIdentity 建立的 B256 通道上 MSG 帧仍为明文对称头（对称覆盖 v0.29.0）；connSession.b256Keys/SecureChannel.keys 本段仅派生存储不使用。
 - **sim b256 握手产物交接**: 主线复核修正 P1 后为函数返回值传递（handleB256OpenSecureChannel 返回 (*b256Handshake, bool)），无 Simulator 级共享状态；并发连接互取竞态窗口随初版 setB256/takeB256 一并删除。
+
+## 30. v0.29.0 开发轮处置登记（2026-09-08，OPC-UA MSG/CLO 对称覆盖 + 显式令牌续期）
+
+- **Renew 形状指纹网关（自研栈约定，与规范 Part 4 形态不同）**: Renew 请求经加密 MSG 通道承载，体 = ClientNonce(32B) ‖ OpenSecureChannelRequest{ver=0, RENEW, lifetime=600000}（44B 定长 + 三元组大端指纹分派）。规范形态为 RequestHeader 扩展（含 nonce 字段）；本仓形状匹配制分派下采用定长指纹，碰撞概率可忽略。接真实第三方服务器互操作时需重评（与 §29 线格式偏差同源）。
+- **换钥窗口收敛机制**: Renew 响应以**旧出站组**密封，客户端收到后原子换组（旧组转在途回退）；sim 收到首个新钥帧才切换出站组。两侧收敛由 TCP 单通道序保证（发送方保守、接收方新钥优先/旧钥回退），无竞态。
+- **KeepAlive seq=0 约定与长轮询自愈**: sim KeepAlive 以空通知 seq=0 兑现（PRT-23）；客户端 PRT-07 防重放原样丢弃会导致发布长轮询断裂（窗口靠消费方 PubAck 驱动）。v0.29.0 起客户端识别空通知自动重挂发布窗口（不投递、不推进 lastPubSeq，pubCh 行为不变）。
+- **悬挂 Publish 陈旧 goroutine 竞态（本轮修复）**: 武装 goroutine 可因迟到 wake 存活至下一轮武装，其 KeepAlive 兑现携带陈旧 reqID 抢答，压制新悬挂请求（订阅通知永久静默；续期时序放大暴露）。修复 = 所有权校验（cs.pubReqID != sh.RequestID 即退出）。既有缺陷，非本轮引入。
+- **MSG 入站 TokenID 未严格校验**: 入站帧认证由 HMAC 足迹承担；TokenID 字段不参与严格比对（换钥窗口内新旧组并行期间避免误杀）。威胁模型下可接受（HMAC 伪造不可行），登记设计取舍。
+- **自动续期未实现**: 令牌寿命（RevisedLifetime=600000ms）到期前无自动 Renew 触发器；使用方需显式调用 Client.Renew。后续轮交付 75% 寿命自动触发。
+- **互通性验证边界（沿用 §29）**: 仍为自研客户端 ↔ 自研 sim 双向交叉验证；OPC 基金会互操作样例向量比对未做，接真实第三方服务器前必须补。
+- **既有 race flake（沿用 §29）**: mappers/opcua TestStopNilClientCollectErrors 本轮三包 race 未触发，仍登记跟踪（单独修复轮处理）。

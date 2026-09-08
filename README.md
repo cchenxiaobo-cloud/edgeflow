@@ -6,7 +6,11 @@ EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备�
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.28.1**（2026-09-03，OPC-UA OPN 体加密与 Basic256Sha256 端到端互通——客户端 OPN 请求体 RSA-OAEP-SHA1(服务端公钥, ClientNonce‖legacyBody) + 客户端私钥 RSA-SHA1 签名；opcuasim `WithIdentity(cert, key)` opt-in 对等处理（解封→验签→加密响应，失败逐路径 ERR 不降级，无身份保持 v0.28.0 显式拒绝）；双侧链式 SHA-1 密钥协商六段逐字节一致（v0.29.0 MSG 对称覆盖接线）；None 路径逐字不变、v0280 冻结测试零改动、端点 42 不变、零新依赖）。核心能力包括：
+> 当前版本：**v0.29.0**（2026-09-08，OPC-UA MSG/CLO 对称覆盖与显式令牌续期——Basic256Sha256 通道全部 MSG/CLO 帧以 AES-128-CBC 加密 + HMAC-SHA1 足迹封尾（Header‖TokenID‖CT‖Footer，覆盖含 MessageSize 的完整帧头，常时比较）；`Client.Renew` 在加密通道内显式续期（新 TokenID/ServerNonce → 新对称密钥组，旧组保留作在途回退，出站保守切换 + TCP 序收敛）；悬挂 Publish 陈旧 goroutine 抢答竞态修复（所有权校验）+ KeepAlive 长轮询自动重挂；整体功能架构图入库 [docs/architecture-overview.svg](docs/architecture-overview.svg)；None 路径逐字不变、v0240–v0281 冻结测试零改动、端点 42 不变、零新依赖）。核心能力包括：
+
+## 整体功能架构
+
+![EdgeFlow 整体功能架构（v0.29.0）](docs/architecture-overview.svg)
 
 ## 目录结构
 
@@ -98,6 +102,7 @@ helm install edgeflow build/charts/edgeflow/
 
 - **v0.27.0**（2026-09-01）：QoS2 会话恢复（in-flight 持久化）：client `Options.PersistenceDir` 门控 + `Resume()` 回放；sim broker `NewBrokerWithOptions` 孤儿表重启恢复；MQTT 5.0 评估文档（本轮不实现，分期草案）。
 - **v0.28.0**（2026-09-01）：OPC-UA 安全策略框架（Basic256Sha256 分段第一段）：策略门禁 + 密码学原语 + OPN 证书协商校验 + sim 显式拒绝；开发规范与 spec-kit 工程化落地（docs/DEVELOPMENT-SPEC.md + .specify/ 宪法）。
+- **v0.29.0**（2026-09-08）：OPC-UA MSG/CLO 对称覆盖与显式令牌续期：SealMSGFrame/OpenMSGFrame 密封原语（AES-128-CBC + HMAC-SHA1 尾足迹，§6.7.4 尾垫）；客户端 sendSecure/recvSecure/pump 三路径密封接线；sim 网关（新钥优先/旧钥回退）+ 密封出站（同步快照 + 异步 writeServerFrameLocked）+ CLO 验封；Client.Renew 显式续期（44B 形状指纹网关、旧出站组回响应、首个新钥帧切组）；悬挂 Publish 所有权校验（修陈旧 goroutine 抢答竞态）+ KeepAlive 长轮询自动重挂；v0290 测试 7 例全绿（含传输级篡改 e2e）；整体功能架构图入库；详见 [docs/RELEASE-NOTES-v0290.md](docs/RELEASE-NOTES-v0290.md)
 - **v0.28.1**（2026-09-03）：OPC-UA OPN 体加密与 Basic256Sha256 端到端互通：客户端加密 OPN + sim opt-in（WithIdentity）对等处理 + 双侧密钥协商；MSG 对称覆盖留 v0.29.0。
 - **v0.26.0**（2026-08-31）：MQTT QoS2 ＋ client mTLS ＋ mapper 配置文件化——pkg/mqtt 补齐 PUBREC=5/PUBREL=6/PUBCOMP=7 codec（PUBREL flags=0x02 规范特例，flags 不符 ErrMalformed）；client Options.EnableQoS2 opt-in 门控（默认 false 与 v0.24.0/v0.25.0 逐字一致）：上行四次握手（PUBLISH→PUBREC→PUBREL→PUBCOMP，复用 pendingAcks，超时/类型错即报错）+ readPump 下行 QoS2（PUBREC 应答 + pendingDownQoS2 暂存，PUBREL 到达才分发 handler 并回 PUBCOMP）；mqttsim pendingQoS2 暂存（按连接隔离，独立复核 P1 修复）+ Pubrel 分支（消息在 PUBREL 确认后才 recordPublish+fanout，broker 视角 exactly-once；QoS0/QoS1 路径零改动）；mapper EDGEFLOW_MQTT_TLS_CERT/_TLS_KEY 客户端证书对（必须成对 + X509KeyPair fail-fast，注入 cfg.Certificates 由服务端 RequireAndVerifyClientCert 校验）；EDGEFLOW_MQTT_CONFIG 配置文件化（.yaml/.yml/.json 扁平键值手写 parser，优先级 With>env>file>默认，坏文件软失败 log.Errorf 继续）；v0260_* 测试 14 例全绿（含 -race）；测试 CA EKU 嵌套陷阱排障记录归档 KNOWN-ISSUES §26；详见 [docs/RELEASE-NOTES-v0260.md](docs/RELEASE-NOTES-v0260.md)
 - **v0.25.0**（2026-08-30）：MQTT 硬化轮——R-6 codec 收敛（pkg/mqtt 导出 EncodePacket/DecodePacket/ValidateTopicFilter 薄包装；mqttsim 删除本地 codec，sim.go 747→447 行净减 300，客户端/broker/测试共享单一 wire 实现；坏客户端 SUBSCRIBE 宽容通道保留冻结负向测试语义，v0250_export_test.go 4 parity 用例）+ R-5 契约守卫口径修正（反向断言/背景注释改同扫 main.go 与 model_api.go 实际口径，错误信息带来源文件 file 字段，断言零变化）+ MQTT TLS 加密传输全栈（pkg/mqtt Options.TLSConfig：tls.DialWithDialer + ServerName 自动回填 + Clone 防突变；pkg/mqttsim NewBrokerTLS（TLS 终止于 listener，broker 其余路径逐字不变）；mappers/mqtt EDGEFLOW_MQTT_TLS_CA（PEM 文件路径，读/解析失败 fail-fast）与 EDGEFLOW_MQTT_TLS_INSECURE（"1"/"true"/"on"，WARN，开发/测试逃生通道）全 opt-in；TestMQTTTLSDeviceE2E 全环 TLS 闭环：上报→云端属性→指令下发→cmd 主题→Desired 收敛→回发收敛；TLS 增量 12 测试全绿含 -race）；HTTP 端点保持 42，零新依赖（crypto/* 标准库），默认行为与 v0.24.0 兼容；详见 [docs/RELEASE-NOTES-v0250.md](docs/RELEASE-NOTES-v0250.md)

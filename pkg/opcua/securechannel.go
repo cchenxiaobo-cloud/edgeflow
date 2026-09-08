@@ -252,11 +252,48 @@ type SecureChannel struct {
 	// policy 是 sendOPN 校验后的协商策略 URI（""=未 OPN）。
 	policy string
 	// clientNonce/serverNonce 是 v0.28.1 Basic256Sha256 握手的随机数
-	//（B256NonceLen=32B，crypto/rand）；None 路径为空。派生密钥 keys
-	// 仅在双方握手成功后持有（v0.29.0 MSG 对称覆盖接线用）。
+	//（B256NonceLen=32B，crypto/rand）；None 路径为空。Renew 时记录
+	// 最近一次换钥使用的 nonce（v0.29.0）。
 	clientNonce []byte
 	serverNonce []byte
-	keys        *DerivedKeys
+
+	// keysMu 保护 cur/prev 密钥组（v0.29.0）。cur.keys==nil 表示 None
+	// 明文通道；prev 仅在 Renew 换钥后短暂存在，用于入站在途帧回退。
+	keysMu sync.RWMutex
+	cur    keySet
+	prev   *keySet
+}
+
+// keySet 是一组生效的对称密钥与令牌（v0.29.0）。换钥窗口语义：
+// 出站永远用 cur；入站先试 cur、失败回退 prev（TCP 单通道序保证对端
+// 不会早于本端切换，回退只命中换钥前的在途帧）。
+type keySet struct {
+	keys    *DerivedKeys
+	tokenID uint32
+}
+
+// curKeys 返回当前密钥组快照（并发安全）。
+func (sc *SecureChannel) curKeys() keySet {
+	sc.keysMu.RLock()
+	defer sc.keysMu.RUnlock()
+	return sc.cur
+}
+
+// encrypted 报告通道是否处于对称加密态（Basic256Sha256 换钥完成）。
+func (sc *SecureChannel) encrypted() bool {
+	sc.keysMu.RLock()
+	defer sc.keysMu.RUnlock()
+	return sc.cur.keys != nil
+}
+
+// swapKeys 原子换钥（Renew）：当前组转 prev（入站回退用），新组就位
+// 并携带新 TokenID（v0.29.0）。
+func (sc *SecureChannel) swapKeys(keys *DerivedKeys, tokenID uint32) {
+	sc.keysMu.Lock()
+	defer sc.keysMu.Unlock()
+	old := sc.cur
+	sc.prev = &keySet{keys: old.keys, tokenID: old.tokenID}
+	sc.cur = keySet{keys: keys, tokenID: tokenID}
 }
 
 // MaxEndpointUrlLength 是 Hello.EndpointUrl 的长度上限（PRT-15）。
@@ -327,8 +364,8 @@ func (sc *SecureChannel) RequestID() uint32 { return sc.reqId }
 // ChannelID 返回协商出的通道 id。
 func (sc *SecureChannel) ChannelID() uint32 { return sc.channelId }
 
-// TokenID 返回协商出的安全令牌 id。
-func (sc *SecureChannel) TokenID() uint32 { return sc.tokenId }
+// TokenID 返回当前生效的安全令牌 id（Renew 换钥后为新令牌，v0.29.0）。
+func (sc *SecureChannel) TokenID() uint32 { return sc.curKeys().tokenID }
 
 // nextReqID 分配并返回下一个出站 RequestId。
 func (sc *SecureChannel) nextReqID() uint32 {
@@ -514,8 +551,9 @@ func (sc *SecureChannel) recvOPN(timeout time.Duration) error {
 			return errors.New("opcua: OPN 响应 ServerNonce 与加密体前缀不一致")
 		}
 		sc.channelId = resp.SecurityToken.ChannelID
-		sc.tokenId = resp.SecurityToken.TokenID
-		sc.keys = DeriveKeys(sc.clientNonce, sc.serverNonce, sc.opts.ClientCert.Raw, sc.opts.ServerCert.Raw)
+		sc.keysMu.Lock()
+		sc.cur = keySet{keys: DeriveKeys(sc.clientNonce, sc.serverNonce, sc.opts.ClientCert.Raw, sc.opts.ServerCert.Raw), tokenID: resp.SecurityToken.TokenID}
+		sc.keysMu.Unlock()
 		return nil
 	}
 	if _, err := decodeSequenceHeader(&d); err != nil {
@@ -534,23 +572,41 @@ func (sc *SecureChannel) recvOPN(timeout time.Duration) error {
 		return fmt.Errorf("opcua: OPN 响应 RevisedLifetime=%v 非法（须 > 0）", resp.SecurityToken.RevisedLifetime)
 	}
 	sc.channelId = resp.SecurityToken.ChannelID
-	sc.tokenId = resp.SecurityToken.TokenID
+	sc.keysMu.Lock()
+	sc.cur = keySet{tokenID: resp.SecurityToken.TokenID}
+	sc.keysMu.Unlock()
 	return nil
 }
 
 // sendSecure 发送一条 MSG 服务消息（SymmetricSecurityHeader +
 // SequenceHeader + 服务 body），返回本次 RequestId。
+// v0.29.0：Basic256Sha256 通道（cur.keys 非 nil）改走密封路径——
+// 明文 = SequenceHeader ‖ body，整帧经 SealMSGFrame 密封后 raw 写出；
+// None 路径逐字保留（冻结带）。
 func (sc *SecureChannel) sendSecure(body []byte) (uint32, error) {
 	sc.sendMu.Lock()
 	defer sc.sendMu.Unlock()
-	var e encoder
-	if err := (SymmetricSecurityHeader{TokenID: sc.tokenId}).encodeUA(&e); err != nil {
-		return 0, err
-	}
+	var seqE encoder
 	reqID := sc.nextReqID()
-	if err := (SequenceHeader{SequenceNumber: nextSeq(&sc.seq), RequestID: reqID}).encodeUA(&e); err != nil {
+	if err := (SequenceHeader{SequenceNumber: nextSeq(&sc.seq), RequestID: reqID}).encodeUA(&seqE); err != nil {
 		return 0, err
 	}
+	ks := sc.curKeys()
+	if ks.keys != nil {
+		frame, err := SealMSGFrame(MsgSecureMessage, sc.channelId, ks.tokenID, ks.keys, true, append(seqE.buf, body...))
+		if err != nil {
+			return 0, err
+		}
+		if err := sc.conn.WriteFrameRaw(frame); err != nil {
+			return 0, err
+		}
+		return reqID, nil
+	}
+	var e encoder
+	if err := (SymmetricSecurityHeader{TokenID: ks.tokenID}).encodeUA(&e); err != nil {
+		return 0, err
+	}
+	e.raw(seqE.buf)
 	e.raw(body)
 	if err := sc.conn.WriteMessage(MsgSecureMessage, e.buf); err != nil {
 		return 0, err
@@ -558,8 +614,31 @@ func (sc *SecureChannel) sendSecure(body []byte) (uint32, error) {
 	return reqID, nil
 }
 
+// openIncoming 解封对端（服务端方向）MSG/CLO 帧：先试当前密钥组，
+// 失败回退 prev（Renew 换钥窗口的在途帧；TCP 单通道序保证对端切出不
+// 会早于本端，回退仅命中有限窗口）。None（cur.keys==nil）原样返回。
+func (sc *SecureChannel) openIncoming(msgType string, body []byte) ([]byte, error) {
+	cur := sc.curKeys()
+	if cur.keys == nil {
+		return body, nil
+	}
+	sc.keysMu.RLock()
+	prev := sc.prev
+	sc.keysMu.RUnlock()
+	if _, plain, err := OpenMSGFrame(msgType, sc.channelId, body, cur.keys, false); err == nil {
+		return plain, nil
+	}
+	if prev != nil {
+		if _, plain, err := OpenMSGFrame(msgType, sc.channelId, body, prev.keys, false); err == nil {
+			return plain, nil
+		}
+	}
+	return nil, errors.New("opcua: MSG 帧解封失败（HMAC/尾垫校验不通过）")
+}
+
 // recvSecure 读取下一条 MSG 响应并关联到期望 RequestId。
 // 非 MSG 帧（如 CLO 后无帧）报错；读取设上限防死循环。
+// v0.29.0：B256 通道先解封（openIncoming）再解析序列头；None 逐字保留。
 func (sc *SecureChannel) recvSecure(wantReqID uint32, timeout time.Duration) ([]byte, error) {
 	if timeout > 0 {
 		if err := sc.conn.netConn.SetDeadline(time.Now().Add(timeout)); err != nil {
@@ -586,6 +665,23 @@ func (sc *SecureChannel) recvSecure(wantReqID uint32, timeout time.Duration) ([]
 		}
 		if msgType != MsgSecureMessage {
 			return nil, fmt.Errorf("opcua: unexpected service reply %q", msgType)
+		}
+		if sc.encrypted() {
+			plain, derr := sc.openIncoming(msgType, body)
+			if derr != nil {
+				return nil, derr
+			}
+			var dd decoder
+			dd.b = plain
+			sh, serr := decodeSequenceHeader(&dd)
+			if serr != nil {
+				return nil, fmt.Errorf("opcua: decode sequence header: %w", serr)
+			}
+			if sh.RequestID != wantReqID {
+				// 不匹配的响应（重发/乱序）：跳过继续读
+				continue
+			}
+			return dd.b[dd.off:], nil
 		}
 		var d decoder
 		d.b = body
@@ -638,14 +734,19 @@ func validateOPNResponseHeader(asym AsymmetricSecurityHeader, policy string, opt
 	return nil
 }
 
-// sendCLO 发送 CloseSecureChannel 请求（AsymmetricSecurityHeader +
-// SequenceHeader，无其他 body 字段）。v0.28.0：沿用协商策略与证书字段。
-// v0.28.1：Basic256Sha256 下 CLO 同样按本端签名能力发送（体不加密，
-// 与 v0.28.0 行为一致；MSG/CLO 对称覆盖留 v0.29.0）。
+// sendCLO 发送 CloseSecureChannel 请求。None：AsymmetricSecurityHeader +
+// SequenceHeader（v0.28.0 逐字保留）。Basic256Sha256（v0.29.0）：CLO 与
+// MSG 同为对称安全帧——明文 = SequenceHeader，整帧 SealMSGFrame 密封。
 func (sc *SecureChannel) sendCLO() error {
 	policy := sc.policy
 	if policy == "" {
 		policy = SecurityPolicyNoneURI
+	}
+	if policy == SecurityPolicyBasic256Sha256URI {
+		if ks := sc.curKeys(); ks.keys != nil {
+			return sc.sendCLOB256(ks) // v0.29.0 复核 P2-1：reqId 分配与写出持 sendMu
+		}
+		// 密钥组缺失（异常态）：保留 v0.28.1 非对称头行为，不静默降级为 None。
 	}
 	hdr := AsymmetricSecurityHeader{SecurityPolicyURI: policy}
 	if policy == SecurityPolicyBasic256Sha256URI && sc.opts.ClientCert != nil && sc.opts.ServerCert != nil {
@@ -667,6 +768,23 @@ func (sc *SecureChannel) sendCLO() error {
 func (sc *SecureChannel) Close() error {
 	_ = sc.sendCLO()
 	return sc.conn.Close()
+}
+
+// sendCLOB256 密封发送 B256 CLO 帧（v0.29.0 复核 P2-1：与 sendSecure 同锁，
+// 消除 Close 与在途发送并发下 reqId/seq 的数据竞争窗口）。
+func (sc *SecureChannel) sendCLOB256(ks keySet) error {
+	sc.sendMu.Lock()
+	defer sc.sendMu.Unlock()
+	var seqE encoder
+	_ = sc.nextReqID()
+	if err := (SequenceHeader{SequenceNumber: nextSeq(&sc.seq), RequestID: sc.reqId}).encodeUA(&seqE); err != nil {
+		return err
+	}
+	frame, err := SealMSGFrame(MsgCloseSecureChannel, sc.channelId, ks.tokenID, ks.keys, true, seqE.buf)
+	if err != nil {
+		return err
+	}
+	return sc.conn.WriteFrameRaw(frame)
 }
 
 // nextSeq 返回递增后的出站 SequenceNumber。

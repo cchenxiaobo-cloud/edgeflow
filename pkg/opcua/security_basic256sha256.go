@@ -8,8 +8,11 @@
 //     (client pub, ServerNonce(32B) || plainResp) + 服务端私钥签名；双侧用
 //     ClientNonce/ServerNonce + 双证书派生对称密钥（DerivedKeys，v0.29.0 MSG
 //     对称覆盖接线用）。
-//   - 不在范围：MSG/CHA 对称覆盖、密钥续期（Renew）、KMS、HSM、性能基线
-//     （v0.29.0+，见 RELEASE-NOTES 与 KNOWN-ISSUES §29）。
+//   - v0.29.0（本段）：MSG/CLO 对称覆盖——密封/解封原语
+//     （SealMSGFrame/OpenMSGFrame）+ 显式续期（Renew，见 securechannel.go
+//     Client.Renew 与 opcuasim.handleB256Renew）。
+//   - 不在范围：自动续期定时器、KMS、HSM、性能基线
+//     （见 RELEASE-NOTES 与 KNOWN-ISSUES §30）。
 //
 // 算法选择（标准库直接对应）：
 //   - RSA-OAEP-SHA1    → crypto/rsa.DecryptOAEP
@@ -30,6 +33,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha1" //nolint:gosec // OPC-UA Basic256Sha256 规范强制 SHA-1
 	"crypto/x509"
+	"encoding/binary"
 	"errors"
 	"fmt"
 )
@@ -317,4 +321,170 @@ func VerifyOPNBody(pub *rsa.PublicKey, asymHeaderWire, plainBody, signature []by
 	h.Write(asymHeaderWire)
 	h.Write(plainBody)
 	return rsa.VerifyPKCS1v15(pub, crypto.SHA1, h.Sum(nil), signature) == nil //nolint:gosec // Part 6 强制 SHA-1
+}
+
+// ---------------------------------------------------------------------------
+// v0.29.0 MSG/CLO 对称覆盖（Part 6 §6.7.5 对称加密/签名 + §6.7.4 尾垫）。
+// 帧布局（HeaderSize=12 已含 ChannelID）：
+//
+//	Header(12B) ‖ TokenID(4B) ‖ CT(AES-128-CBC) ‖ Footer(HMAC-SHA1, 20B)
+//	明文 = SequenceHeader ‖ 服务体 ‖ PadSize(1B) ‖ Padding×PadSize
+//	CT   = AES-128-CBC(发送方 EncryptKey/EncryptIV, 明文)
+//	Footer = HMAC-SHA1(发送方 MACKey, Header‖TokenID‖CT)（覆盖完整帧头，
+//	        含 MessageSize；接收端常时比较）
+// ---------------------------------------------------------------------------
+
+// msgDirKeys 取发送方向的密钥三元组（fromClient=true 表示发送方是客户端）。
+func msgDirKeys(keys *DerivedKeys, fromClient bool) (encKey, encIV, macKey []byte) {
+	if keys == nil {
+		return nil, nil, nil
+	}
+	if fromClient {
+		return keys.ClientEncryptKey, keys.ClientEncryptIV, keys.ClientMACKey
+	}
+	return keys.ServerEncryptKey, keys.ServerEncryptIV, keys.ServerMACKey
+}
+
+// cbcRawEncrypt/Decrypt：数据已按块对齐，不做 padding（MSG 帧尾垫
+// 由 sealMSGPad/openMSGPad 负责，Part 6 §6.7.4）。
+func cbcRawEncrypt(key, iv, data []byte) ([]byte, error) {
+	if len(key) != b256EncryptKeyLen || len(iv) != b256EncryptIVLen {
+		return nil, errors.New("opcua: MSG AES-128 key/IV 长度非法")
+	}
+	if len(data) == 0 || len(data)%aes.BlockSize != 0 {
+		return nil, errors.New("opcua: MSG 明文长度非 AES 块对齐")
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	ct := make([]byte, len(data))
+	cipher.NewCBCEncrypter(block, iv).CryptBlocks(ct, data)
+	return ct, nil
+}
+
+func cbcRawDecrypt(key, iv, data []byte) ([]byte, error) {
+	if len(key) != b256EncryptKeyLen || len(iv) != b256EncryptIVLen {
+		return nil, errors.New("opcua: MSG AES-128 key/IV 长度非法")
+	}
+	if len(data) == 0 || len(data)%aes.BlockSize != 0 {
+		return nil, errors.New("opcua: MSG 密文长度非 AES 块对齐")
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	pt := make([]byte, len(data))
+	cipher.NewCBCDecrypter(block, iv).CryptBlocks(pt, data)
+	return pt, nil
+}
+
+// sealMSGPad 按 Part 6 §6.7.4 尾垫：PadSize(1B) + PadSize 个重复字节，
+// 使 (len(data)+1+PadSize) ≡ 0 (mod blockSize)。PadSize ∈ [0, blockSize)。
+func sealMSGPad(data []byte, blockSize int) []byte {
+	pad := (blockSize - (len(data)+1)%blockSize) % blockSize
+	out := append(append([]byte{}, data...), byte(pad))
+	for i := 0; i < pad; i++ {
+		out = append(out, byte(pad))
+	}
+	return out
+}
+
+// openMSGPad 校验并剥离 §6.7.4 尾垫：布局 data ‖ PadSize ‖ Pad×PadSize；
+// 任何不一致即拒绝（不泄漏明文长度之外的信息）。
+func openMSGPad(plain []byte, blockSize int) ([]byte, error) {
+	if len(plain) == 0 || len(plain)%blockSize != 0 {
+		return nil, errors.New("opcua: MSG 解封明文长度非法")
+	}
+	pad := int(plain[len(plain)-1])
+	if pad < 0 || pad >= blockSize || 1+pad > len(plain) {
+		return nil, errors.New("opcua: MSG 尾垫 PadSize 非法")
+	}
+	if plain[len(plain)-1-pad] != byte(pad) {
+		return nil, errors.New("opcua: MSG 尾垫 PadSize 字节不一致")
+	}
+	for i := len(plain) - pad; i < len(plain); i++ {
+		if plain[i] != byte(pad) {
+			return nil, errors.New("opcua: MSG 尾垫重复字节不一致")
+		}
+	}
+	return plain[:len(plain)-1-pad], nil
+}
+
+// SealMSGFrame 密封一条 MSG/CLO 帧（返回含完整 12B 帧头的可写字节）。
+// plaintext 为调用方组装的 SequenceHeader ‖ 服务体（不加密部分之外）。
+// fromClient=true 用 Client* 密钥（客户端发送方向），false 用 Server*。
+func SealMSGFrame(msgType string, channelID, tokenID uint32, keys *DerivedKeys, fromClient bool, plaintext []byte) ([]byte, error) {
+	encKey, encIV, macKey := msgDirKeys(keys, fromClient)
+	if encKey == nil || macKey == nil {
+		return nil, errors.New("opcua: SealMSGFrame: 密钥组缺失")
+	}
+	padded := sealMSGPad(plaintext, aes.BlockSize)
+	ct, err := cbcRawEncrypt(encKey, encIV, padded)
+	if err != nil {
+		return nil, fmt.Errorf("opcua: SealMSGFrame 加密失败: %w", err)
+	}
+	hdr, err := EncodeHeader(MessageHeader{
+		MessageType: msgType, ChunkType: ChunkFinal,
+		MessageSize: uint32(HeaderSize + 4 + len(ct) + sha1.Size), //nolint:gosec // Part 6 强制 SHA-1
+		ChannelId:   channelID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var tid [4]byte
+	putUint32(tid[:], tokenID)
+	macInput := append(append(append([]byte{}, hdr...), tid[:]...), ct...)
+	frame := append(append(append([]byte{}, hdr...), tid[:]...), ct...)
+	frame = append(frame, hmacSHA1Sign(macKey, macInput)...)
+	return frame, nil
+}
+
+// OpenMSGFrame 解封一条 MSG/CLO 帧：body = ReadMessage 返回的帧载荷
+// （TokenID ‖ CT ‖ Footer；12B 帧头在调用方读帧时已剥离，此处按 msgType/
+// channelID 与长度重建以覆盖 HMAC 校验）。返回帧内 TokenID 与明文
+// （SequenceHeader ‖ 服务体）。
+func OpenMSGFrame(msgType string, channelID uint32, body []byte, keys *DerivedKeys, fromClient bool) (uint32, []byte, error) {
+	encKey, encIV, macKey := msgDirKeys(keys, fromClient)
+	if encKey == nil || macKey == nil {
+		return 0, nil, errors.New("opcua: OpenMSGFrame: 密钥组缺失")
+	}
+	if len(body) < 4+sha1.Size { //nolint:gosec // Part 6 强制 SHA-1
+		return 0, nil, errors.New("opcua: OpenMSGFrame: 帧过短")
+	}
+	ctLen := len(body) - 4 - sha1.Size //nolint:gosec // Part 6 强制 SHA-1
+	if ctLen <= 0 || ctLen%aes.BlockSize != 0 {
+		return 0, nil, errors.New("opcua: OpenMSGFrame: 密文长度非块对齐")
+	}
+	hdr, err := EncodeHeader(MessageHeader{
+		MessageType: msgType, ChunkType: ChunkFinal,
+		MessageSize: uint32(HeaderSize + len(body)), ChannelId: channelID,
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	tokenID := decodeUint32(body[:4])
+	ct := body[4 : len(body)-sha1.Size]  //nolint:gosec // Part 6 强制 SHA-1
+	footer := body[len(body)-sha1.Size:] //nolint:gosec // Part 6 强制 SHA-1
+	macInput := append(append(append([]byte{}, hdr...), body[:4]...), ct...)
+	if !hmacSHA1Verify(macKey, macInput, footer) {
+		return 0, nil, errors.New("opcua: OpenMSGFrame: HMAC 校验失败")
+	}
+	padded, err := cbcRawDecrypt(encKey, encIV, ct)
+	if err != nil {
+		return 0, nil, err
+	}
+	plain, err := openMSGPad(padded, aes.BlockSize)
+	if err != nil {
+		return 0, nil, err
+	}
+	return tokenID, plain, nil
+}
+
+func putUint32(b []byte, v uint32) {
+	binary.BigEndian.PutUint32(b, v)
+}
+
+func decodeUint32(b []byte) uint32 {
+	return binary.BigEndian.Uint32(b)
 }

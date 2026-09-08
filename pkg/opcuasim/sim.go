@@ -28,6 +28,7 @@ import (
 	crand "crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"math"
@@ -389,10 +390,14 @@ func (s *Simulator) handleConn(c net.Conn) {
 		if !hok || h == nil {
 			return
 		}
-		// B256 通道建立后的 MSG 循环：本段 MSG 仍为明文对称头（对称覆盖
-		// v0.29.0），会话态携带派生密钥备用（仅存不用，避免 v0.29.0 重复握手）。
+		// B256 通道建立后的 MSG 循环（v0.29.0：MSG/CLO 对称覆盖接线）。
+		// 入站帧解封（新钥优先/旧钥回退），出站帧密封；会话态携带换钥窗口
+		// 状态（b256OutKeys 保守切组，见 handleB256Renew）。
 		cs := newConnSession(c, h.channelID, h.tokenID)
 		cs.b256Keys = h.keys
+		cs.b256OutKeys = h.keys
+		cs.inTokenID = h.tokenID
+		cs.clientCertDER = asymHdr.SenderCertificate
 		s.sessMu.Lock()
 		s.sessions[cs] = struct{}{}
 		s.sessMu.Unlock()
@@ -410,9 +415,19 @@ func (s *Simulator) handleConn(c net.Conn) {
 			}
 			switch mt {
 			case opcua.MsgCloseSecureChannel:
+				// v0.29.0：B256 下 CLO 为对称安全帧——验封后关连接；
+				// 验封失败回 ERR 再断（不静默降级）。
+				if cs.b256Keys != nil {
+					if _, _, ok := cs.openB256Incoming(mt, body); !ok {
+						errBody, encErr := opcua.ErrorMessage{ErrorCode: 0x80130000, ErrorReason: "Bad_SecurityChecksFailed"}.Encode()
+						if encErr == nil {
+							_ = writeFrame(c, opcua.MsgError, 0, stripHeader(errBody))
+						}
+					}
+				}
 				return
 			case opcua.MsgSecureMessage:
-				if !s.handleService(cs, c, cs.channelID, cs.tokenID, body) {
+				if !s.handleB256Service(cs, c, mt, body) {
 					return
 				}
 			default:
@@ -617,7 +632,106 @@ func (s *Simulator) handleB256OpenSecureChannel(c net.Conn, asymHdr opcua.Asymme
 	return hs, true
 }
 
-// handleService 解析 MSG 帧并分派服务请求。
+// handleB256Service 处理 B256 通道 MSG 帧（v0.29.0）：解封（新钥优先/
+// 旧钥回退；首个新钥帧触发出站切组）→ Renew 网关（44B 形状指纹，见
+// spec 0002）→ dispatchService（writeResp 密封出站，快照出站组避免与
+// cs.mu 重入——悬挂 Publish 即时出队路径会在持锁状态下调用 writeResp）。
+func (s *Simulator) handleB256Service(cs *connSession, c net.Conn, msgType string, body []byte) bool {
+	plain, usedCur, ok := cs.openB256Incoming(msgType, body)
+	if !ok {
+		errBody, encErr := opcua.ErrorMessage{ErrorCode: 0x80130000, ErrorReason: "Bad_SecurityChecksFailed"}.Encode()
+		if encErr == nil {
+			_ = writeFrame(c, opcua.MsgError, 0, stripHeader(errBody))
+		}
+		return false
+	}
+	if usedCur {
+		cs.mu.Lock()
+		if cs.b256OutKeys != cs.b256Keys {
+			cs.b256OutKeys = cs.b256Keys
+			cs.tokenID = cs.inTokenID
+		}
+		cs.mu.Unlock()
+	}
+	sh, rest, err := opcua.DecodeSequenceHeader(plain)
+	if err != nil {
+		return false
+	}
+	// Renew 网关：rest = ClientNonce(32B) ‖ OSCR{ver=0, type=RENEW, lifetime=600000}。
+	// 三元组指纹（大端，与仓库 UA Binary 编码器一致）+ 定长 44B，与既有形状
+	// 分派服务体碰撞概率可忽略（登记 §30）。
+	if len(rest) == opcua.B256NonceLen+12 &&
+		binary.BigEndian.Uint32(rest[32:36]) == 0 &&
+		binary.BigEndian.Uint32(rest[36:40]) == opcua.SecurityTokenRequestTypeRenew &&
+		binary.BigEndian.Uint32(rest[40:44]) == opcua.DefaultRequestedLifetime {
+		return s.handleB256Renew(cs, c, sh, rest[:opcua.B256NonceLen])
+	}
+	cs.mu.Lock()
+	outKeys, outToken := cs.b256OutKeys, cs.tokenID
+	cs.mu.Unlock()
+	if outKeys == nil {
+		return false
+	}
+	writeResp := func(respBody []byte) bool {
+		seqE, err := opcua.EncodeSequenceHeader(sh)
+		if err != nil {
+			return false
+		}
+		frame, err := opcua.SealMSGFrame(opcua.MsgSecureMessage, cs.channelID, outToken, outKeys, false, append(seqE, respBody...))
+		if err != nil {
+			return false
+		}
+		return writeFrameTimeout(c, frame, 5*time.Second) == nil
+	}
+	return s.dispatchService(cs, sh, rest, writeResp)
+}
+
+// handleB256Renew 处理 RENEW（v0.29.0）：生成新 TokenID/新 ServerNonce，
+// 以「请求新 ClientNonce + 新 ServerNonce」派生新组；响应以旧出站组密封
+// （TCP 序保证客户端先收响应换组，此后才有新钥帧）；客户端首个新钥帧
+// 到达时（handleB256Service usedCur 分支）出站才切新组——换钥窗口两侧
+// 收敛确定性成立，无竞态。
+func (s *Simulator) handleB256Renew(cs *connSession, c net.Conn, sh opcua.SequenceHeader, clientNonce []byte) bool {
+	newServerNonce := make([]byte, opcua.B256NonceLen)
+	if _, err := crand.Read(newServerNonce); err != nil {
+		return false
+	}
+	cs.mu.Lock()
+	oldIn := cs.b256Keys
+	newKeys := opcua.DeriveKeys(clientNonce, newServerNonce, cs.clientCertDER, s.serverCert.Raw)
+	newTokenID := uint32(rand.Int31n(1<<31-1) + 1)
+	cs.mu.Unlock()
+	resp, err := opcua.EncodeOpenSecureChannelResponse(opcua.OpenSecureChannelResponse{
+		Timestamp:             opcua.DateTimeFromTime(time.Now()),
+		ServiceResult:         0,
+		ServerProtocolVersion: 0,
+		SecurityToken:         opcua.ChannelSecurityToken{ChannelID: cs.channelID, TokenID: newTokenID, CreatedAt: opcua.DateTimeFromTime(time.Now()), RevisedLifetime: 600000},
+		ServerNonce:           newServerNonce,
+	})
+	if err != nil {
+		return false
+	}
+	seqE, err := opcua.EncodeSequenceHeader(sh)
+	if err != nil {
+		return false
+	}
+	plain := append(seqE, resp...)
+	cs.mu.Lock()
+	frame, ferr := opcua.SealMSGFrame(opcua.MsgSecureMessage, cs.channelID, cs.tokenID, cs.b256OutKeys, false, plain)
+	if ferr != nil {
+		cs.mu.Unlock()
+		return false
+	}
+	cs.b256PrevKeys = oldIn
+	cs.b256Keys = newKeys
+	cs.inTokenID = newTokenID
+	cs.mu.Unlock()
+	ok := writeFrameTimeout(c, frame, 5*time.Second) == nil
+	return ok
+}
+
+// handleService 解析 MSG 帧并分派服务请求（None 明文路径，逐字保留；
+// v0.29.0 分派核心抽出为 dispatchService，B256 走 handleB256Service）。
 func (s *Simulator) handleService(cs *connSession, c net.Conn, channelID, tokenID uint32, body []byte) bool {
 	_, rest, err := opcua.DecodeSymmetricSecurityHeader(body)
 	if err != nil {
@@ -639,6 +753,13 @@ func (s *Simulator) handleService(cs *connSession, c net.Conn, channelID, tokenI
 		frame := append(append(append([]byte{}, sym...), seq...), respBody...)
 		return writeFrame(c, opcua.MsgSecureMessage, channelID, frame) == nil
 	}
+	return s.dispatchService(cs, sh, rest, writeResp)
+}
+
+// dispatchService 是 MSG 服务分派核心（None 与 B256 共用；v0.29.0 自
+// handleService 抽出，行为逐字保留）。writeResp 由调用方注入
+// （None=明文帧；B256=密封帧，见 handleB256Service 快照注释）。
+func (s *Simulator) dispatchService(cs *connSession, sh opcua.SequenceHeader, rest []byte, writeResp func([]byte) bool) bool {
 	respHeader := opcua.ResponseHeader{
 		Timestamp:     opcua.DateTimeFromTime(time.Now()),
 		RequestHandle: sh.RequestID,
@@ -763,7 +884,14 @@ func (s *Simulator) handlePublish(cs *connSession, sh opcua.SequenceHeader, rest
 				return
 			case <-cs.wake:
 				cs.mu.Lock()
-				if !cs.pubWaiting || len(cs.pending) == 0 {
+				// v0.29.0 所有权校验：陈旧 wake（信封已被同步路径兑出）或非本
+				// 悬挂请求 → 立即退出，禁止旧 goroutine 以陈旧 reqID 抢答压制
+				// 新悬挂（Renew 时序下曾致订阅通知永久静默）。
+				if !cs.pubWaiting || cs.pubReqID != sh.RequestID {
+					cs.mu.Unlock()
+					return
+				}
+				if len(cs.pending) == 0 {
 					cs.mu.Unlock()
 					continue
 				}
@@ -777,14 +905,15 @@ func (s *Simulator) handlePublish(cs *connSession, sh opcua.SequenceHeader, rest
 				cs.pubWaiting = false
 				out, oerr := opcua.EncodePublishResponse(env.resp)
 				if oerr == nil {
-					writeServerFrame(cs.out, opcua.MsgSecureMessage, cs.channelID, cs.tokenID, &cs.nextSeqHdr, sh.RequestID, out)
+					cs.writeServerFrameLocked(opcua.MsgSecureMessage, sh.RequestID, out)
 				}
 				cs.mu.Unlock()
 				return
 			case <-ticker.C:
-				// KeepAlive 兑现：悬挂超一个发布周期无信封则回空通知
+				// KeepAlive 兑现：悬挂超一个发布周期无信封则回空通知。
+				// v0.29.0：仅当本 goroutine 仍是该悬挂请求的所有者时才兑现。
 				cs.mu.Lock()
-				if !cs.pubWaiting {
+				if !cs.pubWaiting || cs.pubReqID != sh.RequestID {
 					cs.mu.Unlock()
 					return
 				}
@@ -798,7 +927,7 @@ func (s *Simulator) handlePublish(cs *connSession, sh opcua.SequenceHeader, rest
 				}
 				out, oerr := opcua.EncodePublishResponse(ka)
 				if oerr == nil {
-					writeServerFrame(cs.out, opcua.MsgSecureMessage, cs.channelID, cs.tokenID, &cs.nextSeqHdr, sh.RequestID, out)
+					cs.writeServerFrameLocked(opcua.MsgSecureMessage, sh.RequestID, out)
 				}
 				cs.mu.Unlock()
 				return

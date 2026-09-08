@@ -62,7 +62,7 @@ type connSession struct {
 	pubReqID   uint32         // 悬挂 Publish 的原始 RequestId（响应帧回填）
 	out        net.Conn       // 出站帧通道（悬挂 publish 响应用）
 	channelID  uint32
-	tokenID    uint32
+	tokenID    uint32 // 出站令牌 id（B256 换钥收敛时切为新值）
 
 	nextSeqHdr         uint32        // 出站 SequenceNumber（MSG 序列头）
 	nextSubID          uint32        // 下一个 subscriptionId
@@ -72,9 +72,18 @@ type connSession struct {
 	publishingInterval time.Duration // PRT-23：KeepAlive 兑现周期（随订阅修订）
 	closed             bool
 
-	// b256Keys 是 v0.28.1 Basic256Sha256 握手派生密钥（WithIdentity 会话；
-	// v0.29.0 MSG 对称覆盖接线用，本段仅持有不使用）。受 mu 保护。
-	b256Keys *opcua.DerivedKeys
+	// b256Keys 是 v0.28.1 Basic256Sha256 握手派生密钥（WithIdentity 会话）。
+	// v0.29.0 起 MSG/CLO 对称覆盖接线，并扩展换钥窗口状态（均受 mu 保护）：
+	//   b256Keys      入站当前组（Renew 后=新组，入站先试）
+	//   b256PrevKeys  入站回退组（Renew 前旧组，覆盖在途帧）
+	//   b256OutKeys   出站组（保守=旧组，直到收到首个新钥帧才切）
+	//   inTokenID     Renew 新令牌 id（出站切组时同步到 tokenID）
+	//   clientCertDER 客户端证书 DER（Renew 派生输入）
+	b256Keys      *opcua.DerivedKeys
+	b256PrevKeys  *opcua.DerivedKeys
+	b256OutKeys   *opcua.DerivedKeys
+	inTokenID     uint32
+	clientCertDER []byte
 }
 
 func newConnSession(out net.Conn, channelID, tokenID uint32) *connSession {
@@ -141,32 +150,62 @@ func (cs *connSession) tryDispatchLocked(reqID uint32) {
 	if err != nil {
 		return
 	}
-	writeServerFrame(cs.out, opcua.MsgSecureMessage, cs.channelID, cs.tokenID, &cs.nextSeqHdr, cs.pubReqID, body)
+	cs.writeServerFrameLocked(opcua.MsgSecureMessage, cs.pubReqID, body)
 	cs.pubWaiting = false
 }
 
-// writeServerFrame 写一条完整 MSG 帧（8 字节头+对称头+序列头+body）。
-// 仅在持有 cs.mu 时调用。
-func writeServerFrame(c net.Conn, msgType string, channelID, tokenID uint32, nextSeqHdr *uint32, reqID uint32, body []byte) {
-	sym, err := opcua.EncodeSymmetricSecurityHeader(opcua.SymmetricSecurityHeader{TokenID: tokenID})
+// writeServerFrameLocked 写一条 MSG 帧（None 明文 / B256 密封，v0.29.0）。
+// 要求调用方持 cs.mu（悬挂 Publish/KeepAlive 异步路径）。
+func (cs *connSession) writeServerFrameLocked(msgType string, reqID uint32, body []byte) {
+	seqH, err := opcua.EncodeSequenceHeader(opcua.SequenceHeader{SequenceNumber: cs.nextSeqHdr, RequestID: reqID})
 	if err != nil {
 		return
 	}
-	seqH, err := opcua.EncodeSequenceHeader(opcua.SequenceHeader{SequenceNumber: *nextSeqHdr, RequestID: reqID})
+	cs.nextSeqHdr++
+	if cs.b256OutKeys != nil {
+		frame, ferr := opcua.SealMSGFrame(msgType, cs.channelID, cs.tokenID, cs.b256OutKeys, false, append(seqH, body...))
+		if ferr != nil {
+			return
+		}
+		if werr := writeFrameTimeout(cs.out, frame, 5*time.Second); werr != nil {
+		}
+		return
+	}
+	sym, err := opcua.EncodeSymmetricSecurityHeader(opcua.SymmetricSecurityHeader{TokenID: cs.tokenID})
 	if err != nil {
 		return
 	}
-	*nextSeqHdr++
 	payload := append(append(append([]byte{}, sym...), seqH...), body...)
 	hdr, herr := opcua.EncodeHeader(opcua.MessageHeader{
 		MessageType: msgType, ChunkType: opcua.ChunkFinal,
-		MessageSize: uint32(opcua.HeaderSize + len(payload)), ChannelId: channelID,
+		MessageSize: uint32(opcua.HeaderSize + len(payload)), ChannelId: cs.channelID,
 	})
 	if herr != nil {
 		return
 	}
 	frame := append(append([]byte{}, hdr...), payload...)
-	_ = writeFrameTimeout(c, frame, 5*time.Second)
+	_ = writeFrameTimeout(cs.out, frame, 5*time.Second)
+}
+
+// openB256Incoming 解封客户端方向的 MSG/CLO 帧（v0.29.0）：先试当前组
+// （Renew 后=新组），失败回退旧组（换钥窗口在途帧）；命中判定由 HMAC
+// 常时比较决定。usedCur=true 表示命中当前组（首个新钥帧触发出站切组）。
+// 调用方不得持 cs.mu（内部加锁）。
+func (cs *connSession) openB256Incoming(msgType string, body []byte) (plain []byte, usedCur, ok bool) {
+	cs.mu.Lock()
+	cur, prev, chID := cs.b256Keys, cs.b256PrevKeys, cs.channelID
+	cs.mu.Unlock()
+	if cur != nil {
+		if _, p, err := opcua.OpenMSGFrame(msgType, chID, body, cur, true); err == nil {
+			return p, true, true
+		}
+	}
+	if prev != nil {
+		if _, p, err := opcua.OpenMSGFrame(msgType, chID, body, prev, true); err == nil {
+			return p, false, true
+		}
+	}
+	return nil, false, false
 }
 
 // writeFrameTimeout 带超时写整帧（opcuasim 内部：构造 MSG 帧头+body）。

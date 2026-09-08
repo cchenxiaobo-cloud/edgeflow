@@ -539,6 +539,76 @@ func (c *Client) DeleteSubscription() error {
 // v0.14.0 完全一致（recvSecure 严格配对）。
 // ---------------------------------------------------------------------
 
+// Renew 请求安全令牌续期（v0.29.0，仅 Basic256Sha256 加密通道）：在现有
+// 加密通道内发送 ClientNonce(32B) ‖ OpenSecureChannelRequest{RENEW}
+// （44B 形状指纹网关，见 spec 0002），服务端以旧出站组密封响应（新
+// TokenID + 新 ServerNonce）；本端校验后用新 nonce 对派生新密钥组并原子
+// 换组（旧组保留作在途帧回退）。复用 roundTrip 泵机制，订阅活跃时安全。
+func (c *Client) Renew(timeout time.Duration) error {
+	if timeout > 0 {
+		old := c.timeout
+		c.timeout = timeout
+		defer func() { c.timeout = old }()
+	}
+	ks := c.sc.curKeys()
+	if ks.keys == nil {
+		return errors.New("opcua: Renew 仅支持 Basic256Sha256 加密通道")
+	}
+	nonce := make([]byte, B256NonceLen)
+	if _, err := rand.Read(nonce); err != nil {
+		return fmt.Errorf("opcua: 生成续期 ClientNonce 失败: %w", err)
+	}
+	var oe encoder
+	if err := (OpenSecureChannelRequest{
+		ClientProtocolVersion: 0,
+		RequestType:           SecurityTokenRequestTypeRenew,
+		RequestedLifetime:     DefaultRequestedLifetime,
+	}).encodeUA(&oe); err != nil {
+		return err
+	}
+	body := append(append([]byte{}, nonce...), oe.buf...)
+	respWire, err := c.roundTrip(body)
+	if err != nil {
+		return fmt.Errorf("opcua: Renew 往返失败: %w", err)
+	}
+	var d decoder
+	d.b = respWire
+	resp, err := decodeOpenSecureChannelResponse(&d)
+	if err != nil {
+		return fmt.Errorf("opcua: Renew 响应解码失败: %w", err)
+	}
+	if !resp.ServiceResult.IsGood() {
+		return fmt.Errorf("opcua: Renew 服务失败: %s", resp.ServiceResult)
+	}
+	if resp.SecurityToken.RevisedLifetime <= 0 {
+		return fmt.Errorf("opcua: Renew 响应 RevisedLifetime=%v 非法（须 > 0）", resp.SecurityToken.RevisedLifetime)
+	}
+	if resp.SecurityToken.TokenID == 0 {
+		return errors.New("opcua: Renew 响应 TokenID 非法")
+	}
+	if len(resp.ServerNonce) != B256NonceLen {
+		return fmt.Errorf("opcua: Renew 响应 ServerNonce 长度 %d 非 %d", len(resp.ServerNonce), B256NonceLen)
+	}
+	newKeys := DeriveKeys(nonce, resp.ServerNonce, c.sc.opts.ClientCert.Raw, c.sc.opts.ServerCert.Raw)
+	c.sc.swapKeys(newKeys, resp.SecurityToken.TokenID)
+	return nil
+}
+
+// TokenID 返回当前生效的安全令牌 id（v0.29.0：Renew 换钥后为新令牌）。
+func (c *Client) TokenID() uint32 { return c.sc.TokenID() }
+
+// ProbeKeyMaterial 返回当前对称密钥组与通道/令牌 id（v0.29.0 传输级篡改
+// 用例与诊断探针专用；业务路径禁止使用，密钥不落盘不打印）。
+func (c *Client) ProbeKeyMaterial() (*DerivedKeys, uint32, uint32) {
+	ks := c.sc.curKeys()
+	return ks.keys, c.sc.channelId, ks.tokenID
+}
+
+// ProbeWriteRaw 写原始帧字节（测试探针：密封后篡改重放用）。
+func (c *Client) ProbeWriteRaw(frame []byte) error {
+	return c.sc.conn.WriteFrameRaw(frame)
+}
+
 // roundTrip 是严格配对调用的统一入口：发送、登记 waiter、收响应。
 // 泵未启动时直接走 recvSecure；启动后经 waiters 表由 pump 分发。
 func (c *Client) roundTrip(body []byte) ([]byte, error) {
@@ -612,6 +682,7 @@ func (c *Client) stopPump() {
 }
 
 // pumpLoop 唯一读循环：帧 → 解头 → 分发（waiter/在途 Publish/丢弃）。
+// v0.29.0：B256 通道先解封（openIncoming）再解析序列头；None 走原路径。
 func (c *Client) pumpLoop() {
 	defer func() {
 		c.mu.Lock()
@@ -641,7 +712,24 @@ func (c *Client) pumpLoop() {
 			return // 连接级故障：waiters 由 defer 关闭报错
 		}
 		_ = msgType
-		ridge, rbody, ok := parseSecureFrame(body)
+		var ridge uint32
+		var rbody []byte
+		var ok bool
+		if c.sc.encrypted() {
+			plain, derr := c.sc.openIncoming(msgType, body)
+			if derr != nil {
+				return
+			}
+			var dd decoder
+			dd.b = plain
+			sh, serr := decodeSequenceHeader(&dd)
+			if serr != nil {
+				continue
+			}
+			ridge, rbody, ok = sh.RequestID, dd.b[dd.off:], true
+		} else {
+			ridge, rbody, ok = parseSecureFrame(body)
+		}
 		if !ok {
 			continue
 		}
@@ -688,10 +776,20 @@ func (c *Client) consumePublishFrame(body []byte) {
 	// PRT-07：发布序号防重放——seq==0（非法，序号从 1 起）与
 	// seq<=lastPubSeq（重复/回退：重放或服务器异常）直接丢弃，
 	// 不投递、不生成 ack；lastPubSeq 不回退。
+	// v0.29.0 修正：seq==0 且空通知 = 本仓 KeepAlive 兑现（PRT-23）。
+	// 原静默丢弃会断裂发布长轮询（窗口靠消费方 PubAck 驱动，丢弃后无人
+	// 重挂 → 订阅流永久静默，Renew 时序下必然触发）；改为不投递、不推进
+	// lastPubSeq，但自动重挂发布窗口维持循环。
 	seq := resp.NotificationMessage.SequenceNumber
 	if seq == 0 {
+		isKA := len(resp.NotificationMessage.NotificationData) == 0
+		pumping, hasSub := c.pumping, c.subId != 0
 		c.mu.Unlock()
-		clientProbe("consume 丢弃非法序号 seq=0")
+		if isKA && pumping && hasSub {
+			_ = c.sendPublish() // 重挂发布窗口（sendPublish 自持锁）
+		} else {
+			clientProbe("consume 丢弃非法序号 seq=0")
+		}
 		return
 	}
 	if c.lastPubSeq != 0 && seq <= c.lastPubSeq {

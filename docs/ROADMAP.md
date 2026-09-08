@@ -564,3 +564,20 @@
 | F-6 MSG 对称加密签名 + Renew | — | ⏳ v0.29.0 | 派生密钥已就绪 |
 | 互操作向量比对 | — | ⏳ v0.29.0 | 接真实第三方服务器前必须补 |
 | 测试 | v0281_security_test.go 4 + v0281_security_e2e_test.go 2 | ✅ 6 例 | 含端到端互通与无身份拒绝（冻结语义） |
+
+## 25. v0.29.0 开发轮登记（2026-09-08，OPC-UA MSG/CLO 对称覆盖 + 显式令牌续期）
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| F-6a MSG/CLO 密封原语 | SealMSGFrame/OpenMSGFrame + sealMSGPad/openMSGPad（§6.7.4 尾垫）+ cbcRaw | ✅ 闭环 | Header12‖TokenID4‖CT‖HMAC20；大端与仓库 UA Binary 编码器一致 |
+| F-6b 客户端三分支接线 | sendSecure（sendMu 下密封 raw 写出）/ recvSecure（解封后匹配 reqID）/ pumpLoop（openIncoming 后解析） | ✅ 闭环 | None 路径逐字保留 |
+| F-6c sim 网关与密封出站 | handleB256Service（解封 + Renew 网关 + dispatchService 抽取共用）/ writeResp 快照密封 / writeServerFrameLocked | ✅ 闭环 | 同步快照避免 cs.mu 重入；None 明文路径逐字保留 |
+| F-6d 显式 Renew | Client.Renew（roundTrip 复用）+ sim handleB256Renew + SecureChannel.swapKeys/curKeys/prev | ✅ 闭环 | 新钥优先/旧钥回退 + 出站保守切换（首个新钥帧切组），TCP 序收敛 |
+| F-6e CLO 密封 | sendCLO B256 分支 + sim 验封 | ✅ 闭环 | 验封失败 ERR Bad_SecurityChecksFailed 断连 |
+| 悬挂 Publish 竞态修复 | handlePublish 所有权校验（cs.pubReqID != sh.RequestID → 退出） | ✅ 闭环 | 陈旧 goroutine 以旧 reqID 抢答压制新悬挂（续期时序放大暴露） |
+| KeepAlive 长轮询自愈 | consumePublishFrame seq=0 空通知 → 自动重挂发布窗口 | ✅ 闭环 | 修复既有「丢弃后无人重挂」死循环；pubCh 行为不变（冻结安全） |
+| 传输级篡改 e2e | TestV0290EndToEndTamperedFrameRejected | ✅ 闭环 | 密文翻转 1 bit → ERR Bad_SecurityChecksFailed 断连（补 v0.28.1 US-4 缺口） |
+| 测试 | v0290_security_test.go 5 + v0290_security_e2e_test.go 2 | ✅ 7 例 | 含跨续期订阅全链路 |
+| 架构图 | docs/architecture-overview.svg + README 嵌入 | ✅ 闭环 | 整体功能架构（六层 + 数据流），随版本更新 |
+| 互操作向量比对 | — | ⏳ 后续 | 接真实第三方服务器前必须补（§30 沿用） |
+| 自动续期定时器 | — | ⏳ 后续 | 75% 寿命触发；本轮交付显式 Renew API |

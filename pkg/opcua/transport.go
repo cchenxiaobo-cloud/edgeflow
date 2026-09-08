@@ -246,6 +246,19 @@ func (c *Conn) WriteMessage(msgType string, payload []byte) error {
 	return writeAll(c.netConn, buf)
 }
 
+// WriteFrameRaw 写出已组装的完整帧字节（含 12B 帧头；对称加密帧由
+// SealMSGFrame 组装后经此写出，v0.29.0）。发送上限校验与 WriteMessage 一致。
+func (c *Conn) WriteFrameRaw(frame []byte) error {
+	if len(frame) < HeaderSize {
+		return errors.New("opcua: WriteFrameRaw: 帧长度小于帧头")
+	}
+	size := uint64(len(frame))
+	if c.sendLimit != 0 && size > uint64(c.sendLimit) {
+		return fmt.Errorf("%w: %d bytes, limit=%d", ErrMessageTooLarge, size, c.sendLimit)
+	}
+	return writeAll(c.netConn, frame)
+}
+
 // ReadMessage reads the next complete frame and returns its message
 // type and payload. Frames whose MessageSize exceeds the negotiated
 // limit are rejected before the body is read.

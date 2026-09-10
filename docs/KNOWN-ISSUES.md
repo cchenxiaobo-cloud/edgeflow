@@ -443,3 +443,19 @@
 - **合成源性能边界**: 逐像素渲染 + JPEG 编码在 CPU 单核约 3-8ms/帧（320x240@70），高帧率/高分辨率场景由消费端背压（LatestSlot 丢帧）自然限流；生产实源（解码后送推理）归阶段二。
 - **互通性验证边界（沿用 §29/§30/§31）**: OPC-UA 互操作向量比对仍 pending；本轮推理契约以 httptest stub 双向验证。
 - **复核补充（v0310 复核轮，2026-09-10）**: P1×2 已修复（Stop 重启死锁 → per-run WaitGroup+runDone 收口，重启序列回归锚；槽丢弃计数失真 → Take 清槽，语义锚）。P2-1 登记：produceLoop 出帧错误静默退出而 streamOn 仍=1（合成源 Next 无错误路径，阶段一不可达；RTSP 实源接入时必须补可见降级与 streamOn 语义）。P2-2/P2-3 已顺手修（响应体 4MB 上限、res==nil 防御）或对齐 spec（ledger 未注入静默零副作用，spec US-4 措辞修正）。
+
+## 33. v0.32.0 开发轮处置登记（2026-09-10，MQTT 5.0 阶段二：会话解耦与共享订阅）
+
+**阶段边界（spec 0005 非目标，非缺陷）**
+- 3.1.1 CleanSession=false 持久会话不支持：3.1.1 连接整体退出会话状态机（CleanSession=false 按现状处理 = 断连即毁），冻结兼容优先。会话解耦仅对 v5 生效（Clean Start=0 + Session Expiry）。
+- 下行 QoS1 无重发状态机：broker 恢复下发 dup=0、PUBACK 未达不重推；共享订阅/普通订阅下行恒 QoS0（离线恢复下发除外）。broker 侧完整 QoS1/2 下行（inflight 管理、报文 ID 分配去重、重发定时器）归阶段三。
+- 共享订阅离线成员不参与轮转、不暂存（轮转仅在在线成员中进行）；消息不会被该组成员离线保留。
+- $queue/ 隐式共享订阅不支持（SUBACK 0x80）；订阅选项（No Local / Retain As Published / Retain Handling）、Topic Alias、Will 延迟未实现。
+- client 恢复会话补投语义 = 至多一次：pendingRecovered（容量 32 丢最旧）仅在 handler 注册前缓冲恢复期到达消息，QoS1 已向 broker 确认（确认与补投解耦，登记 as-built）。
+
+**实现语义登记（as-built）**
+- 接管仲裁收窄：仅任一方持有持久会话意图（新连接 CleanStart=0/SE>0 或旧连接 SE>0）时踢旧；双方 clean 连接并存保持 v0.24.0 现状（v0260 冻结依赖）。
+- v5 属性区白名单 = {0x21 RM, 0x11 SE}，任意组合/顺序，编码端固定 0x11→0x21 次序；白名单外属性 ErrMalformed（阶段一语义延续）。确认类报文（PUBACK/PUBREC 等）属性区宽容解析（与阶段一一致）。
+- hasSubscriber（PUBACK 0x10 判定）计入共享订阅与离线保留会话。
+
+**复核补充（v0320 复核轮，2026-09-10）**: P0×1 已修复（fanoutBytes 持锁路径改内联入队，慢消费者死锁回归锚 TestV0320SlowConsumerNoDeadlock）；P1×1 已修复（恢复缓冲限定 QoS<2，QoS2 锚 TestV0320RecoverBufferSkipsQoS2）；P2-3 同面根因修复（pump 写截止：正常分支 5s / 关停 drain 1s——死消费者不再可挂起接管与 broker 关停，v0240–v0310 小帧时序语义不变）。P2-2 登记：shareCursor 组键无界（测试 broker 量级极小，生产 broker 不在本仓范围）。P2-1/P2-4/P2-5 已顺手修（恒真 if 清理、重复属性拒绝、godoc 归位）。

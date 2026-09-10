@@ -6,7 +6,7 @@ EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备�
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.31.0**（2026-09-10，视频流管理与边缘推理对接阶段一——pkg/video 帧源抽象与确定性合成源、HTTP JSON 推理服务契约（`HTTPInferencer`）、latest-wins 背压帧槽（`LatestSlot`）；mappers/video 设备 Mapper（配置文件化 opt-in、`stream` 指令启停、指标面汇入影子上报、推理结果台账留痕与事件上行）；edgecore 装配 `EDGEFLOW_VIDEO_MAPPER_CONFIG`；零新依赖、契约 42 端点不变）。核心能力包括：
+> 当前版本：**v0.32.0**（2026-09-10，MQTT 5.0 阶段二——会话解耦（v5 Session Expiry + Clean Start，断连后订阅表与离线 QoS1 按 ClientID 保留、重连 Session Present 恢复）与共享订阅（`$share/{group}/{filter}` 组内 round-robin 负载均衡）；client 侧 `Options.PersistentSession`/`SessionPresent()`；codec 属性区白名单通用化（0x21 RM + 0x11 SE）；接管仲裁踢旧转接；零新依赖、契约 42 端点不变）。核心能力包括：
 
 ## 整体功能架构
 
@@ -102,6 +102,7 @@ helm install edgeflow build/charts/edgeflow/
 
 - **v0.27.0**（2026-09-01）：QoS2 会话恢复（in-flight 持久化）：client `Options.PersistenceDir` 门控 + `Resume()` 回放；sim broker `NewBrokerWithOptions` 孤儿表重启恢复；MQTT 5.0 评估文档（本轮不实现，分期草案）。
 - **v0.28.0**（2026-09-01）：OPC-UA 安全策略框架（Basic256Sha256 分段第一段）：策略门禁 + 密码学原语 + OPN 证书协商校验 + sim 显式拒绝；开发规范与 spec-kit 工程化落地（docs/DEVELOPMENT-SPEC.md + .specify/ 宪法）。
+- **v0.32.0**（2026-09-10）：MQTT 5.0 阶段二（FR-S2-07）：会话解耦——v5 Clean Start=0 + Session Expiry Interval（codec 属性区白名单通用化 0x21+0x11）下断连后订阅表与离线 QoS1（≤64 丢最旧）按 ClientID 保留，重连 CONNACK Session Present=1 + SE 回显 + 恢复下发（PUBACK 出队），SE 惰性过期，SE=0 断连即毁；同 ClientID 持久连接接管仲裁（踢旧转接，clean 并存现状保留）；共享订阅 $share/{group}/{filter} 组内 round-robin（确定性排序，离线成员不暂存），client handler 内层注册 + 恢复期消息 pendingRecovered 补投；3.1.1 路径整体退出会话状态机（冻结面归零）；v0320 测试 15 例全绿；下行 QoS1 重发状态机归阶段三（KNOWN-ISSUES §33）；详见 [docs/RELEASE-NOTES-v0320.md](docs/RELEASE-NOTES-v0320.md)
 - **v0.31.0**（2026-09-10）：视频流管理与边缘推理对接（阶段一，FR-S1-07）：pkg/video 帧源抽象（FrameSource）+ 确定性合成源（可测 JPEG 出帧）+ HTTP JSON 推理服务对接（帧 base64 → 检测框）+ latest-wins 背压帧槽（推理慢丢旧帧保最新，丢弃计数暴露）；mappers/video VideoMapper（JSON 配置文件 opt-in、stream 指令运行中启停、数字指标面复用影子上报链、推理结果台账留痕（DirUp/frame:seq）与 eventbus 事件上行）；edgecore 装配 EDGEFLOW_VIDEO_MAPPER_CONFIG；v0310 测试 12 例全绿；RTSP 实源/云端管理面/GPU 运行时归阶段二（KNOWN-ISSUES §32）；详见 [docs/RELEASE-NOTES-v0310.md](docs/RELEASE-NOTES-v0310.md)
 - **v0.30.0**（2026-09-09）：MQTT 5.0 阶段一与登记项收口：协议版本参数化（ProtocolVersion5 opt-in，默认 3.1.1 逐字节冻结锚单测）；v5 属性最小层（VBI + Receive Maximum 0x21）与原因码（CONNACK/确认报文/DISCONNECT，失败码语义化透出）；Receive Maximum 双向流控（客户端 flowSlots 出站窗口 + sim 上行 QoS2 暂存深度强制 DISCONNECT 0x93）；OPC-UA 自动续期（AutoRenewRatio 75% 寿命触发 + 退避重试 + 与显式 Renew 互斥）；mappers race flake 修复；MQTT sim 单写者时序缺陷修复（关停报文入队 + 泵清空后关连接）；v0300 测试 12 例全绿；详见 [docs/RELEASE-NOTES-v0300.md](docs/RELEASE-NOTES-v0300.md)
 - **v0.29.0**（2026-09-08）：OPC-UA MSG/CLO 对称覆盖与显式令牌续期：SealMSGFrame/OpenMSGFrame 密封原语（AES-128-CBC + HMAC-SHA1 尾足迹，§6.7.4 尾垫）；客户端 sendSecure/recvSecure/pump 三路径密封接线；sim 网关（新钥优先/旧钥回退）+ 密封出站（同步快照 + 异步 writeServerFrameLocked）+ CLO 验封；Client.Renew 显式续期（44B 形状指纹网关、旧出站组回响应、首个新钥帧切组）；悬挂 Publish 所有权校验（修陈旧 goroutine 抢答竞态）+ KeepAlive 长轮询自动重挂；v0290 测试 7 例全绿（含传输级篡改 e2e）；整体功能架构图入库；详见 [docs/RELEASE-NOTES-v0290.md](docs/RELEASE-NOTES-v0290.md)

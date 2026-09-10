@@ -611,3 +611,16 @@ spec：specs/0004-video-inference-phase1/spec.md（新 FR-S1-07 分段一）。
 | V5 结果留痕与事件 | metamanager 台账（DirUp/frame:seq/ok-error）+ EventPublisher 事件上行（opt-in） | ✅ 闭环 | 主题 edgeflow/video/{device}/inference；未注入零副作用 |
 | V6 edgecore 装配 | EDGEFLOW_VIDEO_MAPPER_CONFIG 配置文件 opt-in | ✅ 闭环 | 无环境变量零行为（冻结）；装配级 e2e（配置→stub 推理→指标/事件断言） |
 | 阶段二（RTSP/GB28181 实源、云端 VideoStream 管理面、GPU 推理运行时、下行 QoS 推送面） | — | ⏳ 待排 | 非承诺 |
+
+## 28. v0.32.0 — MQTT 5.0 阶段二：会话解耦与共享订阅（2026-09-10）
+
+spec：specs/0005-mqtt5-phase2-session-sharesub/spec.md（FR-S2-07）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| M1 会话解耦（v5） | pkg/mqtt Connect.SessionExpiry/Options.PersistentSession + mqttsim simSession 状态机 | ✅ 闭环 | Clean Start/SE 属性、CONNACK SessionPresent+SE 回显、断连保留/销毁、SE 惰性过期 |
+| M2 离线 QoS1 暂存恢复 | simSession.offline（≤64 丢最旧）+ 重连下发 + PUBACK 出队 | ✅ 闭环 | 无重发状态机（阶段三）；client 侧 pendingRecovered 补投（至多一次） |
+| M3 接管仲裁 | 同 ClientID 持久连接踢旧转接 | ✅ 闭环 | clean 连接并存保持现状（冻结兼容） |
+| M4 共享订阅 | $share/{group}/{filter} 组内 round-robin（确定性排序） | ✅ 闭环 | 组键 = group+inner；离线成员不暂存不轮转；$queue/ 拒绝 |
+| M5 codec 属性区通用化 | propsV5 白名单（RM+SE）+ 未知拒绝 + CONNACK SE 回显 | ✅ 闭环 | 3.1.1 路径零触碰 |
+| 阶段三（下行 QoS1/2 重发状态机、订阅选项 NoLocal/RAP/RH、Topic Alias、3.1.1 持久会话） | — | ⏳ 待排 | 非承诺 |

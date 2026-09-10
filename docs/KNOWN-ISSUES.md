@@ -433,3 +433,13 @@
 - **MQTT sim 单写者时序缺陷（本轮发现修复）**: 修复前 serve 直写关停报文与 pump 异步队列可乱序（鉴权 CONNACK/流控 DISCONNECT 可能先于已入队确认上线），违背 MQTT 单字节流语义。修复 = 关停报文一律入队（单写者不变量）+ pump 关停时先清空既有队列、shutdown 等泵退出后再关连接。冻结包测试全绿（含 TLS/mTLS/QoS2/持久化）。
 - **mappers race flake 根因与修复（本轮收口）**: TestStopNilClientCollectErrors / TestStopDuringSubscriptionLoopNoPanic 偶发 DATA RACE。根因 = Client.Close（mapper Stop 锁外路径）构造 CloseSession/DeleteSubscriptions 的 RequestHandle 时无锁调用 SecureChannel.nextReqID（裸 reqId++），与订阅循环 PubAck→sendSecure（sendMu 持锁自增）竞争；同函数族 sendCLO None 分支的 seq 自增同样无锁（v0290 P2-1 只修了 B256 分支）。修复 = nextReqID 原子化（RequestHandle 与帧 RequestID 无需同值，语义不变）+ sendCLO None 分支持 sendMu + 消除 sc.reqId 混合读。修复后 mappers/opcua -race count=30 稳定全绿；偏差登记于 spec 0003 as-built。
 - **互通性验证边界（沿用 §29/§30）**: MQTT 5.0 为自研 client ↔ 自研 sim 双向交叉验证；OPC-UA 互操作向量比对仍 pending，接真实第三方服务器前必须补。
+
+## 32. v0.31.0 开发轮处置登记（2026-09-10，视频流管理与边缘推理对接阶段一）
+
+- **RTSP/GB28181 实源拉流未实现（阶段一边界）**: 真实视频流拉取需第三方库（如 gortsplib）或外部进程桥（ffmpeg），与零第三方依赖硬约束冲突，需单独裁定后阶段二交付；阶段一 source.type 仅 synthetic（合成源，确定性可测），未知值显式拒绝（不做静默降级）。
+- **云端 VideoStream 管理面未实现（阶段一边界）**: 视频流 CRUD/快照预览/事件回放需要契约端点扩容（当前 42 端点冻结不动），归阶段二与契约版本演进同轮裁定；阶段一设备面复用 Device 影子与台账。
+- **GPU 推理运行时未集成（阶段一边界）**: 推理对接为 HTTP JSON 契约（任意 HTTP 推理服务可接），本地 GPU 运行时（TensorRT/ONNX Runtime 等）集成归阶段二。
+- **台账方向语义映射**: metamanager 台账方向白名单仅 up/down，推理结果留痕复用 DirUp（上报语义），帧标识置于 RegAddr=frame:seq——异构记录的类型区分依赖 Message JSON，不新增方向枚举（避免台账面破坏性变更）。
+- **合成源性能边界**: 逐像素渲染 + JPEG 编码在 CPU 单核约 3-8ms/帧（320x240@70），高帧率/高分辨率场景由消费端背压（LatestSlot 丢帧）自然限流；生产实源（解码后送推理）归阶段二。
+- **互通性验证边界（沿用 §29/§30/§31）**: OPC-UA 互操作向量比对仍 pending；本轮推理契约以 httptest stub 双向验证。
+- **复核补充（v0310 复核轮，2026-09-10）**: P1×2 已修复（Stop 重启死锁 → per-run WaitGroup+runDone 收口，重启序列回归锚；槽丢弃计数失真 → Take 清槽，语义锚）。P2-1 登记：produceLoop 出帧错误静默退出而 streamOn 仍=1（合成源 Next 无错误路径，阶段一不可达；RTSP 实源接入时必须补可见降级与 streamOn 语义）。P2-2/P2-3 已顺手修（响应体 4MB 上限、res==nil 防御）或对齐 spec（ledger 未注入静默零副作用，spec US-4 措辞修正）。

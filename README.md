@@ -6,11 +6,11 @@ EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备�
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.30.0**（2026-09-09，MQTT 5.0 阶段一与登记项收口——协议版本参数化（`Options.ProtocolVersion5` opt-in，默认 3.1.1 逐字节冻结）；v5 属性最小层（Receive Maximum 0x21）与原因码（CONNACK 0x84/0x86/0x87 语义化、PUBACK 0x10 无订阅者警告、DISCONNECT 0x93 流控违规）；Receive Maximum 双向流控（客户端出站在途窗口 + sim 服务端强制）；OPC-UA 自动续期（`AutoRenewRatio`，75% 寿命自动 Renew）；mappers race flake 修复；MQTT sim 单写者时序缺陷修复；零新依赖、契约 42 端点不变）。核心能力包括：
+> 当前版本：**v0.31.0**（2026-09-10，视频流管理与边缘推理对接阶段一——pkg/video 帧源抽象与确定性合成源、HTTP JSON 推理服务契约（`HTTPInferencer`）、latest-wins 背压帧槽（`LatestSlot`）；mappers/video 设备 Mapper（配置文件化 opt-in、`stream` 指令启停、指标面汇入影子上报、推理结果台账留痕与事件上行）；edgecore 装配 `EDGEFLOW_VIDEO_MAPPER_CONFIG`；零新依赖、契约 42 端点不变）。核心能力包括：
 
 ## 整体功能架构
 
-![EdgeFlow 整体功能架构（v0.30.0）](docs/architecture-overview.svg)
+![EdgeFlow 整体功能架构（v0.31.0）](docs/architecture-overview.svg)
 
 ## 目录结构
 
@@ -102,6 +102,7 @@ helm install edgeflow build/charts/edgeflow/
 
 - **v0.27.0**（2026-09-01）：QoS2 会话恢复（in-flight 持久化）：client `Options.PersistenceDir` 门控 + `Resume()` 回放；sim broker `NewBrokerWithOptions` 孤儿表重启恢复；MQTT 5.0 评估文档（本轮不实现，分期草案）。
 - **v0.28.0**（2026-09-01）：OPC-UA 安全策略框架（Basic256Sha256 分段第一段）：策略门禁 + 密码学原语 + OPN 证书协商校验 + sim 显式拒绝；开发规范与 spec-kit 工程化落地（docs/DEVELOPMENT-SPEC.md + .specify/ 宪法）。
+- **v0.31.0**（2026-09-10）：视频流管理与边缘推理对接（阶段一，FR-S1-07）：pkg/video 帧源抽象（FrameSource）+ 确定性合成源（可测 JPEG 出帧）+ HTTP JSON 推理服务对接（帧 base64 → 检测框）+ latest-wins 背压帧槽（推理慢丢旧帧保最新，丢弃计数暴露）；mappers/video VideoMapper（JSON 配置文件 opt-in、stream 指令运行中启停、数字指标面复用影子上报链、推理结果台账留痕（DirUp/frame:seq）与 eventbus 事件上行）；edgecore 装配 EDGEFLOW_VIDEO_MAPPER_CONFIG；v0310 测试 12 例全绿；RTSP 实源/云端管理面/GPU 运行时归阶段二（KNOWN-ISSUES §32）；详见 [docs/RELEASE-NOTES-v0310.md](docs/RELEASE-NOTES-v0310.md)
 - **v0.30.0**（2026-09-09）：MQTT 5.0 阶段一与登记项收口：协议版本参数化（ProtocolVersion5 opt-in，默认 3.1.1 逐字节冻结锚单测）；v5 属性最小层（VBI + Receive Maximum 0x21）与原因码（CONNACK/确认报文/DISCONNECT，失败码语义化透出）；Receive Maximum 双向流控（客户端 flowSlots 出站窗口 + sim 上行 QoS2 暂存深度强制 DISCONNECT 0x93）；OPC-UA 自动续期（AutoRenewRatio 75% 寿命触发 + 退避重试 + 与显式 Renew 互斥）；mappers race flake 修复；MQTT sim 单写者时序缺陷修复（关停报文入队 + 泵清空后关连接）；v0300 测试 12 例全绿；详见 [docs/RELEASE-NOTES-v0300.md](docs/RELEASE-NOTES-v0300.md)
 - **v0.29.0**（2026-09-08）：OPC-UA MSG/CLO 对称覆盖与显式令牌续期：SealMSGFrame/OpenMSGFrame 密封原语（AES-128-CBC + HMAC-SHA1 尾足迹，§6.7.4 尾垫）；客户端 sendSecure/recvSecure/pump 三路径密封接线；sim 网关（新钥优先/旧钥回退）+ 密封出站（同步快照 + 异步 writeServerFrameLocked）+ CLO 验封；Client.Renew 显式续期（44B 形状指纹网关、旧出站组回响应、首个新钥帧切组）；悬挂 Publish 所有权校验（修陈旧 goroutine 抢答竞态）+ KeepAlive 长轮询自动重挂；v0290 测试 7 例全绿（含传输级篡改 e2e）；整体功能架构图入库；详见 [docs/RELEASE-NOTES-v0290.md](docs/RELEASE-NOTES-v0290.md)
 - **v0.28.1**（2026-09-03）：OPC-UA OPN 体加密与 Basic256Sha256 端到端互通：客户端加密 OPN + sim opt-in（WithIdentity）对等处理 + 双侧密钥协商；MSG 对称覆盖留 v0.29.0。

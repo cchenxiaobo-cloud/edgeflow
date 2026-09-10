@@ -46,6 +46,7 @@ EdgeFlow 是云边协同的边缘计算平台：云端控制面（cloudcore + et
 - **FR-S1-04 OPC-UA 安全通道**：SecurityPolicy 可选（None 默认 / Basic256Sha256 分段实现），非 None 策略下证书字段与指纹校验强制，不支持策略显式拒绝；OPN 体加密与端到端互通（客户端加密 OPN + sim opt-in 对等处理 + 双侧密钥协商）。锚点：pkg/opcua v0280_security_test.go（17 例）+ v0281_security_test.go（4 例）+ v0290_security_test.go（5 例）+ v0290_security_e2e_test.go（2 例）。✅ v0.29.0 全链路完成（OPN 体加密 + MSG/CLO 对称覆盖 + 显式 Renew）。
 - **FR-S1-05 指令闭环留痕**：device-command 下发→mapper 执行→op-ledger 记账。✅
 - **FR-S1-06 mapper 配置文件化**：mapper 参数走配置文件（v0.26.0）。✅
+- **FR-S1-07 视频流管理与边缘推理对接（阶段一）**：帧源抽象（合成源内置，RTSP 实源阶段二）→ latest-wins 背压槽 → HTTP JSON 推理服务 → 数字指标面（影子上报）+ 结果台账留痕/事件上行；mapper 配置文件化与 stream 指令启停。锚点：pkg/video v0310_test（7 例）+ mappers/video v0310_test（5 例，含装配级 e2e）。✅ v0.31.0
 
 **S2 弱网自治**
 - **FR-S2-01 云边通道**：wss + Token 认证（默认 off/401）+ mTLS 可选。锚点：require_token_test、v0250/v0260 TLS 测试。✅
@@ -86,7 +87,8 @@ EdgeFlow 是云边协同的边缘计算平台：云端控制面（cloudcore + et
 | OPC-UA OPN 体加密（RSA-OAEP 封 ClientNonce‖legacyBody + 双端签名/验签 + 加密响应；规范 RequestHeader 扩展偏差登记 §29） | FR-S1-04 分段 | ~~v0.28.1~~ | ✅ 已实现（线格式偏差登记 KNOWN-ISSUES §29） |
 | OPC-UA MSG 对称加密签名（AES-128-CBC + HMAC-SHA1 全帧覆盖，含 CLO）+ 显式 Renew | FR-S1-04 分段 | ~~v0.29.0~~ | ✅ 已实现（Renew 形状指纹/KeepAlive 约定登记 KNOWN-ISSUES §30） |
 | MQTT 5.0 阶段一（版本参数化+原因码+流控） | FR-S2-07 | ~~v0.30.0~~ | ✅ 已实现（v5 属性区/会话解耦边界登记 KNOWN-ISSUES §31；默认 3.1.1 逐字节冻结） |
-| MQTT 5.0 阶段二（会话解耦+共享订阅） | FR-S2-07 | v0.31.0 草案 | 非承诺 |
+| MQTT 5.0 阶段二（会话解耦+共享订阅） | FR-S2-07 | v0.32.0 草案 | 非承诺 |
+| 视频流管理阶段二（RTSP 实源拉流 + 云端 VideoStream 管理面/快照/回放 + GPU 推理运行时） | FR-S1-07 分段 | 待排 | 阶段一 ✅ v0.31.0（边界登记 KNOWN-ISSUES §32） |
 | mapper 自动 Resume 接线（重连后自动回放 in-flight） | FR-S2-05 延伸 | 待排 | 规划 |
 | 完整 RBAC（多角色） | F43 | 待排 | 规划中 |
 | 设备级身份（当前仅节点级 Token） | F44 | 待排 | 部分实现 |

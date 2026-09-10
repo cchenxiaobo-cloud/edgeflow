@@ -597,3 +597,17 @@ spec：specs/0003-mqtt5-phase1-autorenew/spec.md（FR-S2-07 分期一 + §29/§3
 | sim 单写者时序修复 | simClient.pump 关停清空队列 + shutdown 等泵退出 | ✅ 闭环 | 本轮发现：双写者（异步队列 vs serve 直写）可乱序，违背单字节流语义 |
 | mappers race flake 修复 | （根因与处置见 §31） | ✅ 闭环 | §29/§30 收口 |
 | 阶段二（会话解耦+共享订阅+User Properties+mapper 配置面） | — | ⏳ v0.31.0 草案 | 非承诺 |
+
+## 27. v0.31.0 — 视频流管理与边缘推理对接 阶段一（2026-09-10）
+
+spec：specs/0004-video-inference-phase1/spec.md（新 FR-S1-07 分段一）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| V1 帧源抽象与合成源 | pkg/video FrameSource + SyntheticFrameSource（确定性 JPEG 出帧） | ✅ 闭环 | source.type 仅 synthetic（未知值显式拒绝）；RTSP 实源阶段二（零依赖约束） |
+| V2 推理服务对接 | HTTPInferencer（HTTP JSON：帧 JPEG base64 → 检测框数组） | ✅ 闭环 | 超时/5xx/坏 JSON 显式报错；服务端可省略元数据（帧序/时间戳回填） |
+| V3 背压帧槽 | LatestSlot latest-wins（推理慢丢旧帧保最新） | ✅ 闭环 | 丢弃计数实时暴露（framesDropped 指标） |
+| V4 video mapper | mappers/video VideoMapper（DeviceMapper 全实现） | ✅ 闭环 | stream 指令启停；指标面（frames/infer/detections/avgScore/fps EMA）汇入影子上报链 |
+| V5 结果留痕与事件 | metamanager 台账（DirUp/frame:seq/ok-error）+ EventPublisher 事件上行（opt-in） | ✅ 闭环 | 主题 edgeflow/video/{device}/inference；未注入零副作用 |
+| V6 edgecore 装配 | EDGEFLOW_VIDEO_MAPPER_CONFIG 配置文件 opt-in | ✅ 闭环 | 无环境变量零行为（冻结）；装配级 e2e（配置→stub 推理→指标/事件断言） |
+| 阶段二（RTSP/GB28181 实源、云端 VideoStream 管理面、GPU 推理运行时、下行 QoS 推送面） | — | ⏳ 待排 | 非承诺 |

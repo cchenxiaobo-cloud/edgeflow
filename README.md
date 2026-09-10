@@ -6,7 +6,7 @@ EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备�
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.32.0**（2026-09-10，MQTT 5.0 阶段二——会话解耦（v5 Session Expiry + Clean Start，断连后订阅表与离线 QoS1 按 ClientID 保留、重连 Session Present 恢复）与共享订阅（`$share/{group}/{filter}` 组内 round-robin 负载均衡）；client 侧 `Options.PersistentSession`/`SessionPresent()`；codec 属性区白名单通用化（0x21 RM + 0x11 SE）；接管仲裁踢旧转接；零新依赖、契约 42 端点不变）。核心能力包括：
+> 当前版本：**v0.33.0**（2026-09-10，MQTT 5.0 阶段三——QoS1 可靠下行（v5 订阅授予 granted=min(req,1)、会话级 PUBACK 确认/inflight 窗口、重连重发 DUP=1）、订阅选项 NoLocal/RAP、入站 Topic Alias（0x23 带宽压缩）；client 侧 `SubOpts`/`SubscribeWithOpts`/`Options.PublishTopicAlias`；codec SUBSCRIBE v5 propsLen 存量缺陷修复；零新依赖、契约 42 端点不变）。核心能力包括：
 
 ## 整体功能架构
 

@@ -624,3 +624,17 @@ spec：specs/0005-mqtt5-phase2-session-sharesub/spec.md（FR-S2-07）。
 | M4 共享订阅 | $share/{group}/{filter} 组内 round-robin（确定性排序） | ✅ 闭环 | 组键 = group+inner；离线成员不暂存不轮转；$queue/ 拒绝 |
 | M5 codec 属性区通用化 | propsV5 白名单（RM+SE）+ 未知拒绝 + CONNACK SE 回显 | ✅ 闭环 | 3.1.1 路径零触碰 |
 | 阶段三（下行 QoS1/2 重发状态机、订阅选项 NoLocal/RAP/RH、Topic Alias、3.1.1 持久会话） | — | ⏳ 待排 | 非承诺 |
+
+## 29. v0.33.0 — MQTT 5.0 阶段三：QoS1 可靠下行 + 订阅选项 + Topic Alias（2026-09-10）
+
+spec：specs/0006-mqtt5-phase3-qos1-reliability/spec.md（FR-S2-07 阶段三段）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| N1 下行 QoS 按授予 | SUBSCRIBE granted=min(req,1) + fanoutBytes publisher/granted 流 | ✅ 闭环 | 仅 v5；v3.1.1 冻结锚测试；请求 2 授予 1（登记） |
+| N2 PUBACK 确认 + inflight 窗口 | 统一 v0320 恢复窗口模型（offline 头部 dispatched 条=在途，窗口 16） | ✅ 闭环 | 窗口满积压 ≤64；在途条被挤掉时窗口释放防御 |
+| N3 重连重发 DUP | 恢复批次全 DUP=1（批次⊆在途段不变量） | ✅ 闭环 | 积压条目经 PUBACK 滑动补发 DUP=0 |
+| N4 订阅选项 | SubOpts{NoLocal,RAP,RH} + permissive 解析选项字节拆解 | ✅ 闭环 | RH 仅校验+存储；保留位拒绝 |
+| N5 Topic Alias 入站 | propsV5+0x23 + per-session 映射 ≤16 + 0x94 断开 | ✅ 闭环 | client 出站 opt-in（alias-only 帧）；alias=0 与未携带等同（登记） |
+| 存量修复 | codec decodeSubscribe v5 propsLen 补齐；permissive 选项字节拆解；enqueueQoS Dup 参数 | ✅ 闭环 | 阶段一起 encode/decode 不对称，通用路径修复 |
+| 阶段四候选（周期定时重发、client 出站断线重发、alias 出站方向、RH 行为、共享订阅 granted-QoS1、3.1.1 持久会话） | — | ⏳ 待排 | 非承诺 |

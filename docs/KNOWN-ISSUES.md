@@ -459,3 +459,25 @@
 - hasSubscriber（PUBACK 0x10 判定）计入共享订阅与离线保留会话。
 
 **复核补充（v0320 复核轮，2026-09-10）**: P0×1 已修复（fanoutBytes 持锁路径改内联入队，慢消费者死锁回归锚 TestV0320SlowConsumerNoDeadlock）；P1×1 已修复（恢复缓冲限定 QoS<2，QoS2 锚 TestV0320RecoverBufferSkipsQoS2）；P2-3 同面根因修复（pump 写截止：正常分支 5s / 关停 drain 1s——死消费者不再可挂起接管与 broker 关停，v0240–v0310 小帧时序语义不变）。P2-2 登记：shareCursor 组键无界（测试 broker 量级极小，生产 broker 不在本仓范围）。P2-1/P2-4/P2-5 已顺手修（恒真 if 清理、重复属性拒绝、godoc 归位）。
+
+## 34. v0.33.0（MQTT 5.0 阶段三：QoS1 可靠下行 + 订阅选项 + Topic Alias）
+
+**交付**：v5 下行 QoS 按订阅授予（granted=min(req,1)）+ 会话级 PUBACK 确认/inflight 窗口（16）+
+重连重发（恢复批次精确标注：断连前在途 DUP=1、离线暂存首传 DUP=0——复核 P1-1 修正）+ 订阅选项 NoLocal/RAP（v5 选项字节）+
+Topic Alias 入站（0x23、per-session ≤16、违规 0x94 断开）+ client SubOpts/SubscribeWithOpts/
+PublishTopicAlias opt-in。
+
+**边界登记（非缺陷）**：周期定时重发不做（重发仅触发于重连恢复；sim 连接可靠）；client 出站
+QoS1 断线重发不做（阶段四候选）；Topic Alias 出站方向（server→client 分配）不做；RH 仅校验
++存储（无 retain 转发面）；共享订阅 granted-QoS1 不做（共享订阅下行维持 QoS0）；请求 QoS2
+授予 1 不回 0x9B；alias=0 与未携带等同（codec 无法区分，依赖空主题拒绝路径）；broker 下行
+QoS2 转发不做（QoS2 上行 release 后 fanout 按原 QoS——granted-QoS1 流仅 QoS1 触发）。
+
+**复核补充（v0330 复核轮）**：P0×1 已修复（aliases 纳入 sess.mu——接管时新旧 serve 短暂并发）；P1×2 已修复（恢复 DUP 精确标注 + client e2e ×2/propsLen 锚补测，测试计数 12 例）；P2 处置：0x23 作用域拒绝（CONNECT/CONNACK/SUBACK）、$share+NoLocal 0x80 拒绝（已修）；登记阶段四：CONNACK 无 Topic Alias Maximum（真实 broker 互通时 client 可能超服务端上限发 alias——client 侧 opt-in 默认关、风险受控）、跨连接残留 alias 映射（client 重连首包带主题覆盖）。"RH 校验+存储"更正为"校验+丢弃"。
+
+**存量缺陷修复（本轮暴露）**：① codec decodeSubscribe 阶段一起不读 v5 属性长度字节
+（encode/decode 不对称；sim broker 走 permissive 手工解析未暴露——通用库路径修复）；
+② sim permissive SUBSCRIBE 把 v5 选项字节当 QoS 校验（NoLocal=0x04 断连）——拆解修复；
+③ 恢复下发 enqueueQoS 丢失 Dup 字段——补 dup 参数。
+
+**升级兼容**：默认参数与 v0.32.0 逐字节一致；3.1.1 行为零变化；契约 42 端点零改动。

@@ -425,3 +425,11 @@
 - **自动续期未实现**: 令牌寿命（RevisedLifetime=600000ms）到期前无自动 Renew 触发器；使用方需显式调用 Client.Renew。后续轮交付 75% 寿命自动触发。
 - **互通性验证边界（沿用 §29）**: 仍为自研客户端 ↔ 自研 sim 双向交叉验证；OPC 基金会互操作样例向量比对未做，接真实第三方服务器前必须补。
 - **既有 race flake（沿用 §29）**: mappers/opcua TestStopNilClientCollectErrors 本轮三包 race 未触发，仍登记跟踪（单独修复轮处理）。
+
+## 31. v0.30.0 开发轮处置登记（2026-09-09，MQTT 5.0 阶段一 + 登记项收口）
+
+- **v5 属性区仅接受空属性（阶段一边界）**: PUBLISH/SUBSCRIBE 属性区仅接受 PropertyLength=0；User Properties、Subscription Identifier、Payload Format Indicator 等出现即拒绝（ErrMalformed）。CONNECT/CONNACK 仅 Receive Maximum（0x21）。阶段二随属性系统完整实现。
+- **sim 上行流控执行点 = QoS2 暂存深度**: sim 对 QoS1 即时回执（PUBACK 同步入队），不构成服务端在途积累；流控强制仅覆盖 QoS2 暂存（达 server RM → DISCONNECT 0x93）。真实 broker 对 QoS1 的异步确认路径语义归阶段二（下行 QoS1/2 推送面）。
+- **MQTT sim 单写者时序缺陷（本轮发现修复）**: 修复前 serve 直写关停报文与 pump 异步队列可乱序（鉴权 CONNACK/流控 DISCONNECT 可能先于已入队确认上线），违背 MQTT 单字节流语义。修复 = 关停报文一律入队（单写者不变量）+ pump 关停时先清空既有队列、shutdown 等泵退出后再关连接。冻结包测试全绿（含 TLS/mTLS/QoS2/持久化）。
+- **mappers race flake 根因与修复（本轮收口）**: TestStopNilClientCollectErrors / TestStopDuringSubscriptionLoopNoPanic 偶发 DATA RACE。根因 = Client.Close（mapper Stop 锁外路径）构造 CloseSession/DeleteSubscriptions 的 RequestHandle 时无锁调用 SecureChannel.nextReqID（裸 reqId++），与订阅循环 PubAck→sendSecure（sendMu 持锁自增）竞争；同函数族 sendCLO None 分支的 seq 自增同样无锁（v0290 P2-1 只修了 B256 分支）。修复 = nextReqID 原子化（RequestHandle 与帧 RequestID 无需同值，语义不变）+ sendCLO None 分支持 sendMu + 消除 sc.reqId 混合读。修复后 mappers/opcua -race count=30 稳定全绿；偏差登记于 spec 0003 as-built。
+- **互通性验证边界（沿用 §29/§30）**: MQTT 5.0 为自研 client ↔ 自研 sim 双向交叉验证；OPC-UA 互操作向量比对仍 pending，接真实第三方服务器前必须补。

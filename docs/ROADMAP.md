@@ -581,3 +581,19 @@
 | 架构图 | docs/architecture-overview.svg + README 嵌入 | ✅ 闭环 | 整体功能架构（六层 + 数据流），随版本更新 |
 | 互操作向量比对 | — | ⏳ 后续 | 接真实第三方服务器前必须补（§30 沿用） |
 | 自动续期定时器 | — | ⏳ 后续 | 75% 寿命触发；本轮交付显式 Renew API |
+
+## 26. v0.30.0 — MQTT 5.0 阶段一（协议版本参数化 + 原因码 + 流控）与登记项收口（2026-09-09）
+
+spec：specs/0003-mqtt5-phase1-autorenew/spec.md（FR-S2-07 分期一 + §29/§30 登记项收口）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| M5-1 协议版本参数化 | Options.ProtocolVersion5（opt-in）+ CONNECT 级别 5 + sim 级别字节自动分派 | ✅ 闭环 | 默认 3.1.1 逐字节冻结（冻结锚单测）；DecodePacket 导出语义不变 |
+| M5-2 属性最小层 | VBI 编解码 + 属性分发（阶段一仅 Receive Maximum 0x21） | ✅ 闭环 | 未知属性拒绝；边界值全覆盖 |
+| M5-3 原因码 | CONNACK/确认报文/DISCONNECT v5 形态 + v5ReasonText 语义化 | ✅ 闭环 | QoS1 无订阅者 0x10 警告级容忍；2B 确认报文容忍 rc=0 |
+| M5-4 Receive Maximum 流控 | 客户端 flowSlots 出站窗口 + sim 上行 QoS2 暂存深度强制 DISCONNECT 0x93 | ✅ 闭环 | QoS0 不占槽；全部退出路径释放；下行 QoS1/2 面归阶段二 |
+| M5-5 e2e | v5 全链路 + 0x93 强制 + 鉴权失败码/向下兼容 | ✅ 3 例 | client 与 sim 成对交付（评估文档 §4.1） |
+| OPC-UA 自动续期 | OpenSecureChannelOptions.AutoRenewRatio + autoRenewLoop + 退避重试 | ✅ 闭环 | 与显式 Renew 互斥（renewMu）；Close 收口；None 不启动（§30 收口） |
+| sim 单写者时序修复 | simClient.pump 关停清空队列 + shutdown 等泵退出 | ✅ 闭环 | 本轮发现：双写者（异步队列 vs serve 直写）可乱序，违背单字节流语义 |
+| mappers race flake 修复 | （根因与处置见 §31） | ✅ 闭环 | §29/§30 收口 |
+| 阶段二（会话解耦+共享订阅+User Properties+mapper 配置面） | — | ⏳ v0.31.0 草案 | 非承诺 |

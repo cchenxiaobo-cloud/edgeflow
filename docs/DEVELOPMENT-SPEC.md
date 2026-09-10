@@ -85,8 +85,8 @@ EdgeFlow 是云边协同的边缘计算平台：云端控制面（cloudcore + et
 |---|---|---|---|
 | OPC-UA OPN 体加密（RSA-OAEP 封 ClientNonce‖legacyBody + 双端签名/验签 + 加密响应；规范 RequestHeader 扩展偏差登记 §29） | FR-S1-04 分段 | ~~v0.28.1~~ | ✅ 已实现（线格式偏差登记 KNOWN-ISSUES §29） |
 | OPC-UA MSG 对称加密签名（AES-128-CBC + HMAC-SHA1 全帧覆盖，含 CLO）+ 显式 Renew | FR-S1-04 分段 | ~~v0.29.0~~ | ✅ 已实现（Renew 形状指纹/KeepAlive 约定登记 KNOWN-ISSUES §30） |
-| MQTT 5.0 阶段一（版本参数化+原因码+流控） | FR-S2-07 | v0.29.0 草案 | 非承诺 |
-| MQTT 5.0 阶段二（会话解耦+共享订阅） | FR-S2-07 | v0.30.0 草案 | 非承诺 |
+| MQTT 5.0 阶段一（版本参数化+原因码+流控） | FR-S2-07 | ~~v0.30.0~~ | ✅ 已实现（v5 属性区/会话解耦边界登记 KNOWN-ISSUES §31；默认 3.1.1 逐字节冻结） |
+| MQTT 5.0 阶段二（会话解耦+共享订阅） | FR-S2-07 | v0.31.0 草案 | 非承诺 |
 | mapper 自动 Resume 接线（重连后自动回放 in-flight） | FR-S2-05 延伸 | 待排 | 规划 |
 | 完整 RBAC（多角色） | F43 | 待排 | 规划中 |
 | 设备级身份（当前仅节点级 Token） | F44 | 待排 | 部分实现 |

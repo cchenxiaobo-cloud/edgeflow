@@ -63,6 +63,12 @@ type Options struct {
 	// 以服务器 CONNACK 下发的 Receive Maximum 为节流窗口。
 	ReceiveMax uint16
 
+	// PublishTopicAlias 开启出站 Topic Alias（v0.33.0 阶段三，opt-in；
+	// 默认 false = 每包携带完整主题的逐字节现状）：仅 v5 连接生效。开启
+	// 后同主题第二包起仅携带 16 位别名（首包建映射），压缩重复主题带宽。
+	// 别名表随连接生命周期（≤16；表满后新主题降级为全主题帧）。
+	PublishTopicAlias bool
+
 	// PersistentSession 开启持久会话（v0.32.0 阶段二，opt-in；默认
 	// false = 现状 CleanSession 恒 true 的逐字节行为）：v5 连接发
 	// CleanStart=0 + Session Expiry 属性；3.1.1 连接发 CleanSession=0。
@@ -92,7 +98,13 @@ type Handler func(topic string, payload []byte)
 // responsibility of the upper layer (the EdgeFlow Mapper).
 type Client struct {
 	conn    net.Conn
-	writeMu sync.Mutex // serializes all packet writes on conn
+	writeMu sync.Mutex
+
+	// 出站 Topic Alias 表（v0.33.0 阶段三，opt-in）：topic → alias。
+	// aliasMu 保护；per-connection 生命周期（Dial 重建）。
+	aliasMu   sync.Mutex
+	aliasMap  map[string]uint16
+	aliasNext uint16 // serializes all packet writes on conn
 
 	packetID uint32 // atomic counter feeding 16-bit packet identifiers
 
@@ -197,6 +209,9 @@ func Dial(addr string, opts Options) (*Client, error) {
 		return nil, fmt.Errorf("mqtt: send CONNECT: %w", err)
 	}
 	c.v5 = opts.ProtocolVersion5
+	if opts.PublishTopicAlias {
+		c.aliasMap = make(map[string]uint16)
+	}
 	p, err := decodePacketV(conn, opts.ProtocolVersion5)
 	if err != nil {
 		conn.Close()
@@ -264,11 +279,27 @@ func (c *Client) ensureOpen() error {
 // 仅在 Dial 成功后有意义的只读快照；与 Options.PersistentSession 搭配使用。
 func (c *Client) SessionPresent() bool { return c.sessionPresent }
 
+// SubOpts 是 v5 订阅选项（v0.33.0 阶段三）。仅 v5 连接编码进 SUBSCRIBE
+// 选项字节；3.1.1 连接仅 QoS 生效（字节路径冻结）。RetainHandling 合法值
+// 0/1/2（本仓 sim 无 retain 转发面，服务端仅校验+存储登记）。
+type SubOpts struct {
+	QoS               byte
+	NoLocal           bool // 该订阅不接收发布者自身的匹配消息
+	RetainAsPublished bool // 转发保留消息原 QoS（服务端 granted cap 内）
+	RetainHandling    byte
+}
+
 // Subscribe sends a SUBSCRIBE for a single filter and waits for the matching
 // SUBACK. On a granted code (< 0x80) the handler is registered under the
 // exact filter string; on rejection the error carries the SUBACK code.
 // 共享订阅（$share/{group}/{filter}）的 handler 以内层 filter 注册。
 func (c *Client) Subscribe(topic string, qos byte, h Handler) error {
+	return c.SubscribeWithOpts(topic, SubOpts{QoS: qos}, h)
+}
+
+// SubscribeWithOpts 是带 v5 订阅选项的 Subscribe（v0.33.0 阶段三）；
+// 其余语义（handler 注册/SUBACK 校验/共享订阅内层注册）与 Subscribe 一致。
+func (c *Client) SubscribeWithOpts(topic string, opts SubOpts, h Handler) error {
 	if h == nil {
 		return errors.New("mqtt: nil handler")
 	}
@@ -278,9 +309,12 @@ func (c *Client) Subscribe(topic string, qos byte, h Handler) error {
 	if err := c.ensureOpen(); err != nil {
 		return err
 	}
+	if opts.QoS > 2 || opts.RetainHandling > 2 {
+		return ErrMalformed
+	}
 	pk := &Subscribe{
 		PacketID: c.nextID(),
-		Topics:   []TopicFilter{{Topic: topic, QoS: qos}},
+		Topics:   []TopicFilter{{Topic: topic, QoS: opts.QoS, NoLocal: opts.NoLocal, RetainAsPublished: opts.RetainAsPublished, RetainHandling: opts.RetainHandling}},
 		V5:       c.v5,
 	}
 	ch := c.registerAck(pk.PacketID)
@@ -380,6 +414,22 @@ func (c *Client) Publish(topic string, qos byte, payload []byte) error {
 		return err
 	}
 	pk := &Publish{QoS: qos, Topic: topic, Payload: payload, V5: c.v5}
+	// v0.33.0：出站 Topic Alias（v5 + opt-in）。首包带主题建映射，此后
+	// 同主题仅携带别名（alias-only 帧：Topic="" + TopicAlias）。表满
+	// （≤16）后新主题降级为全主题帧（不带别名）。QoS>0 同样适用（别名
+	// 与 QoS 无关）。
+	if c.v5 && c.aliasMap != nil {
+		c.aliasMu.Lock()
+		if id, ok := c.aliasMap[topic]; ok {
+			pk.Topic = ""
+			pk.TopicAlias = id
+		} else if len(c.aliasMap) < 16 {
+			c.aliasNext++
+			c.aliasMap[topic] = c.aliasNext
+			pk.TopicAlias = c.aliasNext
+		}
+		c.aliasMu.Unlock()
+	}
 	if qos == 0 {
 		return c.write(pk)
 	}

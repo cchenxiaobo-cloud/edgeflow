@@ -136,10 +136,11 @@ func encodeConnectProps(e *encoder, receiveMax uint16, sessionExpiry uint32) {
 	e.writeBytes(body)
 }
 
-// propsV5 是 v5 属性区白名单解析结果（v0.32.0 阶段二扩展）。
+// propsV5 是 v5 属性区白名单解析结果（v0.33.0 阶段三扩展：+Topic Alias）。
 type propsV5 struct {
 	ReceiveMax    uint16 // 0x21（0 = 未携带）
 	SessionExpiry uint32 // 0x11（0 = 未携带）
+	TopicAlias    uint16 // 0x23（0 = 未携带；PUBLISH 专用属性）
 }
 
 // decodeProps 解析 v5 属性区：白名单内属性任意组合与出现顺序（每条
@@ -154,6 +155,7 @@ func decodeProps(d *decoder) (propsV5, error) {
 		return out, nil
 	}
 	end := d.consumed() + int(propLen) // 属性区边界（长度自洽校验）
+	seen := 0 // 位标：bit0=0x11、bit1=0x21、bit2=0x23 已见（规范：重复属性 = 协议错误；v0320 复核 P2-4 + v0330 补齐）
 	for d.consumed() < end {
 		id, err := d.readByte()
 		if err != nil {
@@ -161,11 +163,27 @@ func decodeProps(d *decoder) (propsV5, error) {
 		}
 		switch id {
 		case 0x21: // Receive Maximum (u16)
+			if seen&2 != 0 {
+				return out, ErrMalformed // 重复属性拒绝
+			}
+			seen |= 2
 			if out.ReceiveMax, err = d.readUint16(); err != nil {
 				return out, err
 			}
 		case 0x11: // Session Expiry Interval (u32)
+			if seen&1 != 0 {
+				return out, ErrMalformed // 重复属性拒绝
+			}
+			seen |= 1
 			if out.SessionExpiry, err = d.readUint32(); err != nil {
+				return out, err
+			}
+		case 0x23: // Topic Alias (u16，v0.33.0 阶段三；PUBLISH 专用)
+			if seen&4 != 0 {
+				return out, ErrMalformed // 重复属性拒绝
+			}
+			seen |= 4
+			if out.TopicAlias, err = d.readUint16(); err != nil {
 				return out, err
 			}
 		default:
@@ -309,8 +327,11 @@ func (p *Publish) encodeUA(e *encoder) error {
 	if p.QoS > 2 {
 		return ErrMalformed
 	}
-	if err := validateTopicName(p.Topic); err != nil {
-		return err
+	if p.TopicAlias == 0 {
+		// 非 alias 帧校验主题；alias-only 帧（Topic="" + 别名）放行。
+		if err := validateTopicName(p.Topic); err != nil {
+			return err
+		}
 	}
 	e.writeString(p.Topic)
 	if p.QoS == 0 && p.PacketID != 0 {
@@ -323,7 +344,14 @@ func (p *Publish) encodeUA(e *encoder) error {
 		writeU16(e, p.PacketID)
 	}
 	if p.V5 {
-		e.writeByte(0x00) // v5 PUBLISH 属性长度恒 0（阶段一无 PUBLISH 属性）
+		// v0.33.0：PUBLISH 属性区支持 Topic Alias（0x23，出站 opt-in）。
+		if p.TopicAlias != 0 {
+			e.writeVBI(3)
+			e.writeByte(0x23)
+			writeU16(e, p.TopicAlias)
+		} else {
+			e.writeByte(0x00) // 恒携带属性长度（无属性 = 0x00）
+		}
 	}
 	e.writeBytes(p.Payload)
 	return nil
@@ -377,7 +405,14 @@ func (s *Subscribe) encodeUA(e *encoder) error {
 			return ErrMalformed
 		}
 		e.writeString(tf.Topic)
-		e.writeByte(tf.QoS)
+		if s.V5 {
+			// v0.33.0：v5 订阅选项字节 = QoS(bit0-1) | NoLocal(0x04) |
+			// RAP(0x08) | RH(bit4-5)；bit6-7 保留恒 0。v3.1.1 路径写
+			// 原 QoS 字节（冻结不变）。
+			e.writeByte(tf.QoS | tf.subOptsByte())
+		} else {
+			e.writeByte(tf.QoS)
+		}
 	}
 	return nil
 }
@@ -569,7 +604,7 @@ func decodePacketV(r io.Reader, v5 bool) (Packet, error) {
 		if flags != 0x02 {
 			return nil, ErrMalformedFixedHeader
 		}
-		return decodeSubscribe(d)
+		return decodeSubscribe(d, v5)
 	case PacketTypeSUBACK:
 		if flags != 0 {
 			return nil, ErrMalformedFixedHeader
@@ -649,6 +684,9 @@ func decodeConnect(d *decoder, allowV5 bool) (*Connect, error) {
 		if pr, err = decodeProps(d); err != nil {
 			return nil, err
 		}
+		if pr.TopicAlias != 0 {
+			return nil, ErrMalformed // 0x23 为 PUBLISH 专用属性（复核 P2）
+		}
 		c.ReceiveMax = pr.ReceiveMax
 		c.SessionExpiry = pr.SessionExpiry
 	}
@@ -705,6 +743,9 @@ func decodeConnack(d *decoder, v5 bool) (*Connack, error) {
 		if pr, err = decodeProps(d); err != nil {
 			return nil, err
 		}
+		if pr.TopicAlias != 0 {
+			return nil, ErrMalformed // 0x23 为 PUBLISH 专用属性（复核 P2）
+		}
 		ca.ReceiveMax = pr.ReceiveMax
 		ca.SessionExpiry = pr.SessionExpiry
 	}
@@ -725,9 +766,6 @@ func decodePublish(d *decoder, flags byte, v5 bool) (*Publish, error) {
 	if p.Topic, err = d.readString(); err != nil {
 		return nil, err
 	}
-	if err := validateTopicName(p.Topic); err != nil {
-		return nil, err
-	}
 	if p.QoS > 0 {
 		if p.PacketID, err = d.readUint16(); err != nil {
 			return nil, err
@@ -736,10 +774,21 @@ func decodePublish(d *decoder, flags byte, v5 bool) (*Publish, error) {
 			return nil, ErrMalformed
 		}
 	}
+	var aliasOnly bool
 	if v5 {
-		// v5 PUBLISH：属性长度（阶段一仅接受空属性区）。
-		if n, perr := d.readVBI(); perr != nil || n != 0 {
-			return nil, ErrMalformed
+		// v5 PUBLISH 属性区：v0330 起支持 Topic Alias（0x23）白名单解析；
+		// 空属性区（长度 0）保持阶段一兼容。alias-only 帧（Topic="" +
+		// alias!=0）合法 —— 主题校验延后到属性解析后。
+		var pr propsV5
+		if pr, err = decodeProps(d); err != nil {
+			return nil, err
+		}
+		p.TopicAlias = pr.TopicAlias
+		aliasOnly = p.TopicAlias != 0 && p.Topic == ""
+	}
+	if !aliasOnly {
+		if err := validateTopicName(p.Topic); err != nil {
+			return nil, err
 		}
 	}
 	p.Payload = d.readRest()
@@ -816,12 +865,20 @@ func decodePubRelID(ptype byte, d *decoder, v5 bool) (Packet, error) {
 	}
 }
 
-func decodeSubscribe(d *decoder) (*Subscribe, error) {
+func decodeSubscribe(d *decoder, v5 bool) (*Subscribe, error) {
 	id, err := d.readUint16()
 	if err != nil {
 		return nil, err
 	}
-	s := &Subscribe{PacketID: id}
+	s := &Subscribe{PacketID: id, V5: v5}
+	if v5 {
+		// v0330 修复（阶段一存量缺陷）：SUBSCRIBE v5 属性长度字节此前
+		// 未读取——encode 写 propsLen 而 decode 不读，v5 SUBSCRIBE 经此
+		// 通用路径解析必失败（sim broker 走 permissive 手工解析未暴露）。
+		if _, err := decodeProps(d); err != nil {
+			return nil, err
+		}
+	}
 	for d.remaining() > 0 {
 		var tf TopicFilter
 		if tf.Topic, err = d.readString(); err != nil {
@@ -829,6 +886,17 @@ func decodeSubscribe(d *decoder) (*Subscribe, error) {
 		}
 		if tf.QoS, err = d.readByte(); err != nil {
 			return nil, err
+		}
+		if s.V5 {
+			// v0.33.0：v5 选项字节拆解（QoS 低 2 位；NoLocal/RAP/RH 记录；
+			// 保留位 bit6-7 非 0 与 RH>2 = 协议错误）。v3.1.1 校验不变。
+			if tf.QoS&0xC0 != 0 || tf.QoS>>4 > 2 {
+				return nil, ErrMalformed
+			}
+			tf.NoLocal = tf.QoS&0x04 != 0
+			tf.RetainAsPublished = tf.QoS&0x08 != 0
+			tf.RetainHandling = (tf.QoS >> 4) & 0x03
+			tf.QoS &= 0x03
 		}
 		if tf.QoS > 2 {
 			return nil, ErrMalformed
@@ -850,8 +918,10 @@ func decodeSuback(d *decoder, v5 bool) (*Suback, error) {
 		return nil, err
 	}
 	if v5 {
-		if _, err := decodeProps(d); err != nil {
+		if pr, err := decodeProps(d); err != nil {
 			return nil, err
+		} else if pr.TopicAlias != 0 {
+			return nil, ErrMalformed // 0x23 为 PUBLISH 专用属性（复核 P2）
 		}
 	}
 	if d.remaining() == 0 {

@@ -80,8 +80,12 @@ type Publish struct {
 	PacketID uint16
 	Payload  []byte
 
-	// V5=true 时 payload 前插入属性长度字节 0x00（v5 帧形态，v0.30.0；
-	// 阶段一不支持 PUBLISH 属性）。3.1.1 路径不受影响。
+	// TopicAlias v5 PUBLISH 属性 0x23（v0.33.0 阶段三，opt-in 出站；
+	// 0 = 不携带）。仅 V5=true 生效。
+	TopicAlias uint16
+
+	// V5=true 时 payload 前插入属性长度字节（无属性 = 0x00，v0.30.0；
+	// v0.33.0 起 TopicAlias 非 0 时携带属性区）。3.1.1 路径不受影响。
 	V5 bool
 }
 
@@ -138,6 +142,26 @@ func (p *Pubcomp) Type() byte { return PacketTypePUBCOMP }
 type TopicFilter struct {
 	Topic string
 	QoS   byte
+
+	// v5 订阅选项（v0.33.0 阶段三）：仅 V5=true 编码进选项字节；
+	// v3.1.1 路径忽略。RetainHandling 合法值 0/1/2。
+	NoLocal           bool
+	RetainAsPublished bool
+	RetainHandling    byte
+}
+
+// subOptsByte 组装 v5 选项字节的非 QoS 位（NoLocal/RAP/RH）。
+// RH 超界由 encodeUA 校验路径拒绝（QoS>2 同源校验）。
+func (tf TopicFilter) subOptsByte() byte {
+	var b byte
+	if tf.NoLocal {
+		b |= 0x04
+	}
+	if tf.RetainAsPublished {
+		b |= 0x08
+	}
+	b |= (tf.RetainHandling & 0x03) << 4
+	return b
 }
 
 // Subscribe is the MQTT SUBSCRIBE packet.
@@ -211,6 +235,7 @@ const (
 	MQTTV5ServerUnavailable      byte = 0x88
 	MQTTV5TopicFilterInvalid     byte = 0x8F
 	MQTTV5ReceiveMaxExceeded     byte = 0x93 // DISCONNECT：流控违规
+	MQTTV5TopicAliasInvalid      byte = 0x94 // DISCONNECT：Topic Alias 违规（v0.33.0）
 )
 
 // v5ReasonText 返回 v5 原因码的可读语义（未知码返回空串，调用方自行

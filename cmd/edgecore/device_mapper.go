@@ -27,6 +27,7 @@ import (
 	modbusmapper "edgeflow/mappers/modbus"
 	mqttmapper "edgeflow/mappers/mqtt"
 	opcuamapper "edgeflow/mappers/opcua"
+	videomapper "edgeflow/mappers/video"
 )
 
 // EnvEnableMapper 是 Mapper 装配开关的环境变量名（WBS 5.1 装配门控）。
@@ -174,6 +175,32 @@ func buildMapperRegistry(bus *eventbus.EventBus, ledger *metamanager.Ledger) *ma
 		} else {
 			log.Infof("MQTT Mapper 已注册（broker=%s，订阅 [%s]，设备 %s，cmd=%s）",
 				broker, strings.Join(topics, ","), m.DeviceNames()[0], m.CommandTopic())
+		}
+	}
+	// 视频流设备接入（v0.31.0 阶段一，显式 opt-in）：
+	// EDGEFLOW_VIDEO_MAPPER_CONFIG 指向 JSON 配置文件即注册 video mapper
+	// （帧源 → 背压槽 → HTTP 推理服务 → 指标面/留痕/事件）；文件不存在或
+	// 非法仅 Warn 跳过（不影响其余 Mapper）。无环境变量零行为（冻结）。
+	if cfgPath := os.Getenv(videomapper.EnvConfig); cfgPath != "" {
+		if vcfg, verr := videomapper.LoadConfig(cfgPath); verr != nil {
+			log.Warnf("视频 Mapper 配置加载失败，跳过注册: %v", verr)
+		} else {
+			var opts []videomapper.Option
+			if vcfg.Ledger && ledger != nil {
+				opts = append(opts, videomapper.WithLedger(ledger))
+			}
+			if vcfg.EventBus && bus != nil {
+				opts = append(opts, videomapper.WithEventPublisher(bus))
+			}
+			vm, merr := videomapper.NewMapper(vcfg, opts...)
+			if merr != nil {
+				log.Warnf("注册视频 Mapper 失败: %v", merr)
+			} else if err := reg.Register(vm); err != nil {
+				log.Warnf("注册视频 Mapper 失败: %v", err)
+			} else {
+				log.Infof("视频 Mapper 已注册（config=%s，设备 %s，留痕 %v，事件 %v）",
+					cfgPath, vcfg.DeviceName, vcfg.Ledger && ledger != nil, vcfg.EventBus && bus != nil)
+			}
 		}
 	}
 	if bus != nil {

@@ -114,6 +114,26 @@ func WithEndpointURL(u string) Option {
 	return func(s *Simulator) { s.endpointURL = u }
 }
 
+// WithTokenLifetime 覆盖安全令牌寿命（毫秒，v0.30.0 opt-in）：作用于
+// OPN / Renew 响应的 RevisedLifetime（默认 600000）。自动续期测试注入
+// 短寿命用；0 值忽略。
+func WithTokenLifetime(ms uint32) Option {
+	return func(s *Simulator) {
+		if ms > 0 {
+			s.tokenLifetimeMs = ms
+		}
+	}
+}
+
+// tokenLifetimeMsIfSet 返回生效的安全令牌寿命（毫秒；未配置时回退
+// 规范默认 600000，保持 v0280-v0290 行为）。
+func (s *Simulator) tokenLifetimeMsIfSet() float64 {
+	if s.tokenLifetimeMs > 0 {
+		return float64(s.tokenLifetimeMs)
+	}
+	return 600000
+}
+
 // WithIdentity 为模拟器注入服务端身份（v0.28.1 opt-in）：配置后模拟器
 // 接受 Basic256Sha256 OPN（解封/验签/密钥派生/加密响应）；不配置时保持
 // v0.28.0 语义——非 None 策略显式拒绝（ERR Bad_SecurityPolicyRejected），
@@ -136,6 +156,10 @@ type Simulator struct {
 	// 均非 nil 时启用 Basic256Sha256 OPN 对等处理。
 	serverCert *x509.Certificate
 	serverKey  *rsa.PrivateKey
+
+	// tokenLifetimeMs 是 v0.30.0 opt-in 安全令牌寿命（WithTokenLifetime）：
+	// 0 = 未配置，OPN/Renew 响应回退默认 600000ms。
+	tokenLifetimeMs uint32
 
 	mu        sync.Mutex
 	connCount int
@@ -457,7 +481,7 @@ func (s *Simulator) handleConn(c net.Conn) {
 		Timestamp:             opcua.DateTimeFromTime(time.Now()),
 		ServiceResult:         0,
 		ServerProtocolVersion: 0,
-		SecurityToken:         opcua.ChannelSecurityToken{ChannelID: channelID, TokenID: tokenID, CreatedAt: opcua.DateTimeFromTime(time.Now()), RevisedLifetime: 600000},
+		SecurityToken:         opcua.ChannelSecurityToken{ChannelID: channelID, TokenID: tokenID, CreatedAt: opcua.DateTimeFromTime(time.Now()), RevisedLifetime: s.tokenLifetimeMsIfSet()},
 	})
 	if err != nil {
 		return
@@ -594,7 +618,7 @@ func (s *Simulator) handleB256OpenSecureChannel(c net.Conn, asymHdr opcua.Asymme
 		Timestamp:             opcua.DateTimeFromTime(time.Now()),
 		ServiceResult:         0,
 		ServerProtocolVersion: 0,
-		SecurityToken:         opcua.ChannelSecurityToken{ChannelID: channelID, TokenID: tokenID, CreatedAt: opcua.DateTimeFromTime(time.Now()), RevisedLifetime: 600000},
+		SecurityToken:         opcua.ChannelSecurityToken{ChannelID: channelID, TokenID: tokenID, CreatedAt: opcua.DateTimeFromTime(time.Now()), RevisedLifetime: s.tokenLifetimeMsIfSet()},
 		ServerNonce:           serverNonce,
 	})
 	if err != nil {
@@ -705,7 +729,7 @@ func (s *Simulator) handleB256Renew(cs *connSession, c net.Conn, sh opcua.Sequen
 		Timestamp:             opcua.DateTimeFromTime(time.Now()),
 		ServiceResult:         0,
 		ServerProtocolVersion: 0,
-		SecurityToken:         opcua.ChannelSecurityToken{ChannelID: cs.channelID, TokenID: newTokenID, CreatedAt: opcua.DateTimeFromTime(time.Now()), RevisedLifetime: 600000},
+		SecurityToken:         opcua.ChannelSecurityToken{ChannelID: cs.channelID, TokenID: newTokenID, CreatedAt: opcua.DateTimeFromTime(time.Now()), RevisedLifetime: s.tokenLifetimeMsIfSet()},
 		ServerNonce:           newServerNonce,
 	})
 	if err != nil {

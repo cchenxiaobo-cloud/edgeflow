@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -259,9 +260,12 @@ type SecureChannel struct {
 
 	// keysMu 保护 cur/prev 密钥组（v0.29.0）。cur.keys==nil 表示 None
 	// 明文通道；prev 仅在 Renew 换钥后短暂存在，用于入站在途帧回退。
-	keysMu sync.RWMutex
-	cur    keySet
-	prev   *keySet
+	// lifetimeMs 是最近一次 OPN/Renew 响应的 RevisedLifetime（毫秒，
+	// v0.30.0 自动续期触发点计算用）。
+	lifetimeMs float64
+	keysMu     sync.RWMutex
+	cur        keySet
+	prev       *keySet
 }
 
 // keySet 是一组生效的对称密钥与令牌（v0.29.0）。换钥窗口语义：
@@ -335,6 +339,13 @@ type OpenSecureChannelOptions struct {
 	ClientCert        *x509.Certificate // 客户端证书（Basic256Sha256 必填）
 	ClientKey         *rsa.PrivateKey   // 客户端私钥（Basic256Sha256 必填）
 	ServerCert        *x509.Certificate // 服务端证书（Basic256Sha256 必填）
+
+	// AutoRenewRatio 是令牌自动续期触发点（v0.30.0，opt-in）：寿命的
+	// 该比例时刻自动 Renew（如 0.75 = 75% 寿命）。0 = 关闭（保持
+	// v0.29.0 显式 Renew 行为，冻结）；合法区间 (0,1]。推荐取 (0,1)
+	// 区间（如 0.75）留出网络抖动余量——取 1.0 时触发点=寿命满点，
+	// 任何延迟即令牌过期。
+	AutoRenewRatio float64
 }
 
 // validateSecurityOptions 验证 OpenSecureChannelOptions 与策略 URI 的一致性：
@@ -342,6 +353,9 @@ type OpenSecureChannelOptions struct {
 //   - Basic256Sha256URI → 必须三个证书字段均提供，否则拒绝
 //   - 其他 → 拒绝（v0.28.0 不实现 Basic128Rsa15 / Basic256 等）
 func (o OpenSecureChannelOptions) validateSecurityOptions() (string, error) {
+	if o.AutoRenewRatio < 0 || o.AutoRenewRatio > 1 {
+		return "", fmt.Errorf("opcua: AutoRenewRatio=%v 非法（须为 0=关闭 或 (0,1]）", o.AutoRenewRatio)
+	}
 	if o.SecurityPolicyURI == "" {
 		return SecurityPolicyNoneURI, nil
 	}
@@ -359,18 +373,28 @@ func (o OpenSecureChannelOptions) validateSecurityOptions() (string, error) {
 }
 
 // RequestID 返回下一个出站 RequestId（诊断/测试用）。
-func (sc *SecureChannel) RequestID() uint32 { return sc.reqId }
+func (sc *SecureChannel) RequestID() uint32 { return atomic.LoadUint32(&sc.reqId) }
 
 // ChannelID 返回协商出的通道 id。
 func (sc *SecureChannel) ChannelID() uint32 { return sc.channelId }
+
+// Lifetime 返回当前安全令牌寿命（OPN 响应 RevisedLifetime，毫秒；
+// v0.30.0 自动续期触发点计算用）。
+func (sc *SecureChannel) Lifetime() time.Duration {
+	return time.Duration(sc.lifetimeMs) * time.Millisecond
+}
 
 // TokenID 返回当前生效的安全令牌 id（Renew 换钥后为新令牌，v0.29.0）。
 func (sc *SecureChannel) TokenID() uint32 { return sc.curKeys().tokenID }
 
 // nextReqID 分配并返回下一个出站 RequestId。
+// v0.30.0：原子自增——除 sendMu 持锁路径（sendSecure/sendCLO）外，
+// Client 各服务调用构造 RequestHeader 的 RequestHandle 也在无锁路径
+// 调用本方法（如 Close 的 CloseSession/DeleteSubscriptions，与订阅泵
+// PubAck→sendSecure 并发），裸递增构成数据竞争（§29/§30 flake 根因）。
+// RequestHandle 与帧 RequestID 本就无需同值，原子化不改变语义。
 func (sc *SecureChannel) nextReqID() uint32 {
-	sc.reqId++
-	return sc.reqId
+	return atomic.AddUint32(&sc.reqId, 1)
 }
 
 // sendOPN 发送 OpenSecureChannel 请求（AsymmetricSecurityHeader +
@@ -551,6 +575,7 @@ func (sc *SecureChannel) recvOPN(timeout time.Duration) error {
 			return errors.New("opcua: OPN 响应 ServerNonce 与加密体前缀不一致")
 		}
 		sc.channelId = resp.SecurityToken.ChannelID
+		sc.lifetimeMs = resp.SecurityToken.RevisedLifetime
 		sc.keysMu.Lock()
 		sc.cur = keySet{keys: DeriveKeys(sc.clientNonce, sc.serverNonce, sc.opts.ClientCert.Raw, sc.opts.ServerCert.Raw), tokenID: resp.SecurityToken.TokenID}
 		sc.keysMu.Unlock()
@@ -572,6 +597,7 @@ func (sc *SecureChannel) recvOPN(timeout time.Duration) error {
 		return fmt.Errorf("opcua: OPN 响应 RevisedLifetime=%v 非法（须 > 0）", resp.SecurityToken.RevisedLifetime)
 	}
 	sc.channelId = resp.SecurityToken.ChannelID
+	sc.lifetimeMs = resp.SecurityToken.RevisedLifetime
 	sc.keysMu.Lock()
 	sc.cur = keySet{tokenID: resp.SecurityToken.TokenID}
 	sc.keysMu.Unlock()
@@ -757,8 +783,12 @@ func (sc *SecureChannel) sendCLO() error {
 	if err := hdr.encodeUA(&e); err != nil {
 		return err
 	}
-	_ = sc.nextReqID()
-	if err := (SequenceHeader{SequenceNumber: nextSeq(&sc.seq), RequestID: sc.reqId}).encodeUA(&e); err != nil {
+	// v0.30.0：None 分支同样持 sendMu——修复 Close 与在途发送并发下
+	// reqId/seq 的数据竞争（v0290 P2-1 只修了 B256 分支，此处补齐）。
+	sc.sendMu.Lock()
+	defer sc.sendMu.Unlock()
+	reqID := sc.nextReqID()
+	if err := (SequenceHeader{SequenceNumber: nextSeq(&sc.seq), RequestID: reqID}).encodeUA(&e); err != nil {
 		return err
 	}
 	return sc.conn.WriteMessage(MsgCloseSecureChannel, e.buf)
@@ -776,8 +806,8 @@ func (sc *SecureChannel) sendCLOB256(ks keySet) error {
 	sc.sendMu.Lock()
 	defer sc.sendMu.Unlock()
 	var seqE encoder
-	_ = sc.nextReqID()
-	if err := (SequenceHeader{SequenceNumber: nextSeq(&sc.seq), RequestID: sc.reqId}).encodeUA(&seqE); err != nil {
+	reqID := sc.nextReqID()
+	if err := (SequenceHeader{SequenceNumber: nextSeq(&sc.seq), RequestID: reqID}).encodeUA(&seqE); err != nil {
 		return err
 	}
 	frame, err := SealMSGFrame(MsgCloseSecureChannel, sc.channelId, ks.tokenID, ks.keys, true, seqE.buf)

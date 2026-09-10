@@ -112,6 +112,45 @@ func writeU16(e *encoder, v uint16) {
 }
 
 // ---------------------------------------------------------------------------
+// MQTT 5.0 属性区（v0.30.0 阶段一：仅 Receive Maximum 0x21）。
+// 属性区仅存在于 V5=true 的报文；3.1.1 路径不触碰（冻结保证）。
+// ---------------------------------------------------------------------------
+
+// encodeConnectProps 编码 CONNECT 属性区：RM>0 时属性长度 = 3（ID 1B + u16）。
+func encodeConnectProps(e *encoder, receiveMax uint16) {
+	if receiveMax > 0 {
+		e.writeByte(0x03) // property length (VBI)
+		e.writeByte(0x21) // Receive Maximum
+		writeU16(e, receiveMax)
+		return
+	}
+	e.writeByte(0x00) // 空属性区
+}
+
+// decodePropsV5 解析属性区（阶段一仅接受空区或单条 Receive Maximum；
+// 未知属性拒绝并登记于 spec as-built）。返回 ReceiveMax（0=未携带）。
+func decodePropsV5(d *decoder) (uint16, error) {
+	propLen, err := d.readVBI()
+	if err != nil {
+		return 0, err
+	}
+	if propLen == 0 {
+		return 0, nil
+	}
+	if propLen != 3 {
+		return 0, ErrMalformed // 阶段一：属性区仅支持单条 RM（3B）
+	}
+	id, err := d.readByte()
+	if err != nil {
+		return 0, err
+	}
+	if id != 0x21 {
+		return 0, ErrMalformed // 未知属性：阶段一拒绝
+	}
+	return d.readUint16()
+}
+
+// ---------------------------------------------------------------------------
 // Encoding.
 // ---------------------------------------------------------------------------
 
@@ -205,9 +244,16 @@ func (c *Connect) encodeUA(e *encoder) error {
 		f |= 0x80
 	}
 	e.writeString("MQTT") // protocol name
-	e.writeByte(4)        // protocol level 4 (MQTT 3.1.1)
+	if c.V5 {
+		e.writeByte(5) // protocol level 5 (MQTT 5.0, v0.30.0)
+	} else {
+		e.writeByte(4) // protocol level 4 (MQTT 3.1.1) — 冻结路径
+	}
 	e.writeByte(f)
 	writeU16(e, c.KeepAlive)
+	if c.V5 {
+		encodeConnectProps(e, c.ReceiveMax) // v5：属性区在 keepalive 后、payload 前
+	}
 	e.writeString(c.ClientID)
 	if willFlag {
 		e.writeString(c.WillTopic)
@@ -225,6 +271,15 @@ func (c *Connect) encodeUA(e *encoder) error {
 func (c *Connack) encodeUA(e *encoder) error {
 	e.writeByte(boolByte(c.SessionPresent))
 	e.writeByte(c.ReturnCode)
+	if c.V5 {
+		if c.ReceiveMax > 0 {
+			e.writeByte(0x03)
+			e.writeByte(0x21)
+			writeU16(e, c.ReceiveMax)
+			return nil
+		}
+		e.writeByte(0x00) // v5 空属性区
+	}
 	return nil
 }
 
@@ -245,27 +300,42 @@ func (p *Publish) encodeUA(e *encoder) error {
 		}
 		writeU16(e, p.PacketID)
 	}
+	if p.V5 {
+		e.writeByte(0x00) // v5 PUBLISH 属性长度恒 0（阶段一无 PUBLISH 属性）
+	}
 	e.writeBytes(p.Payload)
 	return nil
 }
 
 func (p *Puback) encodeUA(e *encoder) error {
 	writeU16(e, p.PacketID)
+	if p.V5 {
+		e.writeByte(p.ReasonCode) // v5：追加原因码（规范允许省略，本仓恒携带）
+	}
 	return nil
 }
 
 func (p *Pubrec) encodeUA(e *encoder) error {
 	writeU16(e, p.PacketID)
+	if p.V5 {
+		e.writeByte(p.ReasonCode)
+	}
 	return nil
 }
 
 func (p *Pubrel) encodeUA(e *encoder) error {
 	writeU16(e, p.PacketID)
+	if p.V5 {
+		e.writeByte(p.ReasonCode)
+	}
 	return nil
 }
 
 func (p *Pubcomp) encodeUA(e *encoder) error {
 	writeU16(e, p.PacketID)
+	if p.V5 {
+		e.writeByte(p.ReasonCode)
+	}
 	return nil
 }
 
@@ -274,6 +344,9 @@ func (s *Subscribe) encodeUA(e *encoder) error {
 		return ErrMalformed
 	}
 	writeU16(e, s.PacketID)
+	if s.V5 {
+		e.writeByte(0x00) // v5 属性长度恒 0（阶段一无 SUBSCRIBE 属性）
+	}
 	for _, tf := range s.Topics {
 		if err := validateTopicFilter(tf.Topic); err != nil {
 			return err
@@ -291,14 +364,19 @@ func (s *Suback) encodeUA(e *encoder) error {
 	if len(s.Codes) == 0 {
 		return ErrMalformed
 	}
-	for _, c := range s.Codes {
-		switch c {
-		case 0, 1, 2, 0x80:
-		default:
-			return ErrMalformed
+	if !s.V5 {
+		for _, c := range s.Codes {
+			switch c {
+			case 0, 1, 2, 0x80:
+			default:
+				return ErrMalformed
+			}
 		}
 	}
 	writeU16(e, s.PacketID)
+	if s.V5 {
+		e.writeByte(0x00) // v5 属性长度恒 0
+	}
 	for _, c := range s.Codes {
 		e.writeByte(c)
 	}
@@ -309,7 +387,13 @@ func (p *Pingreq) encodeUA(e *encoder) error { return nil }
 
 func (p *Pingresp) encodeUA(e *encoder) error { return nil }
 
-func (d *Disconnect) encodeUA(e *encoder) error { return nil }
+func (d *Disconnect) encodeUA(e *encoder) error {
+	if d.V5 && d.ReasonCode != 0 {
+		e.writeByte(d.ReasonCode)
+		e.writeByte(0x00) // v5 属性长度恒 0
+	}
+	return nil // v5 rc=0 与 3.1.1 均为空体
+}
 
 // ---------------------------------------------------------------------------
 // Decoding.
@@ -355,6 +439,25 @@ func (d *decoder) readString() (string, error) {
 	return s, nil
 }
 
+// readVBI 从报文体读取一个 MQTT 变长整数（属性长度用，v0.30.0）。
+// 超 4 字节或续传位溢出为 ErrMalformed。
+func (d *decoder) readVBI() (uint32, error) {
+	var value uint32
+	var multiplier uint32 = 1
+	for i := 0; i < 4; i++ {
+		b, err := d.readByte()
+		if err != nil {
+			return 0, ErrMalformed
+		}
+		value += uint32(b&0x7f) * multiplier
+		if b&0x80 == 0 {
+			return value, nil
+		}
+		multiplier *= 128
+	}
+	return 0, ErrMalformed
+}
+
 // readRest consumes and returns everything left in the body (PUBLISH payload).
 func (d *decoder) readRest() []byte {
 	rest := d.b[d.pos:]
@@ -362,8 +465,21 @@ func (d *decoder) readRest() []byte {
 	return rest
 }
 
-// decodePacket reads one control packet from r.
+// decodePacket reads one control packet from r（3.1.1 严格路径，冻结：
+// CONNECT 级别仅 4，其余报文按 3.1.1 形态严格解析）。
 func decodePacket(r io.Reader) (Packet, error) {
+	return decodePacketV(r, false)
+}
+
+// DecodePacketV 是 v5 感知解码入口（v0.30.0）：v5=true 时 CONNECT 接受
+// 级别 4 或 5（按级别字节自动分派，Connect.V5 反映协商结果），其余报文
+// 按 v5 形态解析（可选原因码/属性区）；v5=false 与冻结的 decodePacket
+// 完全一致。
+func DecodePacketV(r io.Reader, v5 bool) (Packet, error) {
+	return decodePacketV(r, v5)
+}
+
+func decodePacketV(r io.Reader, v5 bool) (Packet, error) {
 	var hdr [1]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		return nil, ErrMalformedFixedHeader
@@ -388,22 +504,22 @@ func decodePacket(r io.Reader) (Packet, error) {
 		if flags != 0 {
 			return nil, ErrMalformedFixedHeader // reserved fixed-header flags
 		}
-		return decodeConnect(d)
+		return decodeConnect(d, v5)
 	case PacketTypeCONNACK:
 		if flags != 0 {
 			return nil, ErrMalformedFixedHeader
 		}
-		return decodeConnack(d)
+		return decodeConnack(d, v5)
 	case PacketTypePUBLISH:
 		if (flags>>1)&0x03 == 3 {
 			return nil, ErrMalformedFixedHeader // QoS 3 is illegal
 		}
-		return decodePublish(d, flags)
+		return decodePublish(d, flags, v5)
 	case PacketTypePUBACK:
 		if flags != 0 {
 			return nil, ErrMalformedFixedHeader
 		}
-		return decodePuback(d)
+		return decodePuback(d, v5)
 	case PacketTypePUBREC, PacketTypePUBREL, PacketTypePUBCOMP:
 		if ptype == PacketTypePUBREL {
 			if flags != 0x02 {
@@ -412,7 +528,7 @@ func decodePacket(r io.Reader) (Packet, error) {
 		} else if flags != 0 {
 			return nil, ErrMalformedFixedHeader
 		}
-		return decodePubRelID(ptype, d)
+		return decodePubRelID(ptype, d, v5)
 	case PacketTypeSUBSCRIBE:
 		if flags != 0x02 {
 			return nil, ErrMalformedFixedHeader
@@ -422,10 +538,24 @@ func decodePacket(r io.Reader) (Packet, error) {
 		if flags != 0 {
 			return nil, ErrMalformedFixedHeader
 		}
-		return decodeSuback(d)
+		return decodeSuback(d, v5)
 	case PacketTypePINGREQ, PacketTypePINGRESP, PacketTypeDISCONNECT:
 		if flags != 0 {
 			return nil, ErrMalformedFixedHeader
+		}
+		if ptype == PacketTypeDISCONNECT && v5 && n > 0 {
+			// v5 DISCONNECT：rc(1B) + 属性长度（阶段一属性区恒 0）。
+			rc, err := d.readByte()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := decodePropsV5(d); err != nil {
+				return nil, err
+			}
+			if d.remaining() != 0 {
+				return nil, ErrMalformed
+			}
+			return &Disconnect{V5: true, ReasonCode: rc}, nil
 		}
 		if n != 0 {
 			return nil, ErrMalformed // PINGREQ/PINGRESP/DISCONNECT must be empty
@@ -443,7 +573,7 @@ func decodePacket(r io.Reader) (Packet, error) {
 	}
 }
 
-func decodeConnect(d *decoder) (*Connect, error) {
+func decodeConnect(d *decoder, allowV5 bool) (*Connect, error) {
 	name, err := d.readString()
 	if err != nil {
 		return nil, err
@@ -455,9 +585,10 @@ func decodeConnect(d *decoder) (*Connect, error) {
 	if err != nil {
 		return nil, err
 	}
-	if level != 4 {
+	if level != 4 && !(allowV5 && level == 5) {
 		return nil, ErrMalformedConnect
 	}
+	isV5 := level == 5
 	f, err := d.readByte()
 	if err != nil {
 		return nil, err
@@ -474,6 +605,13 @@ func decodeConnect(d *decoder) (*Connect, error) {
 		CleanSession: f&0x02 != 0,
 		WillQoS:      (f >> 3) & 0x03,
 		WillRetain:   f&0x20 != 0,
+		V5:           isV5,
+	}
+	if isV5 {
+		// v5：属性区在 keepalive 后、payload 前（阶段一仅 Receive Maximum）。
+		if c.ReceiveMax, err = decodePropsV5(d); err != nil {
+			return nil, err
+		}
 	}
 	// Payload order: ClientID, WillTopic, WillMessage, Username, Password.
 	if c.ClientID, err = d.readString(); err != nil {
@@ -509,7 +647,7 @@ func decodeConnect(d *decoder) (*Connect, error) {
 	return c, nil
 }
 
-func decodeConnack(d *decoder) (*Connack, error) {
+func decodeConnack(d *decoder, v5 bool) (*Connack, error) {
 	sp, err := d.readByte()
 	if err != nil {
 		return nil, err
@@ -521,17 +659,25 @@ func decodeConnack(d *decoder) (*Connack, error) {
 	if err != nil {
 		return nil, err
 	}
+	ca := &Connack{SessionPresent: sp&0x01 != 0, ReturnCode: rc}
+	if v5 {
+		ca.V5 = true
+		if ca.ReceiveMax, err = decodePropsV5(d); err != nil {
+			return nil, err
+		}
+	}
 	if d.remaining() != 0 {
 		return nil, ErrMalformed
 	}
-	return &Connack{SessionPresent: sp&0x01 != 0, ReturnCode: rc}, nil
+	return ca, nil
 }
 
-func decodePublish(d *decoder, flags byte) (*Publish, error) {
+func decodePublish(d *decoder, flags byte, v5 bool) (*Publish, error) {
 	p := &Publish{
 		Dup:    (flags >> 3) & 0x01,
 		QoS:    (flags >> 1) & 0x03,
 		Retain: flags&0x01 != 0,
+		V5:     v5,
 	}
 	var err error
 	if p.Topic, err = d.readString(); err != nil {
@@ -548,38 +694,83 @@ func decodePublish(d *decoder, flags byte) (*Publish, error) {
 			return nil, ErrMalformed
 		}
 	}
+	if v5 {
+		// v5 PUBLISH：属性长度（阶段一仅接受空属性区）。
+		if n, perr := d.readVBI(); perr != nil || n != 0 {
+			return nil, ErrMalformed
+		}
+	}
 	p.Payload = d.readRest()
 	return p, nil
 }
 
-func decodePuback(d *decoder) (*Puback, error) {
+// decodePuback 解码 PUBACK：3.1.1 严格 2B；v5 接受 2B（rc=0）/3B（id+rc）/
+// 4B（id+rc+空属性区）。
+func decodePuback(d *decoder, v5 bool) (*Puback, error) {
 	id, err := d.readUint16()
 	if err != nil {
 		return nil, err
+	}
+	pa := &Puback{PacketID: id}
+	if v5 {
+		pa.V5 = true
+		switch d.remaining() {
+		case 0:
+			// rc 视为 0x00（规范 §3.4.2.1）
+		case 1:
+			if pa.ReasonCode, err = d.readByte(); err != nil {
+				return nil, err
+			}
+		default:
+			if pa.ReasonCode, err = d.readByte(); err != nil {
+				return nil, err
+			}
+			if _, err := decodePropsV5(d); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if d.remaining() != 0 {
 		return nil, ErrMalformed
 	}
-	return &Puback{PacketID: id}, nil
+	return pa, nil
 }
 
 // decodePubRelID decodes the shared body shape of PUBREC/PUBREL/PUBCOMP:
-// a two-byte packet identifier followed by nothing else (v0.26.0).
-func decodePubRelID(ptype byte, d *decoder) (Packet, error) {
+// a two-byte packet identifier followed by nothing else (v0.26.0)；v5
+// 形态与 PUBACK 同构（可选 rc / rc+空属性区，v0.30.0）。
+func decodePubRelID(ptype byte, d *decoder, v5 bool) (Packet, error) {
 	id, err := d.readUint16()
 	if err != nil {
 		return nil, err
+	}
+	var rc byte
+	if v5 {
+		switch d.remaining() {
+		case 0:
+		case 1:
+			if rc, err = d.readByte(); err != nil {
+				return nil, err
+			}
+		default:
+			if rc, err = d.readByte(); err != nil {
+				return nil, err
+			}
+			if _, err := decodePropsV5(d); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if d.remaining() != 0 {
 		return nil, ErrMalformed
 	}
 	switch ptype {
 	case PacketTypePUBREC:
-		return &Pubrec{PacketID: id}, nil
+		return &Pubrec{PacketID: id, V5: v5, ReasonCode: rc}, nil
 	case PacketTypePUBREL:
-		return &Pubrel{PacketID: id}, nil
+		return &Pubrel{PacketID: id, V5: v5, ReasonCode: rc}, nil
 	default:
-		return &Pubcomp{PacketID: id}, nil
+		return &Pubcomp{PacketID: id, V5: v5, ReasonCode: rc}, nil
 	}
 }
 
@@ -611,10 +802,15 @@ func decodeSubscribe(d *decoder) (*Subscribe, error) {
 	return s, nil
 }
 
-func decodeSuback(d *decoder) (*Suback, error) {
+func decodeSuback(d *decoder, v5 bool) (*Suback, error) {
 	id, err := d.readUint16()
 	if err != nil {
 		return nil, err
+	}
+	if v5 {
+		if _, err := decodePropsV5(d); err != nil {
+			return nil, err
+		}
 	}
 	if d.remaining() == 0 {
 		return nil, ErrMalformed
@@ -622,14 +818,16 @@ func decodeSuback(d *decoder) (*Suback, error) {
 	codes := make([]byte, d.remaining())
 	copy(codes, d.b[d.pos:])
 	d.pos = len(d.b)
-	for _, c := range codes {
-		switch c {
-		case 0, 1, 2, 0x80:
-		default:
-			return nil, ErrMalformed
+	if !v5 {
+		for _, c := range codes {
+			switch c {
+			case 0, 1, 2, 0x80:
+			default:
+				return nil, ErrMalformed
+			}
 		}
 	}
-	return &Suback{PacketID: id, Codes: codes}, nil
+	return &Suback{PacketID: id, Codes: codes, V5: v5}, nil
 }
 
 // ---------------------------------------------------------------------------

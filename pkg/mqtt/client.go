@@ -50,6 +50,17 @@ type Options struct {
 	// reconnect. Records are removed as soon as the exchange completes
 	// (PUBCOMP received / PUBREL delivered).
 	PersistenceDir string
+
+	// ProtocolVersion5 opts in to MQTT 5.0 (v0.30.0, 阶段一)。默认 false
+	// = 逐字节 3.1.1 行为（冻结）。true 时 CONNECT 以级别 0x05 编码，
+	// CONNACK/确认报文按 v5 形态解析（原因码/属性区），并启用 Receive
+	// Maximum 流控（见 ReceiveMax）。
+	ProtocolVersion5 bool
+
+	// ReceiveMax 是客户端在 CONNECT 中向服务器宣告的自身接收上限
+	//（v5 专用；0 = 不携带属性，语义等同 65535 无限制）。出站方向
+	// 以服务器 CONNACK 下发的 Receive Maximum 为节流窗口。
+	ReceiveMax uint16
 }
 
 // Handler is invoked for every inbound PUBLISH whose topic matches one of the
@@ -81,6 +92,10 @@ type Client struct {
 	persistDir string // QoS2 record directory ("" = disabled, v0.26.0 behavior)
 
 	enableQoS2 bool // gate for the QoS2 code paths (Options.EnableQoS2)
+
+	// ---- MQTT 5.0（v0.30.0，阶段一）----
+	v5        bool          // 协商结果：CONNECT 以 v5 发出
+	flowSlots chan struct{} // 出站 QoS1/2 在途窗口（容量=server RM）；nil=无限制
 
 	closeOnce sync.Once
 	done      chan struct{} // closed by the read pump on exit (disconnected)
@@ -138,12 +153,15 @@ func Dial(addr string, opts Options) (*Client, error) {
 		Username:     opts.Username,
 		Password:     opts.Password,
 		// Will is intentionally not set.
+		V5:         opts.ProtocolVersion5,
+		ReceiveMax: opts.ReceiveMax, // v5：>0 时携带 RM 属性
 	}
 	if err := c.write(ck); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("mqtt: send CONNECT: %w", err)
 	}
-	p, err := decodePacket(conn)
+	c.v5 = opts.ProtocolVersion5
+	p, err := decodePacketV(conn, opts.ProtocolVersion5)
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("mqtt: read CONNACK: %w", err)
@@ -155,7 +173,15 @@ func Dial(addr string, opts Options) (*Client, error) {
 	}
 	if ca.ReturnCode != 0 {
 		conn.Close()
+		if ca.V5 {
+			return nil, fmt.Errorf("mqtt: connect refused, reason code 0x%02X (%s)", ca.ReturnCode, v5ReasonText(ca.ReturnCode))
+		}
 		return nil, fmt.Errorf("mqtt: connect refused, return code %d (0x%02X)", ca.ReturnCode, ca.ReturnCode)
+	}
+	// v5 流控：服务器 CONNACK 下发 Receive Maximum 时启用出站在途窗口
+	//（0/65535 = 未限制，不建槽）。
+	if opts.ProtocolVersion5 && ca.ReceiveMax > 0 && ca.ReceiveMax < 65535 {
+		c.flowSlots = make(chan struct{}, ca.ReceiveMax)
 	}
 
 	go c.readPump()
@@ -210,6 +236,7 @@ func (c *Client) Subscribe(topic string, qos byte, h Handler) error {
 	pk := &Subscribe{
 		PacketID: c.nextID(),
 		Topics:   []TopicFilter{{Topic: topic, QoS: qos}},
+		V5:       c.v5,
 	}
 	ch := c.registerAck(pk.PacketID)
 	defer c.unregisterAck(pk.PacketID)
@@ -251,11 +278,22 @@ func (c *Client) Publish(topic string, qos byte, payload []byte) error {
 	if err := c.ensureOpen(); err != nil {
 		return err
 	}
-	pk := &Publish{QoS: qos, Topic: topic, Payload: payload}
+	pk := &Publish{QoS: qos, Topic: topic, Payload: payload, V5: c.v5}
 	if qos == 0 {
 		return c.write(pk)
 	}
 	pk.PacketID = c.nextID()
+	// v5 流控（v0.30.0）：QoS1/2 出站受服务器 Receive Maximum 节流。
+	// QoS0 不占槽（规范语义：流控仅约束 QoS>0）。获取槽前阻塞等待；
+	// defer 在全部退出路径（成功/超时/断连）释放。
+	if c.flowSlots != nil {
+		select {
+		case c.flowSlots <- struct{}{}:
+		case <-c.done:
+			return ErrClientClosed
+		}
+		defer func() { <-c.flowSlots }()
+	}
 	ch := c.registerAck(pk.PacketID)
 	defer c.unregisterAck(pk.PacketID)
 	if err := c.write(pk); err != nil {
@@ -266,8 +304,13 @@ func (c *Client) Publish(topic string, qos byte, payload []byte) error {
 		if err != nil {
 			return err
 		}
-		if _, ok := ack.(*Puback); !ok {
+		pa, ok := ack.(*Puback)
+		if !ok {
 			return fmt.Errorf("mqtt: expected PUBACK for packet id %d", pk.PacketID)
+		}
+		// v5：0x10（无匹配订阅者）为警告级成功；其他非零码为失败。
+		if pa.ReasonCode != 0 && pa.ReasonCode != MQTTV5NoMatchingSubscribers {
+			return fmt.Errorf("mqtt: publish rejected, reason code 0x%02X (%s)", pa.ReasonCode, v5ReasonText(pa.ReasonCode))
 		}
 		return nil
 	}
@@ -285,14 +328,19 @@ func (c *Client) Publish(topic string, qos byte, payload []byte) error {
 	if err != nil {
 		return err
 	}
-	if _, ok := rec.(*Pubrec); !ok {
+	pr, ok := rec.(*Pubrec)
+	if !ok {
 		return fmt.Errorf("mqtt: expected PUBREC for packet id %d", pk.PacketID)
+	}
+	if pr.ReasonCode != 0 && pr.ReasonCode != MQTTV5NoMatchingSubscribers {
+		return fmt.Errorf("mqtt: qos2 rejected at PUBREC, reason code 0x%02X (%s)", pr.ReasonCode, v5ReasonText(pr.ReasonCode))
 	}
 	// Phase 2: advance the record before sending PUBREL.
 	if err := qos2Save(c.persistDir, qos2Record{Kind: 'o', Phase: 2, PktID: pk.PacketID, Topic: topic, Payload: payload}); err != nil {
 		return fmt.Errorf("mqtt: persist qos2 outbound phase 2: %w", err)
 	}
-	if err := c.write(&Pubrel{PacketID: pk.PacketID}); err != nil {
+	rel := &Pubrel{PacketID: pk.PacketID, V5: c.v5}
+	if err := c.write(rel); err != nil {
 		return err
 	}
 	comp, err := c.waitAck(ch)
@@ -327,7 +375,7 @@ func (c *Client) Close() error {
 func (c *Client) readPump() {
 	defer close(c.done)
 	for {
-		p, err := decodePacket(c.conn)
+		p, err := decodePacketV(c.conn, c.v5)
 		if err != nil {
 			return
 		}
@@ -385,6 +433,10 @@ func (c *Client) readPump() {
 			c.resolveAck(pv.PacketID, pv)
 		case *Suback:
 			c.resolveAck(pv.PacketID, pv)
+		case *Disconnect:
+			// 服务器主动断连（v5 流控违规 0x93 等）：会话终止，读泵退出
+			// 并关闭 done，waiters 经 waitAck 的 done 分支报错返回。
+			return
 		default:
 			// PINGRESP and any other packet: ignore.
 		}

@@ -37,6 +37,13 @@ type Broker struct {
 	pingCount int
 	dropCount int
 
+	// MQTT 5.0（v0.30.0 阶段一）：receiveMax>0 时 CONNACK 携带 Receive
+	// Maximum 且对上行 QoS2 暂存深度做流控强制（超限 DISCONNECT 0x93）；
+	// username 非空时启用鉴权（v5 失败码 0x86 / 3.1.1 失败码 0x04）。
+	receiveMax uint16
+	username   string
+	password   string
+
 	// pendingQoS2 parks upstream QoS2 PUBLISH packets until the sender's
 	// PUBREL arrives; delivery happens only after the release leg (v0.26.0).
 	// Keyed per connection (*simClient) then per PacketID: MQTT packet
@@ -70,7 +77,10 @@ type simClient struct {
 	filters   map[string]struct{}
 	out       chan []byte
 	done      chan struct{}
+	doneOnce  sync.Once
+	pumpDone  chan struct{} // v0.30.0：泵退出信号（关停等队列清空后再关连接）
 	closeOnce sync.Once
+	connV5    bool // 该连接经 v5 CONNECT 协商（v0.30.0）
 }
 
 // NewBroker starts a plaintext listener and the accept loop.
@@ -109,6 +119,31 @@ func NewBrokerWithOptions(persistDir string) (*Broker, error) {
 	}
 	b := newBrokerFromListener(ln)
 	b.brokerSetPersistDir(persistDir)
+	return b, nil
+}
+
+// BrokerConfig 是 NewBrokerWithConfig 的配置（v0.30.0）：零值 = NewBroker
+// 行为。ReceiveMax>0 时向 v5 客户端下发并在服务端强制（上行 QoS2 暂存
+// 深度超限 → DISCONNECT 0x93）；Username 非空时启用鉴权。
+type BrokerConfig struct {
+	PersistDir string
+	ReceiveMax uint16
+	Username   string
+	Password   string
+}
+
+// NewBrokerWithConfig 以扩展配置启动 broker（v0.30.0）。既有构造函数
+// 语义不变。
+func NewBrokerWithConfig(cfg BrokerConfig) (*Broker, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	b := newBrokerFromListener(ln)
+	b.brokerSetPersistDir(cfg.PersistDir)
+	b.receiveMax = cfg.ReceiveMax
+	b.username = cfg.Username
+	b.password = cfg.Password
 	return b, nil
 }
 
@@ -153,11 +188,12 @@ func (b *Broker) acceptLoop() {
 			return // listener closed (or fatal accept error)
 		}
 		c := &simClient{
-			br:      b,
-			conn:    conn,
-			filters: make(map[string]struct{}),
-			out:     make(chan []byte, outQueueSize),
-			done:    make(chan struct{}),
+			br:       b,
+			conn:     conn,
+			filters:  make(map[string]struct{}),
+			out:      make(chan []byte, outQueueSize),
+			done:     make(chan struct{}),
+			pumpDone: make(chan struct{}),
 		}
 		b.mu.Lock()
 		if b.closed {
@@ -198,22 +234,28 @@ func (b *Broker) enqueue(c *simClient, pkt mqtt.Packet) {
 // Publish pushes a server-originated message (QoS 0) to every client whose
 // subscription matches topic. Having no subscriber is not an error.
 func (b *Broker) Publish(topic string, payload []byte) error {
-	var buf bytes.Buffer
-	if err := encodePacket(&buf, &mqtt.Publish{Topic: topic, Payload: payload}); err != nil {
-		return err
-	}
-	b.fanoutBytes(topic, buf.Bytes())
+	b.fanoutBytes(topic, payload)
 	return nil
+}
+
+// hasSubscriber 报告是否有任何客户端订阅匹配 topic（v0.30.0：PUBACK 0x10
+// 判定用）。
+func (b *Broker) hasSubscriber(topic string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for c := range b.clients {
+		if c.matches(topic) {
+			return true
+		}
+	}
+	return false
 }
 
 // fanout distributes a client-originated publish to all matching subscribers
 // (the sender included, if subscribed). Always re-encoded as QoS 0.
+// v0.30.0：按连接编码——v5 客户端的 PUBLISH 需携带属性长度字节（v5 帧形态）。
 func (b *Broker) fanout(topic string, payload []byte) {
-	var buf bytes.Buffer
-	if err := encodePacket(&buf, &mqtt.Publish{Topic: topic, Payload: payload}); err != nil {
-		return
-	}
-	b.fanoutBytes(topic, buf.Bytes())
+	b.fanoutBytes(topic, payload)
 }
 
 func (b *Broker) fanoutBytes(topic string, data []byte) {
@@ -223,10 +265,13 @@ func (b *Broker) fanoutBytes(topic string, data []byte) {
 		if !c.matches(topic) {
 			continue
 		}
-		select {
-		case c.out <- data:
-		default:
-			b.dropCount++
+		var buf bytes.Buffer
+		if err := encodePacket(&buf, &mqtt.Publish{Topic: topic, Payload: data, V5: c.connV5}); err == nil {
+			select {
+			case c.out <- buf.Bytes():
+			default:
+				b.dropCount++
+			}
 		}
 	}
 }
@@ -279,24 +324,39 @@ func (c *simClient) matches(topic string) bool {
 
 // pump drains the outbound queue onto the connection. It exits when the
 // client is shut down or a write fails.
+// v0.30.0：关停（done）后先清空既有队列再退出——恢复“单写者先到先发”
+// 语义，鉴权 CONNACK / 流控 DISCONNECT 等关停前最后一报不再被丢；
+// shutdown 等待泵退出后才关连接。
 func (c *simClient) pump() {
+	defer close(c.pumpDone)
 	for {
 		select {
 		case buf := <-c.out:
 			if _, err := c.conn.Write(buf); err != nil {
-				c.shutdown()
+				c.doneOnce.Do(func() { close(c.done) })
 				return
 			}
 		case <-c.done:
-			return
+			for {
+				select {
+				case buf := <-c.out:
+					if _, err := c.conn.Write(buf); err != nil {
+						return
+					}
+				default:
+					return
+				}
+			}
 		}
 	}
 }
 
 // shutdown closes the connection exactly once and unregisters the client.
+// v0.30.0：先等泵清空队列退出，再关连接（关停报文时序确定性）。
 func (c *simClient) shutdown() {
 	c.closeOnce.Do(func() {
-		close(c.done)
+		c.doneOnce.Do(func() { close(c.done) })
+		<-c.pumpDone
 		c.conn.Close()
 	})
 	c.br.unregister(c)
@@ -305,11 +365,18 @@ func (c *simClient) shutdown() {
 // serve is the per-connection read loop. The first packet must be CONNECT;
 // afterwards CONNECT/SUBSCRIBE/PUBLISH/PINGREQ/DISCONNECT are handled and
 // any decode or read error tears the connection down.
+// v0.30.0：CONNECT 按级别字节分派（4=既有 3.1.1 路径逐字不变，5=v5：
+// CONNACK v5 形态 + RM 下发 + 鉴权失败码 0x86）；v5 客户端上行 QoS2 暂存
+// 深度超 server RM → DISCONNECT 0x93 断连。
 func (c *simClient) serve() {
 	defer c.shutdown()
 	authed := false
 	for {
-		pkt, err := decodePacket(c.conn)
+		hint := true // CONNECT 前接受级别 4/5（首包自动分派）
+		if authed {
+			hint = c.connV5
+		}
+		pkt, err := decodePacketNegotiated(c.conn, hint)
 		if err != nil {
 			return // read error, ErrMalformed*, or closed conn
 		}
@@ -321,7 +388,25 @@ func (c *simClient) serve() {
 			if con.ClientID == "" {
 				return // empty ClientID: refuse and close
 			}
-			c.br.enqueue(c, &mqtt.Connack{ReturnCode: 0})
+			if con.V5 {
+				c.connV5 = true
+			}
+			if c.br.username != "" && (con.Username != c.br.username || con.Password != c.br.password) {
+				// 鉴权失败：v5 回原因码 0x86，3.1.1 回 returnCode 4
+				//（bad user name or password）。经队列回送 + 关停清空，
+				// 保证报文上线后连接才关（单写者时序）。
+				if c.connV5 {
+					c.br.enqueue(c, &mqtt.Connack{V5: true, ReturnCode: mqtt.MQTTV5BadUserpass})
+				} else {
+					c.br.enqueue(c, &mqtt.Connack{ReturnCode: 4})
+				}
+				return
+			}
+			if c.connV5 {
+				c.br.enqueue(c, &mqtt.Connack{V5: true, ReturnCode: 0, ReceiveMax: c.br.receiveMax})
+			} else {
+				c.br.enqueue(c, &mqtt.Connack{ReturnCode: 0})
+			}
 			authed = true
 			continue
 		}
@@ -340,7 +425,7 @@ func (c *simClient) serve() {
 				codes[i] = tf.QoS
 			}
 			c.mu.Unlock()
-			c.br.enqueue(c, &mqtt.Suback{PacketID: p.PacketID, Codes: codes})
+			c.br.enqueue(c, &mqtt.Suback{PacketID: p.PacketID, Codes: codes, V5: c.connV5})
 		case *mqtt.Publish:
 			if p.QoS == 2 {
 				// QoS2 upstream (v0.26.0): park the PUBLISH, ack with
@@ -354,17 +439,32 @@ func (c *simClient) serve() {
 					perConn = make(map[uint16]*mqtt.Publish)
 					c.br.pendingQoS2[c] = perConn
 				}
+				// v0.30.0：服务端流控强制——v5 连接的暂存深度达 server RM
+				// 时拒绝入站（规范 DISCONNECT 0x93）。
+				if c.connV5 && c.br.receiveMax > 0 && len(perConn) >= int(c.br.receiveMax) {
+					c.br.mu.Unlock()
+					// 经队列回送 DISCONNECT 0x93：落在已入队 PUBREC 之后
+					//（单写者 FIFO），关停清空保证上线。
+					c.br.enqueue(c, &mqtt.Disconnect{V5: true, ReasonCode: mqtt.MQTTV5ReceiveMaxExceeded})
+					return
+				}
 				perConn[p.PacketID] = &mqtt.Publish{Dup: p.Dup, QoS: 2, PacketID: p.PacketID, Topic: p.Topic, Payload: append([]byte(nil), p.Payload...)}
 				c.br.mu.Unlock()
 				// v0.27.0: record the parked message (soft-fail; the
 				// protocol reply below must not depend on disk health).
 				_ = brokerQoS2Save(persistDir, p.PacketID, p)
-				c.br.enqueue(c, &mqtt.Pubrec{PacketID: p.PacketID})
+				c.br.enqueue(c, &mqtt.Pubrec{PacketID: p.PacketID, V5: c.connV5})
 				continue
 			}
 			c.br.recordPublish(p)
 			if p.QoS == 1 {
-				c.br.enqueue(c, &mqtt.Puback{PacketID: p.PacketID})
+				// v0.30.0：v5 下无匹配订阅者的 QoS1 回 PUBACK 原因码 0x10
+				//（警告级：消息已确认但无人消费）。
+				rc := byte(0)
+				if c.connV5 && !c.br.hasSubscriber(p.Topic) {
+					rc = mqtt.MQTTV5NoMatchingSubscribers
+				}
+				c.br.enqueue(c, &mqtt.Puback{PacketID: p.PacketID, V5: c.connV5, ReasonCode: rc})
 			}
 			c.br.fanout(p.Topic, p.Payload)
 		case *mqtt.Pubrel:
@@ -437,12 +537,19 @@ func encodePacket(w io.Writer, p mqtt.Packet) error {
 // every non-SUBSCRIBE type is re-fed to the shared decoder verbatim via
 // MultiReader, so its strictness is untouched.
 func decodePacket(r io.Reader) (mqtt.Packet, error) {
+	return decodePacketNegotiated(r, false)
+}
+
+// decodePacketNegotiated 是 v5 感知的 shim（v0.30.0）：非 SUBSCRIBE 报文
+// 直通 mqtt.DecodePacketV（协商提示）；SUBSCRIBE 走宽容解析（v5 需跳过
+// 属性长度字节）。
+func decodePacketNegotiated(r io.Reader, v5 bool) (mqtt.Packet, error) {
 	var h [1]byte
 	if _, err := io.ReadFull(r, h[:]); err != nil {
 		return nil, err
 	}
 	if h[0]>>4 != mqtt.PacketTypeSUBSCRIBE {
-		return mqtt.DecodePacket(io.MultiReader(bytes.NewReader(h[:]), r))
+		return mqtt.DecodePacketV(io.MultiReader(bytes.NewReader(h[:]), r), v5)
 	}
 	rl, err := readVarintBytes(r)
 	if err != nil {
@@ -452,7 +559,7 @@ func decodePacket(r io.Reader) (mqtt.Packet, error) {
 	if _, err := io.ReadFull(r, body); err != nil {
 		return nil, err
 	}
-	return decodePermissiveSubscribe(body)
+	return decodePermissiveSubscribe(body, v5)
 }
 
 // subscribeHasInvalidFilter reports whether any filter in s would be
@@ -485,12 +592,25 @@ func encodePermissiveSubscribe(w io.Writer, s *mqtt.Subscribe) error {
 // decodePermissiveSubscribe parses a SUBSCRIBE body without filter
 // validation (bad-client path only). QoS range and the at-least-one-filter
 // rule are still enforced, mirroring the previous local codec.
-func decodePermissiveSubscribe(body []byte) (mqtt.Packet, error) {
+// v0.30.0：v5=true 时跳过 packetID 后的属性区（阶段一：属性长度字节 +
+// 跳过对应字节数，不解析属性语义）。
+func decodePermissiveSubscribe(body []byte, v5 bool) (mqtt.Packet, error) {
 	if len(body) < 3 {
 		return nil, mqtt.ErrMalformed
 	}
 	s := &mqtt.Subscribe{PacketID: uint16(body[0])<<8 | uint16(body[1])}
 	i := 2
+	if v5 {
+		if i >= len(body) {
+			return nil, mqtt.ErrMalformed
+		}
+		propLen := int(body[i]) // 阶段一：VBI 首字节即总长（0 或 3，宽容路径不深解析）
+		i++
+		if i+propLen > len(body) {
+			return nil, mqtt.ErrMalformed
+		}
+		i += propLen
+	}
 	for i < len(body) {
 		if i+2 > len(body) {
 			return nil, mqtt.ErrMalformed

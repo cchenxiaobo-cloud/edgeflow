@@ -42,6 +42,12 @@ type Client struct {
 	pubChOnce  sync.Once // PRT-04：pubCh 关闭防双关（pumpLoop 收尾与 stopPump 共用）
 	pumping    bool
 	pending    map[uint32][]byte // 无主帧兜底缓冲（RequestId→body，防先到后登记竞态）
+
+	// ---- 自动续期（v0.30.0，opt-in OpenSecureChannelOptions.AutoRenewRatio）----
+	renewMu        sync.Mutex    // 序列化自动/显式 Renew（同 roundTrip 通道互斥）
+	renewDone      chan struct{} // Close 关闭 → 自动续期循环退出
+	renewCloseOnce sync.Once
+	scLifetime0    time.Duration // 初始令牌寿命（open 时快照，仅启动前写入）
 }
 
 // PublishResult 是一条推送到订阅方的通知。
@@ -86,6 +92,12 @@ func open(endpoint string, timeout time.Duration, opts OpenSecureChannelOptions)
 		return nil, fmt.Errorf("opcua: OpenSecureChannel: %w", err)
 	}
 	c := &Client{sc: sc, endpoint: endpoint, timeout: timeout}
+	// v0.30.0：自动续期——仅 Basic256Sha256 通道启动；None 保持 v0.29.0 行为。
+	c.renewDone = make(chan struct{})
+	if opts.AutoRenewRatio > 0 && sc.encrypted() {
+		c.scLifetime0 = sc.Lifetime()
+		go c.autoRenewLoop(opts.AutoRenewRatio)
+	}
 	if err := c.createSession(); err != nil {
 		_ = sc.Close()
 		return nil, err
@@ -270,6 +282,10 @@ func (c *Client) Write(node NodeId, v Variant) (StatusCode, error) {
 func (c *Client) Close() error {
 	if c.sc == nil {
 		return nil
+	}
+	// v0.30.0：先收口自动续期循环（防止循环在通道关闭后继续发请求）。
+	if c.renewDone != nil {
+		c.renewCloseOnce.Do(func() { close(c.renewDone) })
 	}
 	c.mu.Lock()
 	pumping := c.pumping
@@ -545,18 +561,24 @@ func (c *Client) DeleteSubscription() error {
 // TokenID + 新 ServerNonce）；本端校验后用新 nonce 对派生新密钥组并原子
 // 换组（旧组保留作在途帧回退）。复用 roundTrip 泵机制，订阅活跃时安全。
 func (c *Client) Renew(timeout time.Duration) error {
-	if timeout > 0 {
-		old := c.timeout
-		c.timeout = timeout
-		defer func() { c.timeout = old }()
-	}
+	c.renewMu.Lock()
+	defer c.renewMu.Unlock()
+	_, err := c.renewLocked(timeout)
+	return err
+}
+
+// renewLocked 是 Renew 的共享态安全实现（v0.30.0 重构）：调用方须持
+// renewMu；不改写共享 c.timeout（原实现无锁改写与并发 roundTrip 的
+// 读取构成数据竞争，-race 下由自动续期测试暴露），超时经参数传入
+// roundTripTimeout；返回服务端修订寿命（毫秒）供自动续期循环重算。
+func (c *Client) renewLocked(timeout time.Duration) (float64, error) {
 	ks := c.sc.curKeys()
 	if ks.keys == nil {
-		return errors.New("opcua: Renew 仅支持 Basic256Sha256 加密通道")
+		return 0, errors.New("opcua: Renew 仅支持 Basic256Sha256 加密通道")
 	}
 	nonce := make([]byte, B256NonceLen)
 	if _, err := rand.Read(nonce); err != nil {
-		return fmt.Errorf("opcua: 生成续期 ClientNonce 失败: %w", err)
+		return 0, fmt.Errorf("opcua: 生成续期 ClientNonce 失败: %w", err)
 	}
 	var oe encoder
 	if err := (OpenSecureChannelRequest{
@@ -564,34 +586,77 @@ func (c *Client) Renew(timeout time.Duration) error {
 		RequestType:           SecurityTokenRequestTypeRenew,
 		RequestedLifetime:     DefaultRequestedLifetime,
 	}).encodeUA(&oe); err != nil {
-		return err
+		return 0, err
 	}
 	body := append(append([]byte{}, nonce...), oe.buf...)
-	respWire, err := c.roundTrip(body)
+	respWire, err := c.roundTripTimeout(body, timeout)
 	if err != nil {
-		return fmt.Errorf("opcua: Renew 往返失败: %w", err)
+		return 0, fmt.Errorf("opcua: Renew 往返失败: %w", err)
 	}
 	var d decoder
 	d.b = respWire
 	resp, err := decodeOpenSecureChannelResponse(&d)
 	if err != nil {
-		return fmt.Errorf("opcua: Renew 响应解码失败: %w", err)
+		return 0, fmt.Errorf("opcua: Renew 响应解码失败: %w", err)
 	}
 	if !resp.ServiceResult.IsGood() {
-		return fmt.Errorf("opcua: Renew 服务失败: %s", resp.ServiceResult)
+		return 0, fmt.Errorf("opcua: Renew 服务失败: %s", resp.ServiceResult)
 	}
 	if resp.SecurityToken.RevisedLifetime <= 0 {
-		return fmt.Errorf("opcua: Renew 响应 RevisedLifetime=%v 非法（须 > 0）", resp.SecurityToken.RevisedLifetime)
+		return 0, fmt.Errorf("opcua: Renew 响应 RevisedLifetime=%v 非法（须 > 0）", resp.SecurityToken.RevisedLifetime)
 	}
 	if resp.SecurityToken.TokenID == 0 {
-		return errors.New("opcua: Renew 响应 TokenID 非法")
+		return 0, errors.New("opcua: Renew 响应 TokenID 非法")
 	}
 	if len(resp.ServerNonce) != B256NonceLen {
-		return fmt.Errorf("opcua: Renew 响应 ServerNonce 长度 %d 非 %d", len(resp.ServerNonce), B256NonceLen)
+		return 0, fmt.Errorf("opcua: Renew 响应 ServerNonce 长度 %d 非 %d", len(resp.ServerNonce), B256NonceLen)
 	}
 	newKeys := DeriveKeys(nonce, resp.ServerNonce, c.sc.opts.ClientCert.Raw, c.sc.opts.ServerCert.Raw)
 	c.sc.swapKeys(newKeys, resp.SecurityToken.TokenID)
-	return nil
+	return resp.SecurityToken.RevisedLifetime, nil
+}
+
+// autoRenewLoop 在令牌寿命的 ratio 比例点自动触发 Renew（v0.30.0）。
+// 续期失败按剩余寿命 1/10（下限 1s）退避重试，不中断订阅；Close 关闭
+// renewDone 后循环退出。None 通道不启动本循环。
+func (c *Client) autoRenewLoop(ratio float64) {
+	cur := c.scLifetime0
+	if cur <= 0 {
+		return
+	}
+	retrying := false
+	for {
+		delay := time.Duration(float64(cur) * ratio)
+		if retrying {
+			delay = cur / 10
+			if delay < time.Second {
+				delay = time.Second
+			}
+		} else if delay < 50*time.Millisecond {
+			delay = 50 * time.Millisecond
+		}
+		t := time.NewTimer(delay)
+		select {
+		case <-c.renewDone:
+			t.Stop()
+			return
+		case <-t.C:
+		}
+		c.renewMu.Lock()
+		life, err := c.renewLocked(0)
+		c.renewMu.Unlock()
+		if err != nil {
+			if c.sc == nil || !c.sc.encrypted() {
+				return // 通道已不可加密续期：退出（使用方负责重连）
+			}
+			retrying = true
+			continue
+		}
+		retrying = false
+		if life > 0 {
+			cur = time.Duration(life) * time.Millisecond
+		}
+	}
 }
 
 // TokenID 返回当前生效的安全令牌 id（v0.29.0：Renew 换钥后为新令牌）。
@@ -612,6 +677,16 @@ func (c *Client) ProbeWriteRaw(frame []byte) error {
 // roundTrip 是严格配对调用的统一入口：发送、登记 waiter、收响应。
 // 泵未启动时直接走 recvSecure；启动后经 waiters 表由 pump 分发。
 func (c *Client) roundTrip(body []byte) ([]byte, error) {
+	return c.roundTripTimeout(body, 0)
+}
+
+// roundTripTimeout 是 roundTrip 的超时参数化变体（v0.30.0）：timeout<=0
+// 时读共享 c.timeout（open 后不再被写，读安全）；Renew 经此传入显式
+// 超时而不改写共享态。
+func (c *Client) roundTripTimeout(body []byte, timeout time.Duration) ([]byte, error) {
+	if timeout <= 0 {
+		timeout = c.timeout
+	}
 	reqID, err := c.sc.sendSecure(body)
 	if err != nil {
 		return nil, err
@@ -634,12 +709,12 @@ func (c *Client) roundTrip(body []byte) ([]byte, error) {
 	}
 	c.mu.Unlock()
 	if !pumping {
-		return c.sc.recvSecure(reqID, c.timeout)
+		return c.sc.recvSecure(reqID, timeout)
 	}
 	select {
 	case b := <-ch:
 		return b, nil
-	case <-time.After(c.timeout):
+	case <-time.After(timeout):
 		c.mu.Lock()
 		delete(c.waiters, reqID)
 		// PRT-17：超时放弃的 waiter 对应 pending 条目顺带清理，

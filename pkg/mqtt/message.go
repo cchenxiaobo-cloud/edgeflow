@@ -43,6 +43,12 @@ type Connect struct {
 	// （V5=false）编码与历史版本逐字节一致。
 	V5         bool
 	ReceiveMax uint16
+
+	// SessionExpiry 是 v5 Session Expiry Interval（v0.32.0 阶段二，
+	// 属性 0x11，单位秒）：>0 时编码进 CONNECT 属性区，语义 = 会话
+	// 在网络连接断开后保留的秒数（0 = 断连即毁）。CleanSession 位在
+	// v5 语义下即 Clean Start。3.1.1 路径不携带。
+	SessionExpiry uint32
 }
 
 // Type implements Packet.
@@ -55,9 +61,11 @@ type Connack struct {
 
 	// MQTT 5.0（v0.30.0）：V5=true 时 ReturnCode 字段承载 v5 原因码
 	//（布局与 3.1.1 returnCode 同位），随后为属性区；ReceiveMax>0 时
-	// 携带 Receive Maximum（0x21）属性。
-	V5         bool
-	ReceiveMax uint16
+	// 携带 Receive Maximum（0x21）属性。SessionExpiry>0 时携带服务端
+	// 接受的 Session Expiry（0x11，v0.32.0 阶段二回显）。
+	V5            bool
+	ReceiveMax    uint16
+	SessionExpiry uint32
 }
 
 // Type implements Packet.
@@ -267,4 +275,20 @@ func (e *encoder) writeString(s string) {
 		return
 	}
 	_, e.err = e.w.Write([]byte(s))
+}
+
+// writeVBI writes an MQTT variable byte integer (remaining-length/property
+// length encoding；v0.32.0 属性区变长需要)。
+func (e *encoder) writeVBI(v uint32) {
+	for {
+		x := byte(v & 0x7F)
+		v >>= 7
+		if v > 0 {
+			x |= 0x80
+		}
+		e.writeByte(x)
+		if v == 0 {
+			return
+		}
+	}
 }

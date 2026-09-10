@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -61,6 +62,20 @@ type Options struct {
 	//（v5 专用；0 = 不携带属性，语义等同 65535 无限制）。出站方向
 	// 以服务器 CONNACK 下发的 Receive Maximum 为节流窗口。
 	ReceiveMax uint16
+
+	// PersistentSession 开启持久会话（v0.32.0 阶段二，opt-in；默认
+	// false = 现状 CleanSession 恒 true 的逐字节行为）：v5 连接发
+	// CleanStart=0 + Session Expiry 属性；3.1.1 连接发 CleanSession=0。
+	// 会话由服务端按 ClientID 保留（订阅表 + 离线 QoS1 下行，视服务端
+	// 能力），重连（同 ClientID 且 PersistentSession）时 CONNACK 的
+	// Session Present=1，经 SessionPresent() 读取。
+	PersistentSession bool
+
+	// SessionExpiryMs 是 v5 会话过期间隔（毫秒，换算为秒向上取整）：
+	// 仅 ProtocolVersion5 且 PersistentSession 时编码进 CONNECT 属性区
+	//（0 = 服务端默认策略；断连即毁的纯订阅保留也属合法值）。3.1.1
+	// 持久会话无过期概念（服务端保留至重连）。
+	SessionExpiryMs uint64
 }
 
 // Handler is invoked for every inbound PUBLISH whose topic matches one of the
@@ -96,6 +111,15 @@ type Client struct {
 	// ---- MQTT 5.0（v0.30.0，阶段一）----
 	v5        bool          // 协商结果：CONNECT 以 v5 发出
 	flowSlots chan struct{} // 出站 QoS1/2 在途窗口（容量=server RM）；nil=无限制
+
+	sessionPresent bool // CONNACK Session Present（v0.32.0 阶段二：服务端恢复了持久会话）
+
+	// pendingRecovered 缓冲恢复会话场景下"先于 handler 注册到达"的下行
+	// QoS1/0 PUBLISH（SessionPresent 时启用；容量 32，超限丢最旧）。
+	// Subscribe 注册 handler 时按 filter 补投一次（QoS1 已向 broker 确认，
+	// 缓冲仅为 handler 补投，语义 = 至多一次）。
+	pendMu           sync.Mutex
+	pendingRecovered []*Publish
 
 	closeOnce sync.Once
 	done      chan struct{} // closed by the read pump on exit (disconnected)
@@ -146,15 +170,27 @@ func Dial(addr string, opts Options) (*Client, error) {
 	if keepSecs > 65535 {
 		keepSecs = 65535
 	}
+	// v0.32.0 阶段二：持久会话 opt-in（默认 false = 恒 clean，历史行为
+	// 逐字节保留）。Session Expiry 毫秒→秒向上取整（60000ms→60s）。
 	ck := &Connect{
 		ClientID:     opts.ClientID,
 		KeepAlive:    uint16(keepSecs),
-		CleanSession: true, // v0.24.0: always a clean session; no persistent-session support yet
+		CleanSession: true, // 默认：v0.24.0 以来的恒 clean 行为
 		Username:     opts.Username,
 		Password:     opts.Password,
 		// Will is intentionally not set.
 		V5:         opts.ProtocolVersion5,
 		ReceiveMax: opts.ReceiveMax, // v5：>0 时携带 RM 属性
+	}
+	if opts.PersistentSession {
+		ck.CleanSession = false
+		if opts.ProtocolVersion5 {
+			secs := (opts.SessionExpiryMs + 999) / 1000 // 向上取整
+			if secs > 0xFFFFFFFF {
+				secs = 0xFFFFFFFF
+			}
+			ck.SessionExpiry = uint32(secs)
+		}
 	}
 	if err := c.write(ck); err != nil {
 		conn.Close()
@@ -182,6 +218,9 @@ func Dial(addr string, opts Options) (*Client, error) {
 	//（0/65535 = 未限制，不建槽）。
 	if opts.ProtocolVersion5 && ca.ReceiveMax > 0 && ca.ReceiveMax < 65535 {
 		c.flowSlots = make(chan struct{}, ca.ReceiveMax)
+	}
+	if ca.SessionPresent {
+		c.sessionPresent = true
 	}
 
 	go c.readPump()
@@ -220,9 +259,15 @@ func (c *Client) ensureOpen() error {
 	}
 }
 
+// SessionPresent reports whether the server restored a previously stored
+// session for this connection（CONNACK Session Present，v0.32.0 阶段二）。
+// 仅在 Dial 成功后有意义的只读快照；与 Options.PersistentSession 搭配使用。
+func (c *Client) SessionPresent() bool { return c.sessionPresent }
+
 // Subscribe sends a SUBSCRIBE for a single filter and waits for the matching
 // SUBACK. On a granted code (< 0x80) the handler is registered under the
 // exact filter string; on rejection the error carries the SUBACK code.
+// 共享订阅（$share/{group}/{filter}）的 handler 以内层 filter 注册。
 func (c *Client) Subscribe(topic string, qos byte, h Handler) error {
 	if h == nil {
 		return errors.New("mqtt: nil handler")
@@ -257,10 +302,66 @@ func (c *Client) Subscribe(topic string, qos byte, h Handler) error {
 	if sa.Codes[0] >= 0x80 {
 		return fmt.Errorf("mqtt: subscribe rejected, code 0x%02X", sa.Codes[0])
 	}
+	// v0.32.0：共享订阅 handler 以内层 filter 注册（到达 PUBLISH 的
+	// topic 已剥去 $share/{group}/ 前缀，须按内层匹配）。
+	regKey := topic
+	if group, inner, ok := parseShareFilterClient(topic); ok && group != "" {
+		regKey = inner
+	}
 	c.handlersMu.Lock()
-	c.handlers[topic] = append(c.handlers[topic], h)
+	c.handlers[regKey] = append(c.handlers[regKey], h)
 	c.handlersMu.Unlock()
+	if c.sessionPresent {
+		c.flushRecovered(regKey)
+	}
 	return nil
+}
+
+// matchHandlersHit 报告是否有已注册 handler 匹配 topic（恢复会话缓冲判定）。
+func (c *Client) matchHandlersHit(topic string) bool {
+	c.handlersMu.RLock()
+	defer c.handlersMu.RUnlock()
+	for filter := range c.handlers {
+		if MatchTopic(filter, topic) {
+			return true
+		}
+	}
+	return false
+}
+
+// flushRecovered 把缓冲的恢复期消息按新注册 filter 补投（Subscribe 调用）。
+func (c *Client) flushRecovered(filter string) {
+	c.pendMu.Lock()
+	kept := c.pendingRecovered[:0]
+	var deliver []*Publish
+	for _, pv := range c.pendingRecovered {
+		if MatchTopic(filter, pv.Topic) {
+			deliver = append(deliver, pv)
+		} else {
+			kept = append(kept, pv)
+		}
+	}
+	c.pendingRecovered = kept
+	c.pendMu.Unlock()
+	for _, pv := range deliver {
+		for _, h := range c.matchHandlers(pv.Topic) {
+			h(pv.Topic, pv.Payload)
+		}
+	}
+}
+
+// parseShareFilterClient 拆解 $share/{group}/{filter}（client 侧 handler
+// 注册键解析；与 broker 侧语义一致）。普通 filter 返回 (""，原文, true)。
+func parseShareFilterClient(f string) (group, inner string, ok bool) {
+	if !strings.HasPrefix(f, "$share/") {
+		return "", f, true
+	}
+	rest := f[len("$share/"):]
+	i := strings.Index(rest, "/")
+	if i <= 0 || i == len(rest)-1 {
+		return "", "", false
+	}
+	return rest[:i], rest[i+1:], true
 }
 
 // Publish sends a PUBLISH. QoS 0 is fire-and-forget; QoS 1 waits up to
@@ -386,7 +487,20 @@ func (c *Client) readPump() {
 			}
 			if pv.QoS == 1 {
 				// QoS1 inbound must be acknowledged so the broker does not resend.
-				_ = c.write(&Puback{PacketID: pv.PacketID})
+				_ = c.write(&Puback{V5: c.v5, PacketID: pv.PacketID})
+			}
+			// 恢复会话缓冲（复核 P1-1 修复：仅 QoS<2；QoS2 有独立 park/
+			// PUBREC 状态机，不得被缓冲拦截）：
+			if c.sessionPresent && pv.QoS < 2 && !c.matchHandlersHit(pv.Topic) {
+				// 消息先于 handler 注册到达（broker 在 CONNACK 后立即
+				// 下发离线队列）→ 缓冲待 Subscribe 补投。
+				c.pendMu.Lock()
+				if len(c.pendingRecovered) >= 32 {
+					c.pendingRecovered = c.pendingRecovered[1:]
+				}
+				c.pendingRecovered = append(c.pendingRecovered, pv)
+				c.pendMu.Unlock()
+				continue
 			}
 			if pv.QoS == 2 {
 				// QoS2 inbound (v0.26.0): ack PUBLISH with PUBREC and park the
@@ -404,7 +518,7 @@ func (c *Client) readPump() {
 					// by the upper layer via ResumePending absence.
 					// (Deliberate soft-fail: delivery semantics stay intact.)
 				}
-				_ = c.write(&Pubrec{PacketID: pv.PacketID})
+				_ = c.write(&Pubrec{V5: c.v5, PacketID: pv.PacketID})
 				continue
 			}
 			for _, h := range c.matchHandlers(pv.Topic) {

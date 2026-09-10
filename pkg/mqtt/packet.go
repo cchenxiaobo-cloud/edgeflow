@@ -116,38 +116,66 @@ func writeU16(e *encoder, v uint16) {
 // 属性区仅存在于 V5=true 的报文；3.1.1 路径不触碰（冻结保证）。
 // ---------------------------------------------------------------------------
 
-// encodeConnectProps 编码 CONNECT 属性区：RM>0 时属性长度 = 3（ID 1B + u16）。
-func encodeConnectProps(e *encoder, receiveMax uint16) {
+// encodeConnectProps 编码 v5 属性区（v0.32.0 阶段二白名单：Session
+// Expiry 0x11 + Receive Maximum 0x21；固定按 ID 升序）。全空 → 单字节 0x00。
+func encodeConnectProps(e *encoder, receiveMax uint16, sessionExpiry uint32) {
+	var body []byte
+	if sessionExpiry > 0 {
+		body = append(body, 0x11)
+		body = append(body, byte(sessionExpiry>>24), byte(sessionExpiry>>16), byte(sessionExpiry>>8), byte(sessionExpiry))
+	}
 	if receiveMax > 0 {
-		e.writeByte(0x03) // property length (VBI)
-		e.writeByte(0x21) // Receive Maximum
-		writeU16(e, receiveMax)
+		body = append(body, 0x21)
+		body = append(body, byte(receiveMax>>8), byte(receiveMax))
+	}
+	if len(body) == 0 {
+		e.writeByte(0x00) // 空属性区
 		return
 	}
-	e.writeByte(0x00) // 空属性区
+	e.writeVBI(uint32(len(body)))
+	e.writeBytes(body)
 }
 
-// decodePropsV5 解析属性区（阶段一仅接受空区或单条 Receive Maximum；
-// 未知属性拒绝并登记于 spec as-built）。返回 ReceiveMax（0=未携带）。
-func decodePropsV5(d *decoder) (uint16, error) {
+// propsV5 是 v5 属性区白名单解析结果（v0.32.0 阶段二扩展）。
+type propsV5 struct {
+	ReceiveMax    uint16 // 0x21（0 = 未携带）
+	SessionExpiry uint32 // 0x11（0 = 未携带）
+}
+
+// decodeProps 解析 v5 属性区：白名单内属性任意组合与出现顺序（每条
+// = ID 1B + 定长值），未知属性拒绝（阶段一语义延续，spec 0005 as-built）。
+func decodeProps(d *decoder) (propsV5, error) {
+	var out propsV5
 	propLen, err := d.readVBI()
 	if err != nil {
-		return 0, err
+		return out, err
 	}
 	if propLen == 0 {
-		return 0, nil
+		return out, nil
 	}
-	if propLen != 3 {
-		return 0, ErrMalformed // 阶段一：属性区仅支持单条 RM（3B）
+	end := d.consumed() + int(propLen) // 属性区边界（长度自洽校验）
+	for d.consumed() < end {
+		id, err := d.readByte()
+		if err != nil {
+			return out, err
+		}
+		switch id {
+		case 0x21: // Receive Maximum (u16)
+			if out.ReceiveMax, err = d.readUint16(); err != nil {
+				return out, err
+			}
+		case 0x11: // Session Expiry Interval (u32)
+			if out.SessionExpiry, err = d.readUint32(); err != nil {
+				return out, err
+			}
+		default:
+			return out, ErrMalformed // 白名单外属性拒绝
+		}
 	}
-	id, err := d.readByte()
-	if err != nil {
-		return 0, err
+	if d.consumed() != end {
+		return out, ErrMalformed // 属性值越界（长度与内容不符）
 	}
-	if id != 0x21 {
-		return 0, ErrMalformed // 未知属性：阶段一拒绝
-	}
-	return d.readUint16()
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +280,7 @@ func (c *Connect) encodeUA(e *encoder) error {
 	e.writeByte(f)
 	writeU16(e, c.KeepAlive)
 	if c.V5 {
-		encodeConnectProps(e, c.ReceiveMax) // v5：属性区在 keepalive 后、payload 前
+		encodeConnectProps(e, c.ReceiveMax, c.SessionExpiry) // v5：属性区在 keepalive 后、payload 前
 	}
 	e.writeString(c.ClientID)
 	if willFlag {
@@ -272,13 +300,7 @@ func (c *Connack) encodeUA(e *encoder) error {
 	e.writeByte(boolByte(c.SessionPresent))
 	e.writeByte(c.ReturnCode)
 	if c.V5 {
-		if c.ReceiveMax > 0 {
-			e.writeByte(0x03)
-			e.writeByte(0x21)
-			writeU16(e, c.ReceiveMax)
-			return nil
-		}
-		e.writeByte(0x00) // v5 空属性区
+		encodeConnectProps(e, c.ReceiveMax, c.SessionExpiry) // v0.32.0：与 CONNECT 同一白名单编码器
 	}
 	return nil
 }
@@ -406,6 +428,20 @@ type decoder struct {
 }
 
 func (d *decoder) remaining() int { return len(d.b) - d.pos }
+
+// consumed reports the number of bytes already consumed（v0.32.0 属性区
+// 长度自洽校验需要）。
+func (d *decoder) consumed() int { return d.pos }
+
+// readUint32 reads a big-endian uint32（v0.32.0 Session Expiry 属性）。
+func (d *decoder) readUint32() (uint32, error) {
+	if d.remaining() < 4 {
+		return 0, ErrMalformed
+	}
+	v := uint32(d.b[d.pos])<<24 | uint32(d.b[d.pos+1])<<16 | uint32(d.b[d.pos+2])<<8 | uint32(d.b[d.pos+3])
+	d.pos += 4
+	return v, nil
+}
 
 func (d *decoder) readByte() (byte, error) {
 	if d.remaining() < 1 {
@@ -549,7 +585,7 @@ func decodePacketV(r io.Reader, v5 bool) (Packet, error) {
 			if err != nil {
 				return nil, err
 			}
-			if _, err := decodePropsV5(d); err != nil {
+			if _, err := decodeProps(d); err != nil {
 				return nil, err
 			}
 			if d.remaining() != 0 {
@@ -609,9 +645,12 @@ func decodeConnect(d *decoder, allowV5 bool) (*Connect, error) {
 	}
 	if isV5 {
 		// v5：属性区在 keepalive 后、payload 前（阶段一仅 Receive Maximum）。
-		if c.ReceiveMax, err = decodePropsV5(d); err != nil {
+		var pr propsV5
+		if pr, err = decodeProps(d); err != nil {
 			return nil, err
 		}
+		c.ReceiveMax = pr.ReceiveMax
+		c.SessionExpiry = pr.SessionExpiry
 	}
 	// Payload order: ClientID, WillTopic, WillMessage, Username, Password.
 	if c.ClientID, err = d.readString(); err != nil {
@@ -662,9 +701,12 @@ func decodeConnack(d *decoder, v5 bool) (*Connack, error) {
 	ca := &Connack{SessionPresent: sp&0x01 != 0, ReturnCode: rc}
 	if v5 {
 		ca.V5 = true
-		if ca.ReceiveMax, err = decodePropsV5(d); err != nil {
+		var pr propsV5
+		if pr, err = decodeProps(d); err != nil {
 			return nil, err
 		}
+		ca.ReceiveMax = pr.ReceiveMax
+		ca.SessionExpiry = pr.SessionExpiry
 	}
 	if d.remaining() != 0 {
 		return nil, ErrMalformed
@@ -725,7 +767,7 @@ func decodePuback(d *decoder, v5 bool) (*Puback, error) {
 			if pa.ReasonCode, err = d.readByte(); err != nil {
 				return nil, err
 			}
-			if _, err := decodePropsV5(d); err != nil {
+			if _, err := decodeProps(d); err != nil {
 				return nil, err
 			}
 		}
@@ -756,7 +798,7 @@ func decodePubRelID(ptype byte, d *decoder, v5 bool) (Packet, error) {
 			if rc, err = d.readByte(); err != nil {
 				return nil, err
 			}
-			if _, err := decodePropsV5(d); err != nil {
+			if _, err := decodeProps(d); err != nil {
 				return nil, err
 			}
 		}
@@ -808,7 +850,7 @@ func decodeSuback(d *decoder, v5 bool) (*Suback, error) {
 		return nil, err
 	}
 	if v5 {
-		if _, err := decodePropsV5(d); err != nil {
+		if _, err := decodeProps(d); err != nil {
 			return nil, err
 		}
 	}

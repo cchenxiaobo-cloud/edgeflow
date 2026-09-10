@@ -15,7 +15,11 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"edgeflow/pkg/mqtt"
 )
@@ -64,8 +68,70 @@ type Broker struct {
 	// orphan. Per-connection parks always win over orphans.
 	orphanQoS2 map[uint16]*mqtt.Publish
 
+	// ---- 会话解耦 + 共享订阅（v0.32.0 阶段二）----
+	// sessions 按 ClientID 保留断连后的会话（订阅表 + 离线 QoS1 队列）。
+	// expirySec=0 的会话断连即毁（现状行为），不入此表。
+	sessions map[string]*simSession
+	// shareCursor 是共享订阅组 (group,inner) 的 round-robin 游标。
+	shareCursor map[string]uint64
+	// pktID 分配离线 QoS1 恢复下行的报文标识（broker 侧自增循环）。
+	pktID uint32
+
 	closeOnce sync.Once
 	closed    bool
+}
+
+// shareSub 是一条共享订阅（v0.32.0）：原始 filter 串 → 组名 + 内层 filter。
+type shareSub struct {
+	group string
+	inner string
+}
+
+// simSession 是断连后按 ClientID 保留的会话（v0.32.0 阶段二）：订阅表
+// 快照 + 离线 QoS1 暂存队列。conn 指向当前在线连接（nil = 离线）。
+type simSession struct {
+	clientID   string
+	conn       *simClient // 非 nil = 在线（订阅表以连接上的为准）
+	expirySec  uint32     // 0 = 断连即毁；0xFFFFFFFF = 3.1.1 永久/极长 v5 值
+	expiresAt  time.Time  // 断连时刻 + Session Expiry；在线期为零值
+	filters    map[string]struct{}
+	shared     map[string]shareSub
+	offline    []*mqtt.Publish // 离线 QoS1 暂存（≤64，超限丢最旧；头部 dispatched 条已入连接队列在途）
+	offlineDr  int             // 超限丢弃计数
+	dispatched int             // 已入连接队列待 PUBACK 的条数（恢复下发窗口，v0.32.0）
+	mu         sync.Mutex      // 保护 offline/dispatched（确认出队 vs 快照下发）
+}
+
+// recoverWindow 是会话恢复下发的在途窗口（≤ outQueueSize/2，防连接队列
+// 溢出丢帧——v0320 门禁发现的真缺陷修复：一次性灌 64 条超 out 队列容量）。
+const recoverWindow = outQueueSize / 2
+
+// nextPktID 分配 broker 侧下行报文标识（循环，跳过 0）。
+func (b *Broker) nextPktID() uint16 {
+	for {
+		v := uint16(atomic.AddUint32(&b.pktID, 1) & 0xFFFF)
+		if v != 0 {
+			return v
+		}
+	}
+}
+
+// expiryZero 报告会话是否已过期（在线会话永不过期）。
+func (s *simSession) expiryZero() bool {
+	return s.conn == nil && !s.expiresAt.IsZero() && time.Now().After(s.expiresAt)
+}
+
+// offlineCap 是会话离线 QoS1 暂存上限。
+const offlineCap = 64
+
+// matchesNormal 报告会话普通订阅是否匹配 topic（离线暂存判定用）。
+func (s *simSession) matchesNormal(topic string) bool {
+	for f := range s.filters {
+		if simMatchTopic(f, topic) {
+			return true
+		}
+	}
+	return false
 }
 
 // simClient is one accepted connection: its subscription filters and its
@@ -75,6 +141,9 @@ type simClient struct {
 	conn      net.Conn
 	mu        sync.Mutex
 	filters   map[string]struct{}
+	shared    map[string]shareSub // 共享订阅（原始 filter -> 组/内层，v0.32.0）
+	clientID  string              // CONNECT 后填充（会话归属/接管判定）
+	sess      *simSession         // 绑定的会话（v0.32.0；nil = 恒 clean 老路径）
 	out       chan []byte
 	done      chan struct{}
 	doneOnce  sync.Once
@@ -154,6 +223,8 @@ func newBrokerFromListener(ln net.Listener) *Broker {
 		ln:          ln,
 		clients:     make(map[*simClient]struct{}),
 		pendingQoS2: make(map[*simClient]map[uint16]*mqtt.Publish),
+		sessions:    make(map[string]*simSession),
+		shareCursor: make(map[string]uint64),
 	}
 	go b.acceptLoop()
 	return b
@@ -191,6 +262,7 @@ func (b *Broker) acceptLoop() {
 			br:       b,
 			conn:     conn,
 			filters:  make(map[string]struct{}),
+			shared:   make(map[string]shareSub),
 			out:      make(chan []byte, outQueueSize),
 			done:     make(chan struct{}),
 			pumpDone: make(chan struct{}),
@@ -212,6 +284,26 @@ func (b *Broker) unregister(c *simClient) {
 	b.mu.Lock()
 	delete(b.clients, c)
 	delete(b.pendingQoS2, c) // drop any QoS2 exchanges parked by this connection
+	// 会话解耦（v0.32.0）：本连接仍持有会话时（未被新连接接管），
+	// 按 Session Expiry 决定保留或销毁；保留的会话接管订阅表快照。
+	if c.sess != nil && c.sess.conn == c {
+		c.sess.conn = nil
+		if c.sess.expirySec == 0 {
+			delete(b.sessions, c.sess.clientID) // 断连即毁（恒 clean 现状行为）
+		} else {
+			c.sess.expiresAt = time.Now().Add(time.Duration(c.sess.expirySec) * time.Second)
+			c.mu.Lock()
+			c.sess.filters = make(map[string]struct{}, len(c.filters))
+			for f := range c.filters {
+				c.sess.filters[f] = struct{}{}
+			}
+			c.sess.shared = make(map[string]shareSub, len(c.shared))
+			for f, sh := range c.shared {
+				c.sess.shared[f] = sh
+			}
+			c.mu.Unlock()
+		}
+	}
 	b.mu.Unlock()
 }
 
@@ -234,17 +326,36 @@ func (b *Broker) enqueue(c *simClient, pkt mqtt.Packet) {
 // Publish pushes a server-originated message (QoS 0) to every client whose
 // subscription matches topic. Having no subscriber is not an error.
 func (b *Broker) Publish(topic string, payload []byte) error {
-	b.fanoutBytes(topic, payload)
+	b.fanoutBytes(topic, payload, 0)
 	return nil
 }
 
-// hasSubscriber 报告是否有任何客户端订阅匹配 topic（v0.30.0：PUBACK 0x10
-// 判定用）。
+// hasSubscriber 报告是否有任何客户端订阅（含共享订阅，v0.32.0）匹配
+// topic（v0.30.0：PUBACK 0x10 判定用）。
 func (b *Broker) hasSubscriber(topic string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for c := range b.clients {
-		if c.matches(topic) {
+		if c.matches(topic) || len(c.sharedMatches(topic)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// hasOfflineInterest 报告是否有保留中的离线会话订阅匹配 topic（v0.32.0）。
+func (b *Broker) hasOfflineInterest(topic string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for cid, sess := range b.sessions {
+		if sess.conn != nil {
+			continue
+		}
+		if !sess.expiresAt.IsZero() && time.Now().After(sess.expiresAt) {
+			delete(b.sessions, cid)
+			continue
+		}
+		if sess.matchesNormal(topic) {
 			return true
 		}
 	}
@@ -255,24 +366,112 @@ func (b *Broker) hasSubscriber(topic string) bool {
 // (the sender included, if subscribed). Always re-encoded as QoS 0.
 // v0.30.0：按连接编码——v5 客户端的 PUBLISH 需携带属性长度字节（v5 帧形态）。
 func (b *Broker) fanout(topic string, payload []byte) {
-	b.fanoutBytes(topic, payload)
+	b.fanoutBytes(topic, payload, 0)
 }
 
-func (b *Broker) fanoutBytes(topic string, data []byte) {
+func (b *Broker) fanoutBytes(topic string, data []byte, qos byte) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	// 快照在线成员，按 ClientID 排序保证轮转确定性。
+	type member struct {
+		c      *simClient
+		cid    string
+		normal bool
+		shares []shareSub
+	}
+	var members []member
 	for c := range b.clients {
-		if !c.matches(topic) {
+		m := member{c: c, cid: c.clientID}
+		m.normal = c.matches(topic)
+		m.shares = c.sharedMatches(topic)
+		if m.normal || len(m.shares) > 0 {
+			members = append(members, m)
+		}
+	}
+	sort.Slice(members, func(i, j int) bool { return members[i].cid < members[j].cid })
+
+	// 入队辅助：持 b.mu 路径专用（复核 P0-1——enqueueQoS 的队列满分支
+	// 会 Lock b.mu，持锁调用 = 非重入自死锁；此处内联 select 恢复旧行为）。
+	inlineEnqueue := func(c *simClient, pkt *mqtt.Publish) {
+		var buf bytes.Buffer
+		if err := encodePacket(&buf, pkt); err != nil {
+			return
+		}
+		select {
+		case c.out <- buf.Bytes():
+		default:
+			b.dropCount++
+		}
+	}
+	for _, m := range members {
+		// 普通订阅：每连接至多一份（既有语义）。
+		if m.normal {
+			inlineEnqueue(m.c, &mqtt.Publish{Topic: topic, Payload: data, V5: m.c.connV5})
+		}
+	}
+	// 共享订阅：按组键 (group,inner) 分组，组内 round-robin 选一在线成员。
+	groupHits := make(map[shareSub][]*simClient)
+	for i := range members {
+		for _, sh := range members[i].shares {
+			groupHits[sh] = append(groupHits[sh], members[i].c)
+		}
+	}
+	picked := make(map[*simClient]map[shareSub]struct{})
+	for sh, cands := range groupHits {
+		key := sh.group + "\x00" + sh.inner
+		idx := b.shareCursor[key] % uint64(len(cands))
+		b.shareCursor[key]++
+		target := cands[idx]
+		if picked[target] == nil {
+			picked[target] = make(map[shareSub]struct{})
+		}
+		picked[target][sh] = struct{}{}
+	}
+	for c, subs := range picked {
+		for range subs { // 每个命中组一份（同连接同组多 filter 已去重）
+			inlineEnqueue(c, &mqtt.Publish{Topic: topic, Payload: data, V5: c.connV5})
+		}
+	}
+
+	// 离线会话暂存（v0.32.0）：仅 QoS1、普通订阅；共享订阅不暂存（spec
+	// 0005 US-5）。惰性清理过期会话。
+	for cid, sess := range b.sessions {
+		if sess.conn != nil {
+			continue // 在线会话由上方 members 覆盖
+		}
+		if !sess.expiresAt.IsZero() && time.Now().After(sess.expiresAt) {
+			delete(b.sessions, cid)
 			continue
 		}
-		var buf bytes.Buffer
-		if err := encodePacket(&buf, &mqtt.Publish{Topic: topic, Payload: data, V5: c.connV5}); err == nil {
-			select {
-			case c.out <- buf.Bytes():
-			default:
-				b.dropCount++
-			}
+		if qos != 1 || !sess.matchesNormal(topic) {
+			continue
 		}
+		sess.mu.Lock()
+		if len(sess.offline) >= offlineCap {
+			sess.offline = sess.offline[1:]
+			sess.offlineDr++
+		}
+		sess.offline = append(sess.offline, &mqtt.Publish{QoS: 1, Topic: topic, Payload: append([]byte(nil), data...)})
+		sess.mu.Unlock()
+	}
+}
+
+// enqueueQoS 以指定 QoS 编码并入队（pktID 由调用方分配——恢复下发路径
+// 由在途窗口管理；qos=0 即既有 best-effort 语义）。⚠️ 队列满分支会锁
+// b.mu——仅限不持有 b.mu 的调用方（恢复下发/PUBACK 补发）；fanoutBytes
+// 持锁路径必须内联（复核 P0-1 死锁修复）。
+func (b *Broker) enqueueQoS(c *simClient, topic string, data []byte, qos byte, pktID uint16) {
+	var buf bytes.Buffer
+	if err := encodePacket(&buf, &mqtt.Publish{Topic: topic, Payload: data, QoS: qos, PacketID: pktID, V5: c.connV5}); err != nil {
+		return
+	}
+	select {
+	case c.out <- buf.Bytes():
+	default:
+		b.mu.Lock()
+		b.dropCount++
+		b.mu.Unlock()
 	}
 }
 
@@ -309,6 +508,41 @@ func (b *Broker) PingCount() int {
 	return b.pingCount
 }
 
+// parseShareFilter 拆解共享订阅 filter（v0.32.0）：
+//   - "$share/{group}/{inner}" → (group, inner, true)；group/inner 任一为空 → !ok
+//   - "$queue/..." → 不支持，!ok
+//   - 其余 → (""，原文，true) 普通订阅
+func parseShareFilter(f string) (group, inner string, ok bool) {
+	if strings.HasPrefix(f, "$queue/") {
+		return "", "", false
+	}
+	if !strings.HasPrefix(f, "$share/") {
+		return "", f, true
+	}
+	rest := f[len("$share/"):]
+	i := strings.Index(rest, "/")
+	if i <= 0 || i == len(rest)-1 { // 无组/空组；无内层/空内层
+		return "", "", false
+	}
+	return rest[:i], rest[i+1:], true
+}
+
+// sharedMatches 返回该连接命中的共享订阅组键去重集合（caller 持有 c.mu
+// 或保证独占；与 matches 同样的锁约定）。
+func (c *simClient) sharedMatches(topic string) []shareSub {
+	seen := make(map[shareSub]struct{})
+	var out []shareSub
+	for _, sh := range c.shared {
+		if simMatchTopic(sh.inner, topic) {
+			if _, dup := seen[sh]; !dup {
+				seen[sh] = struct{}{}
+				out = append(out, sh)
+			}
+		}
+	}
+	return out
+}
+
 // matches reports whether any of the client's filters match topic.
 // Caller may hold b.mu; c.mu guarding keeps it race-free either way.
 func (c *simClient) matches(topic string) bool {
@@ -332,11 +566,21 @@ func (c *simClient) pump() {
 	for {
 		select {
 		case buf := <-c.out:
+			// v0320（复核 P0-1 同面补充修复）：写截止 5s——死消费者
+			// （对端不读、内核缓冲满）会让阻塞写永挂，close(done) 无法
+			// 中断进行中的 write；超时判连接死，放弃退出。正常客户端
+			// （小帧、正常读）5s 绰绰有余，语义不变。
+			_ = c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			if _, err := c.conn.Write(buf); err != nil {
 				c.doneOnce.Do(func() { close(c.done) })
 				return
 			}
 		case <-c.done:
+			// v0.30.0 语义：关停后先清空既有队列再退出（单写者时序）。
+			// v0320 补充（复核 P0-1 同面发现）：死消费者场景 write 可能
+			// 永久阻塞（内核缓冲 + 4MB 积压、对端不读）→ drain 设写截止
+			// 1s，超时放弃退出（正常关停小帧 <1s，语义不变）。
+			_ = c.conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
 			for {
 				select {
 				case buf := <-c.out:
@@ -391,6 +635,7 @@ func (c *simClient) serve() {
 			if con.V5 {
 				c.connV5 = true
 			}
+			c.clientID = con.ClientID
 			if c.br.username != "" && (con.Username != c.br.username || con.Password != c.br.password) {
 				// 鉴权失败：v5 回原因码 0x86，3.1.1 回 returnCode 4
 				//（bad user name or password）。经队列回送 + 关停清空，
@@ -402,10 +647,96 @@ func (c *simClient) serve() {
 				}
 				return
 			}
-			if c.connV5 {
-				c.br.enqueue(c, &mqtt.Connack{V5: true, ReturnCode: 0, ReceiveMax: c.br.receiveMax})
+
+			// ---- 会话解耦（v0.32.0 阶段二，仅 v5 生效）----
+			// 3.1.1 连接整体保持 v0.24.0 以来的现状路径：无会话恢复、
+			// 无接管仲裁（CleanSession=false 的持久意图不支持，登记
+			// spec 0005 as-built）。v5：Clean Start 位 + Session Expiry。
+			cleanStart := con.CleanSession // v5 位语义 = Clean Start
+			var expirySec uint32
+			if con.V5 {
+				expirySec = con.SessionExpiry
 			} else {
-				c.br.enqueue(c, &mqtt.Connack{ReturnCode: 0})
+				cleanStart = true // 3.1.1：现状恒 clean 语义
+			}
+			present := false
+			var restored *simSession
+			c.br.mu.Lock()
+			if old := c.br.sessions[con.ClientID]; old != nil {
+				if cleanStart || old.expiryZero() {
+					delete(c.br.sessions, con.ClientID) // Clean Start=1 或已过期 → 重建
+				} else {
+					present = true
+					restored = old
+				}
+			}
+			if restored != nil {
+				// 恢复：订阅表与离线队列移交本连接。
+				c.mu.Lock()
+				for f := range restored.filters {
+					c.filters[f] = struct{}{}
+				}
+				for f, sh := range restored.shared {
+					c.shared[f] = sh
+				}
+				c.mu.Unlock()
+				restored.conn = c
+				restored.expiresAt = time.Time{}
+				restored.expirySec = expirySec // v5 DISCONNECT/重连可更新（简化：以新连接值为准）
+				c.sess = restored
+			} else {
+				c.sess = &simSession{
+					clientID:  con.ClientID,
+					conn:      c,
+					expirySec: expirySec,
+					filters:   make(map[string]struct{}),
+					shared:    make(map[string]shareSub),
+					expiresAt: time.Time{},
+				}
+				c.br.sessions[con.ClientID] = c.sess
+			}
+			// 接管（v0.32.0）：同 ClientID 冲突仲裁——仅当任一方持有
+			// 持久会话意图（新连接 CleanStart=0/SE>0，或旧连接持久）时
+			// 踢旧连接；双方均为 clean 时保持 v0.24.0 以来并存行为
+			//（冻结兼容；3.1.1 恒 clean → 恒不踢，spec 0005 as-built）。
+			var kicked []*simClient
+			takeover := !cleanStart || expirySec > 0
+			for oc := range c.br.clients {
+				if oc != c && oc.clientID == con.ClientID && (takeover || (oc.sess != nil && oc.sess.expirySec > 0)) {
+					kicked = append(kicked, oc)
+				}
+			}
+			c.br.mu.Unlock()
+			for _, oc := range kicked {
+				oc.shutdown() // 旧连接断开；其 disconnect 看到会话已转属（sess.conn != oc），不会清订阅
+			}
+
+			if c.connV5 {
+				c.br.enqueue(c, &mqtt.Connack{V5: true, ReturnCode: 0, ReceiveMax: c.br.receiveMax, SessionPresent: present, SessionExpiry: expirySec})
+			} else {
+				c.br.enqueue(c, &mqtt.Connack{ReturnCode: 0, SessionPresent: present})
+			}
+			// 离线 QoS1 恢复下发（恢复会话且队列非空）：CONNACK 先行，
+			// 离线消息随后入同一 FIFO 队列（dup=0，PUBACK 到达出队；
+			// 无重发——spec 0005 as-built）。
+			if restored != nil {
+				restored.mu.Lock()
+				w := len(restored.offline)
+				if w > recoverWindow {
+					w = recoverWindow
+				}
+				var batch []*mqtt.Publish
+				for i := 0; i < w; i++ {
+					m := restored.offline[i]
+					m.PacketID = c.br.nextPktID()
+					batch = append(batch, m)
+				}
+				restored.dispatched = w
+				restored.mu.Unlock()
+				// 锁外入队（锁序纪律：sess.mu 内不做 enqueueQoS）。
+				for _, m := range batch {
+					c.br.enqueueQoS(c, m.Topic, m.Payload, 1, m.PacketID)
+				}
 			}
 			authed = true
 			continue
@@ -417,11 +748,16 @@ func (c *simClient) serve() {
 			codes := make([]byte, len(p.Topics))
 			c.mu.Lock()
 			for i, tf := range p.Topics {
-				if mqtt.ValidateTopicFilter(tf.Topic) != nil {
+				group, inner, ok := parseShareFilter(tf.Topic)
+				if !ok || mqtt.ValidateTopicFilter(inner) != nil {
 					codes[i] = subFailureCode
 					continue
 				}
-				c.filters[tf.Topic] = struct{}{}
+				if group == "" {
+					c.filters[inner] = struct{}{} // 普通订阅（含 $share 外的 $ 主题）
+				} else {
+					c.shared[tf.Topic] = shareSub{group: group, inner: inner}
+				}
 				codes[i] = tf.QoS
 			}
 			c.mu.Unlock()
@@ -459,14 +795,15 @@ func (c *simClient) serve() {
 			c.br.recordPublish(p)
 			if p.QoS == 1 {
 				// v0.30.0：v5 下无匹配订阅者的 QoS1 回 PUBACK 原因码 0x10
-				//（警告级：消息已确认但无人消费）。
+				//（警告级：消息已确认但无人消费）。v0.32.0：保留中的离线
+				// 会话也计为订阅者（消息将暂存待其重连消费）。
 				rc := byte(0)
-				if c.connV5 && !c.br.hasSubscriber(p.Topic) {
+				if c.connV5 && !c.br.hasSubscriber(p.Topic) && !c.br.hasOfflineInterest(p.Topic) {
 					rc = mqtt.MQTTV5NoMatchingSubscribers
 				}
 				c.br.enqueue(c, &mqtt.Puback{PacketID: p.PacketID, V5: c.connV5, ReasonCode: rc})
 			}
-			c.br.fanout(p.Topic, p.Payload)
+			c.br.fanoutBytes(p.Topic, p.Payload, p.QoS)
 		case *mqtt.Pubrel:
 			// Release leg: deliver exactly once, then PUBCOMP. Only this
 			// connection's parked exchange can complete here; if no
@@ -485,11 +822,37 @@ func (c *simClient) serve() {
 			c.br.mu.Unlock()
 			if parked != nil {
 				c.br.recordPublish(parked)
-				c.br.fanout(parked.Topic, parked.Payload)
+				c.br.fanoutBytes(parked.Topic, parked.Payload, parked.QoS)
 			}
 			c.br.enqueue(c, &mqtt.Pubcomp{PacketID: p.PacketID})
 			// Exchange complete: drop the record (no-op when disabled).
 			_ = brokerQoS2Remove(persistDir, p.PacketID)
+		case *mqtt.Puback:
+			// v0.32.0：下行 QoS1 确认——从本连接会话的恢复下发记录中
+			// 移除（简化语义：无重发定时器，确认前不重推）；确认释放
+			// 在途窗口后补发下一条（窗口 = recoverWindow，防 out 队列溢出）。
+			if c.sess != nil {
+				var nxt *mqtt.Publish
+				c.sess.mu.Lock()
+				for i, m := range c.sess.offline {
+					if m.PacketID == p.PacketID {
+						c.sess.offline = append(c.sess.offline[:i], c.sess.offline[i+1:]...)
+						if c.sess.dispatched > 0 {
+							c.sess.dispatched--
+						}
+						if c.sess.dispatched < len(c.sess.offline) {
+							nxt = c.sess.offline[c.sess.dispatched]
+							nxt.PacketID = c.br.nextPktID()
+							c.sess.dispatched++
+						}
+						break
+					}
+				}
+				c.sess.mu.Unlock()
+				if nxt != nil {
+					c.br.enqueueQoS(c, nxt.Topic, nxt.Payload, 1, nxt.PacketID)
+				}
+			}
 		case *mqtt.Pingreq:
 			c.br.mu.Lock()
 			c.br.pingCount++

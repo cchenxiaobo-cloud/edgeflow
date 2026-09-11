@@ -89,7 +89,7 @@ EdgeFlow 是云边协同的边缘计算平台：云端控制面（cloudcore + et
 | OPC-UA MSG 对称加密签名（AES-128-CBC + HMAC-SHA1 全帧覆盖，含 CLO）+ 显式 Renew | FR-S1-04 分段 | ~~v0.29.0~~ | ✅ 已实现（Renew 形状指纹/KeepAlive 约定登记 KNOWN-ISSUES §30） |
 | MQTT 5.0 阶段一（版本参数化+原因码+流控） | FR-S2-07 | ~~v0.30.0~~ | ✅ 已实现（v5 属性区/会话解耦边界登记 KNOWN-ISSUES §31；默认 3.1.1 逐字节冻结） |
 | MQTT 5.0 阶段二（会话解耦+共享订阅） | FR-S2-07 | ~~v0.32.0~~ | ✅ 已实现（3.1.1 持久会话不支持/下行 QoS1 重发状态机归阶段三，KNOWN-ISSUES §33） |
-| 视频流管理阶段二（RTSP 实源拉流 + 云端 VideoStream 管理面/快照/回放 + GPU 推理运行时） | FR-S1-07 分段 | 待排 | 阶段一 ✅ v0.31.0（边界登记 KNOWN-ISSUES §32） |
+| 视频流管理阶段二（实源接入：MJPEG over HTTP + 外部进程桥 + streamOn 降级） | FR-S1-07 分段 | ✅ v0.34.0 | 阶段一 ✅ v0.31.0；原生 RTSP 协议栈/GB28181 信令、云端 VideoStream 管理面（契约扩容）、GPU 运行时仍待排（spec 0007 边界 + KI §35） |
 | mapper 自动 Resume 接线（重连后自动回放 in-flight） | FR-S2-05 延伸 | 待排 | 规划 |
 | 完整 RBAC（多角色） | F43 | 待排 | 规划中 |
 | 设备级身份（当前仅节点级 Token） | F44 | 待排 | 部分实现 |

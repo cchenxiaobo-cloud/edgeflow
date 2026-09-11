@@ -638,3 +638,15 @@ spec：specs/0006-mqtt5-phase3-qos1-reliability/spec.md（FR-S2-07 阶段三段�
 | N5 Topic Alias 入站 | propsV5+0x23 + per-session 映射 ≤16 + 0x94 断开 | ✅ 闭环 | client 出站 opt-in（alias-only 帧）；alias=0 与未携带等同（登记） |
 | 存量修复 | codec decodeSubscribe v5 propsLen 补齐；permissive 选项字节拆解；enqueueQoS Dup 参数 | ✅ 闭环 | 阶段一起 encode/decode 不对称，通用路径修复 |
 | 阶段四候选（周期定时重发、client 出站断线重发、alias 出站方向、RH 行为、共享订阅 granted-QoS1、3.1.1 持久会话） | — | ⏳ 待排 | 非承诺 |
+
+## 30. v0.34.0 — 视频流阶段二：实源接入 + 降级语义（2026-09-11）
+
+spec：specs/0007-video-stream-phase2-real-sources/spec.md（spec 0004 阶段二）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| N1 MJPEG over HTTP 直连 | MJPEGSource（multipart 分帧/重连/坏帧计数） | ✅ 闭环 | IP 摄像头常见输出；配置性错误显式返回 |
+| N2 外部进程桥 | BridgeSource（JPEG 定界/进程管理/双重取消保障） | ✅ 闭环 | ffmpeg 转 RTSP→MJPEG stdout；零 Go 依赖 |
+| N3 源工厂 | NewSource(synthetic/mjpeg/bridge) + 配置扩展 | ✅ 闭环 | 未知类型拒绝；synthetic 默认逐字节不变 |
+| N4 streamOn 降级语义 | sourceErrors + 自收口（stopOnce）+ 日志 | ✅ 闭环 | v0.31.0 复核 P2-1 闭环；stream=1 可重启 |
+| 阶段三候选（原生 RTSP/RTP 协议栈、GB28181 信令、云端 VideoStream 管理面契约扩容、GPU 运行时） | — | ⏳ 待排 | 非承诺 |

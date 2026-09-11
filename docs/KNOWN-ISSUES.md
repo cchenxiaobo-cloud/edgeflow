@@ -481,3 +481,38 @@ QoS2 转发不做（QoS2 上行 release 后 fanout 按原 QoS——granted-QoS1 
 ③ 恢复下发 enqueueQoS 丢失 Dup 字段——补 dup 参数。
 
 **升级兼容**：默认参数与 v0.32.0 逐字节一致；3.1.1 行为零变化；契约 42 端点零改动。
+
+## 35. v0.34.0（视频流阶段二：实源接入 + 降级语义）
+
+**交付**：MJPEG over HTTP 直连源（multipart 分帧、断流重连、坏帧计数、配置性错误显式）
++ 外部进程桥源（JPEG SOI/EOI 定界、多帧待发队列、进程重启、stderr 尾部错误上报、
+双重取消保障）+ 源工厂（synthetic/mjpeg/bridge）+ mapper 配置扩展 + streamOn 可见
+降级（sourceErrors 计数、全 run 自收口、Stop/自收口共用 stopOnce、stream=1 重启）。
+
+**阶段边界（spec 0007 非目标）**：原生 RTSP/RTP/SRTP 协议栈与 GB28181 SIP 信令不实现
+（需第三方库或大工程量，后续单独裁定）；H.264/H.265 解码不实现（桥接路线由 ffmpeg
+解码输出 MJPEG）；云端 VideoStream 管理面（CRUD/快照/回放，契约扩容轮裁定）；GPU
+推理运行时集成；桥命令凭证管理（URL 内嵌凭证由 stdlib 处理）。
+
+**实现语义登记（as-built）**：桥源「未产帧即退出 → 显式错误、曾产帧后退出 → 重启」
+判据基于 per-proc 帧序号快照；MJPEG 重连为无限次（ctx 控制，Reconnects 可观测）；
+配置性错误（非 multipart/HTTP!=200/启动失败）不重试直接返回；`sourceErrors` 只在源
+错误终止时计数（正常 Stop 不计），重启不清零；`lastError` 文本经日志可见（数字面
+仅 sourceErrors/streamOn）。
+
+**复核处置（v0340 复核轮）**：P1×1 修复——出帧循环「帧交付后 select <-stop 退出」路径
+曾不再调 Next，Wait 唯一入口在 Next 内而 watcher 仅 Kill → 直接子进程僵尸至宿主退出；
+新增 BridgeSource.Close()（io.Closer 幂等；takeProc 锁内接管与 waitProc 协调 Wait 恰好
+一次）+ mapper produceLoop defer 统一调用。P2 修复：MJPEG URL 构造期预检（scheme/host
+永久性错误显式拒绝，不进入无限重连）；日志行锁内取值。P2 登记：jpegScanner 按「首个
+FFD9」切帧——元数据段（EXIF 缩略图/COM）可含 FFD9 致帧截早（主流设备/ffmpeg 输出通常
+不触发，后续可按段长度解析）；stream=1 恰落自收口完成前毫秒窗口——回执 streamOn=1 但
+流随后停（补发可恢复）。测试计数更正为 16 例（pkg 13 + mappers 3）。
+
+**开发期修复（测试暴露的真实缺陷）**：① BridgeSource 多帧丢弃（一次读块切多帧只返回
+首帧）→ pending 待发队列；② shell 包装场景取消延迟（Kill 只及直接子进程，stderr 由
+exec 内部拷贝且被 Wait 等待 → 卡到孙进程结束；修：stderr 自读管道 + stdout 读端关闭，
+取消延迟 30s→50ms）。
+
+**升级兼容**：默认配置（synthetic）与 v0.33.0 逐字节一致；无环境变量零行为；
+契约 42 端点不变；MQTT/OPC-UA/3.1.1 路径零触碰。

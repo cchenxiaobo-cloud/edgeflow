@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"sync"
@@ -41,11 +42,17 @@ type EventPublisher interface {
 	Publish(topic string, payload []byte) error
 }
 
-// SourceConfig 是帧源配置；阶段一 type 仅接受 "synthetic"（RTSP 实源为
-// 阶段二，显式报错拒绝未知值，不做静默降级）。
+// SourceConfig 是帧源配置（v0.34.0 阶段二：synthetic | mjpeg | bridge）。
+// mjpeg：MJPEG over HTTP 直连（url）；bridge：外部进程桥（command/args，
+// 如 ffmpeg 转 RTSP→MJPEG stdout）。未知值显式拒绝，不做静默降级。
 type SourceConfig struct {
-	Type  string                   `json:"type"`
-	Synth pkgvideo.SyntheticConfig `json:"synthetic"`
+	Type        string                   `json:"type"`
+	URL         string                   `json:"url,omitempty"`
+	Command     string                   `json:"command,omitempty"`
+	Args        []string                 `json:"args,omitempty"`
+	ReconnectMs int                      `json:"reconnectMs,omitempty"`
+	TimeoutMs   int                      `json:"timeoutMs,omitempty"`
+	Synth       pkgvideo.SyntheticConfig `json:"synthetic"`
 }
 
 // InferConfig 是推理服务配置。
@@ -67,13 +74,24 @@ type Config struct {
 	EventBus bool `json:"eventbus"`
 }
 
-// validate 校验配置：设备名非空；source.type 仅 synthetic；推理 URL 非空。
+// validate 校验配置：设备名非空；source.type ∈ {synthetic, mjpeg, bridge}
+// 且对应必填字段齐全；推理 URL 非空。
 func (c *Config) validate() error {
 	if c.DeviceName == "" {
 		return errors.New("video: deviceName 不能为空")
 	}
-	if c.Source.Type != "synthetic" {
-		return fmt.Errorf("video: source.type=%q 不支持（阶段一仅 synthetic；RTSP 归阶段二）", c.Source.Type)
+	switch c.Source.Type {
+	case "synthetic":
+	case "mjpeg":
+		if c.Source.URL == "" {
+			return errors.New("video: source.type=mjpeg 需要 url")
+		}
+	case "bridge":
+		if c.Source.Command == "" {
+			return errors.New("video: source.type=bridge 需要 command")
+		}
+	default:
+		return fmt.Errorf("video: source.type=%q 不支持（synthetic/mjpeg/bridge）", c.Source.Type)
 	}
 	if c.Inference.URL == "" {
 		return errors.New("video: inference.url 不能为空")
@@ -125,6 +143,7 @@ type metrics struct {
 	framesTotal    uint64
 	inferTotal     uint64
 	inferFail      uint64
+	sourceErrors   uint64 // v0.34.0：帧源错误导致的拉流终止次数（降级可见）
 	detectionsLast float64
 	avgScoreLast   float64
 	frameSeqLast   float64
@@ -141,12 +160,13 @@ type VideoMapper struct {
 	sourceFactory func(cfg *Config) (pkgvideo.FrameSource, error)
 	inferFactory  func(cfg *Config) pkgvideo.Inferencer
 
-	mu      sync.Mutex
-	running bool
-	stopCh  chan struct{} // 当前 run 的停机信号（Start 重建；running 保证只 close 一次）
-	runDone chan struct{} // 当前 run 全部 goroutine 退出后关闭（Stop 等待收口）
-	met     metrics
-	slot    *pkgvideo.LatestSlot
+	mu       sync.Mutex
+	running  bool
+	stopCh   chan struct{} // 当前 run 的停机信号（Start 重建）
+	stopOnce *sync.Once    // 当前 run 的 close(stopCh) 唯一入口（Stop 与源错误自收口共用；v0.34.0）
+	runDone  chan struct{} // 当前 run 全部 goroutine 退出后关闭（Stop 等待收口）
+	met      metrics
+	slot     *pkgvideo.LatestSlot
 }
 
 // NewMapper 创建视频 Mapper（不启动；Start 启动流）。
@@ -163,12 +183,15 @@ func NewMapper(cfg *Config, opts ...Option) (*VideoMapper, error) {
 	}
 	if m.sourceFactory == nil {
 		m.sourceFactory = func(c *Config) (pkgvideo.FrameSource, error) {
-			switch c.Source.Type {
-			case "synthetic":
-				return pkgvideo.NewSyntheticSource(c.Source.Synth), nil
-			default:
-				return nil, fmt.Errorf("video: source.type=%q 不支持", c.Source.Type)
-			}
+			return pkgvideo.NewSource(pkgvideo.SourceConfig{
+				Type:        c.Source.Type,
+				URL:         c.Source.URL,
+				Command:     c.Source.Command,
+				Args:        c.Source.Args,
+				ReconnectMs: c.Source.ReconnectMs,
+				TimeoutMs:   c.Source.TimeoutMs,
+				Synth:       c.Source.Synth,
+			})
 		}
 	}
 	if m.inferFactory == nil {
@@ -206,6 +229,7 @@ func (m *VideoMapper) Start(_ context.Context) error {
 	}
 	infer := m.inferFactory(m.cfg)
 	m.stopCh = make(chan struct{})
+	m.stopOnce = &sync.Once{}
 	m.runDone = make(chan struct{})
 	stop := m.stopCh
 	done := m.runDone
@@ -218,6 +242,13 @@ func (m *VideoMapper) Start(_ context.Context) error {
 	go m.inferLoop(stop, &wg, infer)
 	go func() {
 		wg.Wait()
+		m.mu.Lock()
+		if m.stopCh == stop { // 本 run 仍是当前 run（未被新 run 取代）
+			// v0.34.0：running 统一在收口处置 false——Stop 正常停止与
+			// 源错误自收口共用同一路径（streamOn 随 Collect 自然下降）。
+			m.running = false
+		}
+		m.mu.Unlock()
 		close(done)
 	}()
 	log.Infof("VideoMapper %s: 拉流推理已启动（source=%s，inference=%s）",
@@ -226,22 +257,35 @@ func (m *VideoMapper) Start(_ context.Context) error {
 }
 
 // Stop 实现 DeviceMapper：停止拉流推理（幂等；指标保留供 Collect 读取）。
-// 仅在 running 时 close 当前 run 的 stopCh（同一 stopCh 绝不二次 close），
-// 然后等 runDone 确认两个循环完全退出。
+// stopOnce 保证 stopCh 绝不二次 close（v0.34.0：与源错误自收口共用）；
+// running=false 由收口 goroutine 置（<-done 后可见），重启序列无残留。
 func (m *VideoMapper) Stop() error {
 	m.mu.Lock()
 	if !m.running {
 		m.mu.Unlock()
 		return nil
 	}
-	m.running = false
 	stop := m.stopCh
+	once := m.stopOnce
 	done := m.runDone
 	m.mu.Unlock()
-	close(stop)
+	if once != nil {
+		once.Do(func() { close(stop) })
+	}
 	<-done
 	log.Infof("VideoMapper %s: 已停止", m.cfg.DeviceName)
 	return nil
+}
+
+// stopRun 触发当前 run 停机（幂等；Stop 与源错误自收口共用 stopOnce）。
+func (m *VideoMapper) stopRun() {
+	m.mu.Lock()
+	stop := m.stopCh
+	once := m.stopOnce
+	m.mu.Unlock()
+	if once != nil && stop != nil {
+		once.Do(func() { close(stop) })
+	}
 }
 
 // HandleCommand 实现 DeviceMapper：property=stream（value 1/0 运行中启停），
@@ -274,6 +318,7 @@ func (m *VideoMapper) Collect() (map[string]float64, error) {
 		"framesTotal":    float64(met.framesTotal),
 		"inferTotal":     float64(met.inferTotal),
 		"inferFailTotal": float64(met.inferFail),
+		"sourceErrors":   float64(met.sourceErrors),
 		"framesDropped":  float64(m.slot.Dropped()),
 		"detectionsLast": met.detectionsLast,
 		"avgScoreLast":   met.avgScoreLast,
@@ -289,12 +334,17 @@ func (m *VideoMapper) Collect() (map[string]float64, error) {
 }
 
 // produceLoop 出帧循环：按源节奏产帧入背压槽；stop 退出。
-// （阶段二 RTSP 实源接入时需补：出帧错误后的可见降级与 streamOn 语义，
-// 见 KNOWN-ISSUES §32 登记。）
+// v0.34.0：出帧错误（源错误）→ sourceErrors++ + 全 run 自收口（可见降级，
+// KNOWN-ISSUES §32 登记项闭环）；stop 关闭仍走正常退出（不计数）。
 func (m *VideoMapper) produceLoop(stop <-chan struct{}, wg *sync.WaitGroup, src pkgvideo.FrameSource) {
 	defer wg.Done()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	if c, ok := src.(io.Closer); ok {
+		// 循环终止（含「帧交付间隙 select <-stop 退出」路径）统一回收源：
+		// 桥源进程须保证 Wait 回收（v0340 复核 P1——无僵尸残留）。
+		defer func() { _ = c.Close() }()
+	}
 	go func() {
 		select {
 		case <-stop:
@@ -313,7 +363,16 @@ func (m *VideoMapper) produceLoop(stop <-chan struct{}, wg *sync.WaitGroup, src 
 			if ctx.Err() != nil {
 				return
 			}
-			log.Warnf("VideoMapper %s: 出帧失败: %v", m.cfg.DeviceName, err)
+			// v0.34.0 可见降级（v0310 复核 P2-1 闭环）：源错误不再静默
+			// 退出——记录 sourceErrors + 全 run 自收口（infer 循环同步停，
+			// running→false 使 Collect 的 streamOn=0）；stream=1 可重启。
+			m.mu.Lock()
+			m.met.sourceErrors++
+			errs := m.met.sourceErrors // 锁内取值：日志行不裸读共享字段（v0340 复核 P2-5）
+			m.mu.Unlock()
+			log.Warnf("VideoMapper %s: 拉流终止（源错误，streamOn→0，累计 %d 次）: %v",
+				m.cfg.DeviceName, errs, err)
+			m.stopRun()
 			return
 		}
 		m.mu.Lock()

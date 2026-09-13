@@ -56,6 +56,10 @@ type Broker struct {
 	// in-flight exchanges.
 	pendingQoS2 map[*simClient]map[uint16]*mqtt.Publish
 
+	// pendingWills 持有延迟 will 定时器（v0.36.0 阶段五：clientID →
+	// timer）。恢复会话（同 ClientID）时取消；Broker.Close 时统一停止。
+	pendingWills map[string]*time.Timer
+
 	// persistDir is the broker-side QoS2 record directory (v0.27.0).
 	// Empty (the default) = disabled, v0.26.0 behavior unchanged. Set via
 	// NewBrokerWithOptions before the first connection.
@@ -173,6 +177,11 @@ type simClient struct {
 	pumpDone  chan struct{} // v0.30.0：泵退出信号（关停等队列清空后再关连接）
 	closeOnce sync.Once
 	connV5    bool // 该连接经 v5 CONNECT 协商（v0.30.0）
+
+	// v0.36.0 阶段五（will 面）：CONNECT 携带的遗嘱；断连判定标志。
+	will     *willMsg
+	willSent atomic.Bool // 恰好一次：发布或安排定时（shutdown 可重入）
+	normalDC atomic.Bool // 收到正常 DISCONNECT（rc=0）
 }
 
 // NewBroker starts a plaintext listener and the accept loop.
@@ -243,12 +252,13 @@ func NewBrokerWithConfig(cfg BrokerConfig) (*Broker, error) {
 // listener and starts the accept loop.
 func newBrokerFromListener(ln net.Listener) *Broker {
 	b := &Broker{
-		ln:          ln,
-		clients:     make(map[*simClient]struct{}),
-		pendingQoS2: make(map[*simClient]map[uint16]*mqtt.Publish),
-		sessions:    make(map[string]*simSession),
-		shareCursor: make(map[string]uint64),
-		retained:    make(map[string]*mqtt.Publish),
+		ln:           ln,
+		clients:      make(map[*simClient]struct{}),
+		pendingQoS2:  make(map[*simClient]map[uint16]*mqtt.Publish),
+		pendingWills: make(map[string]*time.Timer),
+		sessions:     make(map[string]*simSession),
+		shareCursor:  make(map[string]uint64),
+		retained:     make(map[string]*mqtt.Publish),
 	}
 	go b.acceptLoop()
 	return b
@@ -263,6 +273,10 @@ func (b *Broker) Close() error {
 	b.closeOnce.Do(func() {
 		b.mu.Lock()
 		b.closed = true
+		for cid, t := range b.pendingWills {
+			t.Stop() // v0.36.0：Close 停止待发 will（不再发布）
+			delete(b.pendingWills, cid)
+		}
 		snap := make([]*simClient, 0, len(b.clients))
 		for c := range b.clients {
 			snap = append(snap, c)
@@ -334,6 +348,79 @@ func (b *Broker) unregister(c *simClient) {
 		}
 	}
 	b.mu.Unlock()
+	c.fireWillOnDisconnect() // v0.36.0：断连收口后判定遗嘱（锁外发布）
+}
+
+// willMsg 是 v0.36.0 阶段五的遗嘱消息（CONNECT 携带；异常断连发布）。
+type willMsg struct {
+	topic   string
+	payload []byte
+	qos     byte
+	retain  bool
+	delay   time.Duration
+}
+
+// fireWillOnDisconnect 在断连收口后判定并安排遗嘱发布（v0.36.0）。
+// 判定：无 will / 正常 DISCONNECT / 已处理 → 跳过；b.closed → 跳过。
+// delay=0 立即发布；delay>0 挂 pendingWills 定时器（恢复会话取消）。
+// 锁外调用（unregister 尾部）：fanoutBytes / updateRetained 自锁。
+func (c *simClient) fireWillOnDisconnect() {
+	w := c.will
+	if w == nil || c.normalDC.Load() {
+		return
+	}
+	if !c.willSent.CompareAndSwap(false, true) {
+		return // 恰好一次（shutdown 路径可重入）
+	}
+	b := c.br
+	b.mu.Lock()
+	closed := b.closed
+	b.mu.Unlock()
+	if closed {
+		return
+	}
+	if w.delay <= 0 {
+		b.publishWill(w)
+		return
+	}
+	// 复核 P2-3 备注：timer 启动与 pendingWills 注册之间存在 µs 级理论
+	// 窗口（回调归属判定不匹配则静默返回）——delay 为秒粒度（≥1s），
+	// 正常调度不可达；当前接受并记录（KI §37）。
+	var timer *time.Timer
+	timer = time.AfterFunc(w.delay, func() {
+		b.mu.Lock()
+		if b.pendingWills[c.clientID] != timer {
+			b.mu.Unlock()
+			return // 已取消或在 Close 中清理
+		}
+		delete(b.pendingWills, c.clientID)
+		closed := b.closed
+		b.mu.Unlock()
+		if closed {
+			return
+		}
+		b.publishWill(w)
+	})
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		timer.Stop()
+		return
+	}
+	if old := b.pendingWills[c.clientID]; old != nil {
+		old.Stop() // 同 ClientID 旧待发 will 被替换（边缘场景，登记 §37）
+	}
+	b.pendingWills[c.clientID] = timer
+	b.mu.Unlock()
+}
+
+// publishWill 发布遗嘱（v0.36.0）：retain=1 时先存储（仿 PUBLISH 路径
+// 顺序），再按 QoS 转发（在线/离线/retain 标志复用 fanoutBytes 语义）。
+func (b *Broker) publishWill(w *willMsg) {
+	if w.retain {
+		b.updateRetained(&mqtt.Publish{Topic: w.topic, Payload: w.payload, Retain: true})
+	}
+	b.fanoutBytes(nil, w.topic, w.payload, w.qos, w.retain)
 }
 
 // enqueue encodes pkt and puts it on the client's outbound queue without
@@ -896,6 +983,25 @@ func (c *simClient) serve() {
 				}
 				c.br.sessions[con.ClientID] = c.sess
 			}
+			// v0.36.0 阶段五：遗嘱存储（鉴权通过且 CONNECT 被接受；
+			// 拒绝路径已提前 return——规范：拒绝连接不发送 will）。
+			if con.WillTopic != "" {
+				c.will = &willMsg{
+					topic:   con.WillTopic,
+					payload: []byte(con.WillMessage),
+					qos:     con.WillQoS,
+					retain:  con.WillRetain,
+					delay:   time.Duration(con.WillDelay) * time.Second,
+				}
+			}
+			// v0.36.0：同 ClientID 新连接建立（无论恢复或重建）→ 取消
+			// 待发 will（规范：delay 内新连接抑制 will）。注：本取消先于
+			// 接管踢人——被踢旧连接的 will 在其断连时（踢之后）才生
+			// 成，不受本连接抑制（边界登记 §37）。
+			if t := c.br.pendingWills[con.ClientID]; t != nil {
+				t.Stop()
+				delete(c.br.pendingWills, con.ClientID)
+			}
 			// 接管（v0.32.0）：同 ClientID 冲突仲裁——仅当任一方持有
 			// 持久会话意图（新连接 CleanStart=0/SE>0，或旧连接持久）时
 			// 踢旧连接；双方均为 clean 时保持 v0.24.0 以来并存行为
@@ -1148,6 +1254,12 @@ func (c *simClient) serve() {
 			c.br.mu.Unlock()
 			c.br.enqueue(c, &mqtt.Pingresp{})
 		case *mqtt.Disconnect:
+			// v0.36.0：正常断开标志（rc=0；3.1.1 无 rc 概念恒 0）——
+			// 抑制遗嘱发布；rc≠0（含 0x04 disconnect-with-will）保持
+			// 异常语义。
+			if p.ReasonCode == 0 {
+				c.normalDC.Store(true)
+			}
 			return
 		}
 	}

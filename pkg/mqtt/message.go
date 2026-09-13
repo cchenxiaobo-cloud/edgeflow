@@ -49,6 +49,11 @@ type Connect struct {
 	// 在网络连接断开后保留的秒数（0 = 断连即毁）。CleanSession 位在
 	// v5 语义下即 Clean Start。3.1.1 路径不携带。
 	SessionExpiry uint32
+
+	// WillDelay 是 v5 Will Delay Interval（v0.36.0 阶段五，Will
+	// Properties 0x18，单位秒）：willFlag=1 时随 Will Properties 区
+	// 编码；0 = 立即发布。3.1.1 路径不允许非 0（编码拒绝）。
+	WillDelay uint32
 }
 
 // Type implements Packet.

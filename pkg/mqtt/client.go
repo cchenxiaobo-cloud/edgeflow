@@ -82,6 +82,20 @@ type Options struct {
 	//（0 = 服务端默认策略；断连即毁的纯订阅保留也属合法值）。3.1.1
 	// 持久会话无过期概念（服务端保留至重连）。
 	SessionExpiryMs uint64
+
+	// WillTopic/WillMessage/WillQoS/WillRetain 配置遗嘱消息（v0.36.0
+	// 阶段五）：WillTopic 非空时 CONNECT 携带 will，服务端在异常断连
+	// （未收到正常 DISCONNECT）时发布；正常 Close 不发布。WillQoS>2
+	// 时 Dial 报错。
+	WillTopic   string
+	WillMessage string
+	WillQoS     byte
+	WillRetain  bool
+
+	// WillDelaySec 是 v5 Will Delay Interval（秒；仅 ProtocolVersion5
+	// 生效）：>0 时服务端延迟发布，期间同会话重连取消。3.1.1 必须为
+	// 0（非 0 时 Dial 报错——3.1.1 无 Will Properties）。
+	WillDelaySec uint32
 }
 
 // Handler is invoked for every inbound PUBLISH whose topic matches one of the
@@ -149,6 +163,12 @@ func Dial(addr string, opts Options) (*Client, error) {
 	if opts.ClientID == "" {
 		return nil, errors.New("mqtt: ClientID is required")
 	}
+	if opts.WillQoS > 2 {
+		return nil, errors.New("mqtt: WillQoS must be 0, 1 or 2")
+	}
+	if opts.WillDelaySec != 0 && !opts.ProtocolVersion5 {
+		return nil, errors.New("mqtt: WillDelaySec requires ProtocolVersion5")
+	}
 	timeout := opts.ConnectTimeout
 	if timeout <= 0 {
 		timeout = 5 * time.Second
@@ -197,9 +217,15 @@ func Dial(addr string, opts Options) (*Client, error) {
 		CleanSession: true, // 默认：v0.24.0 以来的恒 clean 行为
 		Username:     opts.Username,
 		Password:     opts.Password,
-		// Will is intentionally not set.
-		V5:         opts.ProtocolVersion5,
-		ReceiveMax: opts.ReceiveMax, // v5：>0 时携带 RM 属性
+		WillTopic:    opts.WillTopic, // v0.36.0：期权遗嘱（空 topic = 不携带）
+		WillMessage:  opts.WillMessage,
+		WillQoS:      opts.WillQoS,
+		WillRetain:   opts.WillRetain,
+		V5:           opts.ProtocolVersion5,
+		ReceiveMax:   opts.ReceiveMax, // v5：>0 时携带 RM 属性
+	}
+	if opts.ProtocolVersion5 {
+		ck.WillDelay = opts.WillDelaySec // v5：Will Properties 0x18
 	}
 	if opts.PersistentSession {
 		ck.CleanSession = false

@@ -136,6 +136,21 @@ func encodeConnectProps(e *encoder, receiveMax uint16, sessionExpiry uint32) {
 	e.writeBytes(body)
 }
 
+// encodeWillProps 写 v5 Will Properties 区（v0.36.0 阶段五）：WillDelay>0
+// 时携 0x18（Will Delay Interval，u32 秒），否则空区（长度 0x00）。
+func encodeWillProps(e *encoder, delay uint32) {
+	if delay == 0 {
+		e.writeByte(0x00) // 空属性区
+		return
+	}
+	e.writeVBI(5) // 属性长度：1B id + 4B u32
+	e.writeByte(0x18)
+	e.writeByte(byte(delay >> 24))
+	e.writeByte(byte(delay >> 16))
+	e.writeByte(byte(delay >> 8))
+	e.writeByte(byte(delay))
+}
+
 // propsV5 是 v5 属性区白名单解析结果（v0.33.0 阶段三扩展：+Topic Alias）。
 type propsV5 struct {
 	ReceiveMax    uint16 // 0x21（0 = 未携带）
@@ -194,6 +209,44 @@ func decodeProps(d *decoder) (propsV5, error) {
 		return out, ErrMalformed // 属性值越界（长度与内容不符）
 	}
 	return out, nil
+}
+
+// decodeWillProps 解析 v5 Will Properties 区（v0.36.0 阶段五）：白名单
+// 目前仅 Will Delay Interval（0x18，u32 秒）；重复/白名单外属性拒绝
+// （延续属性区白名单语义）。空区返回 0。
+func decodeWillProps(d *decoder) (uint32, error) {
+	propLen, err := d.readVBI()
+	if err != nil {
+		return 0, err
+	}
+	if propLen == 0 {
+		return 0, nil
+	}
+	end := d.consumed() + int(propLen)
+	var delay uint32
+	seen := false
+	for d.consumed() < end {
+		id, err := d.readByte()
+		if err != nil {
+			return 0, err
+		}
+		switch id {
+		case 0x18: // Will Delay Interval (u32)
+			if seen {
+				return 0, ErrMalformed // 重复属性拒绝
+			}
+			seen = true
+			if delay, err = d.readUint32(); err != nil {
+				return 0, err
+			}
+		default:
+			return 0, ErrMalformed // 白名单外属性拒绝
+		}
+	}
+	if d.consumed() != end {
+		return 0, ErrMalformed // 属性值越界
+	}
+	return delay, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +317,12 @@ func validateConnect(c *Connect) error {
 	} else if err := validateTopicName(c.WillTopic); err != nil {
 		return ErrMalformedConnect
 	}
+	if !c.V5 && c.WillDelay != 0 {
+		return ErrMalformedConnect // 3.1.1 无 Will Properties（v0.36.0 阶段五）
+	}
+	if !willFlag && c.WillDelay != 0 {
+		return ErrMalformedConnect // willFlag=0 implies no Will Delay
+	}
 	return nil
 }
 
@@ -302,6 +361,9 @@ func (c *Connect) encodeUA(e *encoder) error {
 	}
 	e.writeString(c.ClientID)
 	if willFlag {
+		if c.V5 {
+			encodeWillProps(e, c.WillDelay) // v5：Will Properties 在 will topic 前
+		}
 		e.writeString(c.WillTopic)
 		e.writeString(c.WillMessage)
 	}
@@ -695,6 +757,11 @@ func decodeConnect(d *decoder, allowV5 bool) (*Connect, error) {
 		return nil, err
 	}
 	if f&0x04 != 0 { // willFlag
+		if isV5 {
+			if c.WillDelay, err = decodeWillProps(d); err != nil {
+				return nil, err
+			}
+		}
 		if c.WillTopic, err = d.readString(); err != nil {
 			return nil, err
 		}

@@ -155,7 +155,7 @@ func decodeProps(d *decoder) (propsV5, error) {
 		return out, nil
 	}
 	end := d.consumed() + int(propLen) // 属性区边界（长度自洽校验）
-	seen := 0 // 位标：bit0=0x11、bit1=0x21、bit2=0x23 已见（规范：重复属性 = 协议错误；v0320 复核 P2-4 + v0330 补齐）
+	seen := 0                          // 位标：bit0=0x11、bit1=0x21、bit2=0x23 已见（规范：重复属性 = 协议错误；v0320 复核 P2-4 + v0330 补齐）
 	for d.consumed() < end {
 		id, err := d.readByte()
 		if err != nil {

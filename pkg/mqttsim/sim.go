@@ -74,6 +74,9 @@ type Broker struct {
 	sessions map[string]*simSession
 	// shareCursor 是共享订阅组 (group,inner) 的 round-robin 游标。
 	shareCursor map[string]uint64
+	// retained 是保留消息存储（v0.35.0 阶段四）：topic → 保留消息（QoS +
+	// payload 快照）。b.mu 保护；订阅下发场景锁内快照、锁外入队。
+	retained map[string]*mqtt.Publish
 	// pktID 分配离线 QoS1 恢复下行的报文标识（broker 侧自增循环）。
 	pktID uint32
 
@@ -126,6 +129,18 @@ func (b *Broker) nextPktID() uint16 {
 // expiryZero 报告会话是否已过期（在线会话永不过期）。
 func (s *simSession) expiryZero() bool {
 	return s.conn == nil && !s.expiresAt.IsZero() && time.Now().After(s.expiresAt)
+}
+
+// rapHit 报告会话离线订阅中是否有匹配 topic 且启用 RAP 的 filter
+// （v0.35.0：离线暂存条目的转发标志判定；filter/subOpts 为断连快照，
+// 离线期只读——与 matchesNormal 同约定）。
+func (s *simSession) rapHit(topic string) bool {
+	for f := range s.filters {
+		if simMatchTopic(f, topic) && s.subOpts[f]&0x08 != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // offlineCap 是会话离线 QoS1 暂存上限。
@@ -233,6 +248,7 @@ func newBrokerFromListener(ln net.Listener) *Broker {
 		pendingQoS2: make(map[*simClient]map[uint16]*mqtt.Publish),
 		sessions:    make(map[string]*simSession),
 		shareCursor: make(map[string]uint64),
+		retained:    make(map[string]*mqtt.Publish),
 	}
 	go b.acceptLoop()
 	return b
@@ -339,7 +355,7 @@ func (b *Broker) enqueue(c *simClient, pkt mqtt.Packet) {
 // Publish pushes a server-originated message (QoS 0) to every client whose
 // subscription matches topic. Having no subscriber is not an error.
 func (b *Broker) Publish(topic string, payload []byte) error {
-	b.fanoutBytes(nil, topic, payload, 0)
+	b.fanoutBytes(nil, topic, payload, 0, false)
 	return nil
 }
 
@@ -379,10 +395,12 @@ func (b *Broker) hasOfflineInterest(topic string) bool {
 // (the sender included, if subscribed). Always re-encoded as QoS 0.
 // v0.30.0：按连接编码——v5 客户端的 PUBLISH 需携带属性长度字节（v5 帧形态）。
 func (b *Broker) fanout(topic string, payload []byte) {
-	b.fanoutBytes(nil, topic, payload, 0)
+	b.fanoutBytes(nil, topic, payload, 0, false)
 }
 
-func (b *Broker) fanoutBytes(publisher *simClient, topic string, data []byte, qos byte) {
+// fanoutBytes 转发一条消息给匹配订阅者（v0.35.0 起携带 retain 原标志：
+// RAP=1 的 v5 订阅保留 RETAIN=1，其余恒 0）。
+func (b *Broker) fanoutBytes(publisher *simClient, topic string, data []byte, qos byte, retain bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -440,18 +458,20 @@ func (b *Broker) fanoutBytes(publisher *simClient, topic string, data []byte, qo
 				sess.offline = sess.offline[1:]
 				sess.offlineDr++
 			}
-			sess.offline = append(sess.offline, &mqtt.Publish{QoS: 1, Topic: topic, Payload: append([]byte(nil), data...), PacketID: pktID})
+			sess.offline = append(sess.offline, &mqtt.Publish{QoS: 1, Topic: topic, Payload: append([]byte(nil), data...), PacketID: pktID, Retain: retain && m.h.rap})
 			if sess.dispatched < recoverWindow {
 				sess.dispatched++
 				direct = true
 			}
 			sess.mu.Unlock()
 			if direct {
-				inlineEnqueue(m.c, &mqtt.Publish{Topic: topic, Payload: data, QoS: 1, PacketID: pktID, V5: true})
+				// v0.35.0：RAP=1 且原消息 retain=1 → 保留标志（离线条目
+				// 同样保留，恢复下发按条目字段重放）。
+				inlineEnqueue(m.c, &mqtt.Publish{Topic: topic, Payload: data, QoS: 1, PacketID: pktID, V5: true, Retain: retain && m.h.rap})
 			}
 			continue
 		}
-		inlineEnqueue(m.c, &mqtt.Publish{Topic: topic, Payload: data, V5: m.c.connV5})
+		inlineEnqueue(m.c, &mqtt.Publish{Topic: topic, Payload: data, V5: m.c.connV5, Retain: retain && m.h.rap})
 	}
 	// 共享订阅：按组键 (group,inner) 分组，组内 round-robin 选一在线成员。
 	groupHits := make(map[shareSub][]*simClient)
@@ -490,13 +510,116 @@ func (b *Broker) fanoutBytes(publisher *simClient, topic string, data []byte, qo
 		if qos != 1 || !sess.matchesNormal(topic) {
 			continue
 		}
+		// v0.35.0（复核 P1-1）：离线条目保留 RAP 标志（任一命中 filter；
+		// 恢复重放按条目字段重发 RETAIN）。
+		keepRetain := retain && sess.rapHit(topic)
 		sess.mu.Lock()
 		if len(sess.offline) >= offlineCap {
 			sess.offline = sess.offline[1:]
 			sess.offlineDr++
 		}
-		sess.offline = append(sess.offline, &mqtt.Publish{QoS: 1, Topic: topic, Payload: append([]byte(nil), data...)})
+		sess.offline = append(sess.offline, &mqtt.Publish{QoS: 1, Topic: topic, Payload: append([]byte(nil), data...), Retain: keepRetain})
 		sess.mu.Unlock()
+	}
+}
+
+// updateRetained 应用发布侧保留语义（v0.35.0）：retain=1 且非空 payload
+// → 存储/覆盖（含 QoS）；retain=1 且空 payload → 清除；retain=0 → 不动。
+// 空 payload 的 retain=1 消息本身照常转发（调用方继续 fanout）。
+func (b *Broker) updateRetained(p *mqtt.Publish) {
+	if !p.Retain {
+		return
+	}
+	b.mu.Lock()
+	if len(p.Payload) == 0 {
+		delete(b.retained, p.Topic)
+	} else {
+		b.retained[p.Topic] = &mqtt.Publish{
+			QoS:     p.QoS,
+			Topic:   p.Topic,
+			Payload: append([]byte(nil), p.Payload...),
+		}
+	}
+	b.mu.Unlock()
+}
+
+// retainPlan 是一次 SUBSCRIBE 内每个普通订阅项的下发决策（v0.35.0）。
+type retainPlan struct {
+	inner   string
+	granted byte
+	send    bool // RH 语义是否允许下发（3.1.1 恒 true）
+}
+
+// deliverRetained 下发匹配的保留消息（v0.35.0）：SUBACK 之后调用；按
+// filter 匹配（mqtt.MatchTopic），QoS=min(retained, granted)，RETAIN=1；
+// 一次调用内按主题去重、按主题字典序（确定性）。QoS1（v5）纳入会话
+// 在途窗口模型（与 fanoutBytes QoS1 分支同构）；3.1.1 维持下行 QoS0
+// 现状（登记 §36）。
+func (b *Broker) deliverRetained(c *simClient, plans []retainPlan) {
+	if len(plans) == 0 {
+		return
+	}
+	b.mu.Lock()
+	var topics []string
+	for t := range b.retained {
+		topics = append(topics, t)
+	}
+	sort.Strings(topics)
+	type item struct {
+		topic   string
+		qos     byte
+		payload []byte
+	}
+	seen := make(map[string]bool)
+	var items []item
+	for _, t := range topics {
+		for _, pl := range plans {
+			if !pl.send || seen[t] || !simMatchTopic(pl.inner, t) {
+				continue
+			}
+			msg := b.retained[t]
+			q := msg.QoS
+			if pl.granted < q {
+				q = pl.granted
+			}
+			seen[t] = true
+			items = append(items, item{topic: t, qos: q, payload: append([]byte(nil), msg.Payload...)})
+		}
+	}
+	b.mu.Unlock()
+	for _, it := range items {
+		if c.connV5 && it.qos >= 1 {
+			b.queueDownlinkQoS1(c, it.topic, it.payload, true)
+			continue
+		}
+		c.br.enqueue(c, &mqtt.Publish{Topic: it.topic, Payload: it.payload, Retain: true, V5: c.connV5})
+	}
+}
+
+// queueDownlinkQoS1 将一条 QoS1 下行消息纳入会话在途窗口模型并（窗口
+// 允许时）直发（v0.35.0 retained 下发用；与 fanoutBytes 的 QoS1 分支
+// 同构——保持 v0320/v0330 会话语义一致）。无会话时直接入队。
+func (b *Broker) queueDownlinkQoS1(c *simClient, topic string, data []byte, retain bool) {
+	pktID := b.nextPktID()
+	sess := c.sess
+	if sess == nil {
+		b.enqueueQoS(c, topic, data, 1, pktID, 0, retain)
+		return
+	}
+	direct := false
+	sess.mu.Lock()
+	if len(sess.offline) >= offlineCap {
+		sess.offline = sess.offline[1:]
+		sess.offlineDr++
+	}
+	sess.offline = append(sess.offline, &mqtt.Publish{QoS: 1, Topic: topic, Payload: append([]byte(nil), data...), PacketID: pktID, Retain: retain})
+	if sess.dispatched < recoverWindow {
+		sess.dispatched++
+		direct = true
+	}
+	sess.mu.Unlock()
+	if direct {
+		b.enqueueQoS(c, topic, data, 1, pktID, 0, retain)
 	}
 }
 
@@ -504,9 +627,9 @@ func (b *Broker) fanoutBytes(publisher *simClient, topic string, data []byte, qo
 // 由在途窗口管理；qos=0 即既有 best-effort 语义）。⚠️ 队列满分支会锁
 // b.mu——仅限不持有 b.mu 的调用方（恢复下发/PUBACK 补发）；fanoutBytes
 // 持锁路径必须内联（复核 P0-1 死锁修复）。
-func (b *Broker) enqueueQoS(c *simClient, topic string, data []byte, qos byte, pktID uint16, dup byte) {
+func (b *Broker) enqueueQoS(c *simClient, topic string, data []byte, qos byte, pktID uint16, dup byte, retain bool) {
 	var buf bytes.Buffer
-	if err := encodePacket(&buf, &mqtt.Publish{Topic: topic, Payload: data, QoS: qos, PacketID: pktID, Dup: dup, V5: c.connV5}); err != nil {
+	if err := encodePacket(&buf, &mqtt.Publish{Topic: topic, Payload: data, QoS: qos, PacketID: pktID, Dup: dup, V5: c.connV5, Retain: retain}); err != nil {
 		return
 	}
 	select {
@@ -826,7 +949,7 @@ func (c *simClient) serve() {
 				// 锁外入队（锁序纪律：sess.mu 内不做 enqueueQoS）。
 				// DUP 按条目标注：断连前在途 → 1；离线暂存首传 → 0。
 				for _, m := range batch {
-					c.br.enqueueQoS(c, m.Topic, m.Payload, 1, m.PacketID, m.Dup)
+					c.br.enqueueQoS(c, m.Topic, m.Payload, 1, m.PacketID, m.Dup, m.Retain)
 				}
 			}
 			authed = true
@@ -837,6 +960,7 @@ func (c *simClient) serve() {
 			return // duplicate CONNECT is a protocol violation
 		case *mqtt.Subscribe:
 			codes := make([]byte, len(p.Topics))
+			var plans []retainPlan // v0.35.0：retained 下发决策（SUBACK 后执行）
 			c.mu.Lock()
 			for i, tf := range p.Topics {
 				group, inner, ok := parseShareFilter(tf.Topic)
@@ -851,10 +975,11 @@ func (c *simClient) serve() {
 					continue
 				}
 				if group == "" {
+					_, existed := c.filters[inner] // v0.35.0：RH=1「订阅已存在」按覆盖前判定
 					if c.connV5 {
 						// v0.33.0：v5 授予 = min(req,1)（请求 2 → 授予 1，
 						// spec 0006 边界登记不回 0x9B）；选项位存储
-						//（NoLocal/RAP 生效，RH 仅校验+登记——sim 无 retain 面）。
+						//（NoLocal/RAP 生效；v0.35.0 起 RH=0/1/2 生效）。
 						g := tf.QoS
 						if g > 1 {
 							g = 1
@@ -873,11 +998,15 @@ func (c *simClient) serve() {
 							delete(c.subOpts, inner)
 						}
 						codes[i] = g
+						// v0.35.0：RH 下发决策（0=总是；1=仅新订阅；2=不发）。
+						send := tf.RetainHandling == 0 || (tf.RetainHandling == 1 && !existed)
+						plans = append(plans, retainPlan{inner: inner, granted: g, send: send})
 					} else {
 						// v3.1.1 现状冻结：codes = 请求 QoS；下行恒 QoS0
 						//（granted 仅存档不改变下行行为）。
 						c.filters[inner] = tf.QoS
 						codes[i] = tf.QoS
+						plans = append(plans, retainPlan{inner: inner, granted: tf.QoS, send: true})
 					}
 				} else {
 					// 共享订阅下行维持 QoS0（v0.33.0 边界：granted-QoS1 仅普通订阅）。
@@ -887,6 +1016,8 @@ func (c *simClient) serve() {
 			}
 			c.mu.Unlock()
 			c.br.enqueue(c, &mqtt.Suback{PacketID: p.PacketID, Codes: codes, V5: c.connV5})
+			// v0.35.0：SUBACK 先于 retained 消息（同一 FIFO 单写者）。
+			c.br.deliverRetained(c, plans)
 		case *mqtt.Publish:
 			// v0.33.0：入站 Topic Alias 解映射（仅 v5）。alias=0 视为未
 			// 携带（codec 无法区分携带 0 与未携带——spec 0006 边界登记）。
@@ -935,7 +1066,7 @@ func (c *simClient) serve() {
 					c.br.enqueue(c, &mqtt.Disconnect{V5: true, ReasonCode: mqtt.MQTTV5ReceiveMaxExceeded})
 					return
 				}
-				perConn[p.PacketID] = &mqtt.Publish{Dup: p.Dup, QoS: 2, PacketID: p.PacketID, Topic: p.Topic, Payload: append([]byte(nil), p.Payload...)}
+				perConn[p.PacketID] = &mqtt.Publish{Dup: p.Dup, QoS: 2, PacketID: p.PacketID, Topic: p.Topic, Payload: append([]byte(nil), p.Payload...), Retain: p.Retain}
 				c.br.mu.Unlock()
 				// v0.27.0: record the parked message (soft-fail; the
 				// protocol reply below must not depend on disk health).
@@ -944,6 +1075,7 @@ func (c *simClient) serve() {
 				continue
 			}
 			c.br.recordPublish(p)
+			c.br.updateRetained(p) // v0.35.0：retain=1 存储/清除（空 payload）
 			if p.QoS == 1 {
 				// v0.30.0：v5 下无匹配订阅者的 QoS1 回 PUBACK 原因码 0x10
 				//（警告级：消息已确认但无人消费）。v0.32.0：保留中的离线
@@ -954,7 +1086,7 @@ func (c *simClient) serve() {
 				}
 				c.br.enqueue(c, &mqtt.Puback{PacketID: p.PacketID, V5: c.connV5, ReasonCode: rc})
 			}
-			c.br.fanoutBytes(c, p.Topic, p.Payload, p.QoS)
+			c.br.fanoutBytes(c, p.Topic, p.Payload, p.QoS, p.Retain)
 		case *mqtt.Pubrel:
 			// Release leg: deliver exactly once, then PUBCOMP. Only this
 			// connection's parked exchange can complete here; if no
@@ -973,7 +1105,8 @@ func (c *simClient) serve() {
 			c.br.mu.Unlock()
 			if parked != nil {
 				c.br.recordPublish(parked)
-				c.br.fanoutBytes(c, parked.Topic, parked.Payload, parked.QoS)
+				c.br.updateRetained(parked) // v0.35.0：QoS2 retain 存储（交付完成时）
+				c.br.fanoutBytes(c, parked.Topic, parked.Payload, parked.QoS, parked.Retain)
 			}
 			c.br.enqueue(c, &mqtt.Pubcomp{PacketID: p.PacketID})
 			// Exchange complete: drop the record (no-op when disabled).
@@ -1006,7 +1139,7 @@ func (c *simClient) serve() {
 				c.sess.mu.Unlock()
 				_ = found
 				if nxt != nil {
-					c.br.enqueueQoS(c, nxt.Topic, nxt.Payload, 1, nxt.PacketID, 0)
+					c.br.enqueueQoS(c, nxt.Topic, nxt.Payload, 1, nxt.PacketID, 0, nxt.Retain)
 				}
 			}
 		case *mqtt.Pingreq:
@@ -1146,21 +1279,23 @@ func decodePermissiveSubscribe(body []byte, v5 bool) (mqtt.Packet, error) {
 		}
 		qos := body[i]
 		i++
-		noLocal, rap := false, false
+		noLocal, rap, rh := false, false, byte(0)
 		if v5 {
-			// v0330：v5 订阅选项字节拆解（QoS 低 2 位；NoLocal/RAP 传入
-			// TopicFilter；保留位/RH 超界拒绝）。v3.1.1 路径字节不变。
+			// v0330：v5 订阅选项字节拆解（QoS 低 2 位；NoLocal/RAP/RH
+			// 传入 TopicFilter；保留位/RH 超界拒绝）。v0.35.0：RH 存储
+			// （阶段四前仅校验——permissive 解析曾丢弃 RH 位）。
 			if qos&0xC0 != 0 || qos>>4 > 2 {
 				return nil, mqtt.ErrMalformed
 			}
 			noLocal = qos&0x04 != 0
 			rap = qos&0x08 != 0
+			rh = (qos >> 4) & 0x03
 			qos &= 0x03
 		}
 		if qos > 2 {
 			return nil, mqtt.ErrMalformed
 		}
-		s.Topics = append(s.Topics, mqtt.TopicFilter{Topic: topic, QoS: qos, NoLocal: noLocal, RetainAsPublished: rap})
+		s.Topics = append(s.Topics, mqtt.TopicFilter{Topic: topic, QoS: qos, NoLocal: noLocal, RetainAsPublished: rap, RetainHandling: rh})
 	}
 	return s, nil
 }

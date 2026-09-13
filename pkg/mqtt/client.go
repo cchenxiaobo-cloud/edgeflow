@@ -126,12 +126,18 @@ type Client struct {
 
 	sessionPresent bool // CONNACK Session Present（v0.32.0 阶段二：服务端恢复了持久会话）
 
-	// pendingRecovered 缓冲恢复会话场景下"先于 handler 注册到达"的下行
-	// QoS1/0 PUBLISH（SessionPresent 时启用；容量 32，超限丢最旧）。
-	// Subscribe 注册 handler 时按 filter 补投一次（QoS1 已向 broker 确认，
-	// 缓冲仅为 handler 补投，语义 = 至多一次）。
+	// pendingRecovered 缓冲"先于 handler 注册到达"的下行 QoS1/0 PUBLISH
+	// （容量 32，超限丢最旧）。两种场景：① SessionPresent 恢复（broker 在
+	// CONNACK 后立即下发离线队列）；② 订阅在途（v0.35.0：SUBACK 与
+	// retained 消息相邻到达，消息可能先于 handler 注册分发）。Subscribe
+	// 注册 handler 时按 filter 补投一次（QoS1 已向 broker 确认，缓冲仅为
+	// handler 补投，语义 = 至多一次）。
 	pendMu           sync.Mutex
 	pendingRecovered []*Publish
+	// pendingSubs 是"订阅在途"登记（filter → true，v0.35.0）：SUBSCRIBE
+	// 写出前登记、Subscribe 返回时清理；readPump 对匹配的在途 filter 消息
+	// 走缓冲（见 pendingRecovered ②）。
+	pendingSubs map[string]bool
 
 	closeOnce sync.Once
 	done      chan struct{} // closed by the read pump on exit (disconnected)
@@ -172,6 +178,7 @@ func Dial(addr string, opts Options) (*Client, error) {
 		conn:            conn,
 		handlers:        make(map[string][]Handler),
 		pendingAcks:     make(map[uint16]chan Packet),
+		pendingSubs:     make(map[string]bool),
 		pendingDownQoS2: make(map[uint16]*Publish),
 		persistDir:      opts.PersistenceDir,
 		enableQoS2:      opts.EnableQoS2,
@@ -317,6 +324,23 @@ func (c *Client) SubscribeWithOpts(topic string, opts SubOpts, h Handler) error 
 		Topics:   []TopicFilter{{Topic: topic, QoS: opts.QoS, NoLocal: opts.NoLocal, RetainAsPublished: opts.RetainAsPublished, RetainHandling: opts.RetainHandling}},
 		V5:       c.v5,
 	}
+	// v0.32.0：共享订阅 handler 以内层 filter 注册（到达 PUBLISH 的
+	// topic 已剥去 $share/{group}/ 前缀，须按内层匹配）。
+	regKey := topic
+	if group, inner, ok := parseShareFilterClient(topic); ok && group != "" {
+		regKey = inner
+	}
+	// v0.35.0：订阅在途登记——SUBACK 后紧随的 retained 消息可能先于
+	// handler 注册分发；在途期间按 filter 缓冲待补投（readPump 判定）。
+	// SUBSCRIBE 写出前登记；任何返回路径由 defer 清理。
+	c.pendMu.Lock()
+	c.pendingSubs[regKey] = true
+	c.pendMu.Unlock()
+	defer func() {
+		c.pendMu.Lock()
+		delete(c.pendingSubs, regKey)
+		c.pendMu.Unlock()
+	}()
 	ch := c.registerAck(pk.PacketID)
 	defer c.unregisterAck(pk.PacketID)
 	if err := c.write(pk); err != nil {
@@ -336,18 +360,11 @@ func (c *Client) SubscribeWithOpts(topic string, opts SubOpts, h Handler) error 
 	if sa.Codes[0] >= 0x80 {
 		return fmt.Errorf("mqtt: subscribe rejected, code 0x%02X", sa.Codes[0])
 	}
-	// v0.32.0：共享订阅 handler 以内层 filter 注册（到达 PUBLISH 的
-	// topic 已剥去 $share/{group}/ 前缀，须按内层匹配）。
-	regKey := topic
-	if group, inner, ok := parseShareFilterClient(topic); ok && group != "" {
-		regKey = inner
-	}
 	c.handlersMu.Lock()
 	c.handlers[regKey] = append(c.handlers[regKey], h)
 	c.handlersMu.Unlock()
-	if c.sessionPresent {
-		c.flushRecovered(regKey)
-	}
+	// 补投缓冲（订阅在途或恢复会话期间先到的消息；无缓冲 = no-op）。
+	c.flushRecovered(regKey)
 	return nil
 }
 
@@ -357,6 +374,18 @@ func (c *Client) matchHandlersHit(topic string) bool {
 	defer c.handlersMu.RUnlock()
 	for filter := range c.handlers {
 		if MatchTopic(filter, topic) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchPendingSubs 报告 topic 是否匹配任何一个"订阅在途"filter（v0.35.0）。
+func (c *Client) matchPendingSubs(topic string) bool {
+	c.pendMu.Lock()
+	defer c.pendMu.Unlock()
+	for f := range c.pendingSubs {
+		if MatchTopic(f, topic) {
 			return true
 		}
 	}
@@ -404,6 +433,18 @@ func parseShareFilterClient(f string) (group, inner string, ok bool) {
 // when the client was dialed with Options.EnableQoS2 — otherwise QoS 2 is
 // rejected before it ever reaches the wire (the v0.24.0 contract).
 func (c *Client) Publish(topic string, qos byte, payload []byte) error {
+	return c.publish(topic, qos, payload, false)
+}
+
+// PublishRetain 发布带 RETAIN 标志的消息（v0.35.0 阶段四）。retain=true
+// 且 payload 非空：broker 存储/覆盖该主题保留消息；retain=true 且 payload
+// 为空：清除该主题保留消息（空消息本身照常转发）。QoS/Ack 路径与 Publish
+// 完全一致。
+func (c *Client) PublishRetain(topic string, qos byte, payload []byte, retain bool) error {
+	return c.publish(topic, qos, payload, retain)
+}
+
+func (c *Client) publish(topic string, qos byte, payload []byte, retain bool) error {
 	if err := validateTopicName(topic); err != nil {
 		return err
 	}
@@ -413,7 +454,7 @@ func (c *Client) Publish(topic string, qos byte, payload []byte) error {
 	if err := c.ensureOpen(); err != nil {
 		return err
 	}
-	pk := &Publish{QoS: qos, Topic: topic, Payload: payload, V5: c.v5}
+	pk := &Publish{QoS: qos, Topic: topic, Payload: payload, V5: c.v5, Retain: retain}
 	// v0.33.0：出站 Topic Alias（v5 + opt-in）。首包带主题建映射，此后
 	// 同主题仅携带别名（alias-only 帧：Topic="" + TopicAlias）。表满
 	// （≤16）后新主题降级为全主题帧（不带别名）。QoS>0 同样适用（别名
@@ -539,9 +580,10 @@ func (c *Client) readPump() {
 				// QoS1 inbound must be acknowledged so the broker does not resend.
 				_ = c.write(&Puback{V5: c.v5, PacketID: pv.PacketID})
 			}
-			// 恢复会话缓冲（复核 P1-1 修复：仅 QoS<2；QoS2 有独立 park/
-			// PUBREC 状态机，不得被缓冲拦截）：
-			if c.sessionPresent && pv.QoS < 2 && !c.matchHandlersHit(pv.Topic) {
+			// 缓冲场景（复核 P1-1 修复：仅 QoS<2；QoS2 有独立 park/
+			// PUBREC 状态机，不得被缓冲拦截）：① SessionPresent 恢复；
+			// ② 订阅在途（v0.35.0，匹配 pendingSubs）。
+			if pv.QoS < 2 && !c.matchHandlersHit(pv.Topic) && (c.sessionPresent || c.matchPendingSubs(pv.Topic)) {
 				// 消息先于 handler 注册到达（broker 在 CONNACK 后立即
 				// 下发离线队列）→ 缓冲待 Subscribe 补投。
 				c.pendMu.Lock()

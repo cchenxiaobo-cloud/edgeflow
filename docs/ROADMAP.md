@@ -664,3 +664,17 @@ spec：specs/0008-mqtt5-phase4-retain/spec.md（FR-S2-07 阶段四段）。
 | 存量修复 | permissive 解析丢 RH；QoS2 parked 丢 Retain | ✅ 闭环 | 开发期测试暴露 |
 | 复核修复 P1-1 | 离线暂存条目补 RAP 标志（rapHit） | ✅ 闭环 | RAP=1 重连重放带 RETAIN=1（TestV0350RetainRAPOfflineReplay 含对照） |
 | 阶段五候选（重发定时器、client 出站断线重发、alias 出站方向、共享订阅 granted-QoS1、3.1.1 持久会话、will 面） | — | ⏳ 待排 | 非承诺 |
+
+## 32. v0.36.0 — MQTT 5.0 阶段五：遗嘱消息（Will）面（2026-09-13）
+
+spec：specs/0009-mqtt5-phase5-will/spec.md（FR-S2-07 阶段五段）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| W1 v5 Will Properties 编解码 | packet.go：0x18 Will Delay + 空区/白名单/重复拒绝 | ✅ 闭环 | 真实 v5 客户端互操作；无 will 连接字节不变（锚） |
+| W2 存储与触发发布 | sim：CONNECT 存储 + 异常断连发布 / 正常 rc=0 抑制 | ✅ 闭环 | QoS 0/1/2、接管发布、鉴权拒绝不发、恰好一次 |
+| W3 Will Retain 交叉 | updateRetained + fanout retain 标志 | ✅ 闭环 | 与 v0.35.0 retained store 交叉（含空 payload 语义） |
+| W4 Will Delay | pendingWills 定时器 + 同 ClientID 新连接取消 + Close 清理 | ✅ 闭环 | delay=0 立即；恢复/重建均取消（规范重连抑制） |
+| W5 client 配置 | Options Will*（QoS/retain/delay 校验） | ✅ 闭环 | 正常 Close 保持 DISCONNECT rc=0 不触发 |
+| 边界 | will 属性不透传 / 过期取小 / 接管 delay / 替换场景 | 📝 登记 | KI §37 |
+| 后续候选（重发定时器、client 出站断线重发、alias 出站方向、共享订阅 granted-QoS1、3.1.1 持久会话） | — | ⏳ 待排 | 非承诺 |

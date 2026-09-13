@@ -547,3 +547,30 @@ filter 键覆盖前判定；一次 SUBSCRIBE 内按主题去重；恢复下发�
 
 **升级兼容**：无 retain 消息路径逐字节不变；默认 3.1.1 行为零变化；契约 42 端点
 不变；edge/云/OPC-UA/视频路径零触碰。
+
+## 37. v0.36.0（MQTT 5.0 阶段五：遗嘱消息 Will 面）
+
+**范围**：v5 Will Properties 编解码（packet）+ sim will 存储与触发发布 + Will Delay
+（含重连取消）+ client 侧 will 配置；零依赖、契约 42 端点不变。
+
+**能力**：见 RELEASE-NOTES-v0360 N1（四块：编解码 / 存储触发 / delay / client）。
+
+**边界登记（本版新增）**：
+- will 消息的 v5 属性不透传：Will Properties 白名单目前仅 Will Delay（0x18）；
+  真实客户端携带其他 will 属性（content type 等）会被拒绝（CONNECT 拒绝断连）。
+- 会话过期先于 Will Delay 的「取小发布」不做（过期惰性清理不触达 will）。
+- 接管/踢连接的 delay：被踢旧连接的 will 在其断连时生成（kick 同步链），不受
+  新连接取消影响（走通用延迟路径；规范「接管立即发布」细节简化）。
+- 同 ClientID 旧待发 will 被新 pending 注册替换（注册覆盖，旧 will 丢失——边缘场景）。
+- 定时器注册存在 µs 级理论窗口（time.AfterFunc 启动与 pendingWills 注册之间；回调
+  归属判定不匹配则静默返回）——delay 为秒粒度（≥1s），正常调度不可达（复核 P2-3，
+  注释标注于 sim.go）。
+- will 空 payload + retain 走 v0.35.0 既有语义（清除 + 照常转发）。
+
+**开发期调试记录（测试自身，非产品缺陷）**：① 会话快照等待条件（filters>0）不覆盖
+无订阅的 will 发送方 → v0360WaitDetached；② 鉴权 broker 下订阅者连接需带凭证；
+③ 空 payload 用例需先读掉先前的普通 fanout 消息。
+
+**升级兼容**：无 will 连接路径逐字节不变（含 v5 编码字节锚 TestV0360NoWillByteIdentical）；
+3.1.1 带 will 为新增规范行为（既有测试无此场景）；契约 42 端点不变；MQTT 既有路径/
+OPC-UA/视频/edge/云零触碰。

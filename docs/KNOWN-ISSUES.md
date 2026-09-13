@@ -516,3 +516,34 @@ exec 内部拷贝且被 Wait 等待 → 卡到孙进程结束；修：stderr 自
 
 **升级兼容**：默认配置（synthetic）与 v0.33.0 逐字节一致；无环境变量零行为；
 契约 42 端点不变；MQTT/OPC-UA/3.1.1 路径零触碰。
+
+## 36. v0.35.0（MQTT 5.0 阶段四：保留消息（Retain）面 + RH 语义）
+
+**交付**：sim retained store（存储/覆盖/清除、QoS0/1/2、空 payload 清除+照常转发）
++ 订阅下发（RH 0/1/2、通配字典序去重、QoS=min、SUBACK 先于 retained）+ RAP 转发
+生效（含离线条目与恢复重放）+ client.PublishRetain + 订阅在途缓冲（pendingSubs）。
+
+**边界登记（非缺陷）**：will 面（Will/Will Retain/Will Delay）整体不做（留后续
+版本）；共享订阅不触发 retained 下发；retained 不跨 broker 重启持久化（sim 内存）；
+无上限/淘汰策略（测试 broker）；QoS0 存储为「SHOULD store」选择路径（规范 MAY
+discard）；handler 面不带 retain 标志（富 handler 后续）；RH=1「订阅已存在」按
+filter 键覆盖前判定；一次 SUBSCRIBE 内按主题去重；恢复下发按条目 Retain 字段重放。
+
+**开发期修复（测试暴露）**：① sim permissive 订阅解析丢弃 RH 位（v0330 只校验不
+存储的对称缺口）→ 修复；② client 订阅在途竞态——SUBACK 后紧随的 retained 可能
+先于 handler 注册到达被丢弃 → pendingSubs 在途登记 + 缓冲补投（扩展 v0320 恢复
+缓冲；竞态型 e2e 暴露）；③ QoS2 parked 结构丢 Retain 字段；④ 离线会话暂存条目
+未填 RAP 标志（复核 P1-1）→ rapHit 补标志。
+
+**复核处置（v0350 复核轮）**：P0×0 / P1×1 / P2×2。P1-1 修复——离线会话暂存条目
+未填 Retain（RAP=1 的真实离线重连重放丢标志）→ `rapHit` 补标志 + 锚
+`TestV0350RetainRAPOfflineReplay`（含 RAP=0 对照）。P2 登记：NoLocal 与 retained
+下发未交叉判定（deliverRetained 不查 NoLocal——自发布 retained 的自订阅场景；规范
+留白、维持现状）；pendingSubs 残留缓冲语义（订阅失败后已缓冲条目滞留 ≤32，后续
+匹配订阅补投，至多一次）与同 filter 并发订阅的集合覆盖微边界（顺序调用无影响）。
+修复后复 gate：回归 / race ×2 多轮 / 契约 / e2e 全绿；新锚时序为确定性轮询。
+备注：复 gate 首轮曾现 1 次未复现 flake（两包并行 race 下；后续 18 轮含 -count=2/6
+全绿），已将其可能来源的时序脆弱点强化为确定性等待并记录。
+
+**升级兼容**：无 retain 消息路径逐字节不变；默认 3.1.1 行为零变化；契约 42 端点
+不变；edge/云/OPC-UA/视频路径零触碰。

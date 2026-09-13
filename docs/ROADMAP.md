@@ -650,3 +650,17 @@ spec：specs/0007-video-stream-phase2-real-sources/spec.md（spec 0004 阶段二
 | N3 源工厂 | NewSource(synthetic/mjpeg/bridge) + 配置扩展 | ✅ 闭环 | 未知类型拒绝；synthetic 默认逐字节不变 |
 | N4 streamOn 降级语义 | sourceErrors + 自收口（stopOnce）+ 日志 | ✅ 闭环 | v0.31.0 复核 P2-1 闭环；stream=1 可重启 |
 | 阶段三候选（原生 RTSP/RTP 协议栈、GB28181 信令、云端 VideoStream 管理面契约扩容、GPU 运行时） | — | ⏳ 待排 | 非承诺 |
+
+## 31. v0.35.0 — MQTT 5.0 阶段四：保留消息（Retain）面 + RH 语义（2026-09-13）
+
+spec：specs/0008-mqtt5-phase4-retain/spec.md（FR-S2-07 阶段四段）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| M6 保留存储（发布侧） | sim retained store + updateRetained | ✅ 闭环 | QoS0/1/2 均存储；空 payload 清除 + 照常转发；字典序确定性 |
+| M7 订阅下发 + RH | deliverRetained + RH 0/1/2（覆盖前判定） | ✅ 闭环 | SUBACK 先于 retained；通配去重；QoS=min；共享订阅不触发 |
+| M8 RAP 转发生效 | fanout retain 标志（含离线条目与恢复重放） | ✅ 闭环 | RAP=1 保留 RETAIN=1；默认恒 0；v3.1.1 恒 0 冻结 |
+| M9 client 发布 API + 在途缓冲 | PublishRetain + pendingSubs 缓冲补投 | ✅ 闭环 | 修复订阅在途竞态（retained 先于 handler 注册被丢弃） |
+| 存量修复 | permissive 解析丢 RH；QoS2 parked 丢 Retain | ✅ 闭环 | 开发期测试暴露 |
+| 复核修复 P1-1 | 离线暂存条目补 RAP 标志（rapHit） | ✅ 闭环 | RAP=1 重连重放带 RETAIN=1（TestV0350RetainRAPOfflineReplay 含对照） |
+| 阶段五候选（重发定时器、client 出站断线重发、alias 出站方向、共享订阅 granted-QoS1、3.1.1 持久会话、will 面） | — | ⏳ 待排 | 非承诺 |

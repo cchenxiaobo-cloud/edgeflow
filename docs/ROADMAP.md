@@ -678,3 +678,17 @@ spec：specs/0009-mqtt5-phase5-will/spec.md（FR-S2-07 阶段五段）。
 | W5 client 配置 | Options Will*（QoS/retain/delay 校验） | ✅ 闭环 | 正常 Close 保持 DISCONNECT rc=0 不触发 |
 | 边界 | will 属性不透传 / 过期取小 / 接管 delay / 替换场景 | 📝 登记 | KI §37 |
 | 后续候选（重发定时器、client 出站断线重发、alias 出站方向、共享订阅 granted-QoS1、3.1.1 持久会话） | — | ⏳ 待排 | 非承诺 |
+
+## 33. v0.37.0 — 规则引擎与实时处理（含数据治理）（2026-09-16）
+
+spec：specs/0010-rule-engine/spec.md（发展规划 v0.37 · G15/G14）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| R1 规则模型与校验 | pkg/rules：Rule/Condition/Action/RuleSet + 全量校验 | ✅ 闭环 | 阈值四 op / 区间两 op / forSeconds；ruleId 格式与保留字拒绝 |
+| R2 评估状态机 | pkg/rules：idle→pending→firing + 防重/恢复/替换重置 | ✅ 闭环 | 持续期计时、中断重置、状态清零 |
+| R3 数据治理过滤器 | pkg/rules：range→debounce→deadband 固定顺序 | ✅ 闭环 | 未配置直通（零行为）；拦截不写影子、坏值不进评估 |
+| R4 云边通道与边缘装配 | 协议 +RuleSync/+RuleEvent；handleRuleSync/启动恢复/采样管道/rule_events 台账 | ✅ 闭环 | 版本陈旧拒绝；rules/current 持久化；事件台账保留 30 天 |
+| R5 云端管理面 | cloud/pkg/rulestore（etcd 写穿）+ rules API 9 端点 + 事件 ring | ✅ 闭环 | 契约 42→51；下发五态语义同 config-sync |
+| 边界 | 动作仅 event / 无 cleared 事件 / ring 内存 500 / 严格相等 / 不补发离线 | 📝 登记 | KI §38 |
+| 后续候选（指令联动动作、云端事件持久化与多副本聚合、治理容差版、规则可视化编排） | — | ⏳ 待排 | 非承诺 |

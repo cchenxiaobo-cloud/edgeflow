@@ -235,6 +235,10 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	loadRuleSet(ruleEngine, governor, store)
 	rulePipeline := newSamplePipeline(governor, ruleEngine, newRuleEventSink(client, ruleLedger, opts.NodeID))
 
+	// 时序存储（v0.38.0，spec 0011）：opt-in（EDGEFLOW_EDGECORE_TSDB=on）；
+	// 关闭时全链零行为。采样管道的 accepted 值经 sink 落时序库。
+	tsdbCleanup, _ := setupEdgeTSDB(rulePipeline)
+
 	// 消息处理回调（WBS 4.6）：云端下发类消息（PodSync/DeviceCommand 等）→
 	// MetaManager 落盘 / 设备影子更新；处理结果由 EdgeHub 自动回 Ack
 	// （成功 code=ok / 失败 code=error）。
@@ -346,6 +350,10 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	<-reportDone // Pod 上报循环退出后不再有新消息写入通道
 	close(deviceReportStopCh)
 	<-deviceReportDone // 设备上报循环退出后不再有新消息写入通道
+	// 时序库收尾（v0.38.0）：上报循环已停 → 无新写入 → 刷盘关闭。
+	if tsdbCleanup != nil {
+		tsdbCleanup()
+	}
 	mapperCancel()
 	if mapperReg != nil {
 		if err := mapperReg.StopAll(); err != nil {

@@ -159,6 +159,7 @@ type samplePipeline struct {
 	gov     *rules.Governor
 	eng     *rules.Evaluator
 	onEvent func(rules.Event)
+	tsSink  func(device, ns, prop string, value float64, ts int64) // v0.38.0 可选；nil=零行为
 }
 
 // newSamplePipeline 构造采样管道（测试与装配共用）。
@@ -166,10 +167,29 @@ func newSamplePipeline(gov *rules.Governor, eng *rules.Evaluator, onEvent func(r
 	return &samplePipeline{gov: gov, eng: eng, onEvent: onEvent}
 }
 
+// SetTSSink 设置时序存储写入出口（v0.38.0，spec 0011 US-6）：写入的是
+// 准许写入影子的 accepted 值（与影子同源同值）；nil 保持关闭（零行为）。
+func (p *samplePipeline) SetTSSink(fn func(device, ns, prop string, value float64, ts int64)) {
+	if p == nil {
+		return
+	}
+	p.tsSink = fn
+}
+
 // process 处理一台设备的一轮采集值，返回"准许写入影子"的属性集合。
-// 治理器/评估器为 nil（未装配）时原样直通。
+// 治理器/评估器为 nil（未装配）时原样直通；时序 sink（v0.38.0）启用时
+// accepted 值同时写入时序库。
 func (p *samplePipeline) process(deviceName, ns string, props map[string]float64, ts int64) map[string]float64 {
-	if p == nil || p.gov == nil || p.eng == nil {
+	if p == nil {
+		return props
+	}
+	if p.gov == nil || p.eng == nil {
+		// 无规则/治理（或仅时序库）：直通；仅时序 sink 启用时记录采样值
+		if p.tsSink != nil {
+			for prop, value := range props {
+				p.tsSink(deviceName, ns, prop, value, ts)
+			}
+		}
 		return props
 	}
 	accepted := make(map[string]float64, len(props))
@@ -178,6 +198,9 @@ func (p *samplePipeline) process(deviceName, ns string, props map[string]float64
 		switch {
 		case d.Accept:
 			accepted[prop] = d.Value
+			if p.tsSink != nil {
+				p.tsSink(deviceName, ns, prop, d.Value, ts)
+			}
 			p.observe(deviceName, ns, prop, d.Value, ts)
 		case d.Reason == rules.ReasonOutOfRange:
 			// 坏值：不写影子、不参与规则评估（不改变规则状态）

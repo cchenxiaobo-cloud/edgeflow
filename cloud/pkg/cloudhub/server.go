@@ -228,13 +228,14 @@ type Server struct {
 	serveDone chan struct{}
 
 	// mu 保护注册表 registry、节点信息 nodes 与事件回调
-	// nodeEvents/podStatusHandler/deviceReportHandler。
+	// nodeEvents/podStatusHandler/deviceReportHandler/ruleEventHandler。
 	mu                  sync.RWMutex
 	registry            map[string]*conn     // nodeID → 活跃连接
 	nodes               map[string]*NodeInfo // nodeID → 节点信息
 	nodeEvents          NodeEvents           // 节点生命周期事件回调（nil 表示未订阅）
 	podStatusHandler    PodStatusHandler     // PodStatus 消息回调（nil 表示未订阅）
 	deviceReportHandler DeviceReportHandler  // DeviceReport 消息回调（nil 表示未订阅，WBS 5.3）
+	ruleEventHandler    RuleEventHandler     // RuleEvent 消息回调（nil 表示未订阅，v0.37.0）
 
 	// connsMu 保护活跃连接集合 conns（含未注册连接，供 Shutdown 统一关闭）。
 	connsMu sync.Mutex
@@ -649,6 +650,8 @@ func (s *Server) dispatch(c *conn, data []byte) {
 		s.handlePodStatus(c, m)
 	case protocol.TypeDeviceReport:
 		s.handleDeviceReport(c, m)
+	case protocol.TypeRuleEvent:
+		s.handleRuleEvent(c, m)
 	case protocol.TypeAck:
 		s.handleAck(c, m)
 	default:

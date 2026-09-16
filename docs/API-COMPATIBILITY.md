@@ -57,7 +57,21 @@
 | 41 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/retry` | 失败节点重试（克隆新发布，RetryOf 回指；nodeIDs 可选 failed 子集） | v0.20.0 |
 | 42 | DELETE | `/api/v1/models/{modelName}/releases/{releaseID}` | 终态发布归档删除（非终态 409；与 GC 同源「在途绝不删」） | v0.20.0 |
 
-> 契约详情见 API-SPEC.md §7（v0.7.0）。
+> **v0.37.0 追加（9 个规则管理 API 端点，均为新增 = 向后兼容；既有 42 行逐字节不变）**：
+
+| # | 方法 | 路径 | 说明 | 版本 |
+|---|------|------|------|------|
+| 43 | POST | `/api/v1/rules` | 创建规则（校验失败 400、重复 ruleId 409） | v0.37.0 |
+| 44 | GET | `/api/v1/rules` | 规则列表（K8s List 风格，按 ruleId 排序） | v0.37.0 |
+| 45 | GET | `/api/v1/rules/{ruleID}` | 规则详情（不存在 404） | v0.37.0 |
+| 46 | PUT | `/api/v1/rules/{ruleID}` | 更新规则（body ruleId 缺省补路径值） | v0.37.0 |
+| 47 | DELETE | `/api/v1/rules/{ruleID}` | 删除规则 | v0.37.0 |
+| 48 | GET | `/api/v1/rules/events` | 规则事件查询（ruleId/device/limit 过滤，倒序） | v0.37.0 |
+| 49 | GET | `/api/v1/rules/governance` | 治理策略列表（含规则包版本） | v0.37.0 |
+| 50 | PUT | `/api/v1/rules/governance` | 治理策略全量替换 | v0.37.0 |
+| 51 | POST | `/api/v1/nodes/{nodeID}/rules/sync` | 规则包下发（可靠投递，五态语义同 config-sync） | v0.37.0 |
+
+> 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行）。
 
 > 认证：`EDGEFLOW_CLOUDCORE_API_TOKEN` 设置为 `on` 时全部管理端点（除 healthz/metrics）要求
 > `Authorization: Bearer <token>`（WBS 7.2）；未设置保持匿名（向后兼容，仅限受信网络）。
@@ -76,6 +90,8 @@
 | `PodStatus` | 边→云 | nodeID / podName / namespace / phase / restartCount / ... | 稳定（M1/M2） |
 | `DeviceReport` | 边→云 | nodeID / deviceID / properties（含 direction/regAddr/value/result/message） | 稳定（M3） |
 | `DeviceCommand` | 云→边 | nodeID / deviceID / property / value（设备指令，对应 POST /device-command 端点） | 稳定（M3） |
+| `RuleSync` | 云→边 | ruleSet（version / rules[] / governance[]，规则包全量下发） | 新增（v0.37.0） |
+| `RuleEvent` | 边→云 | ruleId / ruleName / deviceName / namespace / property / value / severity / message / triggeredAt / ruleSetVersion | 新增（v0.37.0） |
 | `Ack` | 双向 | id / ok / error | 稳定（可靠投递） |
 
 兼容规则：
@@ -141,3 +157,15 @@
 | `GET .../releases/{id}/snapshot` summary 口径与详情/列表统一（五计数同源） | `GET .../releases/{id}/snapshot` | **零破坏**：字段集不变，数值口径收敛 |
 
 云边协议与 CRD 说明：`pkg/protocol` Validate 新增 Version 宽松格式校验（`^v[0-9]+$`，非空既有契约不变；Timestamp 显式不校验）——NewMessage 产出的信封（Version="v1"）全部通过，旧边缘零改动；CRD `config/crd/*.yaml` 关键 string 字段补 minLength/pattern 校验标记（K8s 准入层拒绝脏对象），apis/ 类型零变化，已存在的合法对象全部兼容。
+
+## v0.37.0 兼容性增量（2026-09-16）
+
+端点总数 42 → 51（+9 规则管理 API，全部新增 = 向后兼容；既有 42 行逐字节不变）；云边消息类型 10 → 12（+RuleSync/+RuleEvent）。
+
+| 变更 | 兼容性 |
+|---|---|
+| 新增 `/api/v1/rules*` 9 端点（含规则包下发 `/api/v1/nodes/{nodeID}/rules/sync`） | **零破坏**：全新路由（`/api/v1/rules/*` 前缀此前无路由）；默认无规则/无治理策略时规则引擎全链空转，采集/影子/上报路径与 v0.36.0 逐字节一致 |
+| 云边消息 +`RuleSync`（云→边）/`RuleEvent`（边→云） | **零破坏**：新增类型不影响既有 12 类型；未下发规则包时两类型不出现；旧边缘收到未知类型走既有 default 忽略路径 |
+| 云端规则存储（etcd 键空间 `/edgeflow/ruleset/*`；纯内存模式无持久化） | 升级零迁移：新增键空间；重启自动恢复；与 devicestatus 同构的写穿语义（写穿失败不更新内存） |
+| 边缘规则包持久化（SQLite `rules/current` 键 + `rule_events` 表，保留 30 天） | 升级零迁移：新增键/表；无规则包时零行为；规则包损坏安全降级为空规则 |
+| 零新依赖 / 既有包 API | go.mod 零变化；`pkg/rules` 为新增共享包；MQTT/OPC-UA/视频/模型面代码零触碰；v0240–v0350 冻结测试零改动 |

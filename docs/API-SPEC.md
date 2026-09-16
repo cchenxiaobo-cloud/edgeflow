@@ -71,6 +71,15 @@
 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/cancel` | 取消（v0.16.0 起 pending/running/paused） | 200 / 404 / 409 |
 | POST | `/api/v1/models/{modelName}/releases/{releaseID}/rollback` | **回滚（异步执行，逆序批量）** | **202** / 404 / 409 / 422 |
 | GET | `/api/v1/models/{modelName}/deployments` | 部署影子（版本—节点—时间追踪，F41 台账）；**v0.13.0 支持 `limit`(1-1000)/`offset`(≥0) 分页 + `X-Total-Count` 头，缺省全量** | 200 / 404 |
+| POST | `/api/v1/rules` | **创建规则（v0.37.0 规则引擎：校验失败 400、重复 ruleId 409）** | **201** / 400 / 409 |
+| GET | `/api/v1/rules` | **规则列表（v0.37.0：K8s List 风格，按 ruleId 排序）** | 200 |
+| GET | `/api/v1/rules/{ruleID}` | **规则详情（v0.37.0）** | 200 / 404 |
+| PUT | `/api/v1/rules/{ruleID}` | **更新规则（v0.37.0：body ruleId 缺省补路径值，不一致 400）** | 200 / 400 / 404 |
+| DELETE | `/api/v1/rules/{ruleID}` | **删除规则（v0.37.0）** | 200 / 404 |
+| GET | `/api/v1/rules/events` | **规则事件查询（v0.37.0：ruleId/device/limit 过滤，倒序，limit 上限 200）** | 200 / 400 |
+| GET | `/api/v1/rules/governance` | **治理策略列表（v0.37.0：含规则包版本）** | 200 |
+| PUT | `/api/v1/rules/governance` | **治理策略全量替换（v0.37.0：body {"policies":[...]}）** | 200 / 400 |
+| POST | `/api/v1/nodes/{nodeID}/rules/sync` | **规则包下发（v0.37.0：可靠投递，五态语义同 config-sync）** | 200 / 404 / 502 / 504 / 500 |
 
 ### 1.2 错误码表（统一约定）
 

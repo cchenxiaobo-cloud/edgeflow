@@ -26,13 +26,13 @@ package contract
 // 装配路径而非 mock。反向断言因 net/http 不暴露路由表，改为两道互补防线：
 //   - 静态解析（组 3）：读 cmd/cloudcore 路由注册行。注册并非仅 main.go
 //     一处：HandleFunc/Handle 调用点分布在 main.go（既有节点/设备/应用路由
-//     + registerNodeAPIRoutes）与 model_api.go（modelAPI.Register，v0.7.0 起
-//     模型 API 及后续版本扩展），处理器实现进一步分散在 device_api.go /
-//     v0170_release_ops.go / v0200_release_ops.go 等文件；静态解析经
-//     registeredRoutesFromSource 同扫 main.go 与 model_api.go，定位精确到
-//     行号，但只认字面量注册，路由改为循环/变量注册时会漏报。42 条端点
-//     契约守卫以 routes.go（ContractEndpoints）为事实源，运行时守卫见
-//     api_contract_test.go:758（TestDocAPISpecEndpointsMatchContract）；
+//     + registerNodeAPIRoutes）与 model_api.go / rules_api.go（modelAPI /
+//     ruleAPI 的 Register，v0.7.0 / v0.37.0 起），处理器实现进一步分散在
+//     device_api.go / v0170_release_ops.go / v0200_release_ops.go 等文件；
+//     静态解析经 registeredRoutesFromSource 同扫 main.go 与 model_api.go、
+//     rules_api.go，定位精确到行号，但只认字面量注册，路由改为循环/变量
+//     注册时会漏报。51 条端点契约守卫以 routes.go（ContractEndpoints）为
+//     事实源，运行时守卫见 TestDocAPISpecEndpointsMatchContract；
 //   - 运行时反向探测（组 2）：对保留前缀路径断言 404，直接探测真实 ServeMux
 //     装配结果，能捕获动态注册的契约外路由；代价是只能抽样探测，无法穷举。
 
@@ -301,6 +301,7 @@ func TestContractRoutesRegisteredAtRuntime(t *testing.T) {
 			path = strings.ReplaceAll(path, "{modelName}", "contract-test-model")
 			path = strings.ReplaceAll(path, "{version}", "v1.0.0")
 			path = strings.ReplaceAll(path, "{releaseID}", "contract-test-release")
+			path = strings.ReplaceAll(path, "{ruleID}", "contract-test-rule")
 			req, err := http.NewRequest(ep.Method, proc.base+path, nil)
 			if err != nil {
 				t.Fatalf("构造请求失败: %v", err)
@@ -335,8 +336,8 @@ func TestContractRoutesRegisteredAtRuntime(t *testing.T) {
 					t.Fatalf("%s %s 状态码 = %d，期望 400（空 body 为非法 OCSP 请求，body=%q）",
 						ep.Method, path, resp.StatusCode, bodyStr)
 				}
-			case !hasParam && ep.Method == http.MethodPost:
-				// 无路径参数 POST（创建类，需 body）：空 body → 400 + JSON
+			case !hasParam && (ep.Method == http.MethodPost || ep.Method == http.MethodPut):
+				// 无路径参数 POST/PUT（创建/替换类，需 body）：空 body → 400 + JSON
 				if resp.StatusCode != http.StatusBadRequest {
 					t.Fatalf("%s %s 状态码 = %d，期望 400（空 body 解码失败，body=%q）",
 						ep.Method, path, resp.StatusCode, bodyStr)
@@ -387,12 +388,12 @@ type registeredRoute struct {
 
 // registeredRoutesFromSource 静态解析 cmd/cloudcore 的路由注册。
 // v0.7.0 起模型 API 17 条路由注册在 model_api.go（modelAPI.Register），
-// 与 main.go 同扫：main.go 为既有 11 条 + 前缀挂载，model_api.go 为
-// 18 条新端点（D1 口径：32 = 14 文档 + 17 模型 + 1 digest 复核）。
+// v0.37.0 起规则 API 9 条路由注册在 rules_api.go（ruleAPI.Register），
+// 与 main.go 同扫（main.go 为既有 11 条 + 前缀挂载）。
 func registeredRoutesFromSource(t *testing.T) []registeredRoute {
 	t.Helper()
 	var routes []registeredRoute
-	for _, file := range []string{"main.go", "model_api.go"} {
+	for _, file := range []string{"main.go", "model_api.go", "rules_api.go"} {
 		paths := scanRouteFile(t, filepath.Join(repoRoot(t), "cmd", "cloudcore", file))
 		routes = append(routes, paths...)
 	}

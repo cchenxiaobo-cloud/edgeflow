@@ -2,7 +2,7 @@
 // 「无兼容矩阵文档/测试（audit-m35 G4）」的可执行测试侧）。
 //
 // 本文件是契约的唯一事实源（source of truth）：
-//   - ContractEndpoints：cloudcore HTTP 端点契约（14 条），与
+//   - ContractEndpoints：cloudcore HTTP 端点契约（51 条），与
 //     cmd/cloudcore/main.go 的路由注册、docs/API-SPEC.md §1.1 端点总览、
 //     docs/API-COMPATIBILITY.md §1 REST API 端点矩阵逐行对应；
 //   - ContractMessageTypes：云边通道消息类型契约，直接引用
@@ -23,7 +23,7 @@ type Endpoint struct {
 	Note   string // 契约说明（与文档矩阵口径一致）
 }
 
-// ContractEndpoints 是 cloudcore HTTP 端点契约表（42 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2）。
+// ContractEndpoints 是 cloudcore HTTP 端点契约表（51 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9）。
 //
 // ⚠️ 路径以 cmd/cloudcore/main.go 实际注册为准（任务提示 podsync/pod-sync
 // 存在歧义：grep 确认代码与两份文档均为 /podsync，无连字符）。
@@ -73,6 +73,16 @@ var ContractEndpoints = []Endpoint{
 	{Method: "POST", Path: "/api/v1/models/{modelName}/releases/{releaseID}/cancel", Note: "取消发布（v0.16.0 起 pending/running/paused）"},
 	{Method: "POST", Path: "/api/v1/models/{modelName}/releases/{releaseID}/rollback", Note: "回滚发布（202 异步，逆序批量）"},
 	{Method: "GET", Path: "/api/v1/models/{modelName}/deployments", Note: "部署影子（版本—节点—时间台账）"},
+	// ── v0.37.0 规则管理 API（9 条：规则 CRUD 5 + 治理策略 2 + 下发 1 + 事件查询 1）──
+	{Method: "POST", Path: "/api/v1/rules", Note: "创建规则（v0.37.0；201，重复 ruleId 409）"},
+	{Method: "GET", Path: "/api/v1/rules", Note: "规则列表（v0.37.0，K8s List 风格按 ruleId 排序）"},
+	{Method: "GET", Path: "/api/v1/rules/{ruleID}", Note: "规则详情（v0.37.0，不存在 404）"},
+	{Method: "PUT", Path: "/api/v1/rules/{ruleID}", Note: "更新规则（v0.37.0，不存在 404）"},
+	{Method: "DELETE", Path: "/api/v1/rules/{ruleID}", Note: "删除规则（v0.37.0，不存在 404）"},
+	{Method: "GET", Path: "/api/v1/rules/events", Note: "规则事件查询（v0.37.0；ruleId/device/limit 过滤，倒序）"},
+	{Method: "GET", Path: "/api/v1/rules/governance", Note: "治理策略列表（v0.37.0，含规则包版本）"},
+	{Method: "PUT", Path: "/api/v1/rules/governance", Note: "治理策略全量替换（v0.37.0）"},
+	{Method: "POST", Path: "/api/v1/nodes/{nodeID}/rules/sync", Note: "规则包下发（v0.37.0；可靠投递，五态语义同 config-sync）"},
 }
 
 // MessageType 描述一种云边通道消息类型契约。
@@ -84,9 +94,9 @@ type MessageType struct {
 
 // ContractMessageTypes 是云边通道消息类型契约，逐项绑定 protocol.Type* 常量。
 //
-// 与 docs/API-COMPATIBILITY.md §2 矩阵对应（10 种活跃类型）。任务书口径为
-// 「9 种消息」，实际矩阵含 Ack 共 10 行——契约以文档为准（文档一致性测试
-// 会双向校验，若任务口径与文档再出现分歧会在测试中显式暴露）。
+// 与 docs/API-COMPATIBILITY.md §2 矩阵对应（12 种活跃类型，v0.37.0 起
+// +RuleSync/+RuleEvent）。历史口径「9 种消息」为 M3 时点，契约以文档为准
+// （文档一致性测试会双向校验，口径分歧在测试中显式暴露）。
 // NodeJob / NodeJobResult 为已关闭占位（v0.1.0 范围外，见 pkg/protocol/message.go），
 // 文档矩阵不收录，用 InDoc=false 显式声明该状态，防止误加回文档。
 var ContractMessageTypes = []MessageType{
@@ -99,6 +109,8 @@ var ContractMessageTypes = []MessageType{
 	{Name: protocol.TypePodStatus, InDoc: true, Note: "边→云：Pod 状态上报（M1/M2）"},
 	{Name: protocol.TypeDeviceReport, InDoc: true, Note: "边→云：设备数据/状态上报（M3）"},
 	{Name: protocol.TypeDeviceCommand, InDoc: true, Note: "云→边：设备操作指令（M3）"},
+	{Name: protocol.TypeRuleSync, InDoc: true, Note: "云→边：规则包全量下发（v0.37.0）"},
+	{Name: protocol.TypeRuleEvent, InDoc: true, Note: "边→云：规则触发事件（v0.37.0）"},
 	{Name: protocol.TypeAck, InDoc: true, Note: "双向：通用确认（可靠投递）"},
 	{Name: protocol.TypeNodeJob, InDoc: false, Note: "云→边：任务分发（已关闭：v0.1.0 范围外，保留协议占位）"},
 	{Name: protocol.TypeNodeJobResult, InDoc: false, Note: "边→云：任务结果（已关闭：v0.1.0 范围外，保留协议占位）"},

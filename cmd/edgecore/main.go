@@ -29,6 +29,7 @@ import (
 	"edgeflow/pkg/config"
 	"edgeflow/pkg/log"
 	"edgeflow/pkg/protocol"
+	"edgeflow/pkg/rules"
 	"edgeflow/pkg/version"
 )
 
@@ -215,6 +216,25 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 		}
 	}
 
+	// 规则引擎与数据治理（v0.37.0）：规则评估器 + 治理器 + 规则事件台账。
+	// 规则包经 RuleSync 下发（handleRuleSync）并持久化在 MetaManager，启动时
+	// 恢复；采样管道（samplePipeline）把治理过滤与规则评估接入设备上报循环。
+	// 无规则/无策略时全链直通——与 v0.36.0 行为逐字节等价。
+	ruleEngine := rules.NewEvaluator()
+	governor := rules.NewGovernor()
+	var ruleLedger *metamanager.RuleLedger
+	if rl, err := metamanager.NewRuleLedger(store); err != nil {
+		log.Errorf("规则事件台账初始化失败（规则事件将不落盘）: %v", err)
+	} else {
+		ruleLedger = rl
+		ruleLedgerCtx, ruleLedgerCancel := context.WithCancel(context.Background())
+		defer ruleLedgerCancel()
+		go ruleLedger.RunCleanupLoop(ruleLedgerCtx, 24*time.Hour)
+		log.Infof("规则事件台账已就绪（保留 %d 天，后台每 24h 清理）", metamanager.RuleEventRetentionDays)
+	}
+	loadRuleSet(ruleEngine, governor, store)
+	rulePipeline := newSamplePipeline(governor, ruleEngine, newRuleEventSink(client, ruleLedger, opts.NodeID))
+
 	// 消息处理回调（WBS 4.6）：云端下发类消息（PodSync/DeviceCommand 等）→
 	// MetaManager 落盘 / 设备影子更新；处理结果由 EdgeHub 自动回 Ack
 	// （成功 code=ok / 失败 code=error）。
@@ -226,6 +246,8 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 			return handleConfigSync(store, msg)
 		case protocol.TypeDeviceCommand:
 			return handleDeviceCommand(twinStore, deviceExec, msg)
+		case protocol.TypeRuleSync:
+			return handleRuleSync(ruleEngine, governor, store, msg)
 		default:
 			// 未知下发类型：暂不处理但回 ok，
 			// 避免云端视为失败无限重试；后续模块接入时在此扩展
@@ -312,7 +334,7 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	deviceReportDone := make(chan struct{})
 	go func() {
 		defer close(deviceReportDone)
-		runDeviceReportLoop(client, mapperReg, twinStore, opts.NodeID, func() time.Duration { return rel.Get().DeviceReportInterval }, deviceReportStopCh)
+		runDeviceReportLoopPipe(client, mapperReg, twinStore, opts.NodeID, func() time.Duration { return rel.Get().DeviceReportInterval }, deviceReportStopCh, rulePipeline)
 	}()
 	log.Infof("设备上报循环已启动（周期 %v，nodeID=%s，支持热重载）", rel.Get().DeviceReportInterval, opts.NodeID)
 

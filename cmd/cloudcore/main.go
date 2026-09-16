@@ -36,12 +36,14 @@ import (
 	"edgeflow/cloud/pkg/nodecontroller"
 	"edgeflow/cloud/pkg/podstatus"
 	"edgeflow/cloud/pkg/registry"
+	"edgeflow/cloud/pkg/rulestore"
 	"edgeflow/pkg/certs"
 	"edgeflow/pkg/config"
 	"edgeflow/pkg/httpx"
 	"edgeflow/pkg/log"
 	"edgeflow/pkg/protocol"
 	"edgeflow/pkg/resource"
+	"edgeflow/pkg/rules"
 	"edgeflow/pkg/version"
 )
 
@@ -248,6 +250,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		// v0.7.0：模型仓库存储装配捕获（embed 成功路径的 kv / 外部模式的
 		// ext；纯内存与 embed 降级路径保持 nil → 模型仓库退化为纯内存）
 		modelKV etcdstore.KVStore
+		// v0.37.0：规则包存储装配捕获（与 modelKV 同源：embed kv / 外部
+		// ext；纯内存与降级路径保持 nil → 规则存储退化为纯内存）
+		ruleKV etcdstore.KVStore
 	)
 	// 最先注册 → 最后执行：保证在 ledger.Close()（审计）之后、进程退出前才关
 	// etcd（write-through 无待刷缓冲，Close 即数据完整；EmbeddedEtcd.Close 幂等）。
@@ -340,6 +345,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		modelKV = ext // v0.7.0：模型仓库存储复用同一 ExtendedKV（CAS+watch）
+		ruleKV = ext  // v0.37.0：规则包存储复用同一 ExtendedKV
 		externalFailFast := func(reason string) {
 			log.Errorf("[etcdstore] 外部模式 %s，拒绝启动（不降级——外部 etcd 是显式部署依赖）", reason)
 		}
@@ -400,6 +406,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 				podStore = ps
 			}
 			modelKV = kv // v0.7.0：模型仓库存储复用 embed kvStore（CAS 恒成功，D4 口径）
+			ruleKV = kv  // v0.37.0：规则包存储复用 embed kvStore
 		}
 	}
 
@@ -594,6 +601,24 @@ func run(args []string, stdout, stderr io.Writer) int {
 		})
 	})
 
+	// 规则包存储与 CloudHub 事件桥接（v0.37.0）：规则/治理策略（内存或 etcd
+	// 写穿）装配并在启动时加载恢复；边侧上报的 RuleEvent 经 CloudHub 校验后
+	// 注入存储（内存 ring），供查询 API 使用（依赖注入，CloudHub 不感知存储实现）。
+	ruleStore := rulestore.New(ruleKV)
+	if err := ruleStore.Load(sigCtx); err != nil {
+		log.Warnf("[rulestore] 启动加载失败（以空库继续，重新配置即可恢复）: %v", err)
+	}
+	hub.SetRuleEventHandler(func(nodeID string, ev rules.Event) {
+		// 回调运行在 CloudHub 读循环 goroutine 内：recover 兜底，
+		// 防止单条异常数据导致整个连接处理崩溃（与 DeviceReport 回调同约定）。
+		defer func() {
+			if r := recover(); r != nil {
+				log.Errorf("RuleEvent handler panic（nodeID=%s）: %v", nodeID, r)
+			}
+		}()
+		ruleStore.AppendEvent(ev)
+	})
+
 	// 审计台账（WBS 7.5）：JSONL 追加写，记录每次管理 API 调用。
 	// 路径可用环境变量 EDGEFLOW_CLOUDCORE_AUDIT_PATH 覆盖（默认 data/audit-ledger.jsonl）；
 	// 初始化失败直接拒绝启动（审计是安全控制，静默降级会掩盖问题）。
@@ -693,6 +718,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// 版本 6 + 发布 5 + 部署影子 1；注册在既有 apiMux → auth/audit 链
 	// 自动覆盖，零新中间件代码）
 	(&modelAPI{store: modelStore, reg: nodeReg, mirrorCheck: mirrorCheckCfg, digestOf: podstatus.NodeDigestOf(podStore)}).Register(apiMux)
+	// v0.37.0 规则管理 API（9 条：规则 CRUD 5 + 治理策略 2 + 规则包下发 1 +
+	// 事件查询 1；注册在既有 apiMux → auth/audit 链自动覆盖，零新中间件代码）
+	(&ruleAPI{store: ruleStore, reg: nodeReg, reliableSend: hub.ReliableSendContext}).Register(apiMux)
 
 	var apiHandler http.Handler = apiMux
 	if authEnabled {

@@ -82,8 +82,18 @@ func handleDeviceCommand(twins *devicetwin.TwinStore, exec devicetwin.DeviceComm
 // 生成 DeviceReport 消息，每条影子一条消息。reg 可传 nil（纯影子模式）。
 // 周期支持热重载（WBS 2.7）：每次 tick 后重新读取 intervalFn，
 // 周期变化即重置 ticker（下一轮起按新周期）。
+//
+// v0.37.0：本函数保留为兼容入口（pipe=nil，与 v0.36.0 行为逐字节等价）；
+// 装配规则引擎/治理的路径见 runDeviceReportLoopPipe。
 func runDeviceReportLoop(client *edgehub.Client, reg *mapper.MapperRegistry, twins *devicetwin.TwinStore, nodeID string, intervalFn func() time.Duration, stopCh <-chan struct{}) {
-	reportDeviceReports(client, reg, twins, nodeID) // 启动即上报一轮（含首次）
+	runDeviceReportLoopPipe(client, reg, twins, nodeID, intervalFn, stopCh, nil)
+}
+
+// runDeviceReportLoopPipe 是上报循环的管道化变体（v0.37.0）：pipe 非 nil 时
+// 每轮采集先过采样管道（治理过滤 + 规则评估，事件经管道出口派发），其余
+// 语义（周期热重载/停止语义/QoS 口径）与 runDeviceReportLoop 完全一致。
+func runDeviceReportLoopPipe(client *edgehub.Client, reg *mapper.MapperRegistry, twins *devicetwin.TwinStore, nodeID string, intervalFn func() time.Duration, stopCh <-chan struct{}, pipe *samplePipeline) {
+	reportDeviceReportsPipe(client, reg, twins, nodeID, pipe) // 启动即上报一轮（含首次）
 
 	interval := safeInterval(intervalFn())
 	ticker := time.NewTicker(interval)
@@ -91,7 +101,7 @@ func runDeviceReportLoop(client *edgehub.Client, reg *mapper.MapperRegistry, twi
 	for {
 		select {
 		case <-ticker.C:
-			reportDeviceReports(client, reg, twins, nodeID)
+			reportDeviceReportsPipe(client, reg, twins, nodeID, pipe)
 		case <-stopCh:
 			log.Infof("设备上报循环已停止")
 			return
@@ -112,8 +122,22 @@ func runDeviceReportLoop(client *edgehub.Client, reg *mapper.MapperRegistry, twi
 //   - 发送失败只记 Warn，不重试、不阻塞主流程——EdgeHub 具备断线重连
 //     能力，未上报的状态会在下一轮周期自动补报；
 //   - 单条失败不影响本轮其余条目（循环继续）。
+//
+// v0.37.0：本函数保留为兼容入口（pipe=nil，与 v0.36.0 逐字节等价）；
+// 管道化路径见 reportDeviceReportsPipe。
 func reportDeviceReports(client *edgehub.Client, reg *mapper.MapperRegistry, twins *devicetwin.TwinStore, nodeID string) {
-	collectMapperReports(reg, twins, time.Now().UnixMilli())
+	reportDeviceReportsPipe(client, reg, twins, nodeID, nil)
+}
+
+// reportDeviceReportsPipe 是上报一轮的管道化变体（v0.37.0）：采集阶段经
+// 采样管道（治理过滤 + 规则评估；拦截值不写影子、触发事件经管道出口派发），
+// 上报阶段语义与 reportDeviceReports 完全一致。
+func reportDeviceReportsPipe(client *edgehub.Client, reg *mapper.MapperRegistry, twins *devicetwin.TwinStore, nodeID string, pipe *samplePipeline) {
+	var proc sampleProcessor
+	if pipe != nil {
+		proc = pipe.process
+	}
+	collectMapperSamples(reg, twins, time.Now().UnixMilli(), proc)
 	for _, msg := range buildDeviceReportMessages(nodeID, twins, time.Now().UnixMilli()) {
 		if err := client.Send(msg); err != nil {
 			log.Warnf("设备上报失败: %v", err)

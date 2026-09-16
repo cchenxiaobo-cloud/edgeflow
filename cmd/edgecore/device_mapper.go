@@ -224,6 +224,9 @@ func deviceNamesOf(m mapper.DeviceMapper) []string {
 // 上报循环每轮先执行本步骤再快照 Twin：影子因此始终持有设备最新数据，
 // 周期上报无需感知 Mapper 的存在。reg 为 nil 时静默跳过（纯影子模式）。
 //
+// v0.37.0：本函数保留为兼容入口（与 v0.36.0 行为逐字节等价），
+// 管道化路径见 collectMapperSamples + reportDeviceReportsPipe。
+//
 // 命名空间说明：Collect 只返回属性值、不带命名空间，写入影子时按 Mapper
 // 自身声明的命名空间补全（namespaceOfMapper，与注册表路由索引同一判定
 // 规则）——实现 mapper.DeviceNamespaceResolver 的 Mapper（如 Modbus 配置
@@ -233,6 +236,18 @@ func deviceNamesOf(m mapper.DeviceMapper) []string {
 // 一致；多命名空间部署不再出现 default/x 与 plant-a/x 双条目
 // （KNOWN-ISSUES §1 ①）。
 func collectMapperReports(reg *mapper.MapperRegistry, twins *devicetwin.TwinStore, now int64) {
+	collectMapperSamples(reg, twins, now, nil)
+}
+
+// sampleProcessor 是采集值的管道处理器：输入一台设备的一轮采集值，
+// 返回准许写入影子的属性集合（v0.37.0 采样管道：治理过滤 + 规则评估）。
+type sampleProcessor func(deviceName, ns string, props map[string]float64, ts int64) map[string]float64
+
+// collectMapperSamples 是采集汇影子的管道化内核：proc 非 nil 时对每台设备
+// 的采集值先做处理（返回值才写影子；拦截属性由处理器剔除），proc 为 nil
+// 时原样写影子（与 v0.36.0 路径逐字节等价）。采集失败/空值语义与
+// collectMapperReports 完全一致。
+func collectMapperSamples(reg *mapper.MapperRegistry, twins *devicetwin.TwinStore, now int64, proc sampleProcessor) {
 	if reg == nil || twins == nil {
 		return
 	}
@@ -245,7 +260,11 @@ func collectMapperReports(reg *mapper.MapperRegistry, twins *devicetwin.TwinStor
 		}
 		ns := namespaceOfMapper(m)
 		for _, deviceName := range deviceNamesOf(m) {
-			twins.UpsertReported(deviceName, ns, props, now)
+			out := props
+			if proc != nil {
+				out = proc(deviceName, ns, props, now)
+			}
+			twins.UpsertReported(deviceName, ns, out, now)
 		}
 	}
 }

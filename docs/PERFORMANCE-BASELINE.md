@@ -102,3 +102,27 @@ LOAD_TEST_NODES=10 LOAD_TEST_HEARTBEATS=5 \
   }
 }
 ```
+
+## 边缘时序库（v0.38.0）
+
+> 验收：对齐规划"720 条/s 优化场景 + 保留策略 + 断电重启恢复"的性能验证要求。
+> 基准位于 `pkg/tsdb/v0380_test.go`（Benchmark*）；复现：
+> `go test ./pkg/tsdb/ -run '^$' -bench . -benchtime=2s -benchmem`。
+
+| 项 | 值 |
+| --- | --- |
+| 机器 | Apple Silicon 开发机（arm64，M1 Pro） |
+| OS | macOS（Darwin 25.1.0） |
+| Go | 1.26.2 |
+| 模式 | 单机、本地 SSD、批内顺序写（零依赖纯 Go） |
+
+| 基准 | 场景 | 实测 | 换算 |
+| --- | --- | --- | --- |
+| WriteSingleSeries | 单序列顺序写 | 139.8 ns/条 | ≈ 715 万条/s |
+| WriteParallelSeries | 8 并发 × 16 序列 | 590.0 ns/条 | ≈ 169 万条/s |
+| Write720Scenario | 200 序列 × 36 点/批 = 7200 条/批 | 1.046 ms/批 | ≈ 688 万条/s |
+| QueryWindow | 10 万点中查 1 万点窗 | 52.7 ms | 全段扫描 |
+| AggregateWindow | 5 万点 → 83 桶 avg | 27.3 ms | — |
+
+结论：写吞吐相对 720 条/s 目标余量约 9500×；查询/聚合在 10 万点量级为数十毫秒
+（本地诊断与后续上送场景足够；段级时间裁剪/索引优化列后续候选，登记 KI §39）。

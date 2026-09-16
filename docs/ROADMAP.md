@@ -692,3 +692,19 @@ spec：specs/0010-rule-engine/spec.md（发展规划 v0.37 · G15/G14）。
 | R5 云端管理面 | cloud/pkg/rulestore（etcd 写穿）+ rules API 9 端点 + 事件 ring | ✅ 闭环 | 契约 42→51；下发五态语义同 config-sync |
 | 边界 | 动作仅 event / 无 cleared 事件 / ring 内存 500 / 严格相等 / 不补发离线 | 📝 登记 | KI §38 |
 | 后续候选（指令联动动作、云端事件持久化与多副本聚合、治理容差版、规则可视化编排） | — | ⏳ 待排 | 非承诺 |
+
+## 34. v0.38.0 — 边缘时序存储（2026-09-16）
+
+spec：specs/0011-edge-tsdb/spec.md（发展规划 v0.38 · G17）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| T1 存储模型与写入 | pkg/tsdb：序列/段/点 + 段滚动 + 乱序容忍 | ✅ 闭环 | 段名毫秒+序号唯一；批/单条写 |
+| T2 查询与聚合 | pkg/tsdb：Query 时间窗 + Aggregate 五函数 | ✅ 闭环 | rollup 段加权重聚合；窗对齐确定 |
+| T3 保留与降采样 | pkg/tsdb：逐段判定（超期删除 / raw→rollup） | ✅ 闭环 | 原子替换（rename 覆盖，崩溃安全） |
+| T4 水位与背压 | pkg/tsdb：泄洪（删最老封段）+ ErrBackpressure | ✅ 闭环 | 丢弃计数；不破坏已有数据 |
+| T5 持久化与恢复 | 段文件 + 残尾忽略 + Open 扫描重建 | ✅ 闭环 | 活动段重开即封；损坏段跳过 |
+| T6 边缘装配 | cmd/edgecore：opt-in 开关 + 采样管道 sink + 优雅关闭刷盘 | ✅ 闭环 | 默认关闭零行为；Open 失败降级 |
+| 性能 | 720 条/s 场景实测 ≈688 万条/s（Write720Scenario） | ✅ 验收 | 数字入 RELEASE-NOTES N3 与 PERFORMANCE-BASELINE |
+| 边界 | 段粒度保留 / 断电窗口 ≤1s / rollup 无 first / 无压缩 / 单实例写 | 📝 登记 | KI §39 |
+| 后续候选（压缩、标签过滤、跨序列聚合、云端查询面 v0.39、两级降采样、段级时间裁剪） | — | ⏳ 待排 | 非承诺 |

@@ -59,6 +59,9 @@ func (s *Server) handleRuleEvent(c *conn, m *protocol.Message) {
 			AckPayload{Code: CodeInvalidMessage, Message: "RuleEvent payload 缺少 ruleId 或 deviceName"})
 		return
 	}
+	if s.ruleEventCheckDup(m.Source, m.ID) {
+		return // 重复投递（补传重发）：丢弃 + 计数，不回调（v0.39.0 幂等）
+	}
 	s.notifyRuleEvent(m.Source, ev)
 	log.Infof("收到节点 %s 的 RuleEvent: %s（%s/%s=%g，severity=%s）",
 		m.Source, ev.RuleID, ev.Namespace, ev.DeviceName, ev.Value, ev.Severity)

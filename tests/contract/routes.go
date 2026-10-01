@@ -23,7 +23,7 @@ type Endpoint struct {
 	Note   string // 契约说明（与文档矩阵口径一致）
 }
 
-// ContractEndpoints 是 cloudcore HTTP 端点契约表（51 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9）。
+// ContractEndpoints 是 cloudcore HTTP 端点契约表（53 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9 + v0.39.0 上行补传可视化 2）。
 //
 // ⚠️ 路径以 cmd/cloudcore/main.go 实际注册为准（任务提示 podsync/pod-sync
 // 存在歧义：grep 确认代码与两份文档均为 /podsync，无连字符）。
@@ -83,6 +83,9 @@ var ContractEndpoints = []Endpoint{
 	{Method: "GET", Path: "/api/v1/rules/governance", Note: "治理策略列表（v0.37.0，含规则包版本）"},
 	{Method: "PUT", Path: "/api/v1/rules/governance", Note: "治理策略全量替换（v0.37.0）"},
 	{Method: "POST", Path: "/api/v1/nodes/{nodeID}/rules/sync", Note: "规则包下发（v0.37.0；可靠投递，五态语义同 config-sync）"},
+	// ── v0.39.0 上行补传可视化 API（2 条）──
+	{Method: "GET", Path: "/api/v1/uplink/overview", Note: "上行补传概览（v0.39.0；各节点积压/丢弃/上送/接收计数）"},
+	{Method: "GET", Path: "/api/v1/nodes/{nodeID}/uplink", Note: "单节点上行状态（v0.39.0；无数据 404）"},
 }
 
 // MessageType 描述一种云边通道消息类型契约。
@@ -94,8 +97,8 @@ type MessageType struct {
 
 // ContractMessageTypes 是云边通道消息类型契约，逐项绑定 protocol.Type* 常量。
 //
-// 与 docs/API-COMPATIBILITY.md §2 矩阵对应（12 种活跃类型，v0.37.0 起
-// +RuleSync/+RuleEvent）。历史口径「9 种消息」为 M3 时点，契约以文档为准
+// 与 docs/API-COMPATIBILITY.md §2 矩阵对应（13 种活跃类型，v0.39.0 起
+// +UplinkReport）。历史口径「9 种消息」为 M3 时点，契约以文档为准
 // （文档一致性测试会双向校验，口径分歧在测试中显式暴露）。
 // NodeJob / NodeJobResult 为已关闭占位（v0.1.0 范围外，见 pkg/protocol/message.go），
 // 文档矩阵不收录，用 InDoc=false 显式声明该状态，防止误加回文档。
@@ -111,6 +114,7 @@ var ContractMessageTypes = []MessageType{
 	{Name: protocol.TypeDeviceCommand, InDoc: true, Note: "云→边：设备操作指令（M3）"},
 	{Name: protocol.TypeRuleSync, InDoc: true, Note: "云→边：规则包全量下发（v0.37.0）"},
 	{Name: protocol.TypeRuleEvent, InDoc: true, Note: "边→云：规则触发事件（v0.37.0）"},
+	{Name: protocol.TypeUplinkReport, InDoc: true, Note: "边→云：上行补传队列状态上报（v0.39.0）"},
 	{Name: protocol.TypeAck, InDoc: true, Note: "双向：通用确认（可靠投递）"},
 	{Name: protocol.TypeNodeJob, InDoc: false, Note: "云→边：任务分发（已关闭：v0.1.0 范围外，保留协议占位）"},
 	{Name: protocol.TypeNodeJobResult, InDoc: false, Note: "边→云：任务结果（已关闭：v0.1.0 范围外，保留协议占位）"},

@@ -71,7 +71,14 @@
 | 50 | PUT | `/api/v1/rules/governance` | 治理策略全量替换 | v0.37.0 |
 | 51 | POST | `/api/v1/nodes/{nodeID}/rules/sync` | 规则包下发（可靠投递，五态语义同 config-sync） | v0.37.0 |
 
-> 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行）。
+> **v0.39.0 追加（2 个上行补传可视化端点，均为新增 = 向后兼容；既有 51 行逐字节不变）**：
+
+| # | 方法 | 路径 | 说明 | 版本 |
+|---|------|------|------|------|
+| 52 | GET | `/api/v1/uplink/overview` | 上行补传概览（各节点积压/丢弃/上送/接收计数） | v0.39.0 |
+| 53 | GET | `/api/v1/nodes/{nodeID}/uplink` | 单节点上行状态（无数据 404） | v0.39.0 |
+
+> 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行）。
 
 > 认证：`EDGEFLOW_CLOUDCORE_API_TOKEN` 设置为 `on` 时全部管理端点（除 healthz/metrics）要求
 > `Authorization: Bearer <token>`（WBS 7.2）；未设置保持匿名（向后兼容，仅限受信网络）。
@@ -92,6 +99,7 @@
 | `DeviceCommand` | 云→边 | nodeID / deviceID / property / value（设备指令，对应 POST /device-command 端点） | 稳定（M3） |
 | `RuleSync` | 云→边 | ruleSet（version / rules[] / governance[]，规则包全量下发） | 新增（v0.37.0） |
 | `RuleEvent` | 边→云 | ruleId / ruleName / deviceName / namespace / property / value / severity / message / triggeredAt / ruleSetVersion | 新增（v0.37.0） |
+| `UplinkReport` | 边→云 | depth / dropped / sent / oldestTs（上行补传队列状态周期上报） | 新增（v0.39.0） |
 | `Ack` | 双向 | id / ok / error | 稳定（可靠投递） |
 
 兼容规则：
@@ -169,3 +177,16 @@
 | 云端规则存储（etcd 键空间 `/edgeflow/ruleset/*`；纯内存模式无持久化） | 升级零迁移：新增键空间；重启自动恢复；与 devicestatus 同构的写穿语义（写穿失败不更新内存） |
 | 边缘规则包持久化（SQLite `rules/current` 键 + `rule_events` 表，保留 30 天） | 升级零迁移：新增键/表；无规则包时零行为；规则包损坏安全降级为空规则 |
 | 零新依赖 / 既有包 API | go.mod 零变化；`pkg/rules` 为新增共享包；MQTT/OPC-UA/视频/模型面代码零触碰；v0240–v0350 冻结测试零改动 |
+
+## v0.39.0 兼容性增量（2026-09-16）
+
+端点总数 51 → 53（+2 上行补传可视化端点，全部新增 = 向后兼容；既有 51 行逐字节不变）；云边消息类型 12 → 13（+UplinkReport）。
+
+| 变更 | 兼容性 |
+|---|---|
+| 新增 `/api/v1/uplink/overview`、`/api/v1/nodes/{nodeID}/uplink` 2 端点 | **零破坏**：全新路由（`/api/v1/uplink/*` 与 `.../uplink` 此前无路由）；数据源为增量统计缓存，无数据时空列表 / 404 |
+| 云边消息 +`UplinkReport`（边→云） | **零破坏**：新增类型不影响既有 12 类型；未启用补传（`EDGEFLOW_EDGECORE_UPLINK` off）时不上报；旧边缘不发送 |
+| 云端 RuleEvent 接收幂等（消息 ID 滚动去重，窗口 10000，FIFO 淘汰） | **零破坏**：单发路径不命中去重集；重复仅在补传重发时被消化（丢弃 + 计数） |
+| 云端在途缓冲（etcd `/edgeflow/ruleevents/*`：写→入环→删；启动 Load 恢复） | 升级零迁移：新增键空间；事件 ring 语义不变（内存窗口）；etcd 不可用时降级内存环（Warn） |
+| 边缘上行补传（opt-in `EDGEFLOW_EDGECORE_UPLINK=on`；SQLite `uplink_queue` / `uplink_meta` 表） | **默认零行为**：未开启时规则事件出口与 v0.38.0 直发路径逐字节一致；开启后为至少一次语义（发送失败留队列、恢复续传、云端幂等） |
+| 零新依赖 / 既有包 API | go.mod 零变化；MQTT/OPC-UA/视频/模型面代码零触碰；v0240–v0350 冻结测试零改动 |

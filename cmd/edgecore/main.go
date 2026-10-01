@@ -233,7 +233,27 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 		log.Infof("规则事件台账已就绪（保留 %d 天，后台每 24h 清理）", metamanager.RuleEventRetentionDays)
 	}
 	loadRuleSet(ruleEngine, governor, store)
-	rulePipeline := newSamplePipeline(governor, ruleEngine, newRuleEventSink(client, ruleLedger, opts.NodeID))
+
+	// 上行补传（v0.39.0，spec 0012）：opt-in（EDGEFLOW_EDGECORE_UPLINK=on）——
+	// 规则事件改走持久补传队列（断网积压/恢复续传，云端幂等去重）；关闭时
+	// 保持 v0.38 直发路径（逐字节等价）；队列初始化失败回退直发。
+	var ruleEventSink func(rules.Event)
+	var uplinkRel *uplinkRelay
+	if uplinkOpts := parseUplinkOptionsFromEnv(); uplinkOpts.Enabled {
+		if uq, err := metamanager.NewUplinkQueue(store, uplinkOpts.MaxRows); err != nil {
+			log.Warnf("上行补传队列初始化失败（回退直发模式）: %v", err)
+			ruleEventSink = newRuleEventSink(client, ruleLedger, opts.NodeID)
+		} else {
+			uplinkRel = newUplinkRelay(uq, client.Send, uplinkOpts, opts.NodeID)
+			ruleEventSink = newUplinkRuleEventSink(uplinkRel, ruleLedger, client, opts.NodeID)
+			uplinkRel.Start()
+			log.Infof("上行补传已启用（容量 %d 行，批量 %d，速率 %d 条/s，状态上报 %ds）",
+				uplinkOpts.MaxRows, uplinkOpts.Batch, uplinkOpts.Rate, uplinkOpts.ReportSec)
+		}
+	} else {
+		ruleEventSink = newRuleEventSink(client, ruleLedger, opts.NodeID)
+	}
+	rulePipeline := newSamplePipeline(governor, ruleEngine, ruleEventSink)
 
 	// 时序存储（v0.38.0，spec 0011）：opt-in（EDGEFLOW_EDGECORE_TSDB=on）；
 	// 关闭时全链零行为。采样管道的 accepted 值经 sink 落时序库。
@@ -350,6 +370,11 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	<-reportDone // Pod 上报循环退出后不再有新消息写入通道
 	close(deviceReportStopCh)
 	<-deviceReportDone // 设备上报循环退出后不再有新消息写入通道
+	// 上行补传收尾（v0.39.0）：上报循环已停 → 停止补传 worker（残留条目留盘，
+	// 重启后自动继续补传）。
+	if uplinkRel != nil {
+		uplinkRel.Stop()
+	}
 	// 时序库收尾（v0.38.0）：上报循环已停 → 无新写入 → 刷盘关闭。
 	if tsdbCleanup != nil {
 		tsdbCleanup()

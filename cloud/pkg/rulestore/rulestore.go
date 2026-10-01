@@ -4,11 +4,13 @@
 // 先写 etcd 成功才更新内存，失败返回 error 且内存不动；kv 为 nil 时纯内存，
 // 供测试与内嵌形态使用）。
 //
-// 键空间（etcd，前缀 /edgeflow/ruleset）：
+// 键空间（etcd，前缀 /edgeflow/ruleset，另含事件在途缓冲 /edgeflow/ruleevents）：
 //   - /edgeflow/ruleset/items/<ruleID>   规则单条（rules.Rule JSON）；
 //   - /edgeflow/ruleset/governance       治理策略全量（[]GovernancePolicy JSON）；
 //   - /edgeflow/ruleset/version          规则包版本（int64 JSON，毫秒时间戳，
-//     变更时取 max(now, 当前+1) 保证单调递增——边侧"陈旧版本拒绝"依赖此性质）。
+//     变更时取 max(now, 当前+1) 保证单调递增——边侧"陈旧版本拒绝"依赖此性质）；
+//   - /edgeflow/ruleevents/<nodeID>/<key> 事件在途缓冲（v0.39.0，spec 0012 US-5）：
+//     接收→写缓冲→入 ring→删缓冲；启动 Load 扫描恢复（云端重启不丢）。
 //
 // 事件 ring：最近 EventRingCapacity 条 RuleEvent（FIFO 滚动，内存不落盘）。
 // 多副本聚合与持久化归档见 KNOWN-ISSUES §38。
@@ -16,10 +18,13 @@ package rulestore
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -35,6 +40,9 @@ const (
 	keyVersion         = KeyPrefixRuleStore + "/version"
 	keyGovernance      = KeyPrefixRuleStore + "/governance"
 	keyItemsPrefix     = KeyPrefixRuleStore + "/items/"
+
+	// keyRuleEventsPrefix 是事件在途缓冲的 etcd 键前缀（v0.39.0）。
+	keyRuleEventsPrefix = "/edgeflow/ruleevents/"
 )
 
 // EventRingCapacity 是规则事件内存 ring 的容量（超出丢最旧）。
@@ -115,6 +123,8 @@ func (s *Store) Load(ctx context.Context) error {
 		restored++
 	}
 	log.Infof("规则存储已加载：规则 %d 条，治理策略 %d 条，版本 %d", restored, len(s.gov), s.version)
+	// v0.39.0：恢复在途缓冲（云端重启不丢，spec 0012 US-5）。
+	s.restorePendingEventsLocked(ctx)
 	return nil
 }
 
@@ -279,13 +289,86 @@ func (s *Store) RuleSet() rules.RuleSet {
 }
 
 // AppendEvent 追加一条规则事件到内存 ring（超容量丢最旧）。
+// 仅内存路径（降级/测试）；v0.39.0 起的接收路径用 AppendEventBuffered。
 func (s *Store) AppendEvent(ev rules.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.appendEventLocked(ev)
+}
+
+// appendEventLocked 把事件入 ring（调用方持锁）。
+func (s *Store) appendEventLocked(ev rules.Event) {
 	s.events = append(s.events, ev)
 	if len(s.events) > EventRingCapacity {
 		s.events = s.events[len(s.events)-EventRingCapacity:]
 	}
+}
+
+// AppendEventBuffered 接收持久化（v0.39.0，spec 0012 US-5）：先写 etcd 在途
+// 缓冲（/edgeflow/ruleevents/<nodeID>/<key>）→ 入 ring → 删缓冲。云端在
+// "已接收未处理完"窗口崩溃时，重启 Load 扫描缓冲恢复（不丢）。
+// kv 为 nil（测试/内嵌形态）时退化为仅入 ring；写缓冲失败返回错误
+// （调用方按降级策略处理：Warn + 内存环）。
+func (s *Store) AppendEventBuffered(ctx context.Context, nodeID string, ev rules.Event) error {
+	key := ""
+	if s.kv != nil {
+		raw, err := json.Marshal(ev)
+		if err != nil {
+			return fmt.Errorf("序列化事件失败: %w", err)
+		}
+		key = keyRuleEventsPrefix + nodeID + "/" + pendingEventKey()
+		if err := s.kv.Put(ctx, key, raw); err != nil {
+			return fmt.Errorf("写在途缓冲失败: %w", err)
+		}
+	}
+	s.mu.Lock()
+	s.appendEventLocked(ev)
+	s.mu.Unlock()
+	if key != "" {
+		if err := s.kv.Delete(ctx, key); err != nil {
+			// 已入 ring；残留缓冲在下次 Load 会被恢复（重复进 ring 无害），
+			// 仅告警不阻断（spec 0012 US-5 降级语义）。
+			log.Warnf("清理在途缓冲失败（key=%s）: %v", key, err)
+		}
+	}
+	return nil
+}
+
+// restorePendingEventsLocked 恢复在途缓冲（调用方持锁；Load 尾部调用）：
+// 逐条恢复进 ring 并清除缓冲键；损坏条目跳过。
+func (s *Store) restorePendingEventsLocked(ctx context.Context) {
+	entries, err := s.kv.ListByPrefix(ctx, keyRuleEventsPrefix)
+	if err != nil {
+		log.Warnf("扫描在途缓冲失败（跳过恢复）: %v", err)
+		return
+	}
+	restored := 0
+	for _, e := range entries {
+		var ev rules.Event
+		if err := json.Unmarshal(e.Value, &ev); err != nil || ev.RuleID == "" {
+			log.Warnf("跳过损坏的在途事件（key=%s）", e.Key)
+		} else {
+			s.appendEventLocked(ev)
+			restored++
+		}
+		if err := s.kv.Delete(ctx, e.Key); err != nil {
+			log.Warnf("清除恢复的在途事件失败（key=%s）: %v", e.Key, err)
+		}
+	}
+	if restored > 0 {
+		log.Infof("在途缓冲已恢复：事件 %d 条（重启不丢）", restored)
+	}
+}
+
+// pendingEventKey 生成在途缓冲唯一键后缀：纳秒时间戳 + 4 字节随机
+// （随机源失败时仅用时间戳——纳秒级仍保证进程内唯一）。
+func pendingEventKey() string {
+	ts := strconv.FormatInt(time.Now().UnixNano(), 10)
+	var buf [4]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return ts
+	}
+	return ts + "-" + hex.EncodeToString(buf[:])
 }
 
 // EventFilter 是 ListEvents 的过滤条件（零值不参与过滤）。

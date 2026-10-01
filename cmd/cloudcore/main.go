@@ -616,7 +616,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 				log.Errorf("RuleEvent handler panic（nodeID=%s）: %v", nodeID, r)
 			}
 		}()
-		ruleStore.AppendEvent(ev)
+		// v0.39.0：接收持久化（在途缓冲）——写 etcd 失败时降级为内存环
+		// （不阻断事件管道；边侧补传 + 云端幂等保证最终一致）。
+		if err := ruleStore.AppendEventBuffered(sigCtx, nodeID, ev); err != nil {
+			log.Warnf("[rulestore] 在途缓冲写入失败（降级内存环）: %v", err)
+			ruleStore.AppendEvent(ev)
+		}
 	})
 
 	// 审计台账（WBS 7.5）：JSONL 追加写，记录每次管理 API 调用。
@@ -721,6 +726,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// v0.37.0 规则管理 API（9 条：规则 CRUD 5 + 治理策略 2 + 规则包下发 1 +
 	// 事件查询 1；注册在既有 apiMux → auth/audit 链自动覆盖，零新中间件代码）
 	(&ruleAPI{store: ruleStore, reg: nodeReg, reliableSend: hub.ReliableSendContext}).Register(apiMux)
+	// v0.39.0 上行补传可视化 API（2 条：overview + 单节点；auth/audit 链自动覆盖）
+	uplinkSt := newUplinkState()
+	hub.SetUplinkReportHandler(func(nodeID string, p cloudhub.UplinkReportPayload) {
+		uplinkSt.update(nodeID, p, time.Now().UnixMilli())
+	})
+	(&uplinkAPI{hub: hub, state: uplinkSt}).Register(apiMux)
 
 	var apiHandler http.Handler = apiMux
 	if authEnabled {

@@ -118,20 +118,7 @@ func buildRuleEventMessage(nodeID string, ev rules.Event) (*protocol.Message, er
 // client/ledger 允许为 nil（测试与降级装配）。
 func newRuleEventSink(client *edgehub.Client, ledger *metamanager.RuleLedger, nodeID string) func(rules.Event) {
 	return func(ev rules.Event) {
-		if ledger != nil {
-			rec := metamanager.RuleEventRecord{
-				Ts:        ev.TriggeredAt,
-				RuleID:    ev.RuleID,
-				DeviceID:  ev.DeviceName,
-				Namespace: ev.Namespace,
-				Severity:  ev.Severity,
-				Value:     fmt.Sprintf("%g", ev.Value),
-				Message:   ev.Message,
-			}
-			if err := ledger.SaveEvent(rec); err != nil {
-				log.Warnf("规则事件台账写入失败: %v", err)
-			}
-		}
+		recordRuleEventLedger(ledger, ev)
 		if client == nil {
 			return
 		}

@@ -80,6 +80,8 @@
 | GET | `/api/v1/rules/governance` | **治理策略列表（v0.37.0：含规则包版本）** | 200 |
 | PUT | `/api/v1/rules/governance` | **治理策略全量替换（v0.37.0：body {"policies":[...]}）** | 200 / 400 |
 | POST | `/api/v1/nodes/{nodeID}/rules/sync` | **规则包下发（v0.37.0：可靠投递，五态语义同 config-sync）** | 200 / 404 / 502 / 504 / 500 |
+| GET | `/api/v1/uplink/overview` | **上行补传概览（v0.39.0：各节点积压/丢弃/上送/接收计数）** | 200 |
+| GET | `/api/v1/nodes/{nodeID}/uplink` | **单节点上行状态（v0.39.0：无数据 404）** | 200 / 404 |
 
 ### 1.2 错误码表（统一约定）
 

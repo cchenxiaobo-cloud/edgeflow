@@ -24,6 +24,7 @@ const (
 	TypeDeviceCommand = "DeviceCommand" // 云→边：设备操作指令（M3）
 	TypeRuleSync      = "RuleSync"      // 云→边：规则包全量下发（v0.37.0）
 	TypeRuleEvent     = "RuleEvent"     // 边→云：规则触发事件（v0.37.0）
+	TypeUplinkReport  = "UplinkReport"  // 边→云：上行补传队列状态上报（v0.39.0）
 	TypeNodeJob       = "NodeJob"       // 云→边：任务分发（已关闭：v0.1.0 范围外，保留协议占位）
 	TypeNodeJobResult = "NodeJobResult" // 边→云：任务结果（已关闭：v0.1.0 范围外，保留协议占位）
 	TypeAck           = "Ack"           // 双向：通用确认

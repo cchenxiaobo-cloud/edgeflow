@@ -740,3 +740,17 @@ spec：specs/0013-alarm-setpoint/spec.md（发展规划 v0.40 · G26）。
 | 验收 | e2e 全链 | ✅ 验收 | 三类 severity 告警全链 + 生命周期 + 断网 30s 补传 + 设定值 applied/rejected 双路径 |
 | 边界 | 无自动 cleared / 联动与工单留位 / 控制类须评审 / 节流延迟 / 审批无快照校验 | 📝 登记 | KI §41 |
 | 后续候选（cleared 恢复源、声光/消息联动实现、ITSM 工单对接、审批快照校验、告警聚合窗口可配、通知渠道、告警 episode 跨重启延续（台账回填 active）、启动时按 setpoint_cache 回填 Desired） | — | ⏳ 待排 | 非承诺 |
+
+## 37. v0.41.0 — 采集扩展与性能（2026-10-01）
+
+spec：specs/0014-collect-waveform/spec.md（发展规划 v0.41 · G19+G13）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| C1 Modbus RTU 通道 | pkg/modbusrtu（CRC16/帧/客户端）+ modbussim RTU 模式 + mapper scheme 分发 | ✅ 闭环 | rtutcp:// 联调（串口-网关形态）；TCP 路径零回归；串口硬件依赖登记 |
+| C2 REST 采集器 | mappers/rest（轮询形态，评估落档） | ✅ 闭环 | 单设备/单端点；容错语义与 modbus 同构；推送接收登记后续 |
+| C3 高频波形通道 | pkg/waveform + cmd/edgecore 装配（opt-in） | ✅ 闭环 | 块采集/环形缓冲/FFT+包络谱特征；特征经既有管道进影子/规则/tsSink；原始落库子开关 |
+| C4 压测与基线 | hack/collect-bench + PERFORMANCE-BASELINE | ✅ 验收 | 2000 点/s 达标（两轮复跑）；P50=11.9/12.3ms、P99=14.8/23.2ms（周期 1s） |
+| 验收 | e2e + 压测 | ✅ 验收 | 10kHz 模拟源特征提取演示（domFreq≈50Hz 上云）；RTU 模拟器联调；零回归 |
+| 边界 | 真串口待硬件 / RTU-over-TCP 非标准 / 矩形窗泄漏 / 包络谱最小实现 / 仿真速率出块 | 📝 登记 | KI §42 |
+| 后续候选（真串口 transport、REST 多端点聚合、推送接收形态、加窗与 Hilbert 包络、波形告警规则模板、采集点位动态下发） | — | ⏳ 待排 | 非承诺 |

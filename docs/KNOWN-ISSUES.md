@@ -697,3 +697,38 @@ cloud/pkg/setpointstore 设定值建单/审批/投递（3 端点）+ DeviceComma
 普通设备指令（无 class/setpointId）路径与 v0.39.0 逐字节一致；契约既有 53 端点
 逐字节不变；告警/设定值存储为新增键空间（升级零迁移，重启自动恢复）；零新依赖；
 MQTT/OPC-UA/视频/模型面零触碰；v0240–v0350 冻结测试零改动。
+
+## 42. v0.41.0（采集扩展与性能）
+
+**范围**：pkg/modbusrtu（CRC16/RTU 帧编解码/客户端）+ pkg/modbussim RTU-over-TCP 模式 +
+mappers/modbus scheme 分发（tcp/rtutcp）+ mappers/rest 轮询采集器 + pkg/waveform
+（块采集/环形缓冲/FFT+包络谱）+ edgecore 装配（REST/波形 opt-in）+ hack/collect-bench 压测；
+契约零改动（61 端点/15 消息维持）。
+
+**能力**：见 RELEASE-NOTES-v0410 N1（四块：Modbus RTU 通道 / REST 采集器 /
+高频波形通道 / 2000 点/1s 采集压测）。
+
+**边界登记（本版新增）**：
+- 真串口 transport 未实现：`serial://` scheme 本版不做（串口硬件依赖，联调待硬件；
+  termios raw-mode transport 为后续候选）——RTU-over-TCP 为「串口-网关」主流部署
+  形态，但非标准 Modbus 封装（明确登记）。
+- RTU CRC 错误帧：无帧边界重同步语义，直接断开连接（与主流网关行为一致）；
+  客户端侧同样在 CRC/帧错后主动关闭连接（失步自洽，复核 P2-3 处置）。
+- FFT 为 radix-2 迭代（2 的幂，非 2 幂补零）+ 矩形窗：非整周期采样存在谱泄漏
+  （主 bin 幅值低于真实值，如 10kHz/4096 下 50Hz 信号主 bin 幅值 ≈0.67）；
+  特征频率分辨率 = rateHz/nextPow2(N)（10kHz/4096 ≈ 2.44Hz）。
+- 包络谱为最小实现（|x| 去均值 → FFT 取低频段主频），非完整 Hilbert 解调。
+- 波形模拟源按仿真速率出块：仿真时间轴随块长推进，墙钟出块间隔与仿真块时长解耦
+  （非实时采样承诺）；噪声/相位为确定性 seed。
+- REST 采集器为单设备/单端点（多端点聚合为后续候选）；轮询形态取一
+  （推送接收属平台对接 G18 方向，登记后续）；HandleCommand 明确拒绝（只读面）。
+- 波形原始落 tsdb 默认 off（10k 点/s 量级，开启需评估容量水位与保留策略；
+  原始数据绕过治理/规则直写 tsSink）；原始点时间戳为**仿真时间轴（1970 起）**——
+  按墙钟的保留/窗口查询不可见，保留策略可能立即回收（复核 P2-5 登记）；
+  时间戳推进用 float 累加 + Round 输出（消除逐块截断漂移）。
+- 波形特征频率搜索段排除 <1Hz 与 DC；压测基线为单机本机数字（跨机型复测登记）。
+
+**升级兼容**：REST_URL/WAVEFORM 未配置时零行为（Mapper 不注册/循环不启动）；
+Modbus TCP 路径（既有 addr 格式）与 v0.40.0 行为一致（transport 抽象为等价重构，
+PRT-21 测试零改动通过）；契约零改动（61 端点/15 消息维持）；零新依赖；
+MQTT/OPC-UA/视频/模型面零触碰；v0240–v0350 冻结测试零改动。

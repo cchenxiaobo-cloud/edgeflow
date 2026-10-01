@@ -221,3 +221,33 @@ go run ./hack/modbus-e2e
 | 写目标温度成功但温度不变 | 写错地址（真实设备寄存器偏移不同） | 按 §6 核对地址表；用模拟器对照：写 0x0010 后温度应向目标收敛 |
 | Modbus 异常码 0x02/0x03 | 地址越界 / 值非法 | 核对地址映射与值域；Mapper 的错误信息含异常码，台账可回溯 |
 | 台账增长过快 | 采集周期短、设备多 | `op_ledger` 是追加流水；30 天自动清理，也可调小 `Limit` 查询 |
+
+## 9. Modbus RTU 通道（v0.41.0）
+
+v0.41.0 起 Mapper 支持 RTU 帧封装（地址 scheme 分发）：
+
+| scheme | 形态 | 说明 |
+|--------|------|------|
+| `host:port` / `tcp://host:port` | Modbus TCP | 既有路径（goburrow 客户端，零回归） |
+| `rtutcp://host:port` | RTU over TCP | 串口-网关主流形态（网关把串口 RTU 帧透传为 TCP 字节流）；与模拟器 RTU 模式联调 |
+| `serial:///dev/ttyUSB0` | RTU over 串口 | **本版未实现**（串口硬件依赖，联调待硬件；termios transport 后续候选，登记 KI §42） |
+
+配置示例（edgecore env）：
+
+```bash
+# RTU-over-TCP（网关/模拟器）
+export EDGEFLOW_MODBUS_ADDR=rtutcp://127.0.0.1:15021
+```
+
+模拟器 RTU 模式（与 MBAP 共享寄存器模型）：
+
+```go
+sim := modbussim.New("127.0.0.1:0")
+_ = sim.Start()
+rtuAddr, _ := sim.StartRTU("127.0.0.1:0") // 返回实际监听地址
+```
+
+语义说明：RTU 帧 = `[从站地址][PDU][CRC16-LE]`（CRC 多项式 0xA001）；
+CRC 不符/非法帧直接断开连接（无帧边界重同步，与主流网关一致）；
+从站越界回异常码 0x0B。已知边界（KI §42）：真串口 transport 待硬件联调；
+RTU-over-TCP 非标准 Modbus 封装（主流网关形态，明确登记）。

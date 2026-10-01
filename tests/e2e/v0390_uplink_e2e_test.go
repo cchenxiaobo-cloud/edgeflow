@@ -145,11 +145,28 @@ func TestV0390UplinkE2E(t *testing.T) {
 	n1 := len(got.Items)
 	t.Logf("在线基线事件数 n1=%d（事件流活跃）", n1)
 
-	// 3. 断网：停云，观察 12s 积压窗口（边缘持续触发）
+	// 3. 断网：停云，等待边侧积压木证（drain 失败锚点）后再恢复——消除对
+	// mock 传感器随机穿越节奏的依赖（历史 flake：[6]-[8] 门禁中断网窗口
+	// 恰逢穿越空窗→队列无积压→重放断言无从通过，见工作台记录）。
+	// 有界等待 120s：穿越周期观测间隔最长 ~25s，120s 内至少一次穿越/
+	// 重发；锚点由补传 worker 首次失败时输出（限频，仅此一次）。
 	tDown := time.Now().UnixMilli()
 	cloud.stop()
-	t.Logf("cloudcore 已停（断网模拟，tDown=%d）", tDown)
-	time.Sleep(12 * time.Second)
+	t.Logf("cloudcore 已停（断网模拟，tDown=%d），等待边侧积压木证…", tDown)
+	backlogDeadline := time.Now().Add(120 * time.Second)
+	backlogProven := false
+	for time.Now().Before(backlogDeadline) {
+		if strings.Contains(edge.logTail(), "上行补传暂不可达") {
+			backlogProven = true
+			break
+		}
+		time.Sleep(3 * time.Second)
+	}
+	if !backlogProven {
+		t.Fatalf("等待 120s 未观察到边侧补传积压（断网期间无事件触发/无入队）")
+	}
+	t.Logf("边侧积压木证已确认（drain 失败锚点出现），恢复云端")
+	time.Sleep(2 * time.Second) // 让本轮 drain 失败走完，避免边界竞态
 
 	// 4. 恢复：同端口/同数据目录重启（edge 自动重连重新注册）
 	cloud2 := startCloudcoreOnPorts(t, root, httpPort, hubPort)

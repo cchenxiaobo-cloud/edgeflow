@@ -36,6 +36,7 @@ import (
 	"edgeflow/edge/pkg/mapper"
 	"edgeflow/edge/pkg/metamanager"
 	"edgeflow/pkg/log"
+	"edgeflow/pkg/modbusrtu"
 )
 
 // 寄存器/线圈地址（与模拟器 pkg/modbussim 及 docs/MODBUS-GUIDE.md 一致）。
@@ -125,6 +126,105 @@ var (
 	_ mapper.DeviceNamespaceResolver = (*ModbusMapper)(nil)
 )
 
+// modbusTransport 统一 TCP（goburrow）与 RTU-over-TCP（pkg/modbusrtu）操作面
+// （v0.41.0，spec 0014 US-1）：Connect/Close 语义对齐 goburrow handler
+// （Connect 幂等拨号、Close 断开），四个操作方法与 modbus.Client 子集一致。
+type modbusTransport interface {
+	Connect() error
+	Close() error
+	ReadHoldingRegisters(address, quantity uint16) ([]byte, error)
+	WriteSingleRegister(address, value uint16) ([]byte, error)
+	WriteSingleCoil(address, value uint16) ([]byte, error)
+	ReadCoils(address, quantity uint16) ([]byte, error)
+}
+
+// tcpTransport 是 TCP 适配器（goburrow handler+client 的薄包装——既有路径，
+// 行为零回归）。
+type tcpTransport struct {
+	handler *modbus.TCPClientHandler
+	client  modbus.Client
+}
+
+func (t *tcpTransport) Connect() error { return t.handler.Connect() }
+
+func (t *tcpTransport) Close() error { return t.handler.Close() }
+
+func (t *tcpTransport) ReadHoldingRegisters(address, quantity uint16) ([]byte, error) {
+	return t.client.ReadHoldingRegisters(address, quantity)
+}
+
+func (t *tcpTransport) WriteSingleRegister(address, value uint16) ([]byte, error) {
+	return t.client.WriteSingleRegister(address, value)
+}
+
+func (t *tcpTransport) WriteSingleCoil(address, value uint16) ([]byte, error) {
+	return t.client.WriteSingleCoil(address, value)
+}
+
+func (t *tcpTransport) ReadCoils(address, quantity uint16) ([]byte, error) {
+	return t.client.ReadCoils(address, quantity)
+}
+
+// rtuTransport 是 RTU-over-TCP 适配器（pkg/modbusrtu 客户端；懒拨号，
+// 断开后由 mapper 重连逻辑驱动重拨）。串口-网关主流部署形态；真串口
+// transport 登记 KI §42（后续候选）。
+type rtuTransport struct {
+	addr    string
+	timeout time.Duration
+	slaveID byte
+	mu      sync.Mutex
+	client  *modbusrtu.Client
+}
+
+func (t *rtuTransport) Connect() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.client != nil {
+		return nil // 已拨号（幂等，与 goburrow Connect 语义一致）
+	}
+	c, err := modbusrtu.DialTCP(t.addr, t.slaveID, t.timeout)
+	if err != nil {
+		return err
+	}
+	t.client = c
+	return nil
+}
+
+func (t *rtuTransport) Close() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.client == nil {
+		return nil
+	}
+	err := t.client.Close()
+	t.client = nil
+	return err
+}
+
+func (t *rtuTransport) ReadHoldingRegisters(address, quantity uint16) ([]byte, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.client.ReadHoldingRegisters(address, quantity)
+}
+
+func (t *rtuTransport) WriteSingleRegister(address, value uint16) ([]byte, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.client.WriteSingleRegister(address, value)
+}
+
+func (t *rtuTransport) WriteSingleCoil(address, value uint16) ([]byte, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.client.WriteSingleCoil(address, value)
+}
+
+func (t *rtuTransport) ReadCoils(address, quantity uint16) ([]byte, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.client.ReadCoils(address, quantity)
+}
+
 // ModbusMapper 是 Modbus TCP 设备 Mapper。
 type ModbusMapper struct {
 	mu         sync.Mutex // 串行化连接状态与读写（重连逻辑需要独占连接）
@@ -137,6 +237,7 @@ type ModbusMapper struct {
 
 	handler *modbus.TCPClientHandler
 	client  modbus.Client
+	tr      modbusTransport // 统一传输面（v0.41.0：TCP=goburrow 包装 / rtutcp=modbusrtu）
 	started bool
 }
 
@@ -170,11 +271,29 @@ func New(addr string, opts ...Option) *ModbusMapper {
 	if m.namespace == "" {
 		m.namespace = DefaultNamespace
 	}
-	handler := modbus.NewTCPClientHandler(m.addr)
-	handler.Timeout = m.timeout
-	handler.SlaveId = m.slaveID
-	m.handler = handler
-	m.client = modbus.NewClient(handler)
+	// 传输面 scheme 分发（v0.41.0，spec 0014 US-1）：
+	//   - rtutcp://host:port → RTU 帧 over TCP（pkg/modbusrtu；串口-网关形态，
+	//     与 modbussim RTU 模式联调）；
+	//   - 其余（host:port / tcp://host:port）→ goburrow TCP（既有路径零回归，
+	//     tcp:// 前缀仅剥除）。
+	switch {
+	case strings.HasPrefix(m.addr, "rtutcp://"):
+		m.tr = &rtuTransport{
+			addr:    strings.TrimPrefix(m.addr, "rtutcp://"),
+			timeout: m.timeout,
+			slaveID: m.slaveID,
+		}
+		log.Infof("ModbusMapper %s 使用 RTU-over-TCP（addr=%s, slaveID=%d）",
+			m.deviceName, m.addr, m.slaveID)
+	default:
+		tcpAddr := strings.TrimPrefix(m.addr, "tcp://")
+		handler := modbus.NewTCPClientHandler(tcpAddr)
+		handler.Timeout = m.timeout
+		handler.SlaveId = m.slaveID
+		m.handler = handler
+		m.client = modbus.NewClient(handler)
+		m.tr = &tcpTransport{handler: handler, client: m.client}
+	}
 	return m
 }
 
@@ -209,7 +328,7 @@ func (m *ModbusMapper) Start(_ context.Context) error {
 
 	log.Infof("ModbusMapper %s 启动（addr=%s, slaveID=%d, timeout=%s）",
 		m.deviceName, m.addr, m.slaveID, m.timeout)
-	if err := m.handler.Connect(); err != nil {
+	if err := m.tr.Connect(); err != nil {
 		log.Warnf("ModbusMapper %s: 预连接 %s 失败（%v），操作时将自动重连",
 			m.deviceName, m.addr, err)
 	}
@@ -224,7 +343,7 @@ func (m *ModbusMapper) Stop() error {
 		return nil
 	}
 	m.started = false
-	if err := m.handler.Close(); err != nil {
+	if err := m.tr.Close(); err != nil {
 		log.Warnf("ModbusMapper %s: 关闭连接失败（%v），忽略", m.deviceName, err)
 	}
 	log.Infof("ModbusMapper %s 已停止", m.deviceName)
@@ -247,13 +366,16 @@ func (m *ModbusMapper) withConn(op func() error) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	deadline := time.Now().Add(m.withConnBudget())
-	if err := m.handler.Connect(); err != nil {
+	if err := m.tr.Connect(); err != nil {
 		return fmt.Errorf("连接 Modbus 设备 %s 失败: %w", m.addr, err)
 	}
 	if err := op(); err != nil {
+		// 设备异常应答（非法地址/值等）是语义错误，无需重连：
+		// TCP 路径为 goburrow ModbusError，RTU 路径为 modbusrtu.ModbusError。
 		var mbErr *modbus.ModbusError
-		if errors.As(err, &mbErr) {
-			return err // 设备异常应答（非法地址/值等）：语义错误，无需重连
+		var rtuErr *modbusrtu.ModbusError
+		if errors.As(err, &mbErr) || errors.As(err, &rtuErr) {
+			return err
 		}
 		// PRT-21：整体时间预算耗尽则放弃重试（放弃的仅是"重试"，
 		// 原始错误照常上抛；下次操作从头开始新预算）。
@@ -261,8 +383,8 @@ func (m *ModbusMapper) withConn(op func() error) error {
 			return fmt.Errorf("传输层错误后重试预算已耗尽（整体预算 2×timeout=%s），放弃重试（原始错误: %v）", (2 * m.timeout).String(), err)
 		}
 		// 传输层错误：连接可能已失效（设备重启/断网），断开后重连重试一次
-		_ = m.handler.Close()
-		if cerr := m.handler.Connect(); cerr != nil {
+		_ = m.tr.Close()
+		if cerr := m.tr.Connect(); cerr != nil {
 			return fmt.Errorf("重连 Modbus 设备 %s 失败: %w（原始错误: %v）", m.addr, cerr, err)
 		}
 		if err2 := op(); err2 != nil {
@@ -287,7 +409,7 @@ func (m *ModbusMapper) withConnBudget() time.Duration {
 func (m *ModbusMapper) Collect() (map[string]float64, error) {
 	var tempRaw, humRaw uint16
 	err := m.withConn(func() error {
-		results, err := m.client.ReadHoldingRegisters(RegTemperature, 2)
+		results, err := m.tr.ReadHoldingRegisters(RegTemperature, 2)
 		if err != nil {
 			return err
 		}
@@ -352,11 +474,11 @@ func (m *ModbusMapper) handleTargetTemp(value float64) (mapper.DeviceReport, err
 	raw := uint16(math.Round(value * scaleFactor))
 	var readBack uint16
 	err := m.withConn(func() error {
-		if _, err := m.client.WriteSingleRegister(RegTargetTemp, raw); err != nil {
+		if _, err := m.tr.WriteSingleRegister(RegTargetTemp, raw); err != nil {
 			return err
 		}
 		// 回读验证写入生效（真实设备链路的一致性检查）
-		results, err := m.client.ReadHoldingRegisters(RegTargetTemp, 1)
+		results, err := m.tr.ReadHoldingRegisters(RegTargetTemp, 1)
 		if err != nil {
 			return err
 		}
@@ -406,11 +528,11 @@ func (m *ModbusMapper) handleCoil(property string, value float64) (mapper.Device
 	}
 	var readBack bool
 	err = m.withConn(func() error {
-		if _, err := m.client.WriteSingleCoil(addr, coilVal); err != nil {
+		if _, err := m.tr.WriteSingleCoil(addr, coilVal); err != nil {
 			return err
 		}
 		// 回读验证写入生效
-		results, err := m.client.ReadCoils(addr, 1)
+		results, err := m.tr.ReadCoils(addr, 1)
 		if err != nil {
 			return err
 		}

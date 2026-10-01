@@ -156,6 +156,14 @@ func newSamplePipeline(gov *rules.Governor, eng *rules.Evaluator, onEvent func(r
 
 // SetTSSink 设置时序存储写入出口（v0.38.0，spec 0011 US-6）：写入的是
 // 准许写入影子的 accepted 值（与影子同源同值）；nil 保持关闭（零行为）。
+// TSSink 返回时序 sink（v0.41.0 波形原始落库用；未装配时返回 nil）。
+func (p *samplePipeline) TSSink() func(device, ns, prop string, value float64, ts int64) {
+	if p == nil {
+		return nil
+	}
+	return p.tsSink
+}
+
 func (p *samplePipeline) SetTSSink(fn func(device, ns, prop string, value float64, ts int64)) {
 	if p == nil {
 		return

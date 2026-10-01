@@ -293,6 +293,10 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	// 关闭时全链零行为。采样管道的 accepted 值经 sink 落时序库。
 	tsdbCleanup, _ := setupEdgeTSDB(rulePipeline)
 
+	// 波形采集循环（v0.41.0，spec 0014 US-3）：opt-in（EDGEFLOW_EDGECORE_WAVEFORM=on）；
+	// 关闭时零行为。特征经既有采样管道进影子/规则/告警/tsdb；原始波形落库子开关。
+	waveformStop := setupWaveformLoop(rulePipeline, twinStore)
+
 	// 消息处理回调（WBS 4.6）：云端下发类消息（PodSync/DeviceCommand 等）→
 	// MetaManager 落盘 / 设备影子更新；处理结果由 EdgeHub 自动回 Ack
 	// （成功 code=ok / 失败 code=error）。
@@ -413,6 +417,10 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	}
 	// 告警管理收尾（v0.40.0）：停止后 Observe 空转（活跃 episode 不落终态，闭环在云侧）。
 	alarmMgr.Stop()
+	// 波形循环收尾（v0.41.0）：上报循环已停 → 停止出块。
+	if waveformStop != nil {
+		waveformStop()
+	}
 	// 时序库收尾（v0.38.0）：上报循环已停 → 无新写入 → 刷盘关闭。
 	if tsdbCleanup != nil {
 		tsdbCleanup()

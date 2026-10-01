@@ -27,6 +27,7 @@ import (
 	modbusmapper "edgeflow/mappers/modbus"
 	mqttmapper "edgeflow/mappers/mqtt"
 	opcuamapper "edgeflow/mappers/opcua"
+	restmapper "edgeflow/mappers/rest"
 	videomapper "edgeflow/mappers/video"
 )
 
@@ -137,6 +138,16 @@ func buildMapperRegistry(bus *eventbus.EventBus, ledger *metamanager.Ledger) *ma
 			log.Warnf("注册 Modbus Mapper 失败: %v", err)
 		} else {
 			log.Infof("Modbus Mapper 已注册（addr=%s，设备 mb-sensor-01，台账 %v）", addr, ledger != nil)
+		}
+	}
+	// REST 采集器（轮询形态，v0.41.0，spec 0014 US-2，显式 opt-in）：
+	// EDGEFLOW_REST_URL 非空即注册（设备 rest-01；形态评估结论见 spec）。
+	if u := os.Getenv(restmapper.EnvURL); u != "" {
+		m := restmapper.New(u)
+		if err := reg.Register(m); err != nil {
+			log.Warnf("注册 REST 采集器失败: %v", err)
+		} else {
+			log.Infof("REST 采集器已注册（url=%s，设备 %s）", u, m.DeviceNames()[0])
 		}
 	}
 	// OPC-UA 设备接入（显式 opt-in，WBS 5.2 第二阶段）：

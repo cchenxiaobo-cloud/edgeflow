@@ -130,6 +130,7 @@ type Simulator struct {
 	maxConns   int    // 并发连接数上限（M4C P2-③ 修复，默认 defaultMaxConns）
 	listenAddr string // 监听地址（":15020" 或测试用 "127.0.0.1:0"）
 	ln         net.Listener
+	rtuLn      net.Listener          // RTU-over-TCP 监听（v0.41.0，spec 0014 US-1；与 MBAP 共享寄存器模型）
 	conns      map[net.Conn]struct{} // 活跃连接（Stop 时全部断开，模拟服务端下电）
 	done       chan struct{}
 	wg         sync.WaitGroup
@@ -237,8 +238,10 @@ func (s *Simulator) Stop() error {
 	}
 	s.started = false
 	ln := s.ln
+	rtuLn := s.rtuLn
 	done := s.done
 	s.ln = nil
+	s.rtuLn = nil
 	// 断开全部活跃连接（客户端随即收到 EOF/RST，触发其重连路径）
 	for conn := range s.conns {
 		_ = conn.Close()
@@ -246,6 +249,9 @@ func (s *Simulator) Stop() error {
 	s.mu.Unlock()
 
 	_ = ln.Close()
+	if rtuLn != nil {
+		_ = rtuLn.Close() // RTU 监听（v0.41.0）；活跃 RTU 连接已在上方统一断开
+	}
 	close(done)
 	s.wg.Wait()
 	return nil

@@ -6,7 +6,7 @@ EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备�
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.38.0**（2026-09-16，边缘时序存储：自研零依赖轻量时序库（序列/段模型、时间窗查询、窗口聚合、段粒度保留与降采样、水位背压、崩溃恢复）+ 边缘装配 opt-in（采集管道 sink、优雅关闭刷盘）+ 性能验证（720 条/s 场景实测 ≈688 万条/s）；契约零改动、默认零行为兼容）。核心能力包括：
+> 当前版本：**v0.39.0**（2026-10-01，分级上送与补传：边缘持久补传队列（SQLite，优先级三档/容量水位/崩溃自愈）+ 分级策略（severity→优先级、批量/速率预算）+ 补传 worker（断网积压、恢复续传、至少一次语义）+ 云端幂等接收（消息 ID 去重）与在途缓冲（etcd pending，重启不丢）+ UplinkReport 状态上报与可视化端点 2 条；e2e 断网恢复闭环验证；契约 51→53 端点仅增、默认零行为兼容）。核心能力包括：
 
 ## 整体功能架构
 
@@ -102,6 +102,7 @@ helm install edgeflow build/charts/edgeflow/
 
 - **v0.27.0**（2026-09-01）：QoS2 会话恢复（in-flight 持久化）：client `Options.PersistenceDir` 门控 + `Resume()` 回放；sim broker `NewBrokerWithOptions` 孤儿表重启恢复；MQTT 5.0 评估文档（本轮不实现，分期草案）。
 - **v0.28.0**（2026-09-01）：OPC-UA 安全策略框架（Basic256Sha256 分段第一段）：策略门禁 + 密码学原语 + OPN 证书协商校验 + sim 显式拒绝；开发规范与 spec-kit 工程化落地（docs/DEVELOPMENT-SPEC.md + .specify/ 宪法）。
+- **v0.39.0**（2026-10-01）：分级上送与补传（发展规划 v0.39，G16）：边缘持久补传队列（metamanager `UplinkQueue`：SQLite `uplink_queue`/`uplink_meta` 表、优先级三档、64KB 上限、容量水位 10 万行丢低优最老、dropped/sent 持久计数、坏行自愈）+ 分级策略（severity critical→2/warning→1/info→0、批量 32、速率 100 条/s 弱网调小）+ 补传 worker（入队唤醒 + 兜底 2s、失败整批留队至少一次、离线限频日志、重启续传）+ 云端幂等接收（消息 ID 滚动窗口 10000、received/duplicated 计数）+ 云端在途缓冲（etcd pending 写→入环→删、重启 Load 恢复、失败降级内存环）+ `UplinkReport` 状态上报与可视化端点 2 条（契约 51→53、消息 12→13 仅增）；e2e 断网恢复闭环（停云 12s 持续触发 → 重启云 → 断网窗口事件全补传 + 队列清空）；单测 27 例 + e2e 1 例全绿；默认零行为（UPLINK off 与 v0.38.0 直发逐字节等价）；边界登记 KNOWN-ISSUES §40；详见 [docs/RELEASE-NOTES-v0390.md](docs/RELEASE-NOTES-v0390.md)
 - **v0.38.0**（2026-09-16）：边缘时序存储（发展规划 v0.38，G17）：pkg/tsdb 自研零依赖轻量时序库（序列/段模型、时间窗查询、窗口聚合 avg/min/max/count/sum、段粒度保留与降采样、容量水位泄洪与背压、崩溃恢复与残尾忽略）+ 边缘装配（EDGEFLOW_EDGECORE_TSDB=on opt-in，采样管道 accepted 值落库，优雅关闭刷盘，Open 失败降级）+ 性能验证（写 ≈688 万条/s@720 场景，远超 720 条/s 目标）；单测 39 例 + e2e 1 例全绿；边界登记 KNOWN-ISSUES §39；详见 [docs/RELEASE-NOTES-v0380.md](docs/RELEASE-NOTES-v0380.md)
 - **v0.37.0**（2026-09-16）：规则引擎与实时处理 + 数据治理（发展规划 v0.37，G15/G14）：pkg/rules 规则模型（阈值/区间/forSeconds）与评估状态机（idle→pending→firing，触发一次/恢复再触发/防重）+ 数据治理过滤器（range→debounce→deadband，拦截不写影子）+ 云边通道 RuleSync/RuleEvent + 云端规则管理 API 9 端点（契约 42→51、消息 12→14）+ 边缘装配（规则包持久化与恢复、rule_events 台账 30 天、采样管道挂钩）；三侧单测 60+ 例与 e2e 2 例全绿；边界登记 KNOWN-ISSUES §38；详见 [docs/RELEASE-NOTES-v0370.md](docs/RELEASE-NOTES-v0370.md)
 - **v0.36.0**（2026-09-13）：MQTT 5.0 阶段五（FR-S2-07）：遗嘱消息（Will）全链——v5 Will Properties 编解码（Will Delay 0x18、空区/白名单，真实 v5 客户端互操作、无 will 字节不变）+ sim 存储与触发发布（异常断连发布/正常 DISCONNECT rc=0 抑制/接管踢连接发布/鉴权拒绝不发/QoS 0/1/2 下行与离线暂存/retain 交叉）+ Will Delay（延迟发布、同 ClientID 新连接取消、Close 清理）+ client 配置（Options Will*，正常 Close 不触发）；v0360 测试 23 例全绿（sim 15 + packet 5 + client e2e 3）；重发定时器/alias 出站方向/共享订阅 granted-QoS1/3.1.1 持久会话仍为后续（ROADMAP §32 候选清单）；详见 [docs/RELEASE-NOTES-v0360.md](docs/RELEASE-NOTES-v0360.md)

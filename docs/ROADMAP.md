@@ -708,3 +708,19 @@ spec：specs/0011-edge-tsdb/spec.md（发展规划 v0.38 · G17）。
 | 性能 | 720 条/s 场景实测 ≈688 万条/s（Write720Scenario） | ✅ 验收 | 数字入 RELEASE-NOTES N3 与 PERFORMANCE-BASELINE |
 | 边界 | 段粒度保留 / 断电窗口 ≤1s / rollup 无 first / 无压缩 / 单实例写 | 📝 登记 | KI §39 |
 | 后续候选（压缩、标签过滤、跨序列聚合、云端查询面 v0.39、两级降采样、段级时间裁剪） | — | ⏳ 待排 | 非承诺 |
+
+## 35. v0.39.0 — 分级上送与补传（2026-10-01）
+
+spec：specs/0012-uplink-resume/spec.md（发展规划 v0.39 · G16）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| U1 边缘持久队列 | edge/pkg/metamanager：UplinkQueue（uplink_queue/uplink_meta 表） | ✅ 闭环 | 优先级三档；64KB 上限；容量水位默认 10 万行丢低优最老；dropped/sent 持久计数；坏行自愈 |
+| U2 分级与策略 | cmd/edgecore：severity→优先级 + 批量/速率预算 | ✅ 闭环 | critical→2 / warning→1 / info→0；批量 32；速率 100 条/s（0 不限） |
+| U3 补传 worker | cmd/edgecore：uplinkRelay（入队唤醒 + 兕底 2s） | ✅ 闭环 | 失败整批留队（至少一次）；离线限频日志；重启续传；优雅停止留盘 |
+| U4 云端幂等接收 | cloud/pkg/cloudhub：ruleEventDedup（消息 ID 滚动窗口） | ✅ 闭环 | 窗口 10000 FIFO；received/duplicated 计数；单发路径透明 |
+| U5 云端在途缓冲 | cloud/pkg/rulestore：AppendEventBuffered（etcd pending） | ✅ 闭环 | 写→入环→删；Load 扫描恢复；etcd 失败降级内存环 |
+| U6 状态上报与可视化 | UplinkReport 消息 + 端点 2 条（overview / 单节点） | ✅ 闭环 | 契约 51→53、消息 12→13 仅增；auth/audit 链自动覆盖 |
+| 验收 | e2e 断网恢复闭环 | ✅ 验收 | 停云 12s 持续触发 → 重启云 → 断网窗口事件全补传 + 队列清空 + overview 可见 |
+| 边界 | 极端写达窗口 / 去重窗口容量 / 丢弃序与挤占 / ring 内存窗口 / etcd 降级 / 64KB 上限 | 📝 登记 | KI §40 |
+| 后续候选（精确一次（云端逐条确认）、视频告警链路复用补传设施、队列压缩与指标增强、drain 连续推进直至空队列（消解 2s 兕底周期对纯积压吞吐的限制）、限速可中断与 Start/Stop 防重入硬化、队列计数与深度快照优化、多通道并行上送） | — | ⏳ 待排 | 非承诺 |

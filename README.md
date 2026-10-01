@@ -6,7 +6,7 @@ EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备�
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.39.0**（2026-10-01，分级上送与补传：边缘持久补传队列（SQLite，优先级三档/容量水位/崩溃自愈）+ 分级策略（severity→优先级、批量/速率预算）+ 补传 worker（断网积压、恢复续传、至少一次语义）+ 云端幂等接收（消息 ID 去重）与在途缓冲（etcd pending，重启不丢）+ UplinkReport 状态上报与可视化端点 2 条；e2e 断网恢复闭环验证；契约 51→53 端点仅增、默认零行为兼容）。核心能力包括：
+> 当前版本：**v0.40.0**（2026-10-01，告警事件全链 + 设定值通道：pkg/alarm 告警模型（等级/生命周期/去重聚合）+ 边缘告警管理器（规则触发源挂点、本地台账、本地联动留位、补传队列接入）+ 云侧统一告警中心（etcd 写穿、收/派/闭环、工单集成点留位、5 端点）+ 设定值通道强化（建单/审批选项/可靠投递/执行反馈闭环，3 端点）+ 断网语义（告警缓存补传不丢、设定值按缓存执行恢复重投闭环）；契约 53→61 端点仅增、默认零行为与 opt-in 兼容）。核心能力包括：
 
 ## 整体功能架构
 
@@ -102,6 +102,7 @@ helm install edgeflow build/charts/edgeflow/
 
 - **v0.27.0**（2026-09-01）：QoS2 会话恢复（in-flight 持久化）：client `Options.PersistenceDir` 门控 + `Resume()` 回放；sim broker `NewBrokerWithOptions` 孤儿表重启恢复；MQTT 5.0 评估文档（本轮不实现，分期草案）。
 - **v0.28.0**（2026-09-01）：OPC-UA 安全策略框架（Basic256Sha256 分段第一段）：策略门禁 + 密码学原语 + OPN 证书协商校验 + sim 显式拒绝；开发规范与 spec-kit 工程化落地（docs/DEVELOPMENT-SPEC.md + .specify/ 宪法）。
+- **v0.40.0**（2026-10-01）：告警事件全链 + 设定值通道（发展规划 v0.40，G26）：pkg/alarm 告警模型（等级 critical/warning/info、生命周期 raised→acked/assigned→closed 只进不退、DedupKey 去重）+ 边缘告警管理器（规则触发源挂点零改动、同 episode count 聚合与节流重发、alarm_ledger 台账、本地联动接口留位、补传队列接入）+ 云侧统一告警中心（alarmstore etcd 写穿、AlarmEvent 接收、ack/assign/close 5 端点、工单集成点留位）+ 设定值通道强化（建单/审批开关默认 off/可靠投递同 MsgID 幂等重投/TypeSetpointResult 执行反馈闭环，3 端点）+ 断网语义（告警台账+队列双留痕恢复补传；设定值按缓存执行、恢复重投闭环）；e2e 三类 severity 告警全链 + 断网 30s 补传 + 设定值 applied/rejected 双路径全绿；单测 31 例全绿；契约 53→61 端点、活跃 13→15 消息仅增；默认零行为（审批 off、无规则零告警、普通指令逐字节不变）；边界登记 KNOWN-ISSUES §41；详见 [docs/RELEASE-NOTES-v0400.md](docs/RELEASE-NOTES-v0400.md)
 - **v0.39.0**（2026-10-01）：分级上送与补传（发展规划 v0.39，G16）：边缘持久补传队列（metamanager `UplinkQueue`：SQLite `uplink_queue`/`uplink_meta` 表、优先级三档、64KB 上限、容量水位 10 万行丢低优最老、dropped/sent 持久计数、坏行自愈）+ 分级策略（severity critical→2/warning→1/info→0、批量 32、速率 100 条/s 弱网调小）+ 补传 worker（入队唤醒 + 兜底 2s、失败整批留队至少一次、离线限频日志、重启续传）+ 云端幂等接收（消息 ID 滚动窗口 10000、received/duplicated 计数）+ 云端在途缓冲（etcd pending 写→入环→删、重启 Load 恢复、失败降级内存环）+ `UplinkReport` 状态上报与可视化端点 2 条（契约 51→53、消息 12→13 仅增）；e2e 断网恢复闭环（停云 12s 持续触发 → 重启云 → 断网窗口事件全补传 + 队列清空）；单测 27 例 + e2e 1 例全绿；默认零行为（UPLINK off 与 v0.38.0 直发逐字节等价）；边界登记 KNOWN-ISSUES §40；详见 [docs/RELEASE-NOTES-v0390.md](docs/RELEASE-NOTES-v0390.md)
 - **v0.38.0**（2026-09-16）：边缘时序存储（发展规划 v0.38，G17）：pkg/tsdb 自研零依赖轻量时序库（序列/段模型、时间窗查询、窗口聚合 avg/min/max/count/sum、段粒度保留与降采样、容量水位泄洪与背压、崩溃恢复与残尾忽略）+ 边缘装配（EDGEFLOW_EDGECORE_TSDB=on opt-in，采样管道 accepted 值落库，优雅关闭刷盘，Open 失败降级）+ 性能验证（写 ≈688 万条/s@720 场景，远超 720 条/s 目标）；单测 39 例 + e2e 1 例全绿；边界登记 KNOWN-ISSUES §39；详见 [docs/RELEASE-NOTES-v0380.md](docs/RELEASE-NOTES-v0380.md)
 - **v0.37.0**（2026-09-16）：规则引擎与实时处理 + 数据治理（发展规划 v0.37，G15/G14）：pkg/rules 规则模型（阈值/区间/forSeconds）与评估状态机（idle→pending→firing，触发一次/恢复再触发/防重）+ 数据治理过滤器（range→debounce→deadband，拦截不写影子）+ 云边通道 RuleSync/RuleEvent + 云端规则管理 API 9 端点（契约 42→51、消息 12→14）+ 边缘装配（规则包持久化与恢复、rule_events 台账 30 天、采样管道挂钩）；三侧单测 60+ 例与 e2e 2 例全绿；边界登记 KNOWN-ISSUES §38；详见 [docs/RELEASE-NOTES-v0370.md](docs/RELEASE-NOTES-v0370.md)

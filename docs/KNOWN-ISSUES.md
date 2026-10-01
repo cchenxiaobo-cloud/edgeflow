@@ -656,3 +656,44 @@ cloud/pkg/cloudhub 幂等接收 + cloud/pkg/rulestore 在途缓冲 + UplinkRepor
 （无新表写入/无新日志）；云端幂等与在途缓冲对单发路径透明（终态一致）；
 契约既有 51 端点逐字节不变；零新依赖（队列复用既有 SQLite）；
 MQTT/OPC-UA/视频/模型面零触碰；v0240–v0350 冻结测试零改动。
+
+## 41. v0.40.0（告警事件全链 + 设定值通道）
+
+**范围**：pkg/alarm 告警模型 + cmd/edgecore 告警管理器（规则触发源挂点、alarm_ledger 表、
+本地联动留位）+ cloud/pkg/alarmstore 云侧告警中心（5 端点、工单集成点留位）+
+cloud/pkg/setpointstore 设定值建单/审批/投递（3 端点）+ DeviceCommand 仅增可选字段
+（class/setpointId）+ TypeAlarmEvent / TypeSetpointResult 消息；
+契约 53→61 端点、活跃 13→15 消息仅增。
+
+**能力**：见 RELEASE-NOTES-v0400 N1（五块：告警模型 / 边缘告警管理器 / 云侧统一告警中心 /
+设定值通道强化 / 断网语义）。
+
+**边界登记（本版新增）**：
+- 边侧不自动产生 cleared：v0.37 规则链无 cleared 事件，告警闭环依赖云侧操作（close）；
+  恢复源扩展待后续版本。
+- 本地联动仅 logLinkage（声光/消息联动为接口留位）；工单集成点仅 logTicketSink
+  （ITSM 对接留位）——两者回调失败均不阻断主链。
+- 控制类数据缓存/校验/恢复须经场站工艺与安全部门评审后启用；设定值通道
+  **不替代现场控制系统安全联锁**。
+- 告警重发节流（默认 60s 周期或 10 次命中）内 count 聚合有延迟；episode 30min
+  无新触发即过期（新触发为新告警）——云端闭环状态不回传边侧。
+- 云端告警状态只进不退（StateRank 守卫）：closed 终态后迟到重发整体忽略；
+  合并以同 alarmID 为前提（episode 过期后新告警为新 ID）。
+- 断网告警闭环需 UPLINK on（off 时告警与规则事件同为尽力而为直发——既有口径）。
+- 设定值 flush 重投周期（默认 30s）内恢复同步有延迟；同 MsgID 重发边缘重复应用幂等，
+  重复回告由云端状态机 409 消化；未知建单回告（补传乱序窗口）计数忽略。
+- 审批与执行窗口无锁定：审批后设备状态可能已变化（快照校验留位后续版本）；
+  审批默认 off（EDGEFLOW_CLOUDCORE_SETPOINT_APPROVAL=on 开启；单笔 requireApproval 强制）。
+- 边侧重启后告警 episode 不自动延续（台账不回填 active）——进行中工况重启即新告警，
+  旧告警由 30min 过期 + 云侧 close 收敛；聚合身份跨重启延续为后续候选。
+- 断网/链路断开期间设定值按缓存值（Twin.Desired 驻留内存）继续执行；边缘进程重启
+  期间期望态不回填（setpoint_cache 为后续回填留位，普通指令 Desired 本就不持久）。
+- sent 未回告单按新投递 ID（MsgID-r<次数>）周期重投（默认 90s，
+  EDGEFLOW_CLOUDCORE_SETPOINT_REDELIVER_SEC 可调；0 禁用）——同 ID 重投会被
+  边缘 MsgID 持久去重静默短路（不重执行不出回告），故必须换 ID；
+  边缘重复应用幂等，重复回告由云端状态机 409 消化。
+
+**升级兼容**：无规则时告警链零行为；审批默认 off（不开时建单直接 pending-send）；
+普通设备指令（无 class/setpointId）路径与 v0.39.0 逐字节一致；契约既有 53 端点
+逐字节不变；告警/设定值存储为新增键空间（升级零迁移，重启自动恢复）；零新依赖；
+MQTT/OPC-UA/视频/模型面零触碰；v0240–v0350 冻结测试零改动。

@@ -724,3 +724,19 @@ spec：specs/0012-uplink-resume/spec.md（发展规划 v0.39 · G16）。
 | 验收 | e2e 断网恢复闭环 | ✅ 验收 | 停云 12s 持续触发 → 重启云 → 断网窗口事件全补传 + 队列清空 + overview 可见 |
 | 边界 | 极端写达窗口 / 去重窗口容量 / 丢弃序与挤占 / ring 内存窗口 / etcd 降级 / 64KB 上限 | 📝 登记 | KI §40 |
 | 后续候选（精确一次（云端逐条确认）、视频告警链路复用补传设施、队列压缩与指标增强、drain 连续推进直至空队列（消解 2s 兕底周期对纯积压吞吐的限制）、限速可中断与 Start/Stop 防重入硬化、队列计数与深度快照优化、多通道并行上送） | — | ⏳ 待排 | 非承诺 |
+
+## 36. v0.40.0 — 告警事件全链 + 设定值通道（2026-10-01）
+
+spec：specs/0013-alarm-setpoint/spec.md（发展规划 v0.40 · G26）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| A1 告警模型 | pkg/alarm：Alarm + 状态机（只进不退/closed 终态）+ DedupKey | ✅ 闭环 | 等级三档；JSON 即消息/边缘台账/云端存储三处同构 |
+| A2 边缘告警管理器 | cmd/edgecore + metamanager（alarm_ledger 表） | ✅ 闭环 | 规则源挂点零改动；去重聚合（同 ID count 合并、60s/10 次/30min 过期）；台账留痕；联动接口留位 |
+| A3 云侧统一告警中心 | cloud/pkg/alarmstore + cloudhub + 5 端点 | ✅ 闭环 | etcd 写穿/Load 恢复；收（AlarmEvent）/派（assign+工单留位）/闭环（close）；stats 统计 |
+| S1 设定值建单与审批 | cloud/pkg/setpointstore + 3 端点 | ✅ 闭环 | 审批开关默认 off；pending-approval→sent 状态机；flush 同 MsgID 幂等重投 |
+| S2 执行反馈闭环 | DeviceCommand 仅增字段 + TypeSetpointResult | ✅ 闭环 | 边缘执行后 setpoint_cache 留痕 + 回告；云端 applied/failed 终态 |
+| O1 断网语义 | 告警双留痕补传 + 设定值缓存重投 | ✅ 验收 | 断网告警恢复合并且 UpdatedAt 落窗口为证；恢复后建单投递闭环 e2e |
+| 验收 | e2e 全链 | ✅ 验收 | 三类 severity 告警全链 + 生命周期 + 断网 30s 补传 + 设定值 applied/rejected 双路径 |
+| 边界 | 无自动 cleared / 联动与工单留位 / 控制类须评审 / 节流延迟 / 审批无快照校验 | 📝 登记 | KI §41 |
+| 后续候选（cleared 恢复源、声光/消息联动实现、ITSM 工单对接、审批快照校验、告警聚合窗口可配、通知渠道、告警 episode 跨重启延续（台账回填 active）、启动时按 setpoint_cache 回填 Desired） | — | ⏳ 待排 | 非承诺 |

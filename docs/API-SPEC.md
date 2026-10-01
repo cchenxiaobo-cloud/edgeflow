@@ -82,6 +82,14 @@
 | POST | `/api/v1/nodes/{nodeID}/rules/sync` | **规则包下发（v0.37.0：可靠投递，五态语义同 config-sync）** | 200 / 404 / 502 / 504 / 500 |
 | GET | `/api/v1/uplink/overview` | **上行补传概览（v0.39.0：各节点积压/丢弃/上送/接收计数）** | 200 |
 | GET | `/api/v1/nodes/{nodeID}/uplink` | **单节点上行状态（v0.39.0：无数据 404）** | 200 / 404 |
+| GET | `/api/v1/alarms` | **告警列表（v0.40.0：nodeID/state/severity/limit 过滤）** | 200 |
+| GET | `/api/v1/alarms/stats` | **告警统计（v0.40.0：byState/bySeverity/total）** | 200 |
+| POST | `/api/v1/alarms/{alarmID}/ack` | **告警确认（v0.40.0：raised → acked，operator 必填）** | 200 / 400 / 404 / 409 |
+| POST | `/api/v1/alarms/{alarmID}/assign` | **告警派单（v0.40.0：工单集成点回调）** | 200 / 400 / 404 / 409 |
+| POST | `/api/v1/alarms/{alarmID}/close` | **告警闭环（v0.40.0：任意非 closed → closed 终态）** | 200 / 400 / 404 / 409 |
+| POST | `/api/v1/nodes/{nodeID}/setpoints` | **设定值建单（v0.40.0：审批开关/单笔 requireApproval）** | 200 / 400 |
+| POST | `/api/v1/setpoints/{setpointID}/approval` | **设定值审批（v0.40.0：approve\|reject，仅 pending-approval 可审）** | 200 / 400 / 404 / 409 |
+| GET | `/api/v1/setpoints` | **设定值列表（v0.40.0：含执行反馈 outcome/error）** | 200 |
 
 ### 1.2 错误码表（统一约定）
 

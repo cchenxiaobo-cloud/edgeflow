@@ -32,7 +32,7 @@ package contract
 //     device_api.go / v0170_release_ops.go / v0200_release_ops.go 等文件；
 //     静态解析经 registeredRoutesFromSource 同扫 main.go 与 model_api.go、
 //     rules_api.go、uplink_api.go，定位精确到行号，但只认字面量注册，路由改为循环/变量
-//     注册时会漏报。53 条端点契约守卫以 routes.go（ContractEndpoints）为
+//     注册时会漏报。61 条端点契约守卫以 routes.go（ContractEndpoints）为
 //     事实源，运行时守卫见 TestDocAPISpecEndpointsMatchContract；
 //   - 运行时反向探测（组 2）：对保留前缀路径断言 404，直接探测真实 ServeMux
 //     装配结果，能捕获动态注册的契约外路由；代价是只能抽样探测，无法穷举。
@@ -390,12 +390,12 @@ type registeredRoute struct {
 // registeredRoutesFromSource 静态解析 cmd/cloudcore 的路由注册。
 // v0.7.0 起模型 API 17 条路由注册在 model_api.go（modelAPI.Register），
 // v0.37.0 起规则 API 9 条路由注册在 rules_api.go（ruleAPI.Register），
-// v0.39.0 起上行可视化 2 条路由注册在 uplink_api.go（uplinkAPI.Register），
+// v0.39.0 起上行可视化 2 条路由注册在 uplink_api.go（uplinkAPI.Register），v0.40.0 起告警中心与设定值 8 条路由注册在 alarm_api.go / setpoint_api.go，
 // 与 main.go 同扫（main.go 为既有 11 条 + 前缀挂载）。
 func registeredRoutesFromSource(t *testing.T) []registeredRoute {
 	t.Helper()
 	var routes []registeredRoute
-	for _, file := range []string{"main.go", "model_api.go", "rules_api.go", "uplink_api.go"} {
+	for _, file := range []string{"main.go", "model_api.go", "rules_api.go", "uplink_api.go", "alarm_api.go", "setpoint_api.go"} {
 		paths := scanRouteFile(t, filepath.Join(repoRoot(t), "cmd", "cloudcore", file))
 		routes = append(routes, paths...)
 	}

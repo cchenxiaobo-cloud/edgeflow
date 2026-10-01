@@ -229,16 +229,18 @@ type Server struct {
 
 	// mu 保护注册表 registry、节点信息 nodes 与事件回调
 	// nodeEvents/podStatusHandler/deviceReportHandler/ruleEventHandler/
-	// uplinkReportHandler。
-	mu                  sync.RWMutex
-	registry            map[string]*conn     // nodeID → 活跃连接
-	nodes               map[string]*NodeInfo // nodeID → 节点信息
-	nodeEvents          NodeEvents           // 节点生命周期事件回调（nil 表示未订阅）
-	podStatusHandler    PodStatusHandler     // PodStatus 消息回调（nil 表示未订阅）
-	deviceReportHandler DeviceReportHandler  // DeviceReport 消息回调（nil 表示未订阅，WBS 5.3）
-	ruleEventHandler    RuleEventHandler     // RuleEvent 消息回调（nil 表示未订阅，v0.37.0）
-	uplinkReportHandler UplinkReportHandler  // UplinkReport 消息回调（nil 表示未订阅，v0.39.0）
-	ruleDedup           *ruleEventDedup      // RuleEvent 接收幂等（懒初始化，v0.39.0）
+	// uplinkReportHandler/alarmEventHandler/setpointResultHandler。
+	mu                    sync.RWMutex
+	registry              map[string]*conn      // nodeID → 活跃连接
+	nodes                 map[string]*NodeInfo  // nodeID → 节点信息
+	nodeEvents            NodeEvents            // 节点生命周期事件回调（nil 表示未订阅）
+	podStatusHandler      PodStatusHandler      // PodStatus 消息回调（nil 表示未订阅）
+	deviceReportHandler   DeviceReportHandler   // DeviceReport 消息回调（nil 表示未订阅，WBS 5.3）
+	ruleEventHandler      RuleEventHandler      // RuleEvent 消息回调（nil 表示未订阅，v0.37.0）
+	uplinkReportHandler   UplinkReportHandler   // UplinkReport 消息回调（nil 表示未订阅，v0.39.0）
+	alarmEventHandler     AlarmEventHandler     // AlarmEvent 消息回调（nil 表示未订阅，v0.40.0）
+	setpointResultHandler SetpointResultHandler // SetpointResult 消息回调（nil 表示未订阅，v0.40.0）
+	ruleDedup             *ruleEventDedup       // RuleEvent 接收幂等（懒初始化，v0.39.0）
 
 	// connsMu 保护活跃连接集合 conns（含未注册连接，供 Shutdown 统一关闭）。
 	connsMu sync.Mutex
@@ -657,6 +659,10 @@ func (s *Server) dispatch(c *conn, data []byte) {
 		s.handleRuleEvent(c, m)
 	case protocol.TypeUplinkReport:
 		s.handleUplinkReport(c, m)
+	case protocol.TypeAlarmEvent:
+		s.handleAlarmEvent(c, m)
+	case protocol.TypeSetpointResult:
+		s.handleSetpointResult(c, m)
 	case protocol.TypeAck:
 		s.handleAck(c, m)
 	default:

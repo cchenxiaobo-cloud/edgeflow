@@ -16,10 +16,12 @@ package devicetwin
 
 // DeviceCommandPayload 是 DeviceCommand 消息的负载（云→边契约）。
 type DeviceCommandPayload struct {
-	DeviceName string  `json:"deviceName"` // 目标设备名称
-	Namespace  string  `json:"namespace"`  // 命名空间（缺省 "default"）
-	Property   string  `json:"property"`   // 目标属性名
-	Value      float64 `json:"value"`      // 期望值
+	DeviceName string  `json:"deviceName"`           // 目标设备名称
+	Namespace  string  `json:"namespace"`            // 命名空间（缺省 "default"）
+	Property   string  `json:"property"`             // 目标属性名
+	Value      float64 `json:"value"`                // 期望值
+	Class      string  `json:"class,omitempty"`      // 指令类别（v0.40.0）："setpoint"=设定值；缺省=普通指令（旧边缘忽略）
+	SetpointID string  `json:"setpointId,omitempty"` // 设定值建单 ID（v0.40.0，非空时执行后回 TypeSetpointResult）
 }
 
 // DeviceReportPayload 是 DeviceReport 消息的负载（边→云契约）。

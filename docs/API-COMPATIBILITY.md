@@ -78,6 +78,19 @@
 | 52 | GET | `/api/v1/uplink/overview` | 上行补传概览（各节点积压/丢弃/上送/接收计数） | v0.39.0 |
 | 53 | GET | `/api/v1/nodes/{nodeID}/uplink` | 单节点上行状态（无数据 404） | v0.39.0 |
 
+> **v0.40.0 追加（8 个端点：统一告警中心 5 + 设定值通道 3，均为新增 = 向后兼容；既有 53 行逐字节不变）**：
+
+| # | 方法 | 路径 | 说明 | 版本 |
+|---|------|------|------|------|
+| 54 | GET | `/api/v1/alarms` | 告警列表（nodeID/state/severity/limit 过滤） | v0.40.0 |
+| 55 | GET | `/api/v1/alarms/stats` | 告警统计（byState/bySeverity/total） | v0.40.0 |
+| 56 | POST | `/api/v1/alarms/{alarmID}/ack` | 告警确认（raised → acked，operator 必填） | v0.40.0 |
+| 57 | POST | `/api/v1/alarms/{alarmID}/assign` | 告警派单（工单集成点回调） | v0.40.0 |
+| 58 | POST | `/api/v1/alarms/{alarmID}/close` | 告警闭环（任意非 closed → closed 终态） | v0.40.0 |
+| 59 | POST | `/api/v1/nodes/{nodeID}/setpoints` | 设定值建单（审批开关/单笔 requireApproval） | v0.40.0 |
+| 60 | POST | `/api/v1/setpoints/{setpointID}/approval` | 设定值审批（approve\|reject，仅 pending-approval 可审） | v0.40.0 |
+| 61 | GET | `/api/v1/setpoints` | 设定值列表（含执行反馈 outcome/error） | v0.40.0 |
+
 > 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行）。
 
 > 认证：`EDGEFLOW_CLOUDCORE_API_TOKEN` 设置为 `on` 时全部管理端点（除 healthz/metrics）要求
@@ -100,6 +113,8 @@
 | `RuleSync` | 云→边 | ruleSet（version / rules[] / governance[]，规则包全量下发） | 新增（v0.37.0） |
 | `RuleEvent` | 边→云 | ruleId / ruleName / deviceName / namespace / property / value / severity / message / triggeredAt / ruleSetVersion | 新增（v0.37.0） |
 | `UplinkReport` | 边→云 | depth / dropped / sent / oldestTs（上行补传队列状态周期上报） | 新增（v0.39.0） |
+| `AlarmEvent` | 边→云 | alarmId / nodeId / source / severity / state / message / count / raisedAt / updatedAt（告警事实，三处同构） | 新增（v0.40.0） |
+| `SetpointResult` | 边→云 | setpointId / ok / value / error / ts（设定值执行反馈闭环） | 新增（v0.40.0） |
 | `Ack` | 双向 | id / ok / error | 稳定（可靠投递） |
 
 兼容规则：
@@ -189,4 +204,20 @@
 | 云端 RuleEvent 接收幂等（消息 ID 滚动去重，窗口 10000，FIFO 淘汰） | **零破坏**：单发路径不命中去重集；重复仅在补传重发时被消化（丢弃 + 计数） |
 | 云端在途缓冲（etcd `/edgeflow/ruleevents/*`：写→入环→删；启动 Load 恢复） | 升级零迁移：新增键空间；事件 ring 语义不变（内存窗口）；etcd 不可用时降级内存环（Warn） |
 | 边缘上行补传（opt-in `EDGEFLOW_EDGECORE_UPLINK=on`；SQLite `uplink_queue` / `uplink_meta` 表） | **默认零行为**：未开启时规则事件出口与 v0.38.0 直发路径逐字节一致；开启后为至少一次语义（发送失败留队列、恢复续传、云端幂等） |
+| 零新依赖 / 既有包 API | go.mod 零变化；MQTT/OPC-UA/视频/模型面代码零触碰；v0240–v0350 冻结测试零改动 |
+
+## v0.40.0 兼容性增量（2026-10-01）
+
+端点总数 53 → 61（+8：告警中心 5 + 设定值通道 3，全部新增 = 向后兼容；既有 53 行逐字节不变）；云边消息活跃类型 13 → 15（+AlarmEvent / +SetpointResult）。
+
+| 变更 | 兼容性 |
+|---|---|
+| 新增告警中心 5 端点（`/api/v1/alarms`、`/api/v1/alarms/stats`、`/api/v1/alarms/{alarmID}/ack|assign|close`） | **零破坏**：全新路由（`/api/v1/alarms*` 此前无路由）；空库返回空列表；操作端点 operator 必填（审计留痕） |
+| 新增设定值通道 3 端点（`POST /api/v1/nodes/{nodeID}/setpoints`、`POST /api/v1/setpoints/{setpointID}/approval`、`GET /api/v1/setpoints`） | **零破坏**：全新路由；建单与既有 device-command 端点零耦合（既有路径零触碰）；审批默认 off |
+| 云边消息 +`AlarmEvent`（边→云） | **零破坏**：新增类型；无规则时零行为；旧边缘不发送 |
+| 云边消息 +`SetpointResult`（边→云） | **零破坏**：新增类型；仅 class=setpoint 且带 setpointId 的指令回告；普通指令路径零变化 |
+| DeviceCommand 负载仅增可选字段（class / setpointId） | **零破坏**：JSON 仅增；旧边缘解码忽略未知字段；普通指令（无 setpointId）逐字节等价 |
+| 边缘告警链（规则触发源挂点；alarm_ledger 表 + 本地联动 logLinkage） | 随规则启用自然生效；无规则时零行为；台账失败降级仅内存聚合 |
+| 云端告警中心 / 设定值存储（etcd 写穿 `/edgeflow/alarms/*`、`/edgeflow/setpoints/*`） | 升级零迁移：新增键空间；重启自动恢复；纯内存形态降级同 rulestore |
+| 设定值投递 flush（默认 30s，`EDGEFLOW_CLOUDCORE_SETPOINT_FLUSH_SEC` 可调；审批 `EDGEFLOW_CLOUDCORE_SETPOINT_APPROVAL` 默认 off） | **默认零行为**：无建单时 flush 空转；审批不开时建单直接 pending-send |
 | 零新依赖 / 既有包 API | go.mod 零变化；MQTT/OPC-UA/视频/模型面代码零触碰；v0240–v0350 冻结测试零改动 |

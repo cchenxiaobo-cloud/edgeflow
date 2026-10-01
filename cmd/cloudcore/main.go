@@ -25,6 +25,7 @@ import (
 	"time"
 
 	v1alpha1 "edgeflow/apis/edge/v1alpha1"
+	"edgeflow/cloud/pkg/alarmstore"
 	"edgeflow/cloud/pkg/audit"
 	"edgeflow/cloud/pkg/auth"
 	"edgeflow/cloud/pkg/cloudhub"
@@ -37,6 +38,8 @@ import (
 	"edgeflow/cloud/pkg/podstatus"
 	"edgeflow/cloud/pkg/registry"
 	"edgeflow/cloud/pkg/rulestore"
+	"edgeflow/cloud/pkg/setpointstore"
+	"edgeflow/pkg/alarm"
 	"edgeflow/pkg/certs"
 	"edgeflow/pkg/config"
 	"edgeflow/pkg/httpx"
@@ -732,6 +735,50 @@ func run(args []string, stdout, stderr io.Writer) int {
 		uplinkSt.update(nodeID, p, time.Now().UnixMilli())
 	})
 	(&uplinkAPI{hub: hub, state: uplinkSt}).Register(apiMux)
+
+	// v0.40.0 统一告警中心（spec 0013 US-3）：alarmstore（etcd 写穿，与规则包
+	// 同源 kv）+ 5 端点 + AlarmEvent 接收；工单集成点默认日志留痕。
+	alarmStore := alarmstore.NewStore(ruleKV, nil)
+	if err := alarmStore.Load(sigCtx); err != nil {
+		log.Warnf("[alarmstore] 启动恢复失败（以空告警中心继续）: %v", err)
+	}
+	hub.SetAlarmEventHandler(func(nodeID string, a alarm.Alarm) {
+		if err := alarmStore.Upsert(sigCtx, a); err != nil {
+			log.Warnf("[alarmstore] 告警入库失败（alarmId=%s）: %v", a.AlarmID, err)
+		}
+	})
+	(&alarmAPI{store: alarmStore}).Register(apiMux)
+
+	// v0.40.0 设定值通道（spec 0013 US-4/US-5）：setpointstore + 3 端点 + 投递
+	// flush 循环（断网重投，同 MsgID 幂等；恢复后自动同步闭环）。
+	setpointStore := setpointstore.NewStore(ruleKV)
+	if err := setpointStore.Load(sigCtx); err != nil {
+		log.Warnf("[setpointstore] 启动恢复失败（以空存储继续）: %v", err)
+	}
+	hub.SetSetpointResultHandler(func(nodeID string, r cloudhub.SetpointResultPayload) {
+		if _, err := setpointStore.ApplyResult(sigCtx, r.SetpointID, r.OK, r.Error, time.Now().UnixMilli()); err != nil {
+			if errors.Is(err, setpointstore.ErrNotFound) {
+				log.Infof("[setpointstore] 忽略未知建单回告（setpointId=%s，nodeID=%s）", r.SetpointID, nodeID)
+				return
+			}
+			log.Warnf("[setpointstore] 回告落库失败（setpointId=%s）: %v", r.SetpointID, err)
+		}
+	})
+	spAPI := &setpointAPI{
+		store:          setpointStore,
+		hub:            hub,
+		approvalForced: os.Getenv(envSetpointApproval) == "on",
+		nodeExists: func(nodeID string) bool {
+			_, ok := nodeReg.Get(nodeID)
+			return ok
+		},
+		reliableSend: hub.ReliableSendContext,
+		redeliverMs:  parseSetpointRedeliverMs(),
+	}
+	spAPI.Register(apiMux)
+	spFlushSec := parseSetpointFlushSec()
+	go spAPI.runFlushLoop(sigCtx, spFlushSec)
+	log.Infof("设定值通道已启用（审批开关=%v，flush 周期=%ds）", spAPI.approvalForced, spFlushSec)
 
 	var apiHandler http.Handler = apiMux
 	if authEnabled {

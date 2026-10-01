@@ -253,6 +253,40 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	} else {
 		ruleEventSink = newRuleEventSink(client, ruleLedger, opts.NodeID)
 	}
+
+	// 告警管理与设定值回告（v0.40.0，spec 0013）：dispatch —— UPLINK on 入补传队列
+	//（priority 按 severity），off 直发尽力而为；入队失败直发兑底（与规则事件同口径）。
+	alarmDispatch := func(priority int, msg *protocol.Message) {
+		if err := client.Send(msg); err != nil {
+			log.Warnf("告警/回告直发失败（type=%s）: %v", msg.Type, err)
+		}
+	}
+	if uplinkRel != nil {
+		alarmDispatch = func(priority int, msg *protocol.Message) {
+			if _, err := uplinkRel.q.EnqueueUplink(priority, msg); err != nil {
+				log.Warnf("告警/回告入队失败（type=%s，直发兑底）: %v", msg.Type, err)
+				_ = client.Send(msg)
+			} else {
+				uplinkRel.Notify()
+			}
+		}
+	}
+	alarmMgr := newAlarmManager(opts.NodeID, store, alarmDispatch,
+		envUplinkInt(envAlarmReannounceSec, defaultAlarmReannounceSec, 1))
+	{
+		inner := ruleEventSink
+		ruleEventSink = func(ev rules.Event) {
+			alarmMgr.ObserveRuleEvent(ev) // 先告警记账/联动，再走原事件出口（路径零改动）
+			inner(ev)
+		}
+	}
+	spCtx := &setpointContext{nodeID: opts.NodeID, dispatch: alarmDispatch}
+	if sc, err := metamanager.NewSetpointCache(store); err != nil {
+		log.Warnf("设定值缓存初始化失败（降级为仅回告）: %v", err)
+	} else {
+		spCtx.cache = sc
+	}
+
 	rulePipeline := newSamplePipeline(governor, ruleEngine, ruleEventSink)
 
 	// 时序存储（v0.38.0，spec 0011）：opt-in（EDGEFLOW_EDGECORE_TSDB=on）；
@@ -269,7 +303,9 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 		case protocol.TypeConfigSync:
 			return handleConfigSync(store, msg)
 		case protocol.TypeDeviceCommand:
-			return handleDeviceCommand(twinStore, deviceExec, msg)
+			execErr := handleDeviceCommand(twinStore, deviceExec, msg)
+			handleSetpointAccepted(spCtx, msg, execErr) // v0.40.0：设定值缓存+回告（仅受理成功）
+			return execErr
 		case protocol.TypeRuleSync:
 			return handleRuleSync(ruleEngine, governor, store, msg)
 		default:
@@ -375,6 +411,8 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	if uplinkRel != nil {
 		uplinkRel.Stop()
 	}
+	// 告警管理收尾（v0.40.0）：停止后 Observe 空转（活跃 episode 不落终态，闭环在云侧）。
+	alarmMgr.Stop()
 	// 时序库收尾（v0.38.0）：上报循环已停 → 无新写入 → 刷盘关闭。
 	if tsdbCleanup != nil {
 		tsdbCleanup()

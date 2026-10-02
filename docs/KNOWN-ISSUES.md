@@ -732,3 +732,18 @@ mappers/modbus scheme 分发（tcp/rtutcp）+ mappers/rest 轮询采集器 + pkg
 Modbus TCP 路径（既有 addr 格式）与 v0.40.0 行为一致（transport 抽象为等价重构，
 PRT-21 测试零改动通过）；契约零改动（61 端点/15 消息维持）；零新依赖；
 MQTT/OPC-UA/视频/模型面零触碰；v0240–v0350 冻结测试零改动。
+
+
+## 43. v0.42.0（视频接入增强）
+
+| 边界/局限 | 当前处理 | 后续方向 |
+|---|---|---|
+| 仅 RTP/AVP/TCP（interleaved）——UDP 传输/重定向跟随/SRTP 不做 | pkg/rtspclient 信令层最小子集（OPTIONS/DESCRIBE/SETUP/PLAY/TEARDOWN + CSeq/401 Basic 重试恰一次） | UDP 传输/重定向跟随/SRTP 立项 |
+| H.265/音频轨 | 仅 H.264 解复用（FU-A/STAP-A），音频通道数据丢弃计数 | H.265 解码（AnnexB→解码器命令不变）、音频轨透传 |
+| SDP 最小面（多轨取首个 video） | 复杂 SDP 走拒绝路径 | 多轨选择与会话控制 |
+| RTSP 连接断开（EOF/重置）自动重连；「连接存活但推流静默」无主动超时检测 | ReadAnnex 区分读超时/连接错误（P1-1 修复）；stdout 管道读无 deadline（os.Pipe 限制），仅 ctx 取消路径解除 | 静默停滞看门狗（媒体水位超时） |
+| 解码进程 stdin 背压（写入阻塞）语义 | 管道缓冲兜底；阻塞中仅 ctx 取消可解（无停滞检测） | 可配置背压/停滞策略 |
+| jpegScanner 修复对「元数据段内嵌 FFD9」场景改变结果（截早→完整），对正常流等价（v0340 既有 13 例零改动全绿验证） | APPn/COM/DQT/DHT 整段跳过；SOS 后唯一 EOI | — |
+| GB28181 SIP 信令单独立项评估 | 不在本版（规划原文） | 评估纳入 v0.43+ |
+| RTSP 模拟服务端（pkg/rtspclient/sim.go）为测试面（mapper 测试与 e2e 复用） | 导出但标记非产品交付物 | — |
+| 解码器命令示例 | 正确形态 `ffmpeg -f h264 -i pipe:0 -f mjpeg pipe:1`（管道输入无 `-rtsp_transport`/`-stimeout` 网络参数——P2-7 修正） | — |

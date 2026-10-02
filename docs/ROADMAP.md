@@ -754,3 +754,18 @@ spec：specs/0014-collect-waveform/spec.md（发展规划 v0.41 · G19+G13）。
 | 验收 | e2e + 压测 | ✅ 验收 | 10kHz 模拟源特征提取演示（domFreq≈50Hz 上云）；RTU 模拟器联调；零回归 |
 | 边界 | 真串口待硬件 / RTU-over-TCP 非标准 / 矩形窗泄漏 / 包络谱最小实现 / 仿真速率出块 | 📝 登记 | KI §42 |
 | 后续候选（真串口 transport、REST 多端点聚合、推送接收形态、加窗与 Hilbert 包络、波形告警规则模板、采集点位动态下发） | — | ⏳ 待排 | 非承诺 |
+
+## 38. v0.42.0 — 视频接入增强（2026-10-02）
+
+spec：specs/0015-rtsp-source/spec.md（发展规划 v0.42 · G20）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| V1 RTSP 信令客户端 | pkg/rtspclient（零依赖） | ✅ 闭环 | OPTIONS/DESCRIBE/SETUP/PLAY/TEARDOWN；401 Basic 重试恰一次；SDP 最小解析；选项协商 |
+| V2 RTP over TCP | pkg/rtspclient/rtp.go | ✅ 闭环 | interleaved 定界/RTP 头/FU-A 重组/STAP-A 分解 → AnnexB；畸形丢弃计数 |
+| V3 RTSPSource | pkg/video/v0420.go | ✅ 闭环 | AnnexB→解码进程 stdin→MJPEG stdout→出帧；断流自愈（重连/退避/ctx 取消回收） |
+| V4 mapper rtsp 源型 | mappers/video 配置扩展 | ✅ 闭环 | url+decoder 必填；与 mjpeg/bridge 并存（配置选源） |
+| C6 修复 | pkg/video jpegScanner | ✅ 修复 | marker 遍历（APPn/COM 长度跳过、SOS 后唯一 EOI）；元数据 FFD9 用例绿；正常流等价 |
+| 验收 | mapper 全链测试 | ✅ 验收 | 模拟 RTSP 服务端→拉流→解码→推理 stub 命中→断流自愈 reconnects 增长 |
+| 边界 | 仅 TCP/无 SRTP/无 H.265/SDP 最小面/模拟服务端为测试面/SIP 另立 | 📝 登记 | KI §43 |
+| 后续候选（UDP 传输、重定向跟随、SRTP、H.265、音频轨、GB28181 SIP 立项、rtsp 源 e2e 装配进 edgecore） | — | ⏳ 待排 | 非承诺 |

@@ -42,14 +42,17 @@ type EventPublisher interface {
 	Publish(topic string, payload []byte) error
 }
 
-// SourceConfig 是帧源配置（v0.34.0 阶段二：synthetic | mjpeg | bridge）。
-// mjpeg：MJPEG over HTTP 直连（url）；bridge：外部进程桥（command/args，
-// 如 ffmpeg 转 RTSP→MJPEG stdout）。未知值显式拒绝，不做静默降级。
+// SourceConfig 是帧源配置（v0.34.0 阶段二：synthetic | mjpeg | bridge；
+// v0.42.0 增 rtsp——RTP over TCP interleaved 拉流 + 外部解码器出帧）。
+// mjpeg：MJPEG over HTTP 直连（url）；bridge：外部进程桥（command/args）；
+// rtsp：自研 RTSP 客户端拉流（url + decoder 外部解码命令，如 ffmpeg
+// H.264 AnnexB stdin → MJPEG stdout）。未知值显式拒绝，不做静默降级。
 type SourceConfig struct {
 	Type        string                   `json:"type"`
 	URL         string                   `json:"url,omitempty"`
 	Command     string                   `json:"command,omitempty"`
 	Args        []string                 `json:"args,omitempty"`
+	Decoder     string                   `json:"decoder,omitempty"` // rtsp 专用：H.264→MJPEG 外部解码命令
 	ReconnectMs int                      `json:"reconnectMs,omitempty"`
 	TimeoutMs   int                      `json:"timeoutMs,omitempty"`
 	Synth       pkgvideo.SyntheticConfig `json:"synthetic"`
@@ -90,8 +93,15 @@ func (c *Config) validate() error {
 		if c.Source.Command == "" {
 			return errors.New("video: source.type=bridge 需要 command")
 		}
+	case "rtsp":
+		if c.Source.URL == "" {
+			return errors.New("video: source.type=rtsp 需要 url")
+		}
+		if c.Source.Decoder == "" {
+			return errors.New("video: source.type=rtsp 需要 decoder（H.264→MJPEG 外部解码命令）")
+		}
 	default:
-		return fmt.Errorf("video: source.type=%q 不支持（synthetic/mjpeg/bridge）", c.Source.Type)
+		return fmt.Errorf("video: source.type=%q 不支持（synthetic/mjpeg/bridge/rtsp）", c.Source.Type)
 	}
 	if c.Inference.URL == "" {
 		return errors.New("video: inference.url 不能为空")
@@ -167,6 +177,7 @@ type VideoMapper struct {
 	runDone  chan struct{} // 当前 run 全部 goroutine 退出后关闭（Stop 等待收口）
 	met      metrics
 	slot     *pkgvideo.LatestSlot
+	src      pkgvideo.FrameSource // 当前/最近 run 的帧源（Collect 读源级健康指标：reconnects/badFrames）
 }
 
 // NewMapper 创建视频 Mapper（不启动；Start 启动流）。
@@ -188,6 +199,7 @@ func NewMapper(cfg *Config, opts ...Option) (*VideoMapper, error) {
 				URL:         c.Source.URL,
 				Command:     c.Source.Command,
 				Args:        c.Source.Args,
+				Decoder:     c.Source.Decoder,
 				ReconnectMs: c.Source.ReconnectMs,
 				TimeoutMs:   c.Source.TimeoutMs,
 				Synth:       c.Source.Synth,
@@ -234,6 +246,7 @@ func (m *VideoMapper) Start(_ context.Context) error {
 	stop := m.stopCh
 	done := m.runDone
 	m.running = true
+	m.src = src // 源级健康指标（reconnects/badFrames）经 Collect 汇出；保留至下次 Start
 	m.mu.Unlock()
 
 	var wg sync.WaitGroup
@@ -313,6 +326,7 @@ func (m *VideoMapper) Collect() (map[string]float64, error) {
 	m.mu.Lock()
 	met := m.met
 	running := m.running
+	src := m.src
 	m.mu.Unlock()
 	props := map[string]float64{
 		"framesTotal":    float64(met.framesTotal),
@@ -324,6 +338,14 @@ func (m *VideoMapper) Collect() (map[string]float64, error) {
 		"avgScoreLast":   met.avgScoreLast,
 		"frameSeqLast":   met.frameSeqLast,
 		"fps":            met.fpsEma,
+	}
+	// 源级健康指标（可选接口——v0.42 复核 P1-3：断流自愈的 reconnects 必须
+	// 可见、可测；mjpeg/bridge/rtsp 源均实现，synthetic 无则缺省不输出）。
+	if rc, ok := src.(interface{ Reconnects() uint64 }); ok {
+		props["reconnects"] = float64(rc.Reconnects())
+	}
+	if bf, ok := src.(interface{ BadFrames() uint64 }); ok {
+		props["badFrames"] = float64(bf.BadFrames())
 	}
 	if running {
 		props["streamOn"] = 1

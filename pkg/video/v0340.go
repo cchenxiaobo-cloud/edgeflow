@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image/jpeg"
@@ -24,12 +25,13 @@ import (
 
 // SourceConfig 是帧源配置（阶段二三型源；synthetic 为阶段一默认）。
 type SourceConfig struct {
-	Type        string          `json:"type"`                  // synthetic | mjpeg | bridge
-	URL         string          `json:"url,omitempty"`         // mjpeg：http(s)://（可含内嵌凭证）
+	Type        string          `json:"type"`                  // synthetic | mjpeg | bridge | rtsp
+	URL         string          `json:"url,omitempty"`         // mjpeg：http(s)://；rtsp：rtsp://（可含内嵌凭证）
 	Command     string          `json:"command,omitempty"`     // bridge：外部命令（如 ffmpeg）
 	Args        []string        `json:"args,omitempty"`        // bridge：命令参数
-	ReconnectMs int             `json:"reconnectMs,omitempty"` // mjpeg/bridge 断流重连间隔（默认 1000）
-	TimeoutMs   int             `json:"timeoutMs,omitempty"`   // mjpeg：响应头超时（默认 0=不设）
+	Decoder     string          `json:"decoder,omitempty"`     // rtsp：H.264→MJPEG 外部解码命令
+	ReconnectMs int             `json:"reconnectMs,omitempty"` // mjpeg/bridge/rtsp 断流重连间隔（默认 1000）
+	TimeoutMs   int             `json:"timeoutMs,omitempty"`   // mjpeg：响应头超时；rtsp：信令超时
 	Synth       SyntheticConfig `json:"synthetic"`
 }
 
@@ -57,8 +59,21 @@ func NewSource(cfg SourceConfig) (FrameSource, error) {
 			return nil, errors.New("video: source.type=bridge 需要 command")
 		}
 		return NewBridgeSource(BridgeConfig{Command: cfg.Command, Args: cfg.Args, ReconnectMs: cfg.ReconnectMs}), nil
+	case "rtsp":
+		if cfg.URL == "" {
+			return nil, errors.New("video: source.type=rtsp 需要 url")
+		}
+		if cfg.Decoder == "" {
+			return nil, errors.New("video: source.type=rtsp 需要 decoder（H.264→MJPEG 外部解码命令）")
+		}
+		// URL 预检（v0.42 复核 P2-1）：scheme=rtsp 且 host 非空在构造期
+		// 显式拒绝，不进入运行期重连循环。
+		if u, err := url.Parse(cfg.URL); err != nil || u.Scheme != "rtsp" || u.Host == "" {
+			return nil, fmt.Errorf("video: source.type=rtsp 的 url 非法（需 rtsp://host[:port]/...）: %q", cfg.URL)
+		}
+		return NewRTSPSource(RTSPConfig{URL: cfg.URL, Decoder: cfg.Decoder, ReconnectMs: cfg.ReconnectMs, TimeoutMs: cfg.TimeoutMs}), nil
 	default:
-		return nil, fmt.Errorf("video: source.type=%q 不支持（synthetic/mjpeg/bridge）", cfg.Type)
+		return nil, fmt.Errorf("video: source.type=%q 不支持（synthetic/mjpeg/bridge/rtsp）", cfg.Type)
 	}
 }
 
@@ -455,8 +470,10 @@ var (
 	jpegEOI = []byte{0xFF, 0xD9}
 )
 
-// jpegScanner 是 JPEG 字节流定界状态机：跨读块累积、按 SOI/EOI 切出完整
-// 帧（MJPEG 场景标准做法；合规编码器不在熵数据中产生裸 FFD9）。
+// jpegScanner 是 JPEG 字节流定界状态机：跨读块累积、按 marker 结构切出
+// 完整帧（v0.42.0 C6 修复：APPn/COM 段按长度字段整段跳过——段内 FFD9
+// 不再误判为帧尾；SOS 后进入熵编码数据，唯一有效结束 = EOI。对不含
+// 元数据 FFD9 的正常流与旧「首个 FFD9」逻辑等价）。
 type jpegScanner struct {
 	buf []byte
 }
@@ -464,36 +481,115 @@ type jpegScanner struct {
 // maxPendingFrameBytes 是未闭合帧的缓冲上限（畸形流防爆内存）。
 const maxPendingFrameBytes = 16 << 20
 
+// jpegMarkerLen 判定 marker 是否携带长度字段（APPn/COM；DQT/DHT 等表段
+// 同样带长度——按段解析推进对它们同样正确）。
+func jpegMarkerLen(marker byte) bool {
+	switch marker {
+	case 0xD8, 0xD9, 0x01, 0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7:
+		return false // SOI/EOI/TEM/RSTn 无长度字段
+	}
+	return true // APPn/COM/DQT/DHT/SOF/SOS 等
+}
+
 func (s *jpegScanner) reset() { s.buf = s.buf[:0] }
 
 // feed 喂入读块，返回本次切出的完整 JPEG 帧列表。
+//
+// 扫描状态：buf[0..head) 为「已确认完整的帧内容」，从 head 起做 marker
+// 解析。为兼容跨块边界，marker 解析在数据不足时保留尾部（最多 3 字节
+// 起始码/长度字段 + 已确认前缀）。
 func (s *jpegScanner) feed(chunk []byte) [][]byte {
 	var out [][]byte
 	s.buf = append(s.buf, chunk...)
 	for {
-		i := bytes.Index(s.buf, jpegSOI)
-		if i < 0 {
-			// 无 SOI：保留尾部 1 字节（FF 可能跨块）。
+		// 1) 定位 SOI。
+		soi := bytes.Index(s.buf, jpegSOI)
+		if soi < 0 {
 			if len(s.buf) > 1 {
 				s.buf = append(s.buf[:0], s.buf[len(s.buf)-1:]...)
 			}
-			break
+			return out
 		}
-		if i > 0 {
-			s.buf = append(s.buf[:0], s.buf[i:]...) // 丢弃 SOI 前垃圾
+		if soi > 0 {
+			s.buf = append(s.buf[:0], s.buf[soi:]...)
 		}
-		j := bytes.Index(s.buf[2:], jpegEOI)
-		if j < 0 {
+		// 2) 从 SOI 后逐 marker 推进到帧尾（EOI）。数据不足时 break 等下一块。
+		p := 2
+		frameEnd := -1
+		for frameEnd < 0 && p < len(s.buf) {
+			if s.buf[p] != 0xFF {
+				// 仅 SOS 后熵数据段会出现非 FF 字节——由 SOS 分支整体
+				// 处理（见下）；此处出现即为畸形，跳过一字节。
+				p++
+				continue
+			}
+			if p+1 >= len(s.buf) {
+				break // FF 在块尾：等下一块
+			}
+			m := s.buf[p+1]
+			if m == 0xFF {
+				p++ // 填充 FF
+				continue
+			}
+			if m == 0xD9 { // 罕见：SOI 后直接 EOI（空帧）。
+				frameEnd = p + 2
+				break
+			}
+			if !jpegMarkerLen(m) {
+				p += 2
+				continue
+			}
+			if p+4 > len(s.buf) {
+				break // 长度字段不完整：等下一块
+			}
+			segLen := int(binary.BigEndian.Uint16(s.buf[p+2 : p+4]))
+			if segLen < 2 {
+				s.buf = s.buf[:0] // 畸形段长：丢弃防御
+				break
+			}
+			p += 2 + segLen
+			if p >= len(s.buf) {
+				// 段延伸至当前数据末尾之外：正常的部分到达——等下一块
+				//（真畸形由 maxPendingFrameBytes 上限兜底丢弃）。
+				break
+			}
+			if m == 0xDA { // SOS：熵数据唯一有效结束 = EOI。
+				eoi := jpegEOIIndex(s.buf[p:])
+				if eoi < 0 {
+					break
+				}
+				frameEnd = p + eoi + 2
+				break
+			}
+		}
+		if frameEnd < 0 {
 			if len(s.buf) > maxPendingFrameBytes {
 				s.buf = s.buf[:0]
 			}
-			break
+			return out
 		}
-		end := 2 + j + 2
-		out = append(out, append([]byte(nil), s.buf[:end]...))
-		s.buf = append(s.buf[:0], s.buf[end:]...)
+		out = append(out, append([]byte(nil), s.buf[:frameEnd]...))
+		s.buf = append(s.buf[:0], s.buf[frameEnd:]...)
 	}
-	return out
+}
+
+// jpegEOIIndex 在熵数据中找 EOI（FFD9）。熵数据内 0xFF 后只允许 RSTn
+// （D0-D7）与 0x00 填充——遇到其它 0xFF 即按 FFD9 之外的 marker 处理跳过
+// 两个字节继续找（保守：不误判，漏判由 16MB 上限兜底）。
+func jpegEOIIndex(data []byte) int {
+	for i := 0; i+1 < len(data); i++ {
+		if data[i] != 0xFF {
+			continue
+		}
+		if data[i+1] == 0xD9 {
+			return i
+		}
+		if data[i+1] == 0x00 || (data[i+1] >= 0xD0 && data[i+1] <= 0xD7) {
+			i++
+			continue
+		}
+	}
+	return -1
 }
 
 // jpegDim 校验 JPEG 并取宽高。

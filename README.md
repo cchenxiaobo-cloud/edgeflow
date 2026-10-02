@@ -6,7 +6,7 @@ EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备�
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.43.0**（2026-10-02，视频管理面：云端 VideoStream 资源模型（CRUD/状态/快照预览/告警片段回放）+ 媒资分片上传与断网补传（复用 v0.39 上送队列；MediaUpload 新消息）+ 边缘快照片段采集（pkg/mediaup + video mapper media 块）+ 云端媒资存储（cloud/pkg/mediastore 分片组装/sha256/对象存储）+ 8 端点契约扩容（61→69 端点/15→16 消息）；默认零行为、升级零迁移、零新依赖；e2e 断网补传回放 41.3s 全绿。核心能力包括：
+> 当前版本：**v0.44.0**（2026-10-02，流媒体分发子集 + 告警片段服务：FLV 透传封装器（pkg/flvremux，H.264 AnnexB→FLV 零转码纯封装）+ HTTP-FLV/WS-FLV 分发端点（/media/streams/{name}/live.flv|live.ws）+ 告警片段检索（DeviceName+RaisedAt 窗 × videostream 索引联合查询）+ metrics 中间件补 Flush/Hijack/Unwrap 流式能力；契约扩容 69→72 端点；零新依赖、默认零行为；e2e 拉流演示与告警→片段→播放全链绿。核心能力包括：
 
 ## 整体功能架构
 
@@ -102,6 +102,7 @@ helm install edgeflow build/charts/edgeflow/
 
 - **v0.27.0**（2026-09-01）：QoS2 会话恢复（in-flight 持久化）：client `Options.PersistenceDir` 门控 + `Resume()` 回放；sim broker `NewBrokerWithOptions` 孤儿表重启恢复；MQTT 5.0 评估文档（本轮不实现，分期草案）。
 - **v0.28.0**（2026-09-01）：OPC-UA 安全策略框架（Basic256Sha256 分段第一段）：策略门禁 + 密码学原语 + OPN 证书协商校验 + sim 显式拒绝；开发规范与 spec-kit 工程化落地（docs/DEVELOPMENT-SPEC.md + .specify/ 宪法）。
+- **v0.44.0**（2026-10-02）：流媒体分发子集 + 告警片段服务（发展规划 v0.44，G22）：FLV 透传封装器（pkg/flvremux 零依赖：FLV header/tag 字节级编码、AnnexB→AVCC、AVCDecoderConfigurationRecord、onMetaData；CompositionTime=0）+ 云端流面（帧源注册表 + /media/streams/{name}/live.flv（HTTP chunked）/live.ws（WS 二进制透传）；无注册源 404 默认零行为）+ 告警片段检索（DeviceName+RaisedAt 窗 × videostream 索引）+ metrics 中间件补 Flush/Hijack/Unwrap（流式响应能力，e2e 发现修复）；契约扩容 69→72 端点；新增测试 10 例全绿；HLS 评估登记 KI §45；详见 [docs/RELEASE-NOTES-v0440.md](docs/RELEASE-NOTES-v0440.md)
 - **v0.43.0**（2026-10-02）：视频管理面（发展规划 v0.43，G21）：云端 VideoStream 资源模型（etcd 写穿索引：CRUD/状态/快照引用/片段索引，媒资到达自动建流）+ 媒资分片上传（MediaUpload 消息，分片 ≤32KB base64，经 v0.39 持久队列断网补传）+ 边缘采集（pkg/mediaup spool+Janitor；video mapper media 块：环形缓冲/检出触发/节流；edgecore 延迟注入）+ 云端媒资存储（cloud/pkg/mediastore：分片幂等组装/sha256 校验/对象存储）+ 8 端点（videostreams CRUD/快照/片段列表/回放）；契约扩容 61→69 端点/15→16 消息；新增测试 15 例（单测 14 + e2e 1）全绿；断网补传回放 e2e 铁证（窗内 capturedAt 片段重放）；边界登记 KNOWN-ISSUES §44；详见 [docs/RELEASE-NOTES-v0430.md](docs/RELEASE-NOTES-v0430.md)
 - **v0.42.0**（2026-10-02）：视频接入增强（发展规划 v0.42，G20）：自研 RTSP 客户端最小子集（pkg/rtspclient 零依赖：信令五方法/CSeq/401 Basic 认证重试恰一次/SDP 最小解析；RTP over TCP interleaved 解复用；H.264 FU-A/STAP-A 重组 → AnnexB）+ RTSPSource 帧源（RTSP→AnnexB→外部解码进程 stdin→MJPEG stdout→出帧；断流自愈/ctx 取消回收）+ mapper rtsp 源型（url+decoder 必填，与 mjpeg/bridge 并存）+ C6 jpegScanner 段结构修复（APPn/COM 长度跳过、SOS 后唯一 EOI——元数据段内嵌 FFD9 不再误判帧尾）；新增单测 14 例全绿（grep 口径）；契约零改动、桥接路径零回归；边界登记 KNOWN-ISSUES §43；详见 [docs/RELEASE-NOTES-v0420.md](docs/RELEASE-NOTES-v0420.md)
 - **v0.41.0**（2026-10-01）：采集扩展与性能（发展规划 v0.41，G19+G13）：Modbus RTU 通道（pkg/modbusrtu 零依赖实现：CRC16 0xA001/RTU 帧编解码/客户端 FC 01/03/05/06 + modbussim RTU-over-TCP 模式联调 + mappers/modbus scheme 分发 rtutcp://，TCP 路径零回归，串口硬件依赖登记）+ REST 轮询采集器（mappers/rest，env opt-in，形态评估取轮询落档）+ 高频波形通道（pkg/waveform：块采集/环形缓冲/radix-2 FFT/RMS/Peak/Crest/包络谱特征前置，特征经既有采样管道进影子/规则/告警/tsdb，原始落库子开关）+ 2000 点/1s 采集压测达标（两轮复跑吞吐 2000 点/s，P50=11.9/12.3ms、P99=14.8/23.2ms，治理→规则→tsdb 全管道）；单测 21 例 + e2e 1 例全绿；契约零改动（61 端点/15 消息维持）、REST/波形默认零行为、Modbus TCP 零回归；边界登记 KNOWN-ISSUES §42；详见 [docs/RELEASE-NOTES-v0410.md](docs/RELEASE-NOTES-v0410.md)

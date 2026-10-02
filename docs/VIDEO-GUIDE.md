@@ -111,3 +111,27 @@ go test ./pkg/mediaup/ ./cloud/pkg/videostream/ ./cloud/pkg/mediastore/   # 媒�
 go test ./mappers/video/ -run TestV0430                                   # 采集触发
 go test ./tests/e2e/ -run TestV0430VideoManageE2E                        # 断网补传回放
 ```
+
+
+## 6. 流媒体分发与告警片段服务（v0.44.0，spec 0017）
+
+### 6.1 FLV 分发（H.264 透传封装）
+- `GET /media/streams/{name}/live.flv`：HTTP chunked（video/x-flv）；首块 =
+  FLV header + AVC sequence header + onMetaData；帧循环增量推送（AnnexB→AVCC
+  透传，无转码）。流需已注册 H.264 帧源（无 → 404）。
+- `GET /media/streams/{name}/live.ws`：WS 升级后二进制帧透传 FLV 字节流。
+- 演示帧源 opt-in：`EDGEFLOW_CLOUDCORE_DEMO_H264_STREAMS=cam-demo`（合成 25fps
+  H.264；演示/测试面）。
+- 帧源生产形态（边缘推流/云端 RTSP 拉流）登记 KI §45 后续。
+
+### 6.2 告警片段服务
+- `GET /api/v1/alarms/{alarmID}/segments`：按告警（DeviceName+RaisedAt）检索
+  关联流的时间窗片段（默认 [RaisedAt-5s, +60s]）→ 片段索引（含 sha256）；
+  回放复用 `GET /api/v1/videostreams/{name}/segments/{mediaID}`。
+
+### 6.3 验证
+```bash
+go test ./pkg/flvremux/                                    # 封装器字节级
+go test ./cmd/cloudcore/ -run 'TestMediaStream|TestAlarmSegments'  # 端点
+go test ./tests/e2e/ -run 'TestV0440'                      # 拉流演示 + 全链
+```

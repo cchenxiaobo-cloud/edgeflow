@@ -784,3 +784,18 @@ spec：specs/0016-video-manage/spec.md（发展规划 v0.43 · G21）。
 | 验收 | e2e 断网补传回放 | ✅ 验收 | 在线媒资上云 + 停云 20s 采集积压 + 重启补传重放（窗内 capturedAt 铁证）+ 全部回放校验 |
 | 边界 | MJPEG 无转码/片段级留存/至少一次/告警关联留位/spool 简易水位 | 📝 登记 | KI §44 |
 | 后续候选（转码与 MP4 封装、HLS/FLV 分发（v0.44 G22）、告警关联闭环、媒资保留策略与磁盘水位、多轨/音频） | — | ⏳ 待排 | 非承诺 |
+
+## 40. v0.44.0 — 流媒体分发子集 + 告警片段服务（2026-10-02）
+
+spec：specs/0017-flv-distribution/spec.md（发展规划 v0.44 · G22）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| D1 FLV 透传封装器 | pkg/flvremux（零依赖） | ✅ 闭环 | FLV header/tag 字节级；AnnexB→AVCC；AVC seq header；onMetaData；FrameType 语义；CT=0 |
+| D2 分发端点 | cmd/cloudcore 流面（/media/streams/{name}/live.flv|live.ws） | ✅ 闭环 | 帧源注册表（演示源 opt-in）；HTTP chunked + WS 二进制透传；无源 404 |
+| D3 告警片段服务 | /api/v1/alarms/{alarmID}/segments | ✅ 闭环 | DeviceName+RaisedAt 窗 × videostream 索引联合检索（零边缘改动） |
+| D4 metrics 流式能力 | cloud/pkg/metrics statusRecorder | ✅ 修复 | 补 Flush/Hijack/Unwrap 委托（e2e 发现：包装器致 chunked/WS 不可用） |
+| 契约扩容 | tests/contract + 文档矩阵 | ✅ 验收 | 69→72 端点（流端点 2 + 检索 1）；消息 16 维持 |
+| 验收 | e2e 拉流演示 + 告警→片段→播放 | ✅ 验收 | HTTP-FLV（10 tags/seq/时戳）+ WS-FLV + 检索/回放运行时链路 |
+| 边界 | 仅 H.264 视频透传/CT=0/生产帧源另立/HLS 评估登记/流端点免 Token | 📝 登记 | KI §45 |
+| 后续候选（AAC 音频、RTMP 推流面、边缘转发、HLS（TS/切片/m3u8）、签名 URL 防盗链、时移回放） | — | ⏳ 待排 | 非承诺 |

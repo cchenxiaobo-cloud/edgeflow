@@ -120,7 +120,7 @@ func (e *mapperCommandExecutor) ExecuteCommand(deviceName, namespace, property s
 // 关闭时不做任何注册、直接返回 nil——调用方（main.go）据此跳过生命周期
 // 管理（StartAll/StopAll）并保持指令执行器为 nil（骨架路径），行为与
 // Mapper 框架接入前完全一致（纯影子模式）。
-func buildMapperRegistry(bus *eventbus.EventBus, ledger *metamanager.Ledger) *mapper.MapperRegistry {
+func buildMapperRegistry(bus *eventbus.EventBus, ledger *metamanager.Ledger, mediaSink *mediaSinkHolder) *mapper.MapperRegistry {
 	if !mapperEnabledFromEnv() {
 		log.Infof("Mapper 装配已关闭（%s=false）：不注册 Mapper、不启动采集循环，设备指令仅更新 Twin.Desired",
 			EnvEnableMapper)
@@ -202,6 +202,12 @@ func buildMapperRegistry(bus *eventbus.EventBus, ledger *metamanager.Ledger) *ma
 			}
 			if vcfg.EventBus && bus != nil {
 				opts = append(opts, videomapper.WithEventPublisher(bus))
+			}
+			// 媒资采集出口（v0.43.0，spec 0016 US-2）：media.enabled 时经
+			// holder 转发（补传队列就绪后由 wireMediaUpload 注入真实 Uploader）。
+			if vcfg.Media.Enabled && mediaSink != nil {
+				opts = append(opts, videomapper.WithMediaSink(mediaSink))
+				mediaSink.wanted.Store(true)
 			}
 			vm, merr := videomapper.NewMapper(vcfg, opts...)
 			if merr != nil {

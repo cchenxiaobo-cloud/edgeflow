@@ -27,6 +27,7 @@ const (
 	TypeUplinkReport   = "UplinkReport"   // 边→云：上行补传队列状态上报（v0.39.0）
 	TypeAlarmEvent     = "AlarmEvent"     // 边→云：告警事件（v0.40.0）
 	TypeSetpointResult = "SetpointResult" // 边→云：设定值执行反馈（v0.40.0）
+	TypeMediaUpload    = "MediaUpload"    // 边→云：媒资分片上传（快照/片段，v0.43.0）
 	TypeNodeJob        = "NodeJob"        // 云→边：任务分发（已关闭：v0.1.0 范围外，保留协议占位）
 	TypeNodeJobResult  = "NodeJobResult"  // 边→云：任务结果（已关闭：v0.1.0 范围外，保留协议占位）
 	TypeAck            = "Ack"            // 双向：通用确认

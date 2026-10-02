@@ -91,7 +91,20 @@
 | 60 | POST | `/api/v1/setpoints/{setpointID}/approval` | 设定值审批（approve\|reject，仅 pending-approval 可审） | v0.40.0 |
 | 61 | GET | `/api/v1/setpoints` | 设定值列表（含执行反馈 outcome/error） | v0.40.0 |
 
-> 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行）。
+> **v0.43.0 追加（8 个视频管理面端点，均为新增 = 向后兼容；既有 61 行逐字节不变）**：
+
+| # | 方法 | 路径 | 说明 | 版本 |
+|---|------|------|------|------|
+| 62 | GET | `/api/v1/videostreams` | 视频流列表（nodeID 过滤） | v0.43.0 |
+| 63 | POST | `/api/v1/videostreams` | 创建视频流（name/nodeId/deviceName 必填） | v0.43.0 |
+| 64 | GET | `/api/v1/videostreams/{name}` | 视频流详情（含片段索引） | v0.43.0 |
+| 65 | PUT | `/api/v1/videostreams/{name}` | 更新视频流（deviceName/sourceType/status/description） | v0.43.0 |
+| 66 | DELETE | `/api/v1/videostreams/{name}` | 删除视频流索引（不删媒资文件） | v0.43.0 |
+| 67 | GET | `/api/v1/videostreams/{name}/snapshot` | 最新快照（image/jpeg 字节） | v0.43.0 |
+| 68 | GET | `/api/v1/videostreams/{name}/segments` | 片段索引列表 | v0.43.0 |
+| 69 | GET | `/api/v1/videostreams/{name}/segments/{mediaID}` | 片段回放（video/x-mjpeg 字节） | v0.43.0 |
+
+> 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行、v0.43.0 视频管理面行）。
 
 > 认证：`EDGEFLOW_CLOUDCORE_API_TOKEN` 设置为 `on` 时全部管理端点（除 healthz/metrics）要求
 > `Authorization: Bearer <token>`（WBS 7.2）；未设置保持匿名（向后兼容，仅限受信网络）。
@@ -115,6 +128,7 @@
 | `UplinkReport` | 边→云 | depth / dropped / sent / oldestTs（上行补传队列状态周期上报） | 新增（v0.39.0） |
 | `AlarmEvent` | 边→云 | alarmId / nodeId / source / severity / state / message / count / raisedAt / updatedAt（告警事实，三处同构） | 新增（v0.40.0） |
 | `SetpointResult` | 边→云 | setpointId / ok / value / error / ts（设定值执行反馈闭环） | 新增（v0.40.0） |
+| `MediaUpload` | 边→云 | mediaId / kind（snapshot\|segment）/ nodeId / deviceName / streamName / capturedAt / contentType / frameCount / totalBytes / sha256 / chunkSeq / chunkTotal / chunkData（base64 分片） | 新增（v0.43.0） |
 | `Ack` | 双向 | id / ok / error | 稳定（可靠投递） |
 
 兼容规则：
@@ -221,3 +235,16 @@
 | 云端告警中心 / 设定值存储（etcd 写穿 `/edgeflow/alarms/*`、`/edgeflow/setpoints/*`） | 升级零迁移：新增键空间；重启自动恢复；纯内存形态降级同 rulestore |
 | 设定值投递 flush（默认 30s，`EDGEFLOW_CLOUDCORE_SETPOINT_FLUSH_SEC` 可调；审批 `EDGEFLOW_CLOUDCORE_SETPOINT_APPROVAL` 默认 off） | **默认零行为**：无建单时 flush 空转；审批不开时建单直接 pending-send |
 | 零新依赖 / 既有包 API | go.mod 零变化；MQTT/OPC-UA/视频/模型面代码零触碰；v0240–v0350 冻结测试零改动 |
+
+
+## v0.43.0 兼容性增量（2026-10-02）
+
+端点总数 61 → 69（+8：视频管理面，全部新增 = 向后兼容；既有 61 行逐字节不变）；云边消息活跃类型 15 → 16（+MediaUpload）。
+
+| 变更 | 兼容性 |
+|---|---|
+| 新增视频管理面 8 端点（`/api/v1/videostreams*`） | **零破坏**：全新路由（此前无路由）；空库返回空列表；媒资文件存储与既有 etcd 键空间隔离 |
+| 云边消息 +`MediaUpload`（边→云，分片上传） | **零破坏**：新增类型；media 未配置时零行为；旧云端对未知类型仅日志忽略 |
+| 云端存储 +videostream（etcd 写穿 `/edgeflow/videostreams/*`）/ +mediastore（`/edgeflow/media/*` + 媒资目录） | 升级零迁移：新增键空间与媒资目录（`EDGEFLOW_CLOUDCORE_MEDIA_DIR`，默认 data/media）；重启自动恢复 |
+| 边缘媒资采集（video 配置 `media` 块 + `EDGEFLOW_MEDIA_SPOOL_DIR`，依赖 `EDGEFLOW_EDGECORE_UPLINK=on`） | **默认零行为**：media 未配置/补传未开启时不上传（Warn）；既有视频链路零变化 |
+| 零新依赖 / 既有包 API | go.mod 零变化；MQTT/OPC-UA/规则/时序面零触碰；v0240–v0350 冻结测试零改动 |

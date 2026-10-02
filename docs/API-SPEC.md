@@ -90,6 +90,14 @@
 | POST | `/api/v1/nodes/{nodeID}/setpoints` | **设定值建单（v0.40.0：审批开关/单笔 requireApproval）** | 200 / 400 |
 | POST | `/api/v1/setpoints/{setpointID}/approval` | **设定值审批（v0.40.0：approve\|reject，仅 pending-approval 可审）** | 200 / 400 / 404 / 409 |
 | GET | `/api/v1/setpoints` | **设定值列表（v0.40.0：含执行反馈 outcome/error）** | 200 |
+| GET | `/api/v1/videostreams` | **视频流列表（v0.43.0：nodeID 过滤）** | 200 |
+| POST | `/api/v1/videostreams` | **创建视频流（v0.43.0：name/nodeId/deviceName 必填）** | 201 / 400 / 409 |
+| GET | `/api/v1/videostreams/{name}` | **视频流详情（v0.43.0：含片段索引）** | 200 / 404 |
+| PUT | `/api/v1/videostreams/{name}` | **更新视频流（v0.43.0：deviceName/sourceType/status/description）** | 200 / 400 / 404 |
+| DELETE | `/api/v1/videostreams/{name}` | **删除视频流索引（v0.43.0：不删媒资文件）** | 200 / 404 |
+| GET | `/api/v1/videostreams/{name}/snapshot` | **最新快照（v0.43.0：image/jpeg 字节 + X-Frame-Count）** | 200 / 404 |
+| GET | `/api/v1/videostreams/{name}/segments` | **片段索引列表（v0.43.0）** | 200 / 404 |
+| GET | `/api/v1/videostreams/{name}/segments/{mediaID}` | **片段回放（v0.43.0：video/x-mjpeg 字节 + X-Frame-Count）** | 200 / 404 |
 
 ### 1.2 错误码表（统一约定）
 

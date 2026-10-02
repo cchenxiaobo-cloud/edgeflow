@@ -23,7 +23,7 @@ type Endpoint struct {
 	Note   string // 契约说明（与文档矩阵口径一致）
 }
 
-// ContractEndpoints 是 cloudcore HTTP 端点契约表（61 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9 + v0.39.0 上行补传可视化 2 + v0.40.0 告警中心 5 + 设定值通道 3）。
+// ContractEndpoints 是 cloudcore HTTP 端点契约表（69 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9 + v0.39.0 上行补传可视化 2 + v0.40.0 告警中心 5 + 设定值通道 3 + v0.43.0 视频管理面 8）。
 //
 // ⚠️ 路径以 cmd/cloudcore/main.go 实际注册为准（任务提示 podsync/pod-sync
 // 存在歧义：grep 确认代码与两份文档均为 /podsync，无连字符）。
@@ -92,6 +92,15 @@ var ContractEndpoints = []Endpoint{
 	{Method: "POST", Path: "/api/v1/alarms/{alarmID}/ack", Note: "告警确认（v0.40.0；raised → acked，operator 必填）"},
 	{Method: "POST", Path: "/api/v1/alarms/{alarmID}/assign", Note: "告警派单（v0.40.0；工单集成点回调）"},
 	{Method: "POST", Path: "/api/v1/alarms/{alarmID}/close", Note: "告警闭环（v0.40.0；任意非 closed → closed 终态）"},
+	// ── v0.43.0 视频管理面（8 条）──
+	{Method: "GET", Path: "/api/v1/videostreams", Note: "视频流列表（nodeID 过滤）"},
+	{Method: "POST", Path: "/api/v1/videostreams", Note: "创建视频流（name/nodeId/deviceName 必填）"},
+	{Method: "GET", Path: "/api/v1/videostreams/{name}", Note: "视频流详情（含片段索引）"},
+	{Method: "PUT", Path: "/api/v1/videostreams/{name}", Note: "更新视频流（deviceName/sourceType/status/description）"},
+	{Method: "DELETE", Path: "/api/v1/videostreams/{name}", Note: "删除视频流索引（不删媒资文件）"},
+	{Method: "GET", Path: "/api/v1/videostreams/{name}/snapshot", Note: "最新快照（image/jpeg 字节）"},
+	{Method: "GET", Path: "/api/v1/videostreams/{name}/segments", Note: "片段索引列表"},
+	{Method: "GET", Path: "/api/v1/videostreams/{name}/segments/{mediaID}", Note: "片段回放（video/x-mjpeg 字节）"},
 	// ── v0.40.0 设定值通道（3 条）──
 	{Method: "POST", Path: "/api/v1/nodes/{nodeID}/setpoints", Note: "设定值建单（v0.40.0；审批开关/单笔 requireApproval）"},
 	{Method: "POST", Path: "/api/v1/setpoints/{setpointID}/approval", Note: "设定值审批（v0.40.0；approve|reject，仅 pending-approval 可审）"},
@@ -107,8 +116,8 @@ type MessageType struct {
 
 // ContractMessageTypes 是云边通道消息类型契约，逐项绑定 protocol.Type* 常量。
 //
-// 与 docs/API-COMPATIBILITY.md §2 矩阵对应（15 种活跃类型，v0.40.0 起
-// +UplinkReport/+AlarmEvent/+SetpointResult）。历史口径「9 种消息」为 M3 时点，契约以文档为准
+// 与 docs/API-COMPATIBILITY.md §2 矩阵对应（16 种活跃类型，v0.43.0 起
+// +MediaUpload）。历史口径「9 种消息」为 M3 时点，契约以文档为准
 // （文档一致性测试会双向校验，口径分歧在测试中显式暴露）。
 // NodeJob / NodeJobResult 为已关闭占位（v0.1.0 范围外，见 pkg/protocol/message.go），
 // 文档矩阵不收录，用 InDoc=false 显式声明该状态，防止误加回文档。
@@ -127,6 +136,7 @@ var ContractMessageTypes = []MessageType{
 	{Name: protocol.TypeUplinkReport, InDoc: true, Note: "边→云：上行补传队列状态上报（v0.39.0）"},
 	{Name: protocol.TypeAlarmEvent, InDoc: true, Note: "边→云：告警事件（v0.40.0）"},
 	{Name: protocol.TypeSetpointResult, InDoc: true, Note: "边→云：设定值执行反馈（v0.40.0）"},
+	{Name: protocol.TypeMediaUpload, InDoc: true, Note: "边→云：媒资分片上传（快照/片段，v0.43.0）"},
 	{Name: protocol.TypeAck, InDoc: true, Note: "双向：通用确认（可靠投递）"},
 	{Name: protocol.TypeNodeJob, InDoc: false, Note: "云→边：任务分发（已关闭：v0.1.0 范围外，保留协议占位）"},
 	{Name: protocol.TypeNodeJobResult, InDoc: false, Note: "边→云：任务结果（已关闭：v0.1.0 范围外，保留协议占位）"},

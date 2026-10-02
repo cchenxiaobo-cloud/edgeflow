@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +32,7 @@ import (
 	"edgeflow/cloud/pkg/cloudhub"
 	"edgeflow/cloud/pkg/devicestatus"
 	"edgeflow/cloud/pkg/etcdstore"
+	"edgeflow/cloud/pkg/mediastore"
 	"edgeflow/cloud/pkg/metrics"
 	"edgeflow/cloud/pkg/modelrelease"
 	"edgeflow/cloud/pkg/modelrepo"
@@ -39,11 +41,13 @@ import (
 	"edgeflow/cloud/pkg/registry"
 	"edgeflow/cloud/pkg/rulestore"
 	"edgeflow/cloud/pkg/setpointstore"
+	"edgeflow/cloud/pkg/videostream"
 	"edgeflow/pkg/alarm"
 	"edgeflow/pkg/certs"
 	"edgeflow/pkg/config"
 	"edgeflow/pkg/httpx"
 	"edgeflow/pkg/log"
+	"edgeflow/pkg/mediaup"
 	"edgeflow/pkg/protocol"
 	"edgeflow/pkg/resource"
 	"edgeflow/pkg/rules"
@@ -748,6 +752,39 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	})
 	(&alarmAPI{store: alarmStore}).Register(apiMux)
+
+	// v0.43.0 视频管理面（spec 0016）：videostream（流索引，etcd 写穿）+ mediastore
+	// （媒资分片组装与对象存储）+ 8 端点 + MediaUpload 接收（分片入库 → 完成后
+	// 挂接流索引：快照替换/片段追加）。媒资目录 EDGEFLOW_CLOUDCORE_MEDIA_DIR
+	// （默认 data/media）。
+	videoStore := videostream.NewStore(ruleKV)
+	if err := videoStore.Load(sigCtx); err != nil {
+		log.Warnf("[videostream] 启动恢复失败（以空索引继续）: %v", err)
+	}
+	mediaDir := os.Getenv("EDGEFLOW_CLOUDCORE_MEDIA_DIR")
+	if mediaDir == "" {
+		mediaDir = filepath.Join("data", "media")
+	}
+	mediaStore := mediastore.NewStore(mediaDir, ruleKV)
+	if err := mediaStore.Load(sigCtx); err != nil {
+		log.Warnf("[mediastore] 启动恢复失败（以空索引继续）: %v", err)
+	}
+	hub.SetMediaUploadHandler(func(nodeID string, up mediaup.UploadChunk) {
+		completed, err := mediaStore.PutChunk(sigCtx, &up)
+		if err != nil {
+			log.Warnf("[mediastore] 分片入库失败（mediaId=%s seq=%d): %v", up.MediaID, up.ChunkSeq, err)
+			return
+		}
+		if completed {
+			if _, err := videoStore.AttachMedia(sigCtx, up); err != nil {
+				log.Warnf("[videostream] 媒资挂接失败（%s）: %v", up.MediaID, err)
+			} else {
+				log.Infof("[videostream] 媒资已挂接（stream=%s kind=%s mediaId=%s）",
+					up.StreamName, up.Kind, up.MediaID)
+			}
+		}
+	})
+	(&videoAPI{streams: videoStore, media: mediaStore}).Register(apiMux)
 
 	// v0.40.0 设定值通道（spec 0013 US-4/US-5）：setpointstore + 3 端点 + 投递
 	// flush 循环（断网重投，同 MsgID 幂等；恢复后自动同步闭环）。

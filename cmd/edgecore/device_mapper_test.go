@@ -245,8 +245,8 @@ func TestHandleDeviceCommandFullChain(t *testing.T) {
 // TestBuildMapperRegistry 验证内置装配：注册表含模拟传感器且可按
 // 设备名路由（M3 端到端演示链路的默认装配）。
 func TestBuildMapperRegistry(t *testing.T) {
-	t.Setenv("EDGEFLOW_MODBUS_ADDR", "") // 未显式配置 Modbus：不注册（装配门控）
-	reg := buildMapperRegistry(nil, nil) // 未装配 EventBus：纯本地模式
+	t.Setenv("EDGEFLOW_MODBUS_ADDR", "")      // 未显式配置 Modbus：不注册（装配门控）
+	reg := buildMapperRegistry(nil, nil, nil) // 未装配 EventBus：纯本地模式
 	if len(reg.List()) != 1 {
 		t.Fatalf("注册 Mapper 数 = %d，期望 1（模拟传感器）", len(reg.List()))
 	}
@@ -261,7 +261,7 @@ func TestBuildMapperRegistry(t *testing.T) {
 func TestBuildMapperRegistryMqttMode(t *testing.T) {
 	t.Setenv("EDGEFLOW_MODBUS_ADDR", "")
 	bus := eventbus.New("tcp://127.0.0.1:1") // 仅验证装配，不 Connect
-	reg := buildMapperRegistry(bus, nil)
+	reg := buildMapperRegistry(bus, nil, nil)
 	if len(reg.List()) != 1 {
 		t.Fatalf("注册 Mapper 数 = %d，期望 1（模拟传感器）", len(reg.List()))
 	}
@@ -277,7 +277,7 @@ func TestBuildMapperRegistryMqttMode(t *testing.T) {
 		t.Error("装配 EventBus 后传感器应处于 MQTT 模式")
 	}
 	// 降级路径：bus 为 nil 时传感器为纯本地模式
-	reg2 := buildMapperRegistry(nil, nil)
+	reg2 := buildMapperRegistry(nil, nil, nil)
 	m2, _ := reg2.Get("mock-sensor")
 	if m2.(*mocksensor.MockSensor).MqttEnabled() {
 		t.Error("未装配 EventBus 时传感器不应处于 MQTT 模式")
@@ -289,7 +289,7 @@ func TestBuildMapperRegistryMqttMode(t *testing.T) {
 // 连接发生在操作时而非注册时）。
 func TestBuildMapperRegistryModbusGated(t *testing.T) {
 	t.Setenv("EDGEFLOW_MODBUS_ADDR", "127.0.0.1:15020")
-	reg := buildMapperRegistry(nil, nil)
+	reg := buildMapperRegistry(nil, nil, nil)
 	if len(reg.List()) != 2 {
 		t.Fatalf("注册 Mapper 数 = %d，期望 2（mock-sensor + modbus-mapper）", len(reg.List()))
 	}
@@ -328,11 +328,11 @@ func TestBuildMapperRegistryDisabled(t *testing.T) {
 	t.Setenv("EDGEFLOW_MODBUS_ADDR", "127.0.0.1:15020") // 即使显式配置 Modbus 也不注册
 	t.Setenv(EnvEnableMapper, "false")
 
-	if reg := buildMapperRegistry(nil, nil); reg != nil {
+	if reg := buildMapperRegistry(nil, nil, nil); reg != nil {
 		t.Errorf("开关关闭（bus=nil）应返回 nil 注册表，实际 %+v", reg)
 	}
 	bus := eventbus.New("tcp://127.0.0.1:1") // 仅验证装配，不 Connect
-	if reg := buildMapperRegistry(bus, nil); reg != nil {
+	if reg := buildMapperRegistry(bus, nil, nil); reg != nil {
 		t.Errorf("开关关闭（bus 非 nil）应返回 nil 注册表，实际 %+v", reg)
 	}
 }
@@ -342,7 +342,7 @@ func TestBuildMapperRegistryDisabled(t *testing.T) {
 func TestBuildMapperRegistryEnabledExplicit(t *testing.T) {
 	t.Setenv("EDGEFLOW_MODBUS_ADDR", "")
 	t.Setenv(EnvEnableMapper, "true")
-	reg := buildMapperRegistry(nil, nil)
+	reg := buildMapperRegistry(nil, nil, nil)
 	if reg == nil || len(reg.List()) != 1 {
 		t.Fatalf("开关开启应正常装配 1 个 Mapper，实际 %+v", reg)
 	}
@@ -534,14 +534,14 @@ func TestRunDeviceReportLoopCollectFailureSurvives(t *testing.T) {
 func TestBuildMapperRegistryOPCUAGated(t *testing.T) {
 	t.Setenv(opcuamapper.EnvEndpoint, "")
 	t.Setenv("EDGEFLOW_MODBUS_ADDR", "")
-	reg := buildMapperRegistry(nil, nil)
+	reg := buildMapperRegistry(nil, nil, nil)
 	if _, ok := reg.Get("opcua-mapper"); ok {
 		t.Fatal("ENDPOINT 未设置时不应注册 opcua-mapper")
 	}
 
 	t.Setenv(opcuamapper.EnvEndpoint, "opc.tcp://127.0.0.1:14840")
 	t.Setenv(opcuamapper.EnvNodes, "temperature=ns=2;i=1001,setpoint=ns=2;i=3001")
-	reg2 := buildMapperRegistry(nil, nil)
+	reg2 := buildMapperRegistry(nil, nil, nil)
 	m, ok := reg2.Get("opcua-mapper")
 	if !ok {
 		t.Fatal("ENDPOINT 设置后 opcua-mapper 应已注册")
@@ -559,7 +559,7 @@ func TestBuildMapperRegistryOPCUAGated(t *testing.T) {
 
 	// NODES 非法 → 仅告警跳过（装配失败不 panic、不影响 mock-sensor）
 	t.Setenv(opcuamapper.EnvNodes, "bad=node!!")
-	reg3 := buildMapperRegistry(nil, nil)
+	reg3 := buildMapperRegistry(nil, nil, nil)
 	if _, ok := reg3.Get("opcua-mapper"); ok {
 		t.Error("NODES 非法时不应注册 opcua-mapper")
 	}

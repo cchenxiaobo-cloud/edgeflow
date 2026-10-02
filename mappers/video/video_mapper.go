@@ -24,6 +24,7 @@ import (
 	"edgeflow/edge/pkg/mapper"
 	"edgeflow/edge/pkg/metamanager"
 	"edgeflow/pkg/log"
+	"edgeflow/pkg/mediaup"
 	pkgvideo "edgeflow/pkg/video"
 )
 
@@ -65,16 +66,32 @@ type InferConfig struct {
 	Model     string `json:"model,omitempty"`
 }
 
+// MediaConfig 是媒资采集配置（v0.43.0，spec 0016 US-2）：检出触发快照+
+// 片段采集，经 MediaSink 出口（装配层接入 pkg/mediaup 上传）。
+type MediaConfig struct {
+	Enabled       bool `json:"enabled"`
+	SegmentFrames int  `json:"segmentFrames,omitempty"` // 片段帧数（1..64，默认 8）
+	MinIntervalMs int  `json:"minIntervalMs,omitempty"` // 触发最小间隔（默认 3000）
+}
+
 // Config 是视频 Mapper 配置文件结构。
 type Config struct {
 	DeviceName string       `json:"deviceName"`
 	Namespace  string       `json:"namespace"`
 	Source     SourceConfig `json:"source"`
 	Inference  InferConfig  `json:"inference"`
+	Media      MediaConfig  `json:"media"`
 	// Ledger 与 EventBus 声明是否启用留痕/事件上行；实例由装配层注入
 	//（mapper 不自建基础设施）。
 	Ledger   bool `json:"ledger"`
 	EventBus bool `json:"eventbus"`
+}
+
+// MediaSink 接收采集的媒资（快照/片段）——装配层注入（*mediaup.Uploader
+// 天然实现）。实现必须快速返回（mapper 推理循环同步调用——Uploader 内部
+// 异步化到缓冲队列）。
+type MediaSink interface {
+	HandleClip(c mediaup.Clip)
 }
 
 // validate 校验配置：设备名非空；source.type ∈ {synthetic, mjpeg, bridge}
@@ -138,6 +155,11 @@ func WithEventPublisher(p EventPublisher) Option {
 	return func(m *VideoMapper) { m.publisher = p }
 }
 
+// WithMediaSink 注入媒资采集出口（nil = 不采集；media.enabled 为附加开关）。
+func WithMediaSink(s MediaSink) Option {
+	return func(m *VideoMapper) { m.mediaSink = s }
+}
+
 // WithSource 覆盖帧源工厂（测试注入 stub；生产走 cfg.Source 构造合成源）。
 func WithSource(f func(cfg *Config) (pkgvideo.FrameSource, error)) Option {
 	return func(m *VideoMapper) { m.sourceFactory = f }
@@ -178,6 +200,12 @@ type VideoMapper struct {
 	met      metrics
 	slot     *pkgvideo.LatestSlot
 	src      pkgvideo.FrameSource // 当前/最近 run 的帧源（Collect 读源级健康指标：reconnects/badFrames）
+
+	// v0.43.0 媒资采集（spec 0016 US-2）：出口 + 帧环形缓冲（锁 m.mu 保护）。
+	mediaSink    MediaSink
+	mediaRing    []*pkgvideo.Frame
+	mediaRingCap int   // 0 = 采集未启用（零行为）
+	mediaLastAt  int64 // 上次触发时刻（毫秒；节流）
 }
 
 // NewMapper 创建视频 Mapper（不启动；Start 启动流）。
@@ -188,6 +216,22 @@ func NewMapper(cfg *Config, opts ...Option) (*VideoMapper, error) {
 	m := &VideoMapper{
 		cfg:  cfg,
 		slot: pkgvideo.NewLatestSlot(),
+	}
+	// v0.43.0 媒资采集归一化（spec 0016 US-2）：segmentFrames ∈ [1,64]（默认 8），
+	// minIntervalMs ≥ 1（默认 3000）；启用时环形缓冲界长 64。
+	if m.cfg.Media.Enabled {
+		if m.cfg.Media.SegmentFrames < 1 {
+			m.cfg.Media.SegmentFrames = 8
+		}
+		if m.cfg.Media.SegmentFrames > 64 {
+			log.Warnf("VideoMapper %s: media.segmentFrames=%d 超界（1..64），按 64 归一",
+				m.cfg.DeviceName, m.cfg.Media.SegmentFrames)
+			m.cfg.Media.SegmentFrames = 64
+		}
+		if m.cfg.Media.MinIntervalMs < 1 {
+			m.cfg.Media.MinIntervalMs = 3000
+		}
+		m.mediaRingCap = 64
 	}
 	for _, o := range opts {
 		o(m)
@@ -247,6 +291,8 @@ func (m *VideoMapper) Start(_ context.Context) error {
 	done := m.runDone
 	m.running = true
 	m.src = src // 源级健康指标（reconnects/badFrames）经 Collect 汇出；保留至下次 Start
+	m.mediaRing = nil
+	m.mediaLastAt = 0
 	m.mu.Unlock()
 
 	var wg sync.WaitGroup
@@ -399,6 +445,13 @@ func (m *VideoMapper) produceLoop(stop <-chan struct{}, wg *sync.WaitGroup, src 
 		}
 		m.mu.Lock()
 		m.met.framesTotal++
+		if m.mediaRingCap > 0 {
+			// v0.43.0：媒资采集帧环形缓冲（新→旧丢弃头部；界长 64）。
+			m.mediaRing = append(m.mediaRing, f)
+			if len(m.mediaRing) > m.mediaRingCap {
+				m.mediaRing = m.mediaRing[len(m.mediaRing)-m.mediaRingCap:]
+			}
+		}
 		m.mu.Unlock()
 		m.slot.Put(f)
 		select {
@@ -464,6 +517,7 @@ func (m *VideoMapper) inferLoop(stop <-chan struct{}, wg *sync.WaitGroup, infer 
 			continue
 		}
 		m.recordResult(f, res)
+		m.maybeCapture(f, len(res.Detections)) // v0.43.0 媒资采集触发（零行为默认）
 		m.saveOp(f, res, nil)
 		m.publish(res)
 		select {
@@ -472,6 +526,49 @@ func (m *VideoMapper) inferLoop(stop <-chan struct{}, wg *sync.WaitGroup, infer 
 		default:
 		}
 	}
+}
+
+// maybeCapture 媒资采集触发（v0.43.0，spec 0016 US-2）：检出≥1 且距上次
+// 触发 ≥minIntervalMs → 组装 Clip（快照=当前帧；片段=最近 SegmentFrames
+// 帧拼接）交 MediaSink。未注入出口/未启用/未达间隔零行为；节流与环形
+// 快照在锁内完成（快照后锁外拼接与交付——不阻塞出帧循环）。
+func (m *VideoMapper) maybeCapture(f *pkgvideo.Frame, detections int) {
+	if m.mediaSink == nil || !m.cfg.Media.Enabled || detections < 1 {
+		return
+	}
+	now := time.Now().UnixMilli()
+	m.mu.Lock()
+	if m.mediaLastAt > 0 && now-m.mediaLastAt < int64(m.cfg.Media.MinIntervalMs) {
+		m.mu.Unlock()
+		return
+	}
+	m.mediaLastAt = now
+	n := m.cfg.Media.SegmentFrames
+	ring := m.mediaRing
+	if n > len(ring) {
+		n = len(ring)
+	}
+	var seg []byte
+	frameCount := n
+	if n > 0 {
+		for _, fr := range ring[len(ring)-n:] {
+			seg = append(seg, fr.JPEG...)
+		}
+	}
+	m.mu.Unlock()
+	if len(seg) == 0 {
+		// 环形为空（极端时序）：片段降级为当前帧。
+		seg = append([]byte(nil), f.JPEG...)
+		frameCount = 1
+	}
+	m.mediaSink.HandleClip(mediaup.Clip{
+		DeviceName: m.cfg.DeviceName,
+		Snapshot:   append([]byte(nil), f.JPEG...),
+		Segment:    seg,
+		FrameCount: frameCount,
+		Detections: detections,
+		WhenMs:     now,
+	})
 }
 
 // recordResult 更新指标面；结果 seq 为 0（服务端省略）时以帧序兜底

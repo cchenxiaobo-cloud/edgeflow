@@ -204,7 +204,8 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	// nil（handleDeviceCommand 走骨架路径：仅更新 Twin.Desired），行为与
 	// Mapper 框架接入前完全一致（纯影子模式）。
 	twinStore := devicetwin.NewStore()
-	mapperReg := buildMapperRegistry(bus, ledger)
+	mediaSink := &mediaSinkHolder{} // 媒资出口（v0.43.0；补传就绪后由 wireMediaUpload 注入）
+	mapperReg := buildMapperRegistry(bus, ledger, mediaSink)
 	var deviceExec devicetwin.DeviceCommandExecutor // nil = 骨架路径（Mapper 关闭/未装配）
 	// Mapper 生命周期随 edgecore 启停：启动采集循环（内置模拟传感器每 2s
 	// 波动一次，由上报循环周期汇入影子）；启动失败只告警，不阻断主流程。
@@ -253,6 +254,11 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	} else {
 		ruleEventSink = newRuleEventSink(client, ruleLedger, opts.NodeID)
 	}
+
+	// 媒资上传装配（v0.43.0，spec 0016 US-2）：视频采集启用且补传可用时创建
+	// Uploader（spool 目录 EDGEFLOW_MEDIA_SPOOL_DIR，默认 data/media），经
+	// mediaSink 延迟注入视频 Mapper（装配顺序：Mapper 先建、出口后置填充）。
+	mediaUploader := wireMediaUpload(mediaSink, uplinkRel, opts.NodeID)
 
 	// 告警管理与设定值回告（v0.40.0，spec 0013）：dispatch —— UPLINK on 入补传队列
 	//（priority 按 severity），off 直发尽力而为；入队失败直发兑底（与规则事件同口径）。
@@ -412,6 +418,9 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	<-deviceReportDone // 设备上报循环退出后不再有新消息写入通道
 	// 上行补传收尾（v0.39.0）：上报循环已停 → 停止补传 worker（残留条目留盘，
 	// 重启后自动继续补传）。
+	if mediaUploader != nil {
+		mediaUploader.Stop() // 媒资 spool 收尾（未完成条目留盘/留队，下次启动续传）
+	}
 	if uplinkRel != nil {
 		uplinkRel.Stop()
 	}

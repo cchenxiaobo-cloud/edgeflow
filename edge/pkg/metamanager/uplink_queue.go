@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -252,6 +253,41 @@ func (q *UplinkQueue) AckUplink(id int64) error {
 		return fmt.Errorf("提交确认事务失败: %w", err)
 	}
 	return nil
+}
+
+// PendingUplinkIDs 返回给定行 ID 中仍在队列（等待出队/补传）的子集。
+// 用途（v0.43 媒资 spool Janitor）：判定本地副本的全部上行分片是否已离队
+// （Ack 后行删除 / 容量修剪丢弃）——全部离队即本地副本可清理。
+// 空输入返回 nil；结果无序。
+func (q *UplinkQueue) PendingUplinkIDs(ids []int64) ([]int64, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := q.store.db.Query(fmt.Sprintf(
+		`SELECT id FROM %s WHERE id IN (%s)`, uplinkQueueTable, strings.Join(placeholders, ",")),
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("查询待发行失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("读取待发行失败: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历待发行失败: %w", err)
+	}
+	return out, nil
 }
 
 // UplinkDepth 返回队列观测统计（积压分布/最老时间/累计计数）。

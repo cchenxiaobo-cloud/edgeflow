@@ -244,7 +244,7 @@ func (m *alarmManager) Stop() {
 
 // newAlarmID 生成告警 ID（alm-<毫秒>-<rand4>，进程内唯一）。
 func newAlarmID(nowMs int64) string {
-	var b [2]byte
+	var b [4]byte // 4 字节后缀（v0.44 门禁发现 2 字节在 100 次/同毫秒生成下约 7.5% 生日碰撞——TestNewAlarmIDUnique 偶发 FAIL）
 	if _, err := rand.Read(b[:]); err != nil {
 		return fmt.Sprintf("alm-%d", nowMs) // 极端降级：毫秒时间戳（同毫秒碰撞概率可忽略）
 	}

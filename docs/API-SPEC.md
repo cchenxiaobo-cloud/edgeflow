@@ -98,6 +98,9 @@
 | GET | `/api/v1/videostreams/{name}/snapshot` | **最新快照（v0.43.0：image/jpeg 字节 + X-Frame-Count）** | 200 / 404 |
 | GET | `/api/v1/videostreams/{name}/segments` | **片段索引列表（v0.43.0）** | 200 / 404 |
 | GET | `/api/v1/videostreams/{name}/segments/{mediaID}` | **片段回放（v0.43.0：video/x-mjpeg 字节 + X-Frame-Count）** | 200 / 404 |
+| GET | `/media/streams/{name}/live.flv` | **HTTP-FLV 拉流（v0.44.0：H.264 透传封装，chunked video/x-flv；无注册帧源 404）** | 200 / 404 / 503 |
+| GET | `/media/streams/{name}/live.ws` | **WS-FLV 拉流（v0.44.0：WS 二进制透传 FLV 字节流）** | 101 / 404 |
+| GET | `/api/v1/alarms/{alarmID}/segments` | **告警关联片段检索（v0.44.0：DeviceName+RaisedAt 窗 × videostream 索引）** | 200 / 404 |
 
 ### 1.2 错误码表（统一约定）
 

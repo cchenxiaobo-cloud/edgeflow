@@ -104,7 +104,15 @@
 | 68 | GET | `/api/v1/videostreams/{name}/segments` | 片段索引列表 | v0.43.0 |
 | 69 | GET | `/api/v1/videostreams/{name}/segments/{mediaID}` | 片段回放（video/x-mjpeg 字节） | v0.43.0 |
 
-> 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行、v0.43.0 视频管理面行）。
+> **v0.44.0 追加（3 个端点：流媒体分发 2 + 告警片段检索 1，均为新增 = 向后兼容；既有 69 行逐字节不变）**：
+
+| # | 方法 | 路径 | 说明 | 版本 |
+|---|------|------|------|------|
+| 70 | GET | `/media/streams/{name}/live.flv` | HTTP-FLV 拉流（H.264 透传封装，chunked） | v0.44.0 |
+| 71 | GET | `/media/streams/{name}/live.ws` | WS-FLV 拉流（二进制透传） | v0.44.0 |
+| 72 | GET | `/api/v1/alarms/{alarmID}/segments` | 告警关联片段检索（时间窗联合查询） | v0.44.0 |
+
+> 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行、v0.43.0 视频管理面行、v0.44.0 流媒体分发行）。
 
 > 认证：`EDGEFLOW_CLOUDCORE_API_TOKEN` 设置为 `on` 时全部管理端点（除 healthz/metrics）要求
 > `Authorization: Bearer <token>`（WBS 7.2）；未设置保持匿名（向后兼容，仅限受信网络）。
@@ -247,4 +255,16 @@
 | 云边消息 +`MediaUpload`（边→云，分片上传） | **零破坏**：新增类型；media 未配置时零行为；旧云端对未知类型仅日志忽略 |
 | 云端存储 +videostream（etcd 写穿 `/edgeflow/videostreams/*`）/ +mediastore（`/edgeflow/media/*` + 媒资目录） | 升级零迁移：新增键空间与媒资目录（`EDGEFLOW_CLOUDCORE_MEDIA_DIR`，默认 data/media）；重启自动恢复 |
 | 边缘媒资采集（video 配置 `media` 块 + `EDGEFLOW_MEDIA_SPOOL_DIR`，依赖 `EDGEFLOW_EDGECORE_UPLINK=on`） | **默认零行为**：media 未配置/补传未开启时不上传（Warn）；既有视频链路零变化 |
+| 零新依赖 / 既有包 API | go.mod 零变化；MQTT/OPC-UA/规则/时序面零触碰；v0240–v0350 冻结测试零改动 |
+
+
+## v0.44.0 兼容性增量（2026-10-02）
+
+端点总数 69 → 72（+3：流媒体分发 2 + 告警片段检索 1，全部新增 = 向后兼容；既有 69 行逐字节不变）；云边消息活跃类型 16 维持（本版无新消息）。
+
+| 变更 | 兼容性 |
+|---|---|
+| 新增流媒体分发 2 端点（`/media/streams/{name}/live.flv|live.ws`） | **零破坏**：全新 `/media/*` 命名空间（此前无路由）；无注册帧源 404（默认零行为）；H.264 透传封装（无转码） |
+| 新增告警片段检索 1 端点（`GET /api/v1/alarms/{alarmID}/segments`） | **零破坏**：全新路由；联合查询只读（alarmstore×videostream）；窗默认 [RaisedAt-5s,+60s] |
+| 云端帧源注册表 + 演示源 opt-in（`EDGEFLOW_CLOUDCORE_DEMO_H264_STREAMS`） | **默认零行为**：未配置不注册演示源；注册表为进程内存态 |
 | 零新依赖 / 既有包 API | go.mod 零变化；MQTT/OPC-UA/规则/时序面零触碰；v0240–v0350 冻结测试零改动 |

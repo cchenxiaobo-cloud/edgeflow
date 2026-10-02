@@ -45,6 +45,7 @@ import (
 	"edgeflow/pkg/alarm"
 	"edgeflow/pkg/certs"
 	"edgeflow/pkg/config"
+	"edgeflow/pkg/flvremux"
 	"edgeflow/pkg/httpx"
 	"edgeflow/pkg/log"
 	"edgeflow/pkg/mediaup"
@@ -786,6 +787,28 @@ func run(args []string, stdout, stderr io.Writer) int {
 	})
 	(&videoAPI{streams: videoStore, media: mediaStore}).Register(apiMux)
 
+	// v0.44.0 流媒体分发面（spec 0017）：帧源注册表 + live.flv/live.ws 端点 +
+	// 告警片段检索。演示帧源 opt-in（EDGEFLOW_CLOUDCORE_DEMO_H264_STREAMS=
+	// 逗号分隔流名；合成 H.264 25fps——演示/测试面，KI §45 登记非产品交付物）。
+	mediaSrcs := newStreamRegistry()
+	if demo := os.Getenv("EDGEFLOW_CLOUDCORE_DEMO_H264_STREAMS"); demo != "" {
+		for _, name := range strings.Split(demo, ",") {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			mediaSrcs.Register(name, flvremux.NewSyntheticH264Source(25))
+			log.Infof("[mediastream] 演示 H.264 帧源已注册（stream=%s，25fps 合成）", name)
+		}
+	}
+	mediaAPI := &mediaStreamAPI{
+		srcs:    mediaSrcs,
+		streams: videoStore,
+		alarms:  alarmViewAdapter{store: alarmStore},
+	}
+	mediaAPI.RegisterStreams(mux) // /media/* 流端点 → 根 mux（协议端点面）
+	mediaAPI.RegisterAPI(apiMux)  // 告警片段检索 → apiMux（auth/audit 覆盖）
+
 	// v0.40.0 设定值通道（spec 0013 US-4/US-5）：setpointstore + 3 端点 + 投递
 	// flush 循环（断网重投，同 MsgID 幂等；恢复后自动同步闭环）。
 	setpointStore := setpointstore.NewStore(ruleKV)
@@ -888,8 +911,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 //   - ReadHeaderTimeout 5s：防止慢速建立连接长时间占用连接；
 //   - ReadTimeout 10s：防止慢速读取长时间占用连接；
 //   - WriteTimeout 15s：防止慢客户端（读响应缓慢/停滞）无限占用写路径——
-//     本服务全部响应均为短 JSON（API/healthz/metrics），15s 远超正常编码
-//     耗时；CloudHub 的 WebSocket 长连接是独立 Server，不受此超时影响。
+//     API/healthz/metrics 均为短 JSON 响应，15s 远超正常编码耗时；两个例外
+//     在各自 handler 内按连接豁免（v0.44.0）：/media/streams/{name}/live.flv
+//     经 http.NewResponseController 清写 deadline，live.ws 于 Hijack 后清底层
+//     conn deadline；CloudHub 的 WebSocket 长连接是独立 Server，不受此超时影响。
 func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              addr,

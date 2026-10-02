@@ -17,7 +17,10 @@
 package metrics
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -277,4 +280,27 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 		r.wroteHeader = true
 	}
 	return r.ResponseWriter.Write(b)
+}
+
+// Flush 委托底层 Flusher（v0.44.0：流媒体分发面 chunked 拉流依赖 Flush——
+// 包装器不实现 Flusher 会导致 http.Flusher 断言失败、流式响应无法推送）。
+// 底层不支持 Flush 时为 no-op。
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap 返回底层 ResponseWriter（Go 1.20+ ResponseWriter 解包约定——供
+// handler 侧能力断言链探测底层实现）。
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// Hijack 委托底层 Hijacker（v0.44.0：WS-FLV 升级依赖 Hijack——gorilla
+// Upgrade 对包装 writer 断言 http.Hijacker）。底层不支持时返回错误。
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("metrics: 底层 ResponseWriter 不支持 Hijack")
+	}
+	return h.Hijack()
 }

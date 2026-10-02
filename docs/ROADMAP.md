@@ -769,3 +769,18 @@ spec：specs/0015-rtsp-source/spec.md（发展规划 v0.42 · G20）。
 | 验收 | mapper 全链测试 | ✅ 验收 | 模拟 RTSP 服务端→拉流→解码→推理 stub 命中→断流自愈 reconnects 增长 |
 | 边界 | 仅 TCP/无 SRTP/无 H.265/SDP 最小面/模拟服务端为测试面/SIP 另立 | 📝 登记 | KI §43 |
 | 后续候选（UDP 传输、重定向跟随、SRTP、H.265、音频轨、GB28181 SIP 立项、rtsp 源 e2e 装配进 edgecore） | — | ⏳ 待排 | 非承诺 |
+
+## 39. v0.43.0 — 视频管理面（2026-10-02）
+
+spec：specs/0016-video-manage/spec.md（发展规划 v0.43 · G21）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| M1 媒资上行模型 | pkg/protocol TypeMediaUpload + pkg/mediaup（分片/spool/Janitor） | ✅ 闭环 | 分片 ≤32KB；经 v0.39 补传队列断网留存/重放（至少一次）；Janitor 完成/超龄/孤儿清理 |
+| M2 边缘采集 | mappers/video media 块 + cmd/edgecore 装配 | ✅ 闭环 | 环形缓冲 64/检出触发/节流；holder 延迟注入；未配置零行为 |
+| M3 云端媒资存储 | cloud/pkg/mediastore | ✅ 闭环 | 分片幂等组装/sha256/原子对象存储/etcd 元数据/Load 恢复 |
+| M4 VideoStream 模型与 API | cloud/pkg/videostream + cmd/cloudcore 8 端点 | ✅ 闭环 | CRUD/状态/快照/片段回放；媒资自动建流；Delete 不删文件（留存边界） |
+| 契约扩容 | tests/contract + 三处文档矩阵 | ✅ 验收 | 61→69 端点、15→16 消息；源级/运行时/文档一致性全绿 |
+| 验收 | e2e 断网补传回放 | ✅ 验收 | 在线媒资上云 + 停云 20s 采集积压 + 重启补传重放（窗内 capturedAt 铁证）+ 全部回放校验 |
+| 边界 | MJPEG 无转码/片段级留存/至少一次/告警关联留位/spool 简易水位 | 📝 登记 | KI §44 |
+| 后续候选（转码与 MP4 封装、HLS/FLV 分发（v0.44 G22）、告警关联闭环、媒资保留策略与磁盘水位、多轨/音频） | — | ⏳ 待排 | 非承诺 |

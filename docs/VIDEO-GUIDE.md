@@ -77,3 +77,37 @@ go test ./pkg/video/
 # rtsp 源型 mapper 全链（模拟服务端→拉流→解码→推理 stub→断流自愈）
 go test ./mappers/video/ -run TestV0420 -v
 ```
+
+
+## 5. 媒资采集与视频管理面（v0.43.0，spec 0016）
+
+### 5.1 边缘采集配置（video 配置 media 块）
+```json
+{
+  "deviceName": "cam-01",
+  "source": { "type": "rtsp", "url": "rtsp://...", "decoder": "ffmpeg -f h264 -i pipe:0 -f mjpeg pipe:1" },
+  "inference": { "url": "http://infer-svc:9000/detect" },
+  "media": { "enabled": true, "segmentFrames": 8, "minIntervalMs": 3000 }
+}
+```
+- 检出≥1 且距上次触发 ≥ `minIntervalMs` → 采集：快照=当前帧 JPEG；片段=最近
+  `segmentFrames` 帧 MJPEG 拼接（帧数 1..64，默认 8）。
+- 上传依赖补传开启（`EDGEFLOW_EDGECORE_UPLINK=on`）+ spool 目录
+  （`EDGEFLOW_MEDIA_SPOOL_DIR`，默认 data/media）；未满足时不上传（启动 Warn）。
+- 断网时媒资入 spool + 持久队列，网络恢复自动补传（至少一次，云端幂等）。
+
+### 5.2 云端管理 API（8 端点，契约 61→69）
+- `GET/POST /api/v1/videostreams`（列表/创建）；`GET/PUT/DELETE /api/v1/videostreams/{name}`；
+- `GET /api/v1/videostreams/{name}/snapshot`（最新快照 JPEG 字节，附 X-Frame-Count=1）；
+- `GET /api/v1/videostreams/{name}/segments`（片段索引）；
+- `GET /api/v1/videostreams/{name}/segments/{mediaID}`（片段回放，video/x-mjpeg +
+  X-Frame-Count）。
+- 媒资到达自动建流（无需先创建）；DELETE 仅删索引不删媒资文件（留存边界 KI §44）。
+- 媒资目录：`EDGEFLOW_CLOUDCORE_MEDIA_DIR`（默认 data/media）。
+
+### 5.3 验证
+```bash
+go test ./pkg/mediaup/ ./cloud/pkg/videostream/ ./cloud/pkg/mediastore/   # 媒资单测
+go test ./mappers/video/ -run TestV0430                                   # 采集触发
+go test ./tests/e2e/ -run TestV0430VideoManageE2E                        # 断网补传回放
+```

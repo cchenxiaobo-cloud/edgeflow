@@ -45,8 +45,9 @@ const (
 	orphanGraceMs = 60 * 60 * 1000
 
 	// 媒资种类。
-	KindSnapshot = "snapshot"
-	KindSegment  = "segment"
+	KindSnapshot   = "snapshot"
+	KindSegment    = "segment"
+	KindHardSample = "hard-sample" // v0.45.0（G25）：困难样本（告警触发捕获的 JPEG 快照帧）
 )
 
 // Clip 是一次采集（快照 + 片段），由视频管道在检出时组装。
@@ -83,7 +84,7 @@ func (u *UploadChunk) Validate() error {
 	if u.MediaID == "" || u.Kind == "" || u.DeviceName == "" {
 		return errors.New("mediaup: mediaId/kind/deviceName 必填")
 	}
-	if u.Kind != KindSnapshot && u.Kind != KindSegment {
+	if u.Kind != KindSnapshot && u.Kind != KindSegment && u.Kind != KindHardSample {
 		return fmt.Errorf("mediaup: 未知媒资种类 %q", u.Kind)
 	}
 	if u.ChunkTotal < 1 || u.ChunkSeq < 0 || u.ChunkSeq >= u.ChunkTotal {
@@ -231,6 +232,17 @@ func (u *Uploader) processClip(c Clip) error {
 		u.notify()
 	}
 	return nil
+}
+
+// EnqueueHardSample 是困难样本专用入口（v0.45.0，G25）：只取 Clip.Snapshot
+// （JPEG 单帧）以 KindHardSample 落盘入队；Snapshot 为空时返回 nil（调用方
+// 在帧缺失时通常已自行过滤，此处防御）。与既有 HandleClip/processClip 的
+// snapshot/segment 双段语义隔离，互不影响。
+func (u *Uploader) EnqueueHardSample(c Clip) error {
+	if len(c.Snapshot) == 0 {
+		return nil
+	}
+	return u.spoolAndEnqueue(KindHardSample, "image/jpeg", c, c.WhenMs, c.Snapshot, 1)
 }
 
 // spoolAndEnqueue 落盘一段媒资并逐分片入队（写盘先行；meta 最后写——Janitor

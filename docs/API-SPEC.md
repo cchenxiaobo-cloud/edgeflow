@@ -101,6 +101,9 @@
 | GET | `/media/streams/{name}/live.flv` | **HTTP-FLV 拉流（v0.44.0：H.264 透传封装，chunked video/x-flv；无注册帧源 404）** | 200 / 404 / 503 |
 | GET | `/media/streams/{name}/live.ws` | **WS-FLV 拉流（v0.44.0：WS 二进制透传 FLV 字节流）** | 101 / 404 |
 | GET | `/api/v1/alarms/{alarmID}/segments` | **告警关联片段检索（v0.44.0：DeviceName+RaisedAt 窗 × videostream 索引）** | 200 / 404 |
+| GET | `/api/v1/models/{modelName}/scenes` | **模型-业务场景关联查询（v0.45.0：scene.bindings 结构化视图；未配置空数组）** | 200 / 404 |
+| GET | `/api/v1/hardsamples` | **困难样本列表（v0.45.0：nodeID/deviceName/alarmId 过滤，limit 默认 50 上限 200）** | 200 |
+| GET | `/api/v1/hardsamples/{mediaId}/content` | **困难样本内容（v0.45.0：JPEG 字节流）** | 200 / 404 / 409 |
 
 ### 1.2 错误码表（统一约定）
 

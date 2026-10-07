@@ -227,6 +227,11 @@ func (s *Store) Delete(ctx context.Context, name string) error {
 //
 // 返回更新后的流副本。
 func (s *Store) AttachMedia(ctx context.Context, up mediaup.UploadChunk) (*Stream, error) {
+	if up.Kind == mediaup.KindHardSample {
+		// 困难样本不挂接流索引（非流媒资；云端经 mediastore 检索面查询——
+		// spec 0018 US-4）。返回 (nil, nil)：调用方以 nil Stream 跳过。
+		return nil, nil
+	}
 	name := up.StreamName
 	if name == "" {
 		name = up.DeviceName

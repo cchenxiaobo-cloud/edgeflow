@@ -112,6 +112,8 @@ func (a *modelAPI) Register(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/v1/models/{modelName}", a.getModel)
 	mux.HandleFunc("PUT /api/v1/models/{modelName}", a.updateModel)
 	mux.HandleFunc("DELETE /api/v1/models/{modelName}", a.deleteModel)
+	// v0.45.0（spec 0018 US-2）：模型-业务场景关联查询（scene.bindings 结构化视图）
+	mux.HandleFunc("GET /api/v1/models/{modelName}/scenes", a.listModelScenes)
 	mux.HandleFunc("GET /api/v1/models/{modelName}/versions", a.listVersions)
 	mux.HandleFunc("POST /api/v1/models/{modelName}/versions", a.createVersion)
 	mux.HandleFunc("GET /api/v1/models/{modelName}/versions/{version}", a.getVersion)
@@ -521,6 +523,10 @@ func (a *modelAPI) createModel(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "%v", err)
 		return
 	}
+	if err := modelrepo.ValidateModelMetadataExt(req.Metadata); err != nil {
+		badRequest(w, "%v", err)
+		return
+	}
 	model := &modelrepo.Model{Name: req.Name, Description: req.Description, Type: req.Type, Metadata: req.Metadata}
 	if err := a.store.CreateModel(r.Context(), model); err != nil {
 		modelError(w, err)
@@ -558,6 +564,10 @@ func (a *modelAPI) updateModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := req.validate(); err != nil {
+		badRequest(w, "%v", err)
+		return
+	}
+	if err := modelrepo.ValidateModelMetadataExt(req.Metadata); err != nil {
 		badRequest(w, "%v", err)
 		return
 	}

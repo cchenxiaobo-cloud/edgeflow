@@ -23,7 +23,7 @@ type Endpoint struct {
 	Note   string // 契约说明（与文档矩阵口径一致）
 }
 
-// ContractEndpoints 是 cloudcore HTTP 端点契约表（72 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9 + v0.39.0 上行补传可视化 2 + v0.40.0 告警中心 5 + 设定值通道 3 + v0.43.0 视频管理面 8 + v0.44.0 流媒体分发与告警片段 3）。
+// ContractEndpoints 是 cloudcore HTTP 端点契约表（75 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9 + v0.39.0 上行补传可视化 2 + v0.40.0 告警中心 5 + 设定值通道 3 + v0.43.0 视频管理面 8 + v0.44.0 流媒体分发与告警片段 3 + v0.45.0 模型面扩展与困难样本 3）。
 //
 // ⚠️ 路径以 cmd/cloudcore/main.go 实际注册为准（任务提示 podsync/pod-sync
 // 存在歧义：grep 确认代码与两份文档均为 /podsync，无连字符）。
@@ -105,6 +105,10 @@ var ContractEndpoints = []Endpoint{
 	{Method: "GET", Path: "/media/streams/{name}/live.flv", Note: "HTTP-FLV 拉流（H.264 透传封装，chunked video/x-flv；无注册帧源 404）"},
 	{Method: "GET", Path: "/media/streams/{name}/live.ws", Note: "WS-FLV 拉流（WS 二进制透传 FLV 字节流）"},
 	{Method: "GET", Path: "/api/v1/alarms/{alarmID}/segments", Note: "告警关联片段检索（DeviceName+RaisedAt 窗 × videostream 索引）"},
+	// ── v0.45.0 模型面扩展 + 困难样本（3 条）──
+	{Method: "GET", Path: "/api/v1/models/{modelName}/scenes", Note: "模型-业务场景关联查询（scene.bindings 结构化视图；未配置空数组）"},
+	{Method: "GET", Path: "/api/v1/hardsamples", Note: "困难样本列表（nodeID/deviceName/alarmId 过滤，limit 默认 50 上限 200）"},
+	{Method: "GET", Path: "/api/v1/hardsamples/{mediaId}/content", Note: "困难样本内容（JPEG 字节流；404 未知/409 未完成）"},
 	// ── v0.40.0 设定值通道（3 条）──
 	{Method: "POST", Path: "/api/v1/nodes/{nodeID}/setpoints", Note: "设定值建单（v0.40.0；审批开关/单笔 requireApproval）"},
 	{Method: "POST", Path: "/api/v1/setpoints/{setpointID}/approval", Note: "设定值审批（v0.40.0；approve|reject，仅 pending-approval 可审）"},

@@ -51,6 +51,7 @@ type Media struct {
 	NodeID      string `json:"nodeId"`
 	DeviceName  string `json:"deviceName"`
 	StreamName  string `json:"streamName"`
+	AlarmID     string `json:"alarmId,omitempty"` // v0.45.0（G25）：困难样本关联告警
 	ContentType string `json:"contentType"`
 	FrameCount  int    `json:"frameCount"`
 	ChunkTotal  int    `json:"chunkTotal,omitempty"`
@@ -104,8 +105,12 @@ func (s *Store) Load(ctx context.Context) error {
 	return nil
 }
 
-// objectPath 完成对象路径。
-func (s *Store) objectPath(mediaID string) string {
+// objectPath 完成对象路径。hard-sample 独立前缀（objects/hardsample/，v0.45.0
+// G25 与流媒资隔离；既有 snapshot/segment 路径不变——存量对象零迁移）。
+func (s *Store) objectPath(kind, mediaID string) string {
+	if kind == mediaup.KindHardSample {
+		return filepath.Join(s.dir, "objects", "hardsample", mediaID+".bin")
+	}
 	return filepath.Join(s.dir, "objects", mediaID+".bin")
 }
 
@@ -140,6 +145,7 @@ func (s *Store) PutChunk(ctx context.Context, up *mediaup.UploadChunk) (bool, er
 			NodeID:      up.NodeID,
 			DeviceName:  up.DeviceName,
 			StreamName:  up.StreamName,
+			AlarmID:     up.AlarmID,
 			ContentType: up.ContentType,
 			FrameCount:  up.FrameCount,
 			ChunkTotal:  up.ChunkTotal,
@@ -190,7 +196,7 @@ func (s *Store) PutChunk(ctx context.Context, up *mediaup.UploadChunk) (bool, er
 		return false, fmt.Errorf("mediastore: sha256 校验失败（mediaId=%s）", up.MediaID)
 	}
 	// 原子落对象（临时文件 + rename）。
-	objPath := s.objectPath(up.MediaID)
+	objPath := s.objectPath(up.Kind, up.MediaID)
 	if err := os.MkdirAll(filepath.Dir(objPath), 0o755); err != nil {
 		return false, fmt.Errorf("mediastore: 创建对象目录失败: %w", err)
 	}
@@ -242,13 +248,71 @@ func (s *Store) Read(mediaID string) ([]byte, error) {
 		s.mu.Unlock()
 		return nil, ErrIncomplete
 	}
-	path := s.objectPath(mediaID)
+	path := s.objectPath(m.Kind, mediaID)
 	s.mu.Unlock()
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("mediastore: 读对象失败: %w", err)
 	}
 	return b, nil
+}
+
+// HardSampleFilter 是困难样本检索过滤条件（零值 = 不过滤）。
+type HardSampleFilter struct {
+	NodeID     string
+	DeviceName string
+	AlarmID    string
+	Limit      int
+}
+
+// ListHardSamples 按过滤条件返回完成态困难样本（完成时间倒序；limit<=0 取默认
+// 50，上限 200——v0.45.0 US-4）。实现为内存全量过滤（O(n) 线性扫描；当前
+// 200 上限 + KV 持久化场景量级可控，无需索引——复核 P2-3 备忘）。
+func (s *Store) ListHardSamples(f HardSampleFilter) []*Media {
+	const (
+		defaultLimit = 50
+		maxLimit     = 200
+	)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	limit := f.Limit
+	if limit <= 0 {
+		limit = defaultLimit
+	}
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+	out := make([]*Media, 0, 8)
+	for _, m := range s.items {
+		if m.Kind != mediaup.KindHardSample || m.State != StateComplete {
+			continue
+		}
+		if f.NodeID != "" && m.NodeID != f.NodeID {
+			continue
+		}
+		if f.DeviceName != "" && m.DeviceName != f.DeviceName {
+			continue
+		}
+		if f.AlarmID != "" && m.AlarmID != f.AlarmID {
+			continue
+		}
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CompletedAt != out[j].CompletedAt {
+			return out[i].CompletedAt > out[j].CompletedAt
+		}
+		return out[i].MediaID < out[j].MediaID
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	cp := make([]*Media, len(out))
+	for i, m := range out {
+		c := *m
+		cp[i] = &c
+	}
+	return cp
 }
 
 // ListSorted 返回全部媒资（按完成时间排序；诊断用）。

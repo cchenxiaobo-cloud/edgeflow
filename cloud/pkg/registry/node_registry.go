@@ -56,6 +56,9 @@ type NodeInfo struct {
 	// OfflineAt 是标记离线时刻（毫秒时间戳；v0.13.0，L16）：在线/未知 = 0 省略
 	// （omitempty）；如实反映保留期时钟，重启重置为 Seed 时刻。瞬态内存数据不落盘。
 	OfflineAt int64 `json:"offlineAt,omitempty"`
+	// Accels 是加速卡能力清单（v0.45.0，G24）：<类型>:<标识> 形态。
+	// nil = 未上报（旧边缘兼容，JSON null/省略）。
+	Accels []string `json:"accels,omitempty"`
 }
 
 // Registry 是内存态节点注册表（读写缓存的实现基座）。

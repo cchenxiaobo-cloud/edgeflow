@@ -39,6 +39,7 @@ func (a *CloudHubAdapter) OnNodeRegistered(info cloudhub.NodeInfo) {
 		Memory:          info.Memory,
 		IP:              info.RemoteIP,
 		RegisteredAt:    info.RegisteredAt.UnixMilli(),
+		Accels:          info.Accels, // v0.45.0（G24）：加速卡能力透传
 	})
 	if err != nil {
 		log.Errorf("[CloudHubAdapter] 节点 %s 注册失败（未持久化、未入内存）: %v", info.NodeID, err)

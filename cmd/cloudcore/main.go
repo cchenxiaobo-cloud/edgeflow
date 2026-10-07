@@ -777,6 +777,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return
 		}
 		if completed {
+			if up.Kind == mediaup.KindHardSample {
+				log.Infof("[hardsample] 困难样本已入库（mediaId=%s alarm=%s device=%s）",
+					up.MediaID, up.AlarmID, up.DeviceName)
+				return
+			}
 			if _, err := videoStore.AttachMedia(sigCtx, up); err != nil {
 				log.Warnf("[videostream] 媒资挂接失败（%s）: %v", up.MediaID, err)
 			} else {
@@ -786,6 +791,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	})
 	(&videoAPI{streams: videoStore, media: mediaStore}).Register(apiMux)
+
+	// v0.45.0 困难样本检索面（spec 0018 US-4）：列表 + 内容端点（apiMux，
+	// auth/audit 覆盖）。样本经 mediastore（kind=hard-sample）托管。
+	(&hardsampleAPI{media: mediaStore}).Register(apiMux)
 
 	// v0.44.0 流媒体分发面（spec 0017）：帧源注册表 + live.flv/live.ws 端点 +
 	// 告警片段检索。演示帧源 opt-in（EDGEFLOW_CLOUDCORE_DEMO_H264_STREAMS=

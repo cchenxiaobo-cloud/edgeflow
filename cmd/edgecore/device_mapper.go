@@ -215,6 +215,9 @@ func buildMapperRegistry(bus *eventbus.EventBus, ledger *metamanager.Ledger, med
 			} else if err := reg.Register(vm); err != nil {
 				log.Warnf("注册视频 Mapper 失败: %v", err)
 			} else {
+				if mediaSink != nil {
+					mediaSink.SetSnapSource(vm) // v0.45.0：困难样本帧源登记（独立于 mediaSink 转发）
+				}
 				log.Infof("视频 Mapper 已注册（config=%s，设备 %s，留痕 %v，事件 %v）",
 					cfgPath, vcfg.DeviceName, vcfg.Ledger && ledger != nil, vcfg.EventBus && bus != nil)
 			}

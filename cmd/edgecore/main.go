@@ -90,6 +90,10 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 		// 随 Register 消息携带供云端校验（云端未启用校验时无副作用）。
 		// 敏感配置不入文件（docs/ARCHITECTURE.md §5.2），仅环境变量注入。
 		Token: os.Getenv("EDGEFLOW_EDGECORE_TOKEN"),
+		// v0.45.0（G24）：加速卡能力清单（env 注入，逗号分隔 <类型>:<标识>，
+		// 如 "gpu:cuda-12.4,npu:rockchip-9996"）；空 = 不上报（零行为）。
+		// 真实设备枚举为可插拔探测器（spec 0018 US-5；模拟验证通道）。
+		Accels: envAccelList(),
 	}
 
 	// 云边通道 mTLS（WBS 7.1 证书管理 + 7.4 云边认证）：
@@ -260,6 +264,11 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	// mediaSink 延迟注入视频 Mapper（装配顺序：Mapper 先建、出口后置填充）。
 	mediaUploader := wireMediaUpload(mediaSink, uplinkRel, opts.NodeID)
 
+	// 困难样本采集（v0.45.0，spec 0018 US-3）：opt-in
+	//（EDGEFLOW_EDGECORE_HARDSAMPLE=on，默认 off 零行为）；告警新 episode 时
+	// 捕获视频 mapper 最新快照帧 → hard-sample 入补传队列（断网留存/恢复补传）。
+	hardSamples := newHardSampleCollector(opts.NodeID, mediaSink, mediaUploader)
+
 	// 告警管理与设定值回告（v0.40.0，spec 0013）：dispatch —— UPLINK on 入补传队列
 	//（priority 按 severity），off 直发尽力而为；入队失败直发兑底（与规则事件同口径）。
 	alarmDispatch := func(priority int, msg *protocol.Message) {
@@ -279,6 +288,9 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	}
 	alarmMgr := newAlarmManager(opts.NodeID, store, alarmDispatch,
 		envUplinkInt(envAlarmReannounceSec, defaultAlarmReannounceSec, 1))
+	if hardSamples != nil {
+		alarmMgr.AddLinkage(hardSamples) // v0.45.0：困难样本联动（后于日志留痕）
+	}
 	{
 		inner := ruleEventSink
 		ruleEventSink = func(ev rules.Event) {

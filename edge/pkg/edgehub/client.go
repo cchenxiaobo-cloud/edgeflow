@@ -137,6 +137,9 @@ type RegisterPayload struct {
 	Token string `json:"token"`
 	// Compression 是压缩能力声明（可选）："gzip"。
 	Compression string `json:"compression,omitempty"`
+	// Accels 是加速卡能力清单（v0.45.0，G24，可选）：<类型>:<标识> 形态，
+	// 如 "gpu:cuda-12.4"；空 = 不上报。旧云端忽略未知字段（契约只增不改）。
+	Accels []string `json:"accels,omitempty"`
 }
 
 // RegisterAckPayload 是 RegisterAck 消息的负载（与 CloudHub 契约一致）。
@@ -199,6 +202,11 @@ type Options struct {
 	// Token 是接入令牌（WBS 7.3 设备认证）：非空时随 Register 消息携带，
 	// 供云端校验。通常由装配层从 EDGEFLOW_EDGECORE_TOKEN 读取（keadm join 写入）。
 	Token string
+	// Accels 是加速卡能力清单（v0.45.0，G24，可选）：形如
+	// "gpu:cuda-12.4"/"npu:rockchip-9996"（<类型>:<标识>），非空时随 Register
+	// 上报（云端 NodeInfo 快照记录，GET /api/v1/nodes/{nodeID} 可查）。
+	// 缺省空 = 不上报（旧云端忽略未知字段，兼容）。
+	Accels []string
 }
 
 // downlinkDedup 是下发主路径（handleDownlink）使用的幂等去重接口：
@@ -488,7 +496,8 @@ func (c *Client) register(conn *websocket.Conn, closed <-chan struct{}, regAckCh
 		CPU:             runtime.NumCPU(),
 		Memory:          totalMemoryBytes(),
 		Token:           c.opts.Token,
-		Compression:     "gzip", // WBS 4.4 压缩协商：声明 gzip 能力，云端回带确认后启用双向压缩
+		Compression:     "gzip",        // WBS 4.4 压缩协商：声明 gzip 能力，云端回带确认后启用双向压缩
+		Accels:          c.opts.Accels, // v0.45.0（G24）：加速卡能力上报（可选，缺省空）
 	}
 	msg, err := protocol.NewMessage(protocol.TypeRegister, c.opts.NodeID, targetCloud, payload)
 	if err != nil {

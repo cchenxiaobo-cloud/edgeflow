@@ -102,6 +102,9 @@ type RegisterPayload struct {
 	// Compression 是压缩能力声明（可选）："gzip" 表示支持云边通道
 	// gzip 压缩（WBS 4.4）。旧版本（v1.0）不发送该字段，云端保持明文下发。
 	Compression string `json:"compression,omitempty"`
+	// Accels 是加速卡能力清单（v0.45.0，G24，可选）：<类型>:<标识> 形态。
+	// 旧边缘不发送（只增不改）；云端记录进 NodeInfo 快照供检索。
+	Accels []string `json:"accels,omitempty"`
 }
 
 // RegisterAckPayload 是 RegisterAck 消息的负载（云→边）。
@@ -156,6 +159,7 @@ type NodeInfo struct {
 	Memory          uint64    // 内存字节数（uint64，与 RegisterPayload 契约一致）
 	RemoteIP        string    // 连接来源 IP
 	RegisteredAt    time.Time // 注册时间
+	Accels          []string  // 加速卡能力清单（v0.45.0 G24；nil = 未上报，兼容旧边缘）
 }
 
 // NodeEvents 是节点生命周期事件回调接口，供注册表/控制器等外部模块订阅
@@ -748,6 +752,7 @@ func (s *Server) handleRegister(c *conn, m *protocol.Message) {
 		Memory:          reg.Memory,
 		RemoteIP:        c.remoteIP,
 		RegisteredAt:    time.Now(),
+		Accels:          reg.Accels, // v0.45.0（G24）：加速卡能力快照（nil=未上报）
 	}
 
 	// evicted 记录因本连接更换 nodeID 而被清理的旧节点，锁外通知事件回调

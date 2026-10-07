@@ -126,13 +126,40 @@ func newAlarmManager(nodeID string, store *metamanager.Store, dispatch uplinkDis
 		// 理论不可达（装配必注入）；防御：空实现。
 		dispatch = func(int, *protocol.Message) {}
 	}
-	return &alarmManager{
+	m := &alarmManager{
 		nodeID:        nodeID,
 		ledger:        ledger,
 		linkage:       logLinkage{},
 		dispatch:      dispatch,
 		reannounceSec: reannounceSec,
 		active:        make(map[string]*alarmEpisode),
+	}
+	return m
+}
+
+// AddLinkage 追加联动实现（v0.45.0：困难样本采集器经此挂入；新 episode 时
+// 与默认日志联动同序触发，实现方各自保证不阻塞）。
+func (m *alarmManager) AddLinkage(l Linkage) {
+	if l == nil {
+		return
+	}
+	// 包装为顺序联动：保持既有单一 linkage 字段语义（零结构变更）。
+	prev := m.linkage
+	m.linkage = multiLinkage{prev, l}
+}
+
+// multiLinkage 顺序调用两个联动实现（first 后 second；均不阻塞约定）。
+type multiLinkage struct {
+	first  Linkage
+	second Linkage
+}
+
+func (ml multiLinkage) OnAlarm(a alarm.Alarm) {
+	if ml.first != nil {
+		ml.first.OnAlarm(a)
+	}
+	if ml.second != nil {
+		ml.second.OnAlarm(a)
 	}
 }
 

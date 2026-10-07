@@ -94,6 +94,12 @@ type MediaSink interface {
 	HandleClip(c mediaup.Clip)
 }
 
+// LatestSnapshotSource 是困难样本帧源能力（v0.45.0 US-3，可选实现）：
+// 返回环形缓冲中最新一帧 JPEG 及其采集时刻。
+type LatestSnapshotSource interface {
+	LatestSnapshot() (jpeg []byte, whenMs int64, ok bool)
+}
+
 // validate 校验配置：设备名非空；source.type ∈ {synthetic, mjpeg, bridge}
 // 且对应必填字段齐全；推理 URL 非空。
 func (c *Config) validate() error {
@@ -569,6 +575,21 @@ func (m *VideoMapper) maybeCapture(f *pkgvideo.Frame, detections int) {
 		Detections: detections,
 		WhenMs:     now,
 	})
+}
+
+// LatestSnapshot 实现 LatestSnapshotSource（v0.45.0 US-3）：mediaRing 最新
+// 一帧 JPEG（锁内拷贝）；采集未启用（mediaRingCap=0）或环形空 → ok=false。
+func (m *VideoMapper) LatestSnapshot() ([]byte, int64, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.mediaRingCap == 0 || len(m.mediaRing) == 0 {
+		return nil, 0, false
+	}
+	f := m.mediaRing[len(m.mediaRing)-1]
+	if f == nil || len(f.JPEG) == 0 {
+		return nil, 0, false
+	}
+	return append([]byte(nil), f.JPEG...), f.TsMs, true
 }
 
 // recordResult 更新指标面；结果 seq 为 0（服务端省略）时以帧序兜底

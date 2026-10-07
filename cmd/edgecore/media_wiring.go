@@ -25,7 +25,15 @@ const EnvMediaSpoolDir = "EDGEFLOW_MEDIA_SPOOL_DIR"
 type mediaSinkHolder struct {
 	mu     sync.Mutex
 	sink   videomapper.MediaSink
-	wanted atomic.Bool // 视频配置声明了 media.enabled
+	snap   videomapper.LatestSnapshotSource // 困难样本帧源（v0.45.0；独立于 sink——sink 会被 uploader 覆盖，帧源不能）
+	wanted atomic.Bool                      // 视频配置声明了 media.enabled
+}
+
+// SetSnapSource 登记困难样本帧源（视频 mapper 注册时调用；与 Set 相互独立）。
+func (h *mediaSinkHolder) SetSnapSource(s videomapper.LatestSnapshotSource) {
+	h.mu.Lock()
+	h.snap = s
+	h.mu.Unlock()
 }
 
 // HandleClip 转发到当前出口（未就绪时静默丢弃——初始化窗口）。
@@ -39,6 +47,21 @@ func (h *mediaSinkHolder) HandleClip(c mediaup.Clip) {
 }
 
 // Set 注入真实出口（*mediaup.Uploader）。
+// LatestSnapshot 返回登记帧源的最新 JPEG 快照帧（v0.45.0 US-3；帧源经
+// SetSnapSource 独立登记——不随 sink 被 uploader 覆盖而丢失）。未登记/无帧
+// → ok=false。弱关联语义：取「最后注册的视频 mapper」，多视频设备时快照
+// 可能非告警设备帧（spec 0018 边界登记；样本经 AlarmID 元数据留痕可追溯，
+// 精确设备-帧流映射属后续迭代——复核 P2-2 备忘）。
+func (h *mediaSinkHolder) LatestSnapshot() (jpeg []byte, whenMs int64, ok bool) {
+	h.mu.Lock()
+	s := h.snap
+	h.mu.Unlock()
+	if s == nil {
+		return nil, 0, false
+	}
+	return s.LatestSnapshot()
+}
+
 func (h *mediaSinkHolder) Set(s videomapper.MediaSink) {
 	h.mu.Lock()
 	h.sink = s

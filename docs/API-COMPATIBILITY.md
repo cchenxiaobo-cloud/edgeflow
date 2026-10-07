@@ -111,6 +111,9 @@
 | 70 | GET | `/media/streams/{name}/live.flv` | HTTP-FLV 拉流（H.264 透传封装，chunked） | v0.44.0 |
 | 71 | GET | `/media/streams/{name}/live.ws` | WS-FLV 拉流（二进制透传） | v0.44.0 |
 | 72 | GET | `/api/v1/alarms/{alarmID}/segments` | 告警关联片段检索（时间窗联合查询） | v0.44.0 |
+| 73 | GET | `/api/v1/models/{modelName}/scenes` | 模型-业务场景关联查询（scene.bindings 结构化视图） | v0.45.0 |
+| 74 | GET | `/api/v1/hardsamples` | 困难样本列表（nodeID/deviceName/alarmId 过滤） | v0.45.0 |
+| 75 | GET | `/api/v1/hardsamples/{mediaId}/content` | 困难样本内容（JPEG 字节流） | v0.45.0 |
 
 > 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行、v0.43.0 视频管理面行、v0.44.0 流媒体分发行）。
 
@@ -255,6 +258,21 @@
 | 云边消息 +`MediaUpload`（边→云，分片上传） | **零破坏**：新增类型；media 未配置时零行为；旧云端对未知类型仅日志忽略 |
 | 云端存储 +videostream（etcd 写穿 `/edgeflow/videostreams/*`）/ +mediastore（`/edgeflow/media/*` + 媒资目录） | 升级零迁移：新增键空间与媒资目录（`EDGEFLOW_CLOUDCORE_MEDIA_DIR`，默认 data/media）；重启自动恢复 |
 | 边缘媒资采集（video 配置 `media` 块 + `EDGEFLOW_MEDIA_SPOOL_DIR`，依赖 `EDGEFLOW_EDGECORE_UPLINK=on`） | **默认零行为**：media 未配置/补传未开启时不上传（Warn）；既有视频链路零变化 |
+| 零新依赖 / 既有包 API | go.mod 零变化；MQTT/OPC-UA/规则/时序面零触碰；v0240–v0350 冻结测试零改动 |
+
+## v0.45.0 兼容性增量（2026-10-03）
+
+端点总数 72 → 75（+3：模型场景关联查询 1 + 困难样本检索 2，全部新增 = 向后兼容；既有 72 行逐字节不变）；云边消息活跃类型 16 维持（复用 Register/MediaUpload，无新消息类型）。
+
+| 变更 | 兼容性 |
+|---|---|
+| 新增模型场景关联查询 1 端点（`GET /api/v1/models/{modelName}/scenes`） | **零破坏**：scene.bindings 为 Metadata 约定键（非独立资源）；未配置返回空数组；存量模型零迁移 |
+| 新增困难样本检索 2 端点（`GET /api/v1/hardsamples`、`GET /api/v1/hardsamples/{mediaId}/content`） | **零破坏**：全新路由；只读检索面；对象落 mediastore `objects/hardsample/` 前缀（与流媒资隔离） |
+| Register/RegisterPayload 可选字段 `accels`（加速卡能力清单） | **只增不改**：旧边缘不发送（字段缺省）→ 云端 NodeInfo.Accels=nil（JSON 省略）；旧云端忽略未知字段；缺省空 = 不上报零行为 |
+| mediastore kind 白名单扩容 `hard-sample` | **只增不改**：snapshot/segment 语义与对象路径零变化；未知 kind 依旧 400 |
+| 边缘困难样本采集 opt-in（`EDGEFLOW_EDGECORE_HARDSAMPLE=on`） | **默认零行为**：off 时不装配采集器；on 时告警联动追加（logLinkage 后序），采集失败仅计数不阻塞告警链 |
+| 边缘加速探测 env（`EDGEFLOW_EDGECORE_ACCELS`） | **默认零行为**：未设置不携带 accels；env 优先，真实探测为可插拔探测器后续接入 |
+| Model/Update 元数据扩展校验（modality 白名单） | **只增不改**：无 modality 键 = 缺省 vision 兼容存量；非法值 400（新校验仅约束新写入） |
 | 零新依赖 / 既有包 API | go.mod 零变化；MQTT/OPC-UA/规则/时序面零触碰；v0240–v0350 冻结测试零改动 |
 
 

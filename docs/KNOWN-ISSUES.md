@@ -793,3 +793,16 @@ MQTT/OPC-UA/视频/模型面零触碰；v0240–v0350 冻结测试零改动。
 | 发布白名单不校验加速匹配 | Accels 仅登记能力 | 匹配校验（后续） |
 | scenes 为 bindings 键结构化视图（无 CRUD） | 只读语义 | 场景资源化（按需） |
 | mediaSinkHolder 帧源独立登记（SetSnapSource） | 修复：原实现经 sink 探测被 uploader 覆盖失效（e2e 发现） | — |
+## 47. v0.46.0（RBAC 与隔离 + 镜像凭证）
+
+| 边界/局限 | 当前处理 | 后续方向 |
+|---|---|---|
+| scope.ns 仅约束命名空间化资源（路径含 /namespaces/{ns}/） | 平台级资源（models/nodes 等）不受约束 | 全资源 scope（后续） |
+| 凭证文件启动时加载，后写不热加载 | 安全默认（防运行期篡改）；改后重启生效 | 热重载 + SIGHUP（按需） |
+| operator 无删除权（保守起步） | DELETE 全量 403（含非 roles 面） | 细粒度删除白名单（按需） |
+| 引导：首个 admin 凭证需预写文件（表空 + env 未设 → 管理面 401） | 无引导漏洞（表空不开放创建） | 引导 CLI（按需） |
+| imageAuth 密码静态加密依赖 env 密钥 | 未配 key 仅存哈希 + Warn；下发链路明确报错 | KMS/密钥文件集成（后续） |
+| 边缘凭证 env 明文形态（EDGEFLOW_EDGED_IMAGEAUTH） | 进程 env 注入；不落盘不进日志 | 凭证文件/secret 卷（后续） |
+| docker login 失败不阻塞 run | 公有仓库误配无副作用；私有仓库 run 自身失败重试 | 预检拉取（按需） |
+| 运行时扫描仅评估不内置 | SECURITY-GUIDE 给 Trivy/Clair 对比与对接规范 | 扫描器立项（评估后） |
+| admin 显式 scope 也受约束（scope 显式即生效） | 需全权 admin 创建时不带 scope | 文档明示（已写入 GUIDE） |

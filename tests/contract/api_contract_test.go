@@ -337,6 +337,13 @@ func TestContractRoutesRegisteredAtRuntime(t *testing.T) {
 					t.Fatalf("%s %s 状态码 = %d，期望 400（空 body 为非法 OCSP 请求，body=%q）",
 						ep.Method, path, resp.StatusCode, bodyStr)
 				}
+			case isAdminOnly(ep):
+				// v0.46.0 admin-only 端点：无认证环境恒 403（管理面不裸奔——
+				// 覆盖无参 GET/POST 与带参 PUT/DELETE；403 优先于 400 判定）
+				if resp.StatusCode != http.StatusForbidden {
+					t.Fatalf("%s %s 状态码 = %d，期望 403（admin-only 无认证语义，body=%q）",
+						ep.Method, path, resp.StatusCode, bodyStr)
+				}
 			case !hasParam && (ep.Method == http.MethodPost || ep.Method == http.MethodPut):
 				// 无路径参数 POST/PUT（创建/替换类，需 body）：空 body → 400 + JSON
 				if resp.StatusCode != http.StatusBadRequest {
@@ -395,7 +402,7 @@ type registeredRoute struct {
 func registeredRoutesFromSource(t *testing.T) []registeredRoute {
 	t.Helper()
 	var routes []registeredRoute
-	for _, file := range []string{"main.go", "model_api.go", "rules_api.go", "uplink_api.go", "alarm_api.go", "setpoint_api.go", "video_api.go", "media_stream_api.go", "hardsample_api.go", "model_scenes_api.go"} {
+	for _, file := range []string{"main.go", "model_api.go", "rules_api.go", "uplink_api.go", "alarm_api.go", "setpoint_api.go", "video_api.go", "media_stream_api.go", "hardsample_api.go", "model_scenes_api.go", "v0460_rbac_api.go"} {
 		paths := scanRouteFile(t, filepath.Join(repoRoot(t), "cmd", "cloudcore", file))
 		routes = append(routes, paths...)
 	}
@@ -835,4 +842,11 @@ func TestDocCompatibilityMessageTypesMatchProtocol(t *testing.T) {
 		t.Logf("docs/API-COMPATIBILITY.md §2 消息类型与契约一致（活跃 %d 条；%d 条关闭占位按约定不收录）",
 			inDoc, closed)
 	}
+}
+
+// isAdminOnly 报告端点是否为 v0.46.0 admin-only 管理面（roles/users/image-auths）。
+func isAdminOnly(ep Endpoint) bool {
+	return strings.HasPrefix(ep.Path, "/api/v1/roles") ||
+		strings.HasPrefix(ep.Path, "/api/v1/users") ||
+		strings.HasPrefix(ep.Path, "/api/v1/image-auths")
 }

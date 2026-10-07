@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"edgeflow/edge/pkg/metamanager"
+	"edgeflow/pkg/log"
 	"edgeflow/pkg/resource"
 )
 
@@ -198,6 +201,19 @@ func (d *DockerRuntime) EnsureRunning(pod metamanager.Pod, index int) error {
 		resArgs, err := DockerResourceArgs(pod.Resources)
 		if err != nil {
 			return fmt.Errorf("Pod %s 资源参数解析失败: %w", name, err)
+		}
+		// v0.46.0 US-6：私有仓库凭证——按需 docker login（--password-stdin，
+		// 密码不进 argv/日志；未配置该 registry 的本地凭证 → 跳过 login，
+		// 拉取失败在 run 错误中暴露）。登录失败不阻塞 run（公有仓库场景
+		// imageAuth 误配无副作用；私有仓库场景 run 自身会失败重试）。
+		if pod.ImageAuth != nil && pod.ImageAuth.Registry != "" {
+			if pw, ok := imageAuthPassword(pod.ImageAuth.Registry); ok {
+				if lerr := d.login(pod.ImageAuth.Registry, pod.ImageAuth.Username, pw); lerr != nil {
+					log.Warnf("[imageauth] docker login %s 失败（继续尝试拉取）: %v", pod.ImageAuth.Registry, lerr)
+				}
+			} else {
+				log.Warnf("[imageauth] 本地未配置 registry %s 的拉取凭证（EDGEFLOW_EDGED_IMAGEAUTH），按匿名拉取", pod.ImageAuth.Registry)
+			}
 		}
 		runArgs := append([]string{"run", "-d",
 			"--name", name,
@@ -464,5 +480,49 @@ func parseIndexFromName(containerName string) int {
 
 // Close 无持久资源（每次操作独立 exec），按接口要求实现。
 func (d *DockerRuntime) Close() error {
+	return nil
+}
+
+// EnvImageAuth 是边缘本地镜像凭证环境变量名（v0.46.0 US-6）：
+// JSON 形态 {"<registry>":"<password>"}；username 走云端 imageAuth.username。
+const EnvImageAuth = "EDGEFLOW_EDGED_IMAGEAUTH"
+
+// imageAuthPasswords 惰性解析 env（进程生命周期内缓存；解析失败 Warn 一次返回空）。
+var (
+	imageAuthOnce   sync.Once
+	imageAuthParsed map[string]string
+)
+
+// imageAuthPassword 返回本地配置的 registry 明文密码（env JSON；未配置 → false）。
+func imageAuthPassword(registry string) (string, bool) {
+	imageAuthOnce.Do(func() {
+		raw := os.Getenv(EnvImageAuth)
+		if raw == "" {
+			return
+		}
+		m := map[string]string{}
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			log.Warnf("[imageauth] %s 解析失败（忽略，按匿名拉取）: %v", EnvImageAuth, err)
+			return
+		}
+		imageAuthParsed = m
+	})
+	pw, ok := imageAuthParsed[registry]
+	return pw, ok && pw != ""
+}
+
+// login 执行 docker login（--password-stdin：密码经 stdin，不进 argv/日志）。
+func (d *DockerRuntime) login(registry, username, password string) error {
+	if username == "" {
+		return fmt.Errorf("registry %s 凭证缺 username", registry)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), d.timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "login", registry, "-u", username, "--password-stdin")
+	cmd.Stdin = strings.NewReader(password + "\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker login %s: %w（output 截断: %.120s）", registry, err, string(out))
+	}
 	return nil
 }

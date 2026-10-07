@@ -817,3 +817,21 @@ spec：specs/0018-model-sample-inference/spec.md（发展规划 v0.45 · G23+G25
 | 装配修复 | mediaSinkHolder.SetSnapSource | ✅ 修复 | 帧源独立登记（原实现被 uploader Set 覆盖——e2e 发现） |
 | 边界 | 仅 JPEG 帧/弱关联/env 探测/训练仅留位/发布不校验加速匹配 | 📝 登记 | KI §46 |
 | 后续候选（原始波形/视频段样本、精确设备-帧流映射、真实 GPU/NPU 枚举器、发布加速匹配校验、scenes CRUD、训练闭环接入） | — | ⏳ 待排 | 非承诺 |
+
+## 42. v0.46.0 — RBAC 与隔离 + 镜像凭证 + 运行时扫描评估（2026-10-08）
+
+spec：specs/0019-rbac-imageauth/spec.md（发展规划 v0.46 · G27+G28）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| D1 角色与凭证模型（G27） | cloud/pkg/rbac（admin/operator/viewer + scope.ns） | ✅ 闭环 | Token 仅存 SHA-256；文件 0600 写穿；env 单令牌回退（admin） |
+| D2 授权判定（G27） | rbac.Can 纯函数 + Middleware（401/403 语义集中） | ✅ 闭环 | facet 判定（roles/users 最高敏感）；scope.ns 约束命名空间化资源 |
+| D3 角色管理面（G27） | GET /roles + GET/POST /users + DELETE /users/{id} | ✅ 闭环 | admin-only；明文 token 仅创建响应出现一次；撤销即时生效 |
+| D4 审计衔接（G27） | audit.SetIdentity 写凭证 ID / "token" / anonymous | ✅ 闭环 | 审计格式零变化；MountSlot/IdentityOf 导出对称 |
+| D5 镜像凭证托管（G28） | cloud/pkg/imageauth（哈希 + 可选 AES-256-GCM）+ 3 端点 | ✅ 闭环 | 未配 key 仅哈希 + Warn（下发 503/明确错误）；明文不落盘不回显 |
+| D6 下发与边缘拉取（G28） | Deployer.ImageAuthLookup 注入 podsync.imageAuth（authRef）+ edged docker login --password-stdin | ✅ 闭环 | 密码不进消息明文/argv；login 失败不阻塞 run（可观测） |
+| D7 运行时扫描评估（G28） | docs/SECURITY-GUIDE.md 扫描评估节 | ✅ 交付 | Trivy/Clair 对比 + 缺口 + 不内置裁决（零第三方依赖） |
+| 契约扩容 | tests/contract + 文档矩阵 | ✅ 验收 | 75→82 端点；消息 16 维持（podsync.imageAuth 可选字段=只增不改） |
+| 验收 | e2e TestV0460RBACImageAuthE2E | ✅ 验收 | 默认零行为 + 角色矩阵 + 401/403 + 撤销即时生效 + 凭证脱敏/503 语义 |
+| 边界 | scope 仅命名空间资源/后写不热加载/运行时扫描不内置 | 📝 登记 | KI §47 |
+| 后续候选（scope.ns 全资源覆盖/凭证热重载/密码改密 API/LDAP-OIDC 对接/扫描器内置评估立项） | — | ⏳ 待排 | 非承诺 |

@@ -132,6 +132,21 @@ func SetIdentity(ctx context.Context, identity string) {
 	}
 }
 
+// IdentityOf 读取请求 context 中的操作者身份（v0.46.0 补充读取器；
+// 无槽 → 返回 anonymous 语义调用方自判：返回空串表示未挂槽）。
+func IdentityOf(ctx context.Context) string {
+	if slot, ok := ctx.Value(identityKey{}).(*identitySlot); ok {
+		return slot.identity
+	}
+	return ""
+}
+
+// MountSlot 为请求挂身份槽并返回新 context（v0.46.0 导出形态；供测试桩与
+// 非审计包装场景复用——与 Middleware 内部挂槽同逻辑，槽可变指针语义不变）。
+func MountSlot(ctx context.Context) context.Context {
+	return context.WithValue(ctx, identityKey{}, &identitySlot{identity: IdentityAnonymous})
+}
+
 // Middleware 包装 HTTP handler：每个请求完成后落一条审计记录。
 //
 // 记录动作（action）= 方法 + 路由模式（r.Pattern，低基数），路径（path）=

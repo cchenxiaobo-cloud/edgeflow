@@ -38,6 +38,16 @@ type Pod struct {
 	// Resources 是资源诉求（WBS 6.5 资源调度，新增字段，向后兼容：
 	// 旧云端/旧数据无此字段时为零值 = 不限制）。
 	Resources ResourceRequirements `json:"resources,omitempty"`
+	// ImageAuth 是私有仓库拉取凭证引用（v0.46.0 US-6，authRef 形态，向后兼容：
+	// 旧云端/旧数据无此字段时为 nil = 无凭证注入；密码不随消息下发，
+	// 边缘按 Registry 从本地 env 凭证查明文。指针形态：未配置时不序列化）。
+	ImageAuth *ImageAuthRef `json:"imageAuth,omitempty"`
+}
+
+// ImageAuthRef 是镜像拉取凭证引用（v0.46.0；不含密码——边缘本地查明文）。
+type ImageAuthRef struct {
+	Registry string `json:"registry,omitempty"`
+	Username string `json:"username,omitempty"`
 }
 
 // ResourceRequirements 描述 workload 对 CPU 与内存的资源诉求（WBS 6.5，

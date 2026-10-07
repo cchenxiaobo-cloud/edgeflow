@@ -67,6 +67,10 @@ type Deployer struct {
 	ReliableSend func(ctx context.Context, nodeID string, msg *protocol.Message, opts cloudhub.ReliableOptions) error
 	// Now 是时钟（测试注入；nil → time.Now）。
 	Now func() time.Time
+	// ImageAuthLookup 是私有仓库凭证查表（v0.46.0 US-6，可选；nil = 未托管）。
+	// 返回 (registry, username, password, ok)。查表失败/无凭证 → ok=false，
+	// 发布按无凭证处理（边缘拉取失败会在部署循环暴露）。
+	ImageAuthLookup func(imageRef string) (registry, username, password string, ok bool)
 }
 
 // NewDeployer 构造部署执行器（store/send 必填，缺失 fail-fast 对齐
@@ -125,16 +129,20 @@ func DeployReason(err error) string {
 
 // BuildPodSyncPayload 构造 podsync 消息载荷（operation=add；设计 §6.1/§6.4
 // 命名约定）。导出供 H1 载荷断言；DeployVersion 内部使用。
-func BuildPodSyncPayload(ver *modelrepo.ModelVersion) map[string]any {
-	return map[string]any{
-		"operation": "add",
-		"pod": map[string]any{
-			"name":      DeploymentObjectName(ver.Model),
-			"namespace": "edgeflow",
-			"image":     ver.Mirror,
-			"replicas":  1,
-		},
+// BuildPodSyncPayload 构造 podsync 消息载荷（operation=add；Pod 形态见设计 §6.1）。
+// imageAuth 为可选私有仓库凭证引用（v0.46.0 US-6；nil = 无——密码不进
+// config-sync/podsync 明文，边缘按 registry 自查本地凭证）。
+func BuildPodSyncPayload(ver *modelrepo.ModelVersion, imageAuth map[string]string) map[string]any {
+	pod := map[string]any{
+		"name":      DeploymentObjectName(ver.Model),
+		"namespace": "edgeflow",
+		"image":     ver.Mirror,
+		"replicas":  1,
 	}
+	if imageAuth != nil {
+		pod["imageAuth"] = imageAuth // {registry, username}（authRef 形态，无密码）
+	}
+	return map[string]any{"operation": "add", "pod": pod}
 }
 
 // DeploymentObjectName 返回下发对象名（podName = cfgName =
@@ -207,7 +215,15 @@ func (d *Deployer) DeployVersion(ctx context.Context, nodeID, releaseID string, 
 	}
 
 	// ① podsync add（幂等 upsert；失败 → 不发 config-sync，半部署不产生）
-	podMsg, err := protocol.NewMessage(protocol.TypePodSync, "cloud", nodeID, BuildPodSyncPayload(ver))
+	// v0.46.0 US-6：镜像引用命中托管凭证 → 注入 imageAuth{registry,username}
+	// （authRef 形态；查表错误按无凭证处理 + Warn，不阻塞发布主链）。
+	var imgAuth map[string]string
+	if d.ImageAuthLookup != nil {
+		if reg, user, _, ok := d.ImageAuthLookup(ver.Mirror); ok {
+			imgAuth = map[string]string{"registry": reg, "username": user}
+		}
+	}
+	podMsg, err := protocol.NewMessage(protocol.TypePodSync, "cloud", nodeID, BuildPodSyncPayload(ver, imgAuth))
 	if err != nil {
 		return fmt.Errorf("modelrelease: 构建 PodSync 消息失败: %w", err)
 	}

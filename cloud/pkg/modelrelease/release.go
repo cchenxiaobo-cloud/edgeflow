@@ -139,6 +139,14 @@ func (c *Controller) SetTerminalObserver(fn func(terminalWriteDetail)) {
 	c.observeTerminalWrite = fn
 }
 
+// SetImageAuthLookup 注入私有仓库凭证查表（v0.46.0 US-6；透传到 Deployer；
+// 装配层在 NewController 后可选接线，既有构造调用零影响）。
+func (c *Controller) SetImageAuthLookup(fn func(imageRef string) (registry, username, password string, ok bool)) {
+	if d, ok := c.deploy.(*Deployer); ok {
+		d.ImageAuthLookup = fn
+	}
+}
+
 // reportIllegalTransition 上报一次终态写点断言违例（log.Warnf + 可选
 // 观测回调；回调 panic 隔离——观测面故障不得影响发布主流程）。
 func (c *Controller) reportIllegalTransition(id string, from, to modelrepo.ReleaseStatus, reason string) {

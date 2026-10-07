@@ -167,3 +167,13 @@ go test ./cloud/pkg/mediastore/                           # hard-sample 存储�
 go test ./cmd/edgecore/ -run 'TestV0450'                  # 采集器/env
 go test ./tests/e2e/ -run 'TestV0450'                     # 全链铁证
 ```
+
+
+## 8. 私有仓库模型镜像部署（v0.46.0，spec 0019）
+
+模型镜像托管私有仓库时：
+1. 云端配置凭证：`PUT /api/v1/image-auths/{registry}`（admin）；
+2. 边缘配置本地密码：`EDGEFLOW_EDGED_IMAGEAUTH='{"registry":"password"}'`；
+3. 发布下发携带 imageAuth{registry,username}（authRef；密码不进消息明文），
+   edged 自动 docker login 后拉取。
+详见 docs/SECURITY-GUIDE.md §2。

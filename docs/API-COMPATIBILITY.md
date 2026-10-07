@@ -114,6 +114,13 @@
 | 73 | GET | `/api/v1/models/{modelName}/scenes` | 模型-业务场景关联查询（scene.bindings 结构化视图） | v0.45.0 |
 | 74 | GET | `/api/v1/hardsamples` | 困难样本列表（nodeID/deviceName/alarmId 过滤） | v0.45.0 |
 | 75 | GET | `/api/v1/hardsamples/{mediaId}/content` | 困难样本内容（JPEG 字节流） | v0.45.0 |
+| 76 | GET | `/api/v1/roles` | 角色枚举与权限矩阵（admin-only） | v0.46.0 |
+| 77 | GET | `/api/v1/users` | API 凭证列表（脱敏，admin-only） | v0.46.0 |
+| 78 | POST | `/api/v1/users` | 创建 API 凭证（明文 token 一次性返回，admin-only） | v0.46.0 |
+| 79 | DELETE | `/api/v1/users/{id}` | 撤销 API 凭证（即时生效，admin-only） | v0.46.0 |
+| 80 | GET | `/api/v1/image-auths` | 镜像仓库凭证列表（脱敏，admin-only） | v0.46.0 |
+| 81 | PUT | `/api/v1/image-auths/{registry}` | 设置/覆盖镜像仓库凭证（admin-only） | v0.46.0 |
+| 82 | DELETE | `/api/v1/image-auths/{registry}` | 删除镜像仓库凭证（admin-only） | v0.46.0 |
 
 > 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行、v0.43.0 视频管理面行、v0.44.0 流媒体分发行）。
 
@@ -268,6 +275,16 @@
 |---|---|
 | 新增模型场景关联查询 1 端点（`GET /api/v1/models/{modelName}/scenes`） | **零破坏**：scene.bindings 为 Metadata 约定键（非独立资源）；未配置返回空数组；存量模型零迁移 |
 | 新增困难样本检索 2 端点（`GET /api/v1/hardsamples`、`GET /api/v1/hardsamples/{mediaId}/content`） | **零破坏**：全新路由；只读检索面；对象落 mediastore `objects/hardsample/` 前缀（与流媒资隔离） |
+
+### v0.46.0 兼容性增量（RBAC 与镜像凭证，spec 0019）
+
+| 变更 | 兼容性 |
+|---|---|
+| 端点总数 75 → 82（+7：RBAC 管理面 4 + 镜像凭证 3，全部新增 = 向后兼容；既有 75 行逐字节不变） | **零破坏** |
+| 新增 RBAC 授权层（`EDGEFLOW_CLOUDCORE_RBAC=on` + 凭证文件启用；三角色 admin/operator/viewer + scope.ns 命名空间范围） | **默认 off 零变化**：off 时 auth 单令牌语义与 v0.45 逐字节一致；on 时未命中凭证回退 env 单令牌（admin 身份） |
+| 越权语义 403 `{"error":"forbidden","required":"<op>"}`（不泄露存在性）；凭证/角色面 operator/viewer 一律 403 | 新增语义，不影响既有端点行为 |
+| 新增镜像凭证托管 3 端点（`GET/PUT/DELETE /api/v1/image-auths[/{registry}]`；password 仅存哈希+可选 AES-GCM 静态加密，明文只在设置请求体出现一次） | **零破坏**：未配置凭证文件时端点返回 200 空列表/503 未启用 |
+| 发布下发增量：podsync.pod 新增可选字段 `imageAuth{registry,username}`（authRef 形态，密码不进消息明文；边缘按 registry 从本地 env 查明文） | **只增不改**：旧边缘忽略未知字段；旧云端不携带 |
 | Register/RegisterPayload 可选字段 `accels`（加速卡能力清单） | **只增不改**：旧边缘不发送（字段缺省）→ 云端 NodeInfo.Accels=nil（JSON 省略）；旧云端忽略未知字段；缺省空 = 不上报零行为 |
 | mediastore kind 白名单扩容 `hard-sample` | **只增不改**：snapshot/segment 语义与对象路径零变化；未知 kind 依旧 400 |
 | 边缘困难样本采集 opt-in（`EDGEFLOW_EDGECORE_HARDSAMPLE=on`） | **默认零行为**：off 时不装配采集器；on 时告警联动追加（logLinkage 后序），采集失败仅计数不阻塞告警链 |

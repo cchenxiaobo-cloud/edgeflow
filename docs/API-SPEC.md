@@ -104,6 +104,13 @@
 | GET | `/api/v1/models/{modelName}/scenes` | **模型-业务场景关联查询（v0.45.0：scene.bindings 结构化视图；未配置空数组）** | 200 / 404 |
 | GET | `/api/v1/hardsamples` | **困难样本列表（v0.45.0：nodeID/deviceName/alarmId 过滤，limit 默认 50 上限 200）** | 200 |
 | GET | `/api/v1/hardsamples/{mediaId}/content` | **困难样本内容（v0.45.0：JPEG 字节流）** | 200 / 404 / 409 |
+| GET | `/api/v1/roles` | **角色枚举与权限矩阵（v0.46.0：admin/operator/viewer 说明）** | 200 / 403 |
+| GET | `/api/v1/users` | **API 凭证列表（v0.46.0：脱敏 hashPrefix/scopeNs）** | 200 / 403 |
+| POST | `/api/v1/users` | **创建 API 凭证（v0.46.0：body {id,token,role,scopeNs}；明文 token 仅此响应出现一次）** | 201 / 400 / 403 |
+| DELETE | `/api/v1/users/{id}` | **撤销 API 凭证（v0.46.0：即时生效）** | 200 / 404 / 403 |
+| GET | `/api/v1/image-auths` | **镜像仓库凭证列表（v0.46.0：脱敏 password=哈希摘要前 12 位 + deployable）** | 200 / 403 / 503 |
+| PUT | `/api/v1/image-auths/{registry}` | **设置/覆盖镜像仓库凭证（v0.46.0：body {username,password}；响应不含明文）** | 200 / 400 / 403 / 503 |
+| DELETE | `/api/v1/image-auths/{registry}` | **删除镜像仓库凭证（v0.46.0）** | 200 / 404 / 403 / 503 |
 
 ### 1.2 错误码表（统一约定）
 

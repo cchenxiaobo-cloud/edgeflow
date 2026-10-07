@@ -38,6 +38,7 @@ import (
 	"edgeflow/cloud/pkg/modelrepo"
 	"edgeflow/cloud/pkg/nodecontroller"
 	"edgeflow/cloud/pkg/podstatus"
+	"edgeflow/cloud/pkg/rbac"
 	"edgeflow/cloud/pkg/registry"
 	"edgeflow/cloud/pkg/rulestore"
 	"edgeflow/cloud/pkg/setpointstore"
@@ -510,6 +511,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 			modelStore = modelrepo.NewMemoryModelStore(modelrepo.WithReleaseGC(releaseGCEnabled, releaseGCKeep))
 		}
 	}
+	// v0.46.0 US-6：私有仓库凭证托管（可选）——文件未配置 = 零行为（默认）；
+	// 配置后注入 Deployer 查表（发布命中凭证 → podsync.imageAuth authRef 形态，
+	// 密码不进消息明文）+ 挂 image-auths 管理 API。
+	imageAuthStore = assembleImageAuth()
+	if imageAuthStore != nil && relCtrl != nil {
+		relCtrl.SetImageAuthLookup(func(imageRef string) (reg, user, pass string, ok bool) {
+			reg, user, pass, err := imageAuthStore.Lookup(imageRef)
+			if err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					log.Warnf("[imageauth] 凭证查表失败（按无凭证处理）: %v", err)
+				}
+				return "", "", "", false
+			}
+			return reg, user, pass, true
+		})
+	}
 	if relCtrl != nil {
 		// 控制器 goroutine：sigCtx 取消即退出（优雅关停随主流程）
 		go relCtrl.Run(sigCtx)
@@ -849,8 +866,24 @@ func run(args []string, stdout, stderr io.Writer) int {
 	go spAPI.runFlushLoop(sigCtx, spFlushSec)
 	log.Infof("设定值通道已启用（审批开关=%v，flush 周期=%ds）", spAPI.approvalForced, spFlushSec)
 
+	// v0.46.0（spec 0019 G27）：RBAC 授权（默认 off 零变化）。on 时替代
+	// auth.Middleware 的位置（认证+授权一体）；off 时维持 v0.45 语义。
+	rbacOn := rbacEnabledFromEnv()
+	if rbacOn {
+		var err error
+		rbacUsers, err = assembleRBAC()
+		if err != nil {
+			log.Errorf("[rbac] %v", err)
+			return 1
+		}
+	}
+	registerV0460APIs(apiMux)
+
 	var apiHandler http.Handler = apiMux
-	if authEnabled {
+	if rbacOn && rbacUsers != nil {
+		apiHandler = rbac.Middleware(rbacUsers, apiToken)(apiHandler)
+		log.Infof("[rbac] 授权中间件已装配（角色矩阵 admin/operator/viewer + scope.ns）")
+	} else if authEnabled {
 		apiHandler = auth.Middleware(apiToken)(apiHandler)
 	}
 	apiHandler = ledger.Middleware(apiHandler)

@@ -487,7 +487,8 @@ func (d *DockerRuntime) Close() error {
 // JSON 形态 {"<registry>":"<password>"}；username 走云端 imageAuth.username。
 const EnvImageAuth = "EDGEFLOW_EDGED_IMAGEAUTH"
 
-// imageAuthPasswords 惰性解析 env（进程生命周期内缓存；解析失败 Warn 一次返回空）。
+// imageAuthPasswords 惰性解析 env（进程生命周期内缓存；解析失败 Warn 一次
+// 返回空。凭证变更需重启 edged 生效——sync.Once 缓存语义，复核 P2-4 留档）。
 var (
 	imageAuthOnce   sync.Once
 	imageAuthParsed map[string]string

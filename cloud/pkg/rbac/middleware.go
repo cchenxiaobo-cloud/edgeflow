@@ -1,6 +1,7 @@
 package rbac
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -10,18 +11,18 @@ import (
 	"edgeflow/cloud/pkg/audit"
 )
 
-// Middleware 返回 RBAC 授权中间件（认证之后、业务 mux 之前）。
+// Middleware 返回 RBAC 中间件（认证 + 授权一体，替代 auth.Middleware 装配位；
+// RBAC on 时不装配 auth.Middleware，避免双重认证语义漂移）。
 //
-//   - users 表命中 → 按 Can 判定；通过 → 审计身份改写为凭证 ID，放行；
-//   - 未命中 → env 单令牌回退（envToken 命中 → admin 身份 "token"，放行）；
-//   - 都未命中 → 401（与 auth 语义一致）；
-//   - 命中但 Can=false → 403 {"error":"forbidden","required":"<op>"}。
-//
-// 注意：本中间件假设认证已由内层完成？不——装配顺序是 auth(认证) 外、
-// rbac(授权) 内？v0.46 裁决：RBAC 中间件**替代** auth.Middleware 的位置
-// （同层装配），自身完成「认证 + 授权」一体：先查 RBAC 表，再回退 env，
-// 401/403 语义集中在此层；auth.Middleware 保留但 RBAC on 时不装配
-// （避免双重认证语义漂移）。
+// 判定顺序与语义边界（复核 P1-2 收敛）：
+//  1. RBAC 凭证表命中 → Can 判定；通过 → 审计身份 = 凭证 ID，放行；
+//  2. 表未命中 → env 单令牌回退（命中 → admin 身份 "token"，放行）；
+//  3. 都未命中 → 401 + WWW-Authenticate（未认证，与 auth 语义一致）；
+//  4. 命中但 Can=false → 403 {"error":"forbidden","required":"<op>"}
+//     （已认证但越权；无 WWW-Authenticate——401/403 分界：401=你是谁未知，
+//     403=已知身份不被允许；RBAC off 时管理面恒 403 属「无认证环境主动
+//     拒绝管理操作」，契约面稳定、不泄露内部状态）。
+//     401/403 完整分界说明见 docs/API-SPEC.md §1.2 与 docs/SECURITY-GUIDE.md。
 func Middleware(store *Store, envToken string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -69,12 +70,14 @@ func bearerToken(r *http.Request) string {
 }
 
 // bearerValid 是 constant-time 的 token 比对（env 回退路径）。
+// 两侧先各算 SHA-256（定长 32 字节），再 subtle.ConstantTimeCompare——
+// 显式常时比较，不依赖「hex 定长 + string ==」的隐式事实（复核 P1-1）。
 func bearerValid(r *http.Request, envToken string) bool {
 	t := bearerToken(r)
 	if t == "" || envToken == "" {
 		return false
 	}
-	return HashToken(t) == HashToken(envToken) // 哈希后 constant-time（subtle 在 Authenticate 内同口径）
+	return subtle.ConstantTimeCompare([]byte(HashToken(t)), []byte(HashToken(envToken))) == 1
 }
 
 // RegisterUsersAPI 挂角色管理面端点（admin-only；RBAC 中间件在 facet 判定已拦

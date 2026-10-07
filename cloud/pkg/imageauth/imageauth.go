@@ -210,6 +210,7 @@ func (s *Store) Lookup(imageRef string) (registry, username, password string, er
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	// 线性遍历（O(n)；凭证条目量级预期 <100，无需索引——复核 P2-3 留档）
 	for _, e := range s.entries {
 		if e.Registry != reg {
 			continue

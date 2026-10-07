@@ -145,7 +145,9 @@ func (s *Store) Create(id, token, role string, ns []string) (*User, error) {
 	u := User{ID: id, Hash: HashToken(token), Role: role, NS: append([]string(nil), ns...)}
 	s.users = append(s.users, u)
 	if err := s.save(); err != nil {
-		s.users = s.users[:len(s.users)-1] // 回滚内存
+		// 回滚内存（切片截断；append 扩容不影响语义——末元素即本次新增。
+		// copy-on-write 更稳，量级预期小暂不引入——复核 P2-2 留档）
+		s.users = s.users[:len(s.users)-1]
 		return nil, err
 	}
 	return &u, nil
@@ -242,7 +244,7 @@ func nsOf(path string) string {
 // Can 判定角色对 (op, facet, ns) 的权限（纯函数——表驱动测试锚点）。
 //   - admin：全部允许；
 //   - operator：read/write 允许；delete 仅非 roles 面；roles 面一律拒绝；
-//   - viewer：仅 read；roles 面 read 允许（角色枚举可见）其余拒绝；
+//   - viewer：仅 read；roles 面一律拒绝（含 read——角色枚举不向 viewer 开放）；
 //   - scope.ns 非空且 ns 非空且不在范围 → false（403）。
 func Can(u User, method, path string) bool {
 	o, facet := opOf(method, path)

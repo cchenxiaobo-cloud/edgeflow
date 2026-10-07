@@ -11,11 +11,9 @@ package main
 import (
 	"crypto/cipher"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 
 	"edgeflow/cloud/pkg/auth"
 	"edgeflow/cloud/pkg/imageauth"
@@ -209,6 +207,3 @@ func writeV0460JSON(w http.ResponseWriter, code int, v any) {
 
 // v0460EnvRaw 是 os.Getenv 的包内别名（测试可注入的缝；当前直通）。
 func v0460EnvRaw(k string) string { return os.Getenv(k) }
-
-var _ = errors.New   // 保留（错误语义扩展位）
-var _ = strings.Trim // 保留

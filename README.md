@@ -6,7 +6,7 @@ EdgeFlow 是一个类 KubeEdge 的云边协同边缘计算平台，提供设备�
 - **EdgeCore（边缘端）**：与云端建立安全连接、心跳保活与重连退避、设备数据采集上报、事件总线、模型管理。
 - **keadm（安装管理 CLI）**：一键生成云端部署产物与边缘接入产物，支持升级、回滚与证书轮换。
 
-> 当前版本：**v0.44.0**（2026-10-02，流媒体分发子集 + 告警片段服务：FLV 透传封装器（pkg/flvremux，H.264 AnnexB→FLV 零转码纯封装）+ HTTP-FLV/WS-FLV 分发端点（/media/streams/{name}/live.flv|live.ws）+ 告警片段检索（DeviceName+RaisedAt 窗 × videostream 索引联合查询）+ metrics 中间件补 Flush/Hijack/Unwrap 流式能力；契约扩容 69→72 端点；零新依赖、默认零行为；e2e 拉流演示与告警→片段→播放全链绿。核心能力包括：
+> 当前版本：**v0.45.0**（2026-10-03，模型面扩展 + 困难样本回传 + 推理运行时：模型 Modality 元数据与场景关联（modality/scene.bindings 约定键 + GET /api/v1/models/{name}/scenes）+ 困难样本全链（告警触发捕获→hard-sample 补传→objects/hardsample/ 隔离→GET /api/v1/hardsamples 检索与内容回读）+ 加速卡探测上报（EDGEFLOW_EDGECORE_ACCELS → Register.accels → 节点快照）+ INFERENCE-GUIDE 对接规范；契约扩容 72→75 端点；零新依赖、默认零行为（双 opt-in）。核心能力包括：
 
 ## 整体功能架构
 
@@ -102,6 +102,7 @@ helm install edgeflow build/charts/edgeflow/
 
 - **v0.27.0**（2026-09-01）：QoS2 会话恢复（in-flight 持久化）：client `Options.PersistenceDir` 门控 + `Resume()` 回放；sim broker `NewBrokerWithOptions` 孤儿表重启恢复；MQTT 5.0 评估文档（本轮不实现，分期草案）。
 - **v0.28.0**（2026-09-01）：OPC-UA 安全策略框架（Basic256Sha256 分段第一段）：策略门禁 + 密码学原语 + OPN 证书协商校验 + sim 显式拒绝；开发规范与 spec-kit 工程化落地（docs/DEVELOPMENT-SPEC.md + .specify/ 宪法）。
+- **v0.45.0**（2026-10-03）：模型面扩展 + 困难样本回传 + 推理运行时（发展规划 v0.45，G23+G25+G24）：模型 Modality 元数据（modality 白名单/时序约定键/训练闭环留位键）+ 模型-业务场景关联（scene.bindings 键 + GET /api/v1/models/{name}/scenes 结构化查询）+ 困难样本全链（hardSampleCollector 告警联动捕获最新帧（opt-in EDGEFLOW_EDGECORE_HARDSAMPLE，每告警 1 张可调 1-5）→ EnqueueHardSample 复用补传队列 → mediastore objects/hardsample/ 隔离 + AlarmID 元数据 → GET /api/v1/hardsamples(+/{id}/content) 检索；AttachMedia 对 hard-sample 跳过流挂接）+ 加速卡探测上报（EDGEFLOW_EDGECORE_ACCELS env → RegisterPayload.Accels 可选字段 → 云端 NodeInfo.Accels 快照）+ docs/INFERENCE-GUIDE.md 对接规范；契约扩容 72→75 端点；新增测试 10 例全绿；登记 KI §46；详见 [docs/RELEASE-NOTES-v0450.md](docs/RELEASE-NOTES-v0450.md)
 - **v0.44.0**（2026-10-02）：流媒体分发子集 + 告警片段服务（发展规划 v0.44，G22）：FLV 透传封装器（pkg/flvremux 零依赖：FLV header/tag 字节级编码、AnnexB→AVCC、AVCDecoderConfigurationRecord、onMetaData；CompositionTime=0）+ 云端流面（帧源注册表 + /media/streams/{name}/live.flv（HTTP chunked）/live.ws（WS 二进制透传）；无注册源 404 默认零行为）+ 告警片段检索（DeviceName+RaisedAt 窗 × videostream 索引）+ metrics 中间件补 Flush/Hijack/Unwrap（流式响应能力，e2e 发现修复）；契约扩容 69→72 端点；新增测试 10 例全绿；HLS 评估登记 KI §45；详见 [docs/RELEASE-NOTES-v0440.md](docs/RELEASE-NOTES-v0440.md)
 - **v0.43.0**（2026-10-02）：视频管理面（发展规划 v0.43，G21）：云端 VideoStream 资源模型（etcd 写穿索引：CRUD/状态/快照引用/片段索引，媒资到达自动建流）+ 媒资分片上传（MediaUpload 消息，分片 ≤32KB base64，经 v0.39 持久队列断网补传）+ 边缘采集（pkg/mediaup spool+Janitor；video mapper media 块：环形缓冲/检出触发/节流；edgecore 延迟注入）+ 云端媒资存储（cloud/pkg/mediastore：分片幂等组装/sha256 校验/对象存储）+ 8 端点（videostreams CRUD/快照/片段列表/回放）；契约扩容 61→69 端点/15→16 消息；新增测试 15 例（单测 14 + e2e 1）全绿；断网补传回放 e2e 铁证（窗内 capturedAt 片段重放）；边界登记 KNOWN-ISSUES §44；详见 [docs/RELEASE-NOTES-v0430.md](docs/RELEASE-NOTES-v0430.md)
 - **v0.42.0**（2026-10-02）：视频接入增强（发展规划 v0.42，G20）：自研 RTSP 客户端最小子集（pkg/rtspclient 零依赖：信令五方法/CSeq/401 Basic 认证重试恰一次/SDP 最小解析；RTP over TCP interleaved 解复用；H.264 FU-A/STAP-A 重组 → AnnexB）+ RTSPSource 帧源（RTSP→AnnexB→外部解码进程 stdin→MJPEG stdout→出帧；断流自愈/ctx 取消回收）+ mapper rtsp 源型（url+decoder 必填，与 mjpeg/bridge 并存）+ C6 jpegScanner 段结构修复（APPn/COM 长度跳过、SOS 后唯一 EOI——元数据段内嵌 FFD9 不再误判帧尾）；新增单测 14 例全绿（grep 口径）；契约零改动、桥接路径零回归；边界登记 KNOWN-ISSUES §43；详见 [docs/RELEASE-NOTES-v0420.md](docs/RELEASE-NOTES-v0420.md)

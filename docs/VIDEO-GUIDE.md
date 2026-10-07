@@ -135,3 +135,35 @@ go test ./pkg/flvremux/                                    # 封装器字节级
 go test ./cmd/cloudcore/ -run 'TestMediaStream|TestAlarmSegments'  # 端点
 go test ./tests/e2e/ -run 'TestV0440'                      # 拉流演示 + 全链
 ```
+
+## 7. 模型面扩展与困难样本服务（v0.45.0，spec 0018）
+
+### 7.1 模型元数据与场景关联（G23）
+- 创建/更新模型时通过 Metadata 声明 `modality`（vision 缺省 | time-series |
+  multimodal，白名单校验）与 `scene.bindings`（JSON 数组）；
+- 场景查询：`GET /api/v1/models/{name}/scenes`（结构化视图；未配置空数组）。
+
+### 7.2 困难样本（G25，边缘 opt-in）
+```bash
+# 边缘开关（默认 off）
+export EDGEFLOW_EDGECORE_HARDSAMPLE=on
+export EDGEFLOW_EDGECORE_HARDSAMPLE_MAX_PER_ALARM=1   # 1–5
+```
+- 链路：告警新 episode → 捕获视频 mapper 最新帧（kind=hard-sample）→ 补传
+  队列上云 → `objects/hardsample/` 隔离存储（不挂 videostream 索引）；
+- 检索：`GET /api/v1/hardsamples?alarmId=...&limit=50`；内容
+  `GET /api/v1/hardsamples/{mediaId}/content`（JPEG）。
+
+### 7.3 加速卡探测上报（G24）
+```bash
+export EDGEFLOW_EDGECORE_ACCELS="gpu:cuda-12.4,npu:rockchip-9996"
+```
+- 注册后 `GET /api/v1/nodes/{nodeID}` 含 `accels`；详见 docs/INFERENCE-GUIDE.md。
+
+### 7.4 验证
+```bash
+go test ./cloud/pkg/modelrepo/                            # modality 校验
+go test ./cloud/pkg/mediastore/                           # hard-sample 存储与检索
+go test ./cmd/edgecore/ -run 'TestV0450'                  # 采集器/env
+go test ./tests/e2e/ -run 'TestV0450'                     # 全链铁证
+```

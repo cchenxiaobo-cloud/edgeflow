@@ -799,3 +799,21 @@ spec：specs/0017-flv-distribution/spec.md（发展规划 v0.44 · G22）。
 | 验收 | e2e 拉流演示 + 告警→片段→播放 | ✅ 验收 | HTTP-FLV（10 tags/seq/时戳）+ WS-FLV + 检索/回放运行时链路 |
 | 边界 | 仅 H.264 视频透传/CT=0/生产帧源另立/HLS 评估登记/流端点免 Token | 📝 登记 | KI §45 |
 | 后续候选（AAC 音频、RTMP 推流面、边缘转发、HLS（TS/切片/m3u8）、签名 URL 防盗链、时移回放） | — | ⏳ 待排 | 非承诺 |
+
+## 41. v0.45.0 — 模型面扩展 + 困难样本回传 + 推理运行时（2026-10-03）
+
+spec：specs/0018-model-sample-inference/spec.md（发展规划 v0.45 · G23+G25+G24）。
+
+| 特性 | 落点 | 状态 | 说明 |
+|---|---|---|---|
+| D1 模型元数据扩展（G23） | modelrepo 约定键 + ValidateModelMetadataExt | ✅ 闭环 | modality 白名单（vision 缺省兼容存量）/时序约定键/训练留位键；发布平铺自动携带 |
+| D2 模型-场景关联（G23） | scene.bindings 键 + GET models/{name}/scenes | ✅ 闭环 | 结构化只读视图（未配置空数组；解析失败不阻塞） |
+| D3 困难样本边缘采集（G25） | hardSampleCollector（alarm.Linkage 追加联动） | ✅ 闭环 | opt-in HARDSAMPLE=on；每告警 1 张（1–5 可调）；无帧跳过不阻塞告警链 |
+| D4 困难样本回传与检索（G25） | mediaup.EnqueueHardSample + mediastore hardsample/ 前缀 + 2 检索端点 | ✅ 闭环 | 复用补传队列（零新队列）；AlarmID 元数据；AttachMedia 跳过流挂接 |
+| D5 加速卡探测上报（G24） | EDGEFLOW_EDGECORE_ACCELS → Register.accels → NodeInfo | ✅ 闭环 | env 优先 + 可插拔探测器；旧边缘缺省兼容 |
+| D6 推理对接规范（G24） | docs/INFERENCE-GUIDE.md | ✅ 交付 | HTTP 推理契约沿用 + runtime.http-inference 标签发现 + 验证清单 |
+| 契约扩容 | tests/contract + 文档矩阵 | ✅ 验收 | 72→75 端点；消息 16 维持（Register 可选字段 + kind 白名单=只增不改） |
+| 验收 | e2e TestV0450ModelSampleInferenceE2E | ✅ 验收 | 加速上报 + 场景关联 + 检索空态 + 困难样本全链（告警→捕获→补传→检索→sha256 一致） |
+| 装配修复 | mediaSinkHolder.SetSnapSource | ✅ 修复 | 帧源独立登记（原实现被 uploader Set 覆盖——e2e 发现） |
+| 边界 | 仅 JPEG 帧/弱关联/env 探测/训练仅留位/发布不校验加速匹配 | 📝 登记 | KI §46 |
+| 后续候选（原始波形/视频段样本、精确设备-帧流映射、真实 GPU/NPU 枚举器、发布加速匹配校验、scenes CRUD、训练闭环接入） | — | ⏳ 待排 | 非承诺 |

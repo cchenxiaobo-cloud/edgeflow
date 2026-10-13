@@ -27,6 +27,8 @@ import (
 
 	v1alpha1 "edgeflow/apis/edge/v1alpha1"
 	"edgeflow/cloud/pkg/alarmstore"
+	"edgeflow/cloud/pkg/appdeploy"
+	"edgeflow/cloud/pkg/appstore"
 	"edgeflow/cloud/pkg/audit"
 	"edgeflow/cloud/pkg/auth"
 	"edgeflow/cloud/pkg/cloudhub"
@@ -878,6 +880,26 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	registerV0460APIs(apiMux)
+	// v0.47.0（spec 0020 G08/G09/G10）：应用目录 + 灰度部署 + 应用包服务。
+	// 纯进程内装配（文件未配置 = 纯内存，重启丢失为明示行为）；无注册应用时零行为。
+	appStore = appstore.New(os.Getenv(appstore.EnvFile))
+	if err := appStore.Load(); err != nil {
+		log.Errorf("[appstore] 应用目录加载失败（以空目录继续）: %v", err)
+	}
+	appPkgDir = os.Getenv("EDGEFLOW_CLOUDCORE_APPPKG_DIR")
+	if appPkgDir != "" {
+		if err := os.MkdirAll(appPkgDir, 0o700); err != nil {
+			log.Errorf("[apppkg] 包目录创建失败（上传面不可用）: %v", err)
+			appPkgDir = ""
+		}
+	}
+	appDeployCtl = appdeploy.NewController(&cloudAppDeployer{hub: hub}, nil)
+	// v0.47.0 应用灰度控制器 goroutine（扫描周期即批间节奏；赋值后启动——
+	// 首跑曾因 goroutine 先于赋值启动而 nil receiver panic，e2e 捕获修复）
+	go appDeployCtl.Run(sigCtx, appDeployScanInterval())
+	registerAppAPIs(apiMux)
+	log.Infof("[appstore] 应用目录就绪（应用 %d 个；持久化=%v；包服务=%v）",
+		appStore.Count(), os.Getenv(appstore.EnvFile) != "", appPkgDir != "")
 
 	var apiHandler http.Handler = apiMux
 	if rbacOn && rbacUsers != nil {

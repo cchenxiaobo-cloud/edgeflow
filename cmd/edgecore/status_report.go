@@ -36,8 +36,8 @@ const (
 //   - 固定周期含首次上报：edgecore 启动后云端无需等待即可看到 Pod 状态；
 //   - 周期支持热重载（WBS 2.7）：每次 tick 后重新读取 intervalFn，
 //     周期变化即重置 ticker（下一轮起按新周期），上报循环无感知。
-func runStatusReportLoop(client *edgehub.Client, edgedSvc *edged.Edged, nodeID string, intervalFn func() time.Duration, stopCh <-chan struct{}) {
-	reportPodStatuses(client, edgedSvc, nodeID) // 启动即上报一轮（含首次）
+func runStatusReportLoop(client *edgehub.Client, edgedSvc *edged.Edged, nodeID string, intervalFn func() time.Duration, stopCh <-chan struct{}, extras ...func() []edged.PodStatusPayload) {
+	reportPodStatuses(client, edgedSvc, nodeID, extras...) // 启动即上报一轮（含首次）
 
 	interval := safeInterval(intervalFn())
 	ticker := time.NewTicker(interval)
@@ -45,7 +45,7 @@ func runStatusReportLoop(client *edgehub.Client, edgedSvc *edged.Edged, nodeID s
 	for {
 		select {
 		case <-ticker.C:
-			reportPodStatuses(client, edgedSvc, nodeID)
+			reportPodStatuses(client, edgedSvc, nodeID, extras...)
 		case <-stopCh:
 			log.Infof("Pod 状态上报循环已停止")
 			return
@@ -76,8 +76,14 @@ func safeInterval(d time.Duration) time.Duration {
 //     未上报的状态会在下一轮周期自动补报；
 //   - 单条失败不影响本轮其余条目（循环继续）；
 //   - 可靠性提升（消息缓存、Ack 确认、按序投递）属于 M3 可靠上报范围。
-func reportPodStatuses(client *edgehub.Client, edgedSvc *edged.Edged, nodeID string) {
-	for _, msg := range buildStatusMessages(nodeID, edgedSvc.BuildStatusPayload(nodeID)) {
+func reportPodStatuses(client *edgehub.Client, edgedSvc *edged.Edged, nodeID string, extras ...func() []edged.PodStatusPayload) {
+	payloads := edgedSvc.BuildStatusPayload(nodeID)
+	for _, ex := range extras {
+		if ex != nil {
+			payloads = append(payloads, ex()...) // v0.47.0：脚本应用伪 Pod（scriptrunner）
+		}
+	}
+	for _, msg := range buildStatusMessages(nodeID, payloads) {
 		if err := client.Send(msg); err != nil {
 			var p edged.PodStatusPayload
 			_ = msg.DecodePayload(&p) // 自构造消息，解析不会失败

@@ -121,6 +121,21 @@
 | 80 | GET | `/api/v1/image-auths` | 镜像仓库凭证列表（脱敏，admin-only） | v0.46.0 |
 | 81 | PUT | `/api/v1/image-auths/{registry}` | 设置/覆盖镜像仓库凭证（admin-only） | v0.46.0 |
 | 82 | DELETE | `/api/v1/image-auths/{registry}` | 删除镜像仓库凭证（admin-only） | v0.46.0 |
+| 83 | POST | `/api/v1/applications` | 注册应用（name 唯一 409） | v0.47.0 |
+| 84 | GET | `/api/v1/applications` | 应用列表（分页） | v0.47.0 |
+| 85 | GET | `/api/v1/applications/{name}` | 应用详情（含版本目录） | v0.47.0 |
+| 86 | DELETE | `/api/v1/applications/{name}` | 删除应用（进行中部署 409） | v0.47.0 |
+| 87 | POST | `/api/v1/applications/{name}/versions` | 登记版本 | v0.47.0 |
+| 88 | GET | `/api/v1/applications/{name}/versions` | 版本列表 | v0.47.0 |
+| 89 | PUT | `/api/v1/applications/{name}/versions/{version}/package` | 上传应用包（≤32MB） | v0.47.0 |
+| 90 | GET | `/api/v1/applications/{name}/versions/{version}/package` | 下载应用包 | v0.47.0 |
+| 91 | POST | `/api/v1/app-deployments` | 创建灰度部署计划 | v0.47.0 |
+| 92 | GET | `/api/v1/app-deployments` | 部署计划列表 | v0.47.0 |
+| 93 | GET | `/api/v1/app-deployments/{planID}` | 部署计划详情 | v0.47.0 |
+| 94 | POST | `/api/v1/app-deployments/{planID}/pause` | 暂停部署 | v0.47.0 |
+| 95 | POST | `/api/v1/app-deployments/{planID}/resume` | 恢复部署 | v0.47.0 |
+| 96 | POST | `/api/v1/app-deployments/{planID}/cancel` | 取消部署（逆序卸载） | v0.47.0 |
+| 97 | POST | `/api/v1/app-deployments/{planID}/rollback` | 回滚部署 | v0.47.0 |
 
 > 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行、v0.43.0 视频管理面行、v0.44.0 流媒体分发行）。
 
@@ -284,6 +299,16 @@
 | 新增 RBAC 授权层（`EDGEFLOW_CLOUDCORE_RBAC=on` + 凭证文件启用；三角色 admin/operator/viewer + scope.ns 命名空间范围） | **默认 off 零变化**：off 时 auth 单令牌语义与 v0.45 逐字节一致；on 时未命中凭证回退 env 单令牌（admin 身份） |
 | 越权语义 403 `{"error":"forbidden","required":"<op>"}`（不泄露存在性）；凭证/角色面 operator/viewer 一律 403 | 新增语义，不影响既有端点行为 |
 | 新增镜像凭证托管 3 端点（`GET/PUT/DELETE /api/v1/image-auths[/{registry}]`；password 仅存哈希+可选 AES-GCM 静态加密，明文只在设置请求体出现一次） | **零破坏**：未配置凭证文件时端点返回 200 空列表/503 未启用 |
+
+### v0.47.0 兼容性增量（应用目录与分发增强，spec 0020）
+
+| 变更 | 兼容性 |
+|---|---|
+| 端点总数 82 → 97（+15：应用目录 6 + 应用包 2 + 灰度部署 7，全部新增 = 向后兼容；既有 82 行逐字节不变） | **零破坏** |
+| 新增应用目录（container/script 双形态；版本目录；kind 决定 image/scriptRef 必填校验） | 全新资源面，不影响既有端点 |
+| 新增应用包上传/下载（≤32MB；sha256 校验回显；落盘 0600） | 全新面 |
+| 新增应用级灰度（pending→running→paused→succeeded/failed/cancelled；批次推进；rollback 逆序恢复） | 下发复用 PodSync/ConfigSync（operation=add/update/delete 既有语义，零新消息） |
+| PodSync/ConfigSync 载荷增量：pod.name 前缀 `edgeflow-app-`；ConfigMap data 新增 app/version/scriptRef/pkgUrl 约定键 | **只增不改**：旧边缘按既有 Pod/ConfigMap 语义处理 |
 | 发布下发增量：podsync.pod 新增可选字段 `imageAuth{registry,username}`（authRef 形态，密码不进消息明文；边缘按 registry 从本地 env 查明文） | **只增不改**：旧边缘忽略未知字段；旧云端不携带 |
 | Register/RegisterPayload 可选字段 `accels`（加速卡能力清单） | **只增不改**：旧边缘不发送（字段缺省）→ 云端 NodeInfo.Accels=nil（JSON 省略）；旧云端忽略未知字段；缺省空 = 不上报零行为 |
 | mediastore kind 白名单扩容 `hard-sample` | **只增不改**：snapshot/segment 语义与对象路径零变化；未知 kind 依旧 400 |

@@ -111,6 +111,21 @@
 | GET | `/api/v1/image-auths` | **镜像仓库凭证列表（v0.46.0：脱敏 password=哈希摘要前 12 位 + deployable）** | 200 / 403 / 503 |
 | PUT | `/api/v1/image-auths/{registry}` | **设置/覆盖镜像仓库凭证（v0.46.0：body {username,password}；响应不含明文）** | 200 / 400 / 403 / 503 |
 | DELETE | `/api/v1/image-auths/{registry}` | **删除镜像仓库凭证（v0.46.0）** | 200 / 404 / 403 / 503 |
+| POST | `/api/v1/applications` | **注册应用（v0.47.0：{name,kind,firstVersion?}；name 唯一）** | 200 / 400 / 409 |
+| GET | `/api/v1/applications` | **应用列表（v0.47.0：分页 limit/offset + X-Total-Count）** | 200 |
+| GET | `/api/v1/applications/{name}` | **应用详情（v0.47.0：含版本目录）** | 200 / 404 |
+| DELETE | `/api/v1/applications/{name}` | **删除应用（v0.47.0：有进行中部署 409）** | 200 / 404 / 409 |
+| POST | `/api/v1/applications/{name}/versions` | **登记版本（v0.47.0：kind 决定 image/scriptRef 必填）** | 201 / 400 / 404 / 409 |
+| GET | `/api/v1/applications/{name}/versions` | **版本列表（v0.47.0）** | 200 / 404 |
+| PUT | `/api/v1/applications/{name}/versions/{version}/package` | **上传应用包（v0.47.0：≤32MB；响应 sha256）** | 200 / 400 / 404 / 413 |
+| GET | `/api/v1/applications/{name}/versions/{version}/package` | **下载应用包（v0.47.0：X-Checksum-Sha256）** | 200 / 404 |
+| POST | `/api/v1/app-deployments` | **创建灰度部署计划（v0.47.0：{app,version,nodes,batchSize,pauseBetweenSec}）** | 201 / 400 / 404 |
+| GET | `/api/v1/app-deployments` | **部署计划列表（v0.47.0：分页）** | 200 |
+| GET | `/api/v1/app-deployments/{planID}` | **部署计划详情（v0.47.0：perNode/批次进度）** | 200 / 404 |
+| POST | `/api/v1/app-deployments/{planID}/pause` | **暂停部署（v0.47.0：running→paused）** | 200 / 404 / 409 |
+| POST | `/api/v1/app-deployments/{planID}/resume` | **恢复部署（v0.47.0：paused→running）** | 200 / 404 / 409 |
+| POST | `/api/v1/app-deployments/{planID}/cancel` | **取消部署（v0.47.0：逆序卸载已交付）** | 200 / 404 / 409 |
+| POST | `/api/v1/app-deployments/{planID}/rollback` | **回滚部署（v0.47.0：body {version}? 缺省=目录早版本）** | 200 / 201 / 404 / 409 |
 
 ### 1.2 错误码表（统一约定）
 

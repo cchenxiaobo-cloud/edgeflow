@@ -2,7 +2,7 @@
 // 「无兼容矩阵文档/测试（audit-m35 G4）」的可执行测试侧）。
 //
 // 本文件是契约的唯一事实源（source of truth）：
-//   - ContractEndpoints：cloudcore HTTP 端点契约（51 条），与
+//   - ContractEndpoints：cloudcore HTTP 端点契约（95 条），与
 //     cmd/cloudcore/main.go 的路由注册、docs/API-SPEC.md §1.1 端点总览、
 //     docs/API-COMPATIBILITY.md §1 REST API 端点矩阵逐行对应；
 //   - ContractMessageTypes：云边通道消息类型契约，直接引用
@@ -23,7 +23,7 @@ type Endpoint struct {
 	Note   string // 契约说明（与文档矩阵口径一致）
 }
 
-// ContractEndpoints 是 cloudcore HTTP 端点契约表（82 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9 + v0.39.0 上行补传可视化 2 + v0.40.0 告警中心 5 + 设定值通道 3 + v0.43.0 视频管理面 8 + v0.44.0 流媒体分发与告警片段 3 + v0.45.0 模型面扩展与困难样本 3 + v0.46.0 RBAC 与镜像凭证 7）。
+// ContractEndpoints 是 cloudcore HTTP 端点契约表（97 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9 + v0.39.0 上行补传可视化 2 + v0.40.0 告警中心 5 + 设定值通道 3 + v0.43.0 视频管理面 8 + v0.44.0 流媒体分发与告警片段 3 + v0.45.0 模型面扩展与困难样本 3 + v0.46.0 RBAC 与镜像凭证 7 + v0.47.0 应用目录与分发 15）。
 //
 // ⚠️ 路径以 cmd/cloudcore/main.go 实际注册为准（任务提示 podsync/pod-sync
 // 存在歧义：grep 确认代码与两份文档均为 /podsync，无连字符）。
@@ -116,6 +116,21 @@ var ContractEndpoints = []Endpoint{
 	{Method: "GET", Path: "/api/v1/image-auths", Note: "镜像仓库凭证列表（脱敏；v0.46.0；admin-only）"},
 	{Method: "PUT", Path: "/api/v1/image-auths/{registry}", Note: "设置/覆盖镜像仓库凭证（v0.46.0；admin-only）"},
 	{Method: "DELETE", Path: "/api/v1/image-auths/{registry}", Note: "删除镜像仓库凭证（v0.46.0；admin-only）"},
+	{Method: "POST", Path: "/api/v1/applications", Note: "注册应用（v0.47.0；name 唯一 409）"},
+	{Method: "GET", Path: "/api/v1/applications", Note: "应用列表（分页 limit/offset + X-Total-Count）"},
+	{Method: "GET", Path: "/api/v1/applications/{name}", Note: "应用详情（含版本目录）"},
+	{Method: "DELETE", Path: "/api/v1/applications/{name}", Note: "删除应用（有进行中部署 409）"},
+	{Method: "POST", Path: "/api/v1/applications/{name}/versions", Note: "登记版本（kind 决定 image/scriptRef 必填）"},
+	{Method: "GET", Path: "/api/v1/applications/{name}/versions", Note: "版本列表"},
+	{Method: "PUT", Path: "/api/v1/applications/{name}/versions/{version}/package", Note: "上传应用包（≤32MB；sha256 回显）"},
+	{Method: "GET", Path: "/api/v1/applications/{name}/versions/{version}/package", Note: "下载应用包（X-Checksum-Sha256）"},
+	{Method: "POST", Path: "/api/v1/app-deployments", Note: "创建应用灰度部署计划（分批/停顿）"},
+	{Method: "GET", Path: "/api/v1/app-deployments", Note: "部署计划列表"},
+	{Method: "GET", Path: "/api/v1/app-deployments/{planID}", Note: "部署计划详情（perNode/批次进度）"},
+	{Method: "POST", Path: "/api/v1/app-deployments/{planID}/pause", Note: "暂停部署（running → paused）"},
+	{Method: "POST", Path: "/api/v1/app-deployments/{planID}/resume", Note: "恢复部署（paused → running）"},
+	{Method: "POST", Path: "/api/v1/app-deployments/{planID}/cancel", Note: "取消部署（逆序卸载已交付）"},
+	{Method: "POST", Path: "/api/v1/app-deployments/{planID}/rollback", Note: "回滚部署（恢复目标版本）"},
 	// ── v0.40.0 设定值通道（3 条）──
 	{Method: "POST", Path: "/api/v1/nodes/{nodeID}/setpoints", Note: "设定值建单（v0.40.0；审批开关/单笔 requireApproval）"},
 	{Method: "POST", Path: "/api/v1/setpoints/{setpointID}/approval", Note: "设定值审批（v0.40.0；approve|reject，仅 pending-approval 可审）"},

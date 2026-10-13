@@ -315,6 +315,13 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	// 关闭时零行为。特征经既有采样管道进影子/规则/告警/tsdb；原始波形落库子开关。
 	waveformStop := setupWaveformLoop(rulePipeline, twinStore)
 
+	// 脚本化应用执行器（v0.47.0，spec 0020 US-4）：opt-in
+	// （EDGEFLOW_EDGED_SCRIPTRUNNER=on，默认 off 零行为——脚本配置仅落盘）。
+	scriptRunner := edged.NewScriptRunner()
+	if scriptRunner.Enabled() {
+		log.Infof("[scriptrunner] 已启用（工作/缓存目录 %s）", os.Getenv(edged.EnvAppPkgDir))
+	}
+
 	// 消息处理回调（WBS 4.6）：云端下发类消息（PodSync/DeviceCommand 等）→
 	// MetaManager 落盘 / 设备影子更新；处理结果由 EdgeHub 自动回 Ack
 	// （成功 code=ok / 失败 code=error）。
@@ -323,7 +330,13 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 		case protocol.TypePodSync:
 			return handlePodSync(store, msg)
 		case protocol.TypeConfigSync:
-			return handleConfigSync(store, msg)
+			if err := handleConfigSync(store, msg); err != nil {
+				return err
+			}
+			// v0.47.0（spec 0020 US-4）：脚本应用生命周期（opt-in，默认零行为；
+			// 在 MetaManager 落盘成功后执行——失败记状态经 PodStatus 回报）
+			scriptRunner.HandleConfigSync(msg.Payload)
+			return nil
 		case protocol.TypeDeviceCommand:
 			execErr := handleDeviceCommand(twinStore, deviceExec, msg)
 			handleSetpointAccepted(spCtx, msg, execErr) // v0.40.0：设定值缓存+回告（仅受理成功）
@@ -403,7 +416,8 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	reportDone := make(chan struct{})
 	go func() {
 		defer close(reportDone)
-		runStatusReportLoop(client, edgedSvc, opts.NodeID, func() time.Duration { return rel.Get().PodReportInterval }, reportStopCh)
+		runStatusReportLoop(client, edgedSvc, opts.NodeID, func() time.Duration { return rel.Get().PodReportInterval }, reportStopCh,
+			func() []edged.PodStatusPayload { return scriptRunner.StatusPayloads(opts.NodeID) })
 	}()
 	log.Infof("Pod 状态上报循环已启动（周期 %v，nodeID=%s，支持热重载）", rel.Get().PodReportInterval, opts.NodeID)
 

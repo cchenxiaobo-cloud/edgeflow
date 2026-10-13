@@ -331,6 +331,16 @@ func TestContractRoutesRegisteredAtRuntime(t *testing.T) {
 			// 判别 3：各端点按契约期望的精确状态码
 			hasParam := strings.Contains(ep.Path, "{")
 			switch {
+			case strings.HasPrefix(ep.Path, "/api/v1/applications") || strings.HasPrefix(ep.Path, "/api/v1/app-deployments"):
+				// v0.47.0 应用面：契约进程未配置 APPSTORE/APPPKG 时
+				// 503（服务未启用）或 404/400（资源未知）均为合法注册语义
+				if resp.StatusCode != http.StatusServiceUnavailable &&
+					resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusBadRequest &&
+					resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated &&
+					resp.StatusCode != http.StatusConflict {
+					t.Fatalf("%s %s 状态码 = %d，期望 503/404/400/200/201/409（应用面注册语义，body=%q）",
+						ep.Method, path, resp.StatusCode, bodyStr)
+				}
 			case ep.Path == "/ocsp":
 				// OCSP 协议端点：空 body 为非法请求 → 400（协议要求 DER 请求体）
 				if resp.StatusCode != http.StatusBadRequest {
@@ -402,7 +412,7 @@ type registeredRoute struct {
 func registeredRoutesFromSource(t *testing.T) []registeredRoute {
 	t.Helper()
 	var routes []registeredRoute
-	for _, file := range []string{"main.go", "model_api.go", "rules_api.go", "uplink_api.go", "alarm_api.go", "setpoint_api.go", "video_api.go", "media_stream_api.go", "hardsample_api.go", "model_scenes_api.go", "v0460_rbac_api.go"} {
+	for _, file := range []string{"main.go", "model_api.go", "rules_api.go", "uplink_api.go", "alarm_api.go", "setpoint_api.go", "video_api.go", "media_stream_api.go", "hardsample_api.go", "model_scenes_api.go", "v0460_rbac_api.go", "v0470_app_api.go"} {
 		paths := scanRouteFile(t, filepath.Join(repoRoot(t), "cmd", "cloudcore", file))
 		routes = append(routes, paths...)
 	}

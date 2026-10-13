@@ -62,10 +62,21 @@ type ScriptState struct {
 	At      int64  `json:"at"`
 }
 
-// ScriptRunner 边缘脚本应用执行器（并发安全；ConfigSync 回调驱动）。
+// scriptTask 队列任务（HandleConfigSync 投递，worker 串行消费——EdgeHub 读循环
+// 不被 install/start 最长 ~120s 执行阻塞，v0.47 复核 P2-2）。
+type scriptTask struct {
+	raw []byte
+}
+
+// scriptTaskQueueCap 任务队列容量（满时丢弃 + Warn 留痕——边缘过载保护）。
+const scriptTaskQueueCap = 64
+
+// ScriptRunner 边缘脚本应用执行器（并发安全；ConfigSync 回调投递 + 单 worker 串行执行）。
 type ScriptRunner struct {
 	enabled bool
 	dir     string // 缓存/工作根目录
+
+	tasks chan scriptTask // 仅 enabled 时非 nil
 
 	mu     sync.Mutex
 	states map[string]*ScriptState // key = app
@@ -80,7 +91,19 @@ func NewScriptRunner() *ScriptRunner {
 	if dir == "" {
 		dir = filepath.Join(os.TempDir(), "edgeflow-edged-apppkg")
 	}
-	return &ScriptRunner{enabled: enabled, dir: dir, states: map[string]*ScriptState{}}
+	s := &ScriptRunner{enabled: enabled, dir: dir, states: map[string]*ScriptState{}}
+	if enabled {
+		s.tasks = make(chan scriptTask, scriptTaskQueueCap)
+		go s.worker()
+	}
+	return s
+}
+
+// worker 串行消费配置任务（FIFO 保序：先 deploy 后 delete 不会乱序）。
+func (s *ScriptRunner) worker() {
+	for t := range s.tasks {
+		s.apply(t.raw)
+	}
 }
 
 // Enabled 报告是否启用（装配日志用）。
@@ -111,6 +134,25 @@ type scriptAppData struct {
 // 脚本配置按生命周期执行（失败记状态不回错——配置落盘本身已成功，
 // 执行态经 PodStatus 回报）。
 func (s *ScriptRunner) HandleConfigSync(raw []byte) {
+	if !s.enabled {
+		var probe scriptConfigPayload
+		if err := json.Unmarshal(raw, &probe); err == nil {
+			d := probe.Config.Data
+			if d["scriptRef"] != "" || d["scriptTar"] != "" {
+				log.Warnf("[scriptrunner] 脚本应用配置仅落盘不执行（opt-in %s=on 开启）", EnvScriptRunner)
+			}
+		}
+		return
+	}
+	select {
+	case s.tasks <- scriptTask{raw: raw}:
+	default:
+		log.Warnf("[scriptrunner] 任务队列已满（%d）——配置丢弃留痕（边缘过载）", scriptTaskQueueCap)
+	}
+}
+
+// apply 同步执行一条配置任务（worker 内串行调用）。
+func (s *ScriptRunner) apply(raw []byte) {
 	var p scriptConfigPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return // 非约定形态：零行为（MetaManager 已自行落盘/报错）
@@ -164,7 +206,13 @@ func (s *ScriptRunner) deploy(d *scriptAppData) {
 		fail("scriptTar base64 解码失败: %v", err)
 		return
 	}
-	if d.SHA256 != "" {
+	// sha256 硬校验（fail-closed）：缺字段/不一致均拒绝执行（spec 0020 安全硬规则；
+	// v0.47 复核 P1-1：原实现缺 checksum 时跳过校验构成 fail-open）
+	if d.SHA256 == "" {
+		fail("配置缺少 sha256——拒绝执行（fail-closed）")
+		return
+	}
+	{
 		sum := sha256.Sum256(blob)
 		if got := hex.EncodeToString(sum[:]); got != d.SHA256 {
 			fail("sha256 不一致（云端登记 %.12s… ↔ 边缘落地 %.12s…）——拒绝执行", d.SHA256, got)
@@ -183,8 +231,9 @@ func (s *ScriptRunner) deploy(d *scriptAppData) {
 		fail("包缓存写盘失败: %v", err)
 		return
 	}
-	// 专用工作目录（每次部署清空重建）
-	work := filepath.Join(s.dir, "work", d.App+"-"+ver)
+	// 专用工作目录（每次部署清空重建；App/ver 经 Base 收敛——防目录逃逸，
+	// v0.47 复核 P1-2：缓存路径已 Base 而 work 路径漏收，自相矛盾）
+	work := filepath.Join(s.dir, "work", filepath.Base(d.App)+"-"+filepath.Base(ver))
 	_ = os.RemoveAll(work)
 	if err := extractTarGz(blob, work); err != nil {
 		fail("包解包失败: %v", err)
@@ -211,7 +260,7 @@ func (s *ScriptRunner) uninstall(app string) {
 		return // 未知应用：零行为
 	}
 	ver := st.Version
-	work := filepath.Join(s.dir, "work", app+"-"+ver)
+	work := filepath.Join(s.dir, "work", filepath.Base(app)+"-"+filepath.Base(ver))
 	for _, act := range []string{"stop", "uninstall"} {
 		if _, err := s.runScript(work, act); err != nil {
 			log.Warnf("[scriptrunner] %s %s 动作失败（继续清理）: %v", app, act, err)
@@ -236,6 +285,13 @@ func (s *ScriptRunner) runScript(work, act string) (string, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-e", act)
 	cmd.Dir = work
+	// 最小 env（v0.47 复核 P2-3）：不继承守护进程全量环境——防凭证类变量
+	// 泄漏进包内脚本；额外变量按声明式注入留后续版本。
+	cmd.Env = []string{
+		"PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+		"HOME=" + work,
+		"TMPDIR=" + os.TempDir(),
+	}
 	out, err := cmd.CombinedOutput()
 	if len(out) > scriptOutputLimit {
 		out = out[:scriptOutputLimit]
@@ -246,7 +302,7 @@ func (s *ScriptRunner) runScript(work, act string) (string, error) {
 
 // StatusPayloads 把脚本应用状态映射为 PodStatus 形态（契约零新增消息；
 // pod.name = edgeflow-script-<app>，phase：running→Running / failed→Failed /
-// stopped→Stopped）。未启用/无状态返回 nil。
+// stopped→Stopped；failed→Error 与 PodStatus 既有 Error 相位对齐）。未启用/无状态返回 nil。
 func (s *ScriptRunner) StatusPayloads(nodeID string) []PodStatusPayload {
 	if !s.enabled {
 		return nil
@@ -258,7 +314,7 @@ func (s *ScriptRunner) StatusPayloads(nodeID string) []PodStatusPayload {
 		phase := "Running"
 		switch st.Phase {
 		case "failed":
-			phase = "Error"
+			phase = "Error" // PodStatus 无 failed 相位——映射既有 Error
 		case "stopped":
 			phase = "Stopped"
 		}

@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"edgeflow/pkg/log"
 )
 
 // 部署计划状态（低基数白名单）。
@@ -206,9 +208,13 @@ func (c *Controller) Cancel(id string) error {
 	if err := c.setState(id, StateCancelled); err != nil {
 		return mapCtlErr(err)
 	}
-	// 已交付节点逆序卸载（尽力；失败记日志不影响取消终态）
+	// 已交付节点逆序卸载（尽力；失败记日志不影响取消终态）。
+	// 持锁内构造快照副本再传 goroutine（v0.47 复核 P1-3：传活指针 + goroutine
+	// 内无锁读构成数据竞争）。
 	p := c.plans[id]
-	go c.rollbackNodes(p, deliveredNodes(p), p.Version+"_cancelled")
+	snap := *p
+	snap.Nodes = append([]PerNode(nil), p.Nodes...)
+	go c.rollbackNodes(&snap, deliveredNodes(p))
 	return nil
 }
 
@@ -311,7 +317,12 @@ func (c *Controller) advance(ctx context.Context, id string) bool {
 		}
 	}
 	if nextBatch < 0 {
-		// 无 pending：按成败汇总终态
+		// 无 pending：按成败汇总终态（写点前复查终态——v0.47 复核 P1-3：
+		// 直写 p.State 绕过 setState 终态断言，会覆盖 Cancel 已置的 cancelled）
+		if Terminal(p.State) {
+			c.mu.Unlock()
+			return false
+		}
 		failed := 0
 		for _, n := range p.Nodes {
 			if n.State == "failed" {
@@ -353,7 +364,27 @@ func (c *Controller) advance(ctx context.Context, id string) bool {
 				p.Nodes[i].At = c.now().UnixMilli()
 			}
 		}
-		// 批次收尾即做终态汇总（无 pending：全失败 → failed，否则 succeeded）
+		// 批次收尾即做终态汇总（无 pending：全失败 → failed，否则 succeeded）。
+		// 写点前复查终态（v0.47 复核 P1-3）：Deliver 在途时 Cancel 可已置
+		// cancelled——不覆盖终态；本批已 delivered 节点不在 Cancel 快照中，
+		// 补偿性直接卸载（否则应用残留节点永不清理）。
+		if Terminal(p.State) {
+			var leaked []string
+			for i := range p.Nodes {
+				if p.Nodes[i].State == "delivered" {
+					leaked = append(leaked, p.Nodes[i].NodeID)
+				}
+			}
+			if len(leaked) > 0 {
+				snap := *p
+				snap.Nodes = append([]PerNode(nil), p.Nodes...)
+				log.Infof("[appdeploy] 计划 %s 已 %s（Cancel 竞态）——补偿卸载本批交付节点 %v", p.ID, p.State, leaked)
+				go c.rollbackNodes(&snap, leaked)
+			}
+			p.UpdatedAt = c.now().UnixMilli()
+			c.mu.Unlock()
+			return true
+		}
 		pendingLeft := false
 		for _, n := range p.Nodes {
 			if n.State == "pending" || n.State == "delivering" {
@@ -380,16 +411,14 @@ func (c *Controller) advance(ctx context.Context, id string) bool {
 	return true
 }
 
-// rollbackNodes 逆序卸载已交付节点（cancel/回滚卸载路径）。
-func (c *Controller) rollbackNodes(p *Plan, nodes []string, _ string) {
+// rollbackNodes 逆序卸载已交付节点（cancel/Cancel 竞态补偿路径；
+// p 必须为快照副本——本函数在 goroutine 中无锁读）。
+func (c *Controller) rollbackNodes(p *Plan, nodes []string) {
 	if p == nil || len(nodes) == 0 {
 		return
 	}
-	// 副本语义执行（Remove 尽力；失败仅日志——由执行器实现记录）
-	cp := *p
-	cp.Nodes = append([]PerNode(nil), p.Nodes...)
 	for _, n := range nodes {
-		_ = c.dep.Remove(context.Background(), &cp, n)
+		_ = c.dep.Remove(context.Background(), p, n)
 	}
 }
 

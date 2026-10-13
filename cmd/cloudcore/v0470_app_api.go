@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"edgeflow/cloud/pkg/appdeploy"
@@ -170,7 +171,7 @@ func apiDeleteApplication(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	// 有进行中部署 → 409（spec §2 US-1）
 	for _, p := range appDeployCtl.List() {
-		if p.App == name && !appdeploy.Terminal(p.State) {
+		if strings.EqualFold(p.App, name) && !appdeploy.Terminal(p.State) {
 			writeV0470JSON(w, http.StatusConflict, map[string]string{
 				"error": fmt.Sprintf("存在进行中的部署计划 %s（%s）", p.ID, p.State)})
 			return
@@ -423,18 +424,20 @@ func apiRollbackAppDeployment(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	target := body.Version
 	if target == "" {
+		// 缺省目标 = 严格早于当前版本的最新版（spec §3 边界 ⑤ 只恢复上一版本；
+		// v0.47 复核 P2-1：原「排除当前版后取最大」可向前回滚到更新版本）
 		app, _ := appStore.Get(orig.App)
 		var candidates []string
 		for _, v := range app.Versions {
-			if v.Version != orig.Version {
+			if v.Version < orig.Version {
 				candidates = append(candidates, v.Version)
 			}
 		}
 		if len(candidates) == 0 {
-			writeV0470JSON(w, http.StatusConflict, map[string]string{"error": "无可回滚版本（目录中无其他版本）"})
+			writeV0470JSON(w, http.StatusConflict, map[string]string{"error": "无可回滚版本（目录中无早于当前版本者）"})
 			return
 		}
-		target = candidates[len(candidates)-1] // 字典序最大（目录按 version 排序）
+		target = candidates[len(candidates)-1] // 版本目录升序 → 取最大即最近上一版
 	}
 	ver, ok := appStore.GetVersion(orig.App, target)
 	if !ok {

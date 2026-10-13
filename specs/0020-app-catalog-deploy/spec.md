@@ -113,3 +113,4 @@
   edgeflow-script-<app>（app 原样拼接，不做重复语义折叠）。
 - env 清单：EDGEFLOW_CLOUDCORE_APPSTORE_FILE / _APPPKG_DIR /
   _APPDEPLOY_SCAN_SEC / EDGEFLOW_EDGED_APPPKG_DIR / EDGEFLOW_EDGED_SCRIPTRUNNER。
+- 复核处置（FAIL→放行，P1×3/P2×3 全修 + P3 顺手修 3 留档 4）：P1 修正——sha256 fail-closed（缺 checksum 拒绝执行）/work 路径 Base 收敛/advance 终态写点 Terminal 复查 + Cancel 快照化 + 终态竞态补偿卸载；P2 修正——回滚缺省目标 = 严格早于当前版本的最新版（边界 ⑤ 收紧：原「排除当前版取最大」可向前回滚）/HandleConfigSync 单 worker 异步队列（EdgeHub 读循环不阻塞）/脚本执行最小 env。US-4「必须 sha256 校验」语义由此固化为 fail-closed。

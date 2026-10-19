@@ -818,18 +818,13 @@ spec：specs/0018-model-sample-inference/spec.md（发展规划 v0.45 · G23+G25
 | 边界 | 仅 JPEG 帧/弱关联/env 探测/训练仅留位/发布不校验加速匹配 | 📝 登记 | KI §46 |
 | 后续候选（原始波形/视频段样本、精确设备-帧流映射、真实 GPU/NPU 枚举器、发布加速匹配校验、scenes CRUD、训练闭环接入） | — | ⏳ 待排 | 非承诺 |
 
-## 43. v0.47.0 — 应用目录 + 应用级灰度 + 离线安装包 + 脚本化应用（2026-10-13）
+## 44. v0.48.0 — 日志链路（2026-10-19）
 
-- **G08 应用目录**：appstore 包（container|script 双形态 + 版本目录唯一 +
-  DNS-1123 校验 + JSON 穿写持久化/纯内存双模）；6 端点管理面。
-- **G09 应用级灰度**：appdeploy 独立状态机（pending→running→paused→
-  succeeded/failed/cancelled）；BatchSize 分批 + 扫描拾起 + 尽力交付终态内联；
-  pause/resume/cancel（逆序卸载）/rollback（对 delivered 集合再下发）7 端点。
-- **G10 离线安装包**：云端包上传/下载（≤32MB + sha256 回显/校验头）2 端点；
-  边缘包缓存目录（EDGEFLOW_EDGED_APPPKG_DIR）。
-- **G07 脚本化应用**：ConfigSync 内联（base64 + sha256 硬校验）+ 边缘
-  scriptrunner（opt-in 默认关：白名单生命周期 sh -e 60s 超时审计执行 +
-  PodStatus 伪 Pod 回穿）。
-- 契约 82→**97** 端点/16 消息维持；默认零行为；冻结带零改动；go.mod 零变化。
-- 详见 docs/RELEASE-NOTES-v0470.md。
+- **范围**：方案缺口 O4（日志采集链路：无→有）+ A5 日志面（G32 + G11，spec 0021）。
+- **交付**：边缘 logcollector（opt-in 默认关：文件 tail `[LEVEL]` 推断 + 程序内 Emit 事件源 +
+  批量 4KB 截断 + 背压丢最旧）+ LogSync 消息（16→**17**，≤200 条/批）复用补传队列上行
+  （断网不丢，写出成功即删行 + 云端 msgID 去重）+ 云端 logstore（per-node 环形默认 5000 条 +
+  可选 JSONL 16MB 单代轮转）+ 检索 API 5 端点（查询/节点清单/概要/tail/清空）。
+- 契约 97→**102** 端点/17 消息；默认零行为（采集 opt-in）；冻结带零改动；go.mod 零变化。
+- 详见 docs/RELEASE-NOTES-v0480.md。
 

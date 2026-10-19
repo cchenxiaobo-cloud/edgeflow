@@ -245,7 +245,9 @@ type Server struct {
 	alarmEventHandler     AlarmEventHandler     // AlarmEvent 消息回调（nil 表示未订阅，v0.40.0）
 	setpointResultHandler SetpointResultHandler // SetpointResult 消息回调（nil 表示未订阅，v0.40.0）
 	mediaUploadHandler    MediaUploadHandler    // MediaUpload 消息回调（nil 表示未订阅，v0.43.0）
+	logSyncHandler        LogSyncHandler        // LogSync 消息回调（nil 表示未订阅，v0.48.0）
 	ruleDedup             *ruleEventDedup       // RuleEvent 接收幂等（懒初始化，v0.39.0）
+	logDedup              *ruleEventDedup       // LogSync 接收幂等（懒初始化，v0.48.0；独立实例不与 rule 混计）
 
 	// connsMu 保护活跃连接集合 conns（含未注册连接，供 Shutdown 统一关闭）。
 	connsMu sync.Mutex
@@ -670,6 +672,8 @@ func (s *Server) dispatch(c *conn, data []byte) {
 		s.handleSetpointResult(c, m)
 	case protocol.TypeMediaUpload:
 		s.handleMediaUpload(c, m)
+	case protocol.TypeLogSync:
+		s.handleLogSync(c, m)
 	case protocol.TypeAck:
 		s.handleAck(c, m)
 	default:

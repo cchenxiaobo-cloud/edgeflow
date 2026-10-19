@@ -126,6 +126,11 @@
 | POST | `/api/v1/app-deployments/{planID}/resume` | **恢复部署（v0.47.0：paused→running）** | 200 / 404 / 409 |
 | POST | `/api/v1/app-deployments/{planID}/cancel` | **取消部署（v0.47.0：逆序卸载已交付）** | 200 / 404 / 409 |
 | POST | `/api/v1/app-deployments/{planID}/rollback` | **回滚部署（v0.47.0：body {version}? 缺省=目录早版本）** | 200 / 201 / 404 / 409 |
+| GET | `/api/v1/logs` | **日志检索（v0.48.0：node/source/level/q/since/until/limit/offset，node 缺省跨节点）** | 200 / 400 |
+| GET | `/api/v1/logs/nodes` | **有日志节点清单（v0.48.0：含条数与最新时间）** | 200 |
+| GET | `/api/v1/logs/nodes/{nodeID}` | **节点日志概要（v0.48.0：sources/levels 计数）** | 200 / 404 |
+| GET | `/api/v1/logs/nodes/{nodeID}/tail` | **节点日志尾部 N 条（v0.48.0：默认 100 上限 1000）** | 200 / 400 / 404 |
+| DELETE | `/api/v1/logs/nodes/{nodeID}` | **清空节点日志（v0.48.0：轮转/清理入口）** | 200 / 404 |
 
 ### 1.2 错误码表（统一约定）
 

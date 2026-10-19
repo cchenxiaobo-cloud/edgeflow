@@ -2,7 +2,7 @@
 // 「无兼容矩阵文档/测试（audit-m35 G4）」的可执行测试侧）。
 //
 // 本文件是契约的唯一事实源（source of truth）：
-//   - ContractEndpoints：cloudcore HTTP 端点契约（95 条），与
+//   - ContractEndpoints：cloudcore HTTP 端点契约（102 条），与
 //     cmd/cloudcore/main.go 的路由注册、docs/API-SPEC.md §1.1 端点总览、
 //     docs/API-COMPATIBILITY.md §1 REST API 端点矩阵逐行对应；
 //   - ContractMessageTypes：云边通道消息类型契约，直接引用
@@ -23,7 +23,7 @@ type Endpoint struct {
 	Note   string // 契约说明（与文档矩阵口径一致）
 }
 
-// ContractEndpoints 是 cloudcore HTTP 端点契约表（97 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9 + v0.39.0 上行补传可视化 2 + v0.40.0 告警中心 5 + 设定值通道 3 + v0.43.0 视频管理面 8 + v0.44.0 流媒体分发与告警片段 3 + v0.45.0 模型面扩展与困难样本 3 + v0.46.0 RBAC 与镜像凭证 7 + v0.47.0 应用目录与分发 15）。
+// ContractEndpoints 是 cloudcore HTTP 端点契约表（97 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9 + v0.39.0 上行补传可视化 2 + v0.40.0 告警中心 5 + 设定值通道 3 + v0.43.0 视频管理面 8 + v0.44.0 流媒体分发与告警片段 3 + v0.45.0 模型面扩展与困难样本 3 + v0.46.0 RBAC 与镜像凭证 7 + v0.47.0 应用目录与分发 15 + v0.48.0 日志链路 5）。
 //
 // ⚠️ 路径以 cmd/cloudcore/main.go 实际注册为准（任务提示 podsync/pod-sync
 // 存在歧义：grep 确认代码与两份文档均为 /podsync，无连字符）。
@@ -135,6 +135,12 @@ var ContractEndpoints = []Endpoint{
 	{Method: "POST", Path: "/api/v1/nodes/{nodeID}/setpoints", Note: "设定值建单（v0.40.0；审批开关/单笔 requireApproval）"},
 	{Method: "POST", Path: "/api/v1/setpoints/{setpointID}/approval", Note: "设定值审批（v0.40.0；approve|reject，仅 pending-approval 可审）"},
 	{Method: "GET", Path: "/api/v1/setpoints", Note: "设定值列表（v0.40.0；含执行反馈 outcome/error）"},
+	// ── v0.48.0 日志链路（5 条，spec 0021 US-3）──
+	{Method: "GET", Path: "/api/v1/logs", Note: "日志检索（node/source/level/q/since/until/limit/offset，node 缺省跨节点；v0.48.0）"},
+	{Method: "GET", Path: "/api/v1/logs/nodes", Note: "有日志节点清单（含条数与最新时间；v0.48.0）"},
+	{Method: "GET", Path: "/api/v1/logs/nodes/{nodeID}", Note: "节点日志概要（sources/levels 计数；v0.48.0）"},
+	{Method: "GET", Path: "/api/v1/logs/nodes/{nodeID}/tail", Note: "节点日志尾部 N 条（默认 100 上限 1000；v0.48.0）"},
+	{Method: "DELETE", Path: "/api/v1/logs/nodes/{nodeID}", Note: "清空节点日志（轮转/清理入口；v0.48.0）"},
 }
 
 // MessageType 描述一种云边通道消息类型契约。
@@ -167,6 +173,7 @@ var ContractMessageTypes = []MessageType{
 	{Name: protocol.TypeAlarmEvent, InDoc: true, Note: "边→云：告警事件（v0.40.0）"},
 	{Name: protocol.TypeSetpointResult, InDoc: true, Note: "边→云：设定值执行反馈（v0.40.0）"},
 	{Name: protocol.TypeMediaUpload, InDoc: true, Note: "边→云：媒资分片上传（快照/片段，v0.43.0）"},
+	{Name: protocol.TypeLogSync, InDoc: true, Note: "边→云：批量日志同步（v0.48.0）"},
 	{Name: protocol.TypeAck, InDoc: true, Note: "双向：通用确认（可靠投递）"},
 	{Name: protocol.TypeNodeJob, InDoc: false, Note: "云→边：任务分发（已关闭：v0.1.0 范围外，保留协议占位）"},
 	{Name: protocol.TypeNodeJobResult, InDoc: false, Note: "边→云：任务结果（已关闭：v0.1.0 范围外，保留协议占位）"},

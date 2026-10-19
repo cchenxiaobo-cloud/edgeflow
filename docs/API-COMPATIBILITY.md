@@ -136,6 +136,11 @@
 | 95 | POST | `/api/v1/app-deployments/{planID}/resume` | 恢复部署 | v0.47.0 |
 | 96 | POST | `/api/v1/app-deployments/{planID}/cancel` | 取消部署（逆序卸载） | v0.47.0 |
 | 97 | POST | `/api/v1/app-deployments/{planID}/rollback` | 回滚部署 | v0.47.0 |
+| 98 | GET | `/api/v1/logs` | 日志检索（node/source/level/q/since/until/limit/offset） | v0.48.0 |
+| 99 | GET | `/api/v1/logs/nodes` | 有日志节点清单 | v0.48.0 |
+| 100 | GET | `/api/v1/logs/nodes/{nodeID}` | 节点日志概要 | v0.48.0 |
+| 101 | GET | `/api/v1/logs/nodes/{nodeID}/tail` | 节点日志尾部 N 条 | v0.48.0 |
+| 102 | DELETE | `/api/v1/logs/nodes/{nodeID}` | 清空节点日志 | v0.48.0 |
 
 > 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行、v0.43.0 视频管理面行、v0.44.0 流媒体分发行）。
 
@@ -162,6 +167,7 @@
 | `AlarmEvent` | 边→云 | alarmId / nodeId / source / severity / state / message / count / raisedAt / updatedAt（告警事实，三处同构） | 新增（v0.40.0） |
 | `SetpointResult` | 边→云 | setpointId / ok / value / error / ts（设定值执行反馈闭环） | 新增（v0.40.0） |
 | `MediaUpload` | 边→云 | mediaId / kind（snapshot\|segment）/ nodeId / deviceName / streamName / capturedAt / contentType / frameCount / totalBytes / sha256 / chunkSeq / chunkTotal / chunkData（base64 分片） | 新增（v0.43.0） |
+| `LogSync` | 边→云 | entries[]（ts/source/level/message，≤200 条/批） | **v0.48.0 新增**：批量日志同步；复用补传队列（写出成功即删行，重发由 msgID 去重消化） |
 | `Ack` | 双向 | id / ok / error | 稳定（可靠投递） |
 
 兼容规则：
@@ -317,6 +323,17 @@
 | Model/Update 元数据扩展校验（modality 白名单） | **只增不改**：无 modality 键 = 缺省 vision 兼容存量；非法值 400（新校验仅约束新写入） |
 | 零新依赖 / 既有包 API | go.mod 零变化；MQTT/OPC-UA/规则/时序面零触碰；v0240–v0350 冻结测试零改动 |
 
+
+### v0.48.0 兼容性增量（日志链路，spec 0021）
+
+| 项 | 内容 | 兼容性 |
+|---|---|---|
+| 新增消息 | `LogSync`（边→云，批量日志条目） | 只增不改：既有 16 类消息零改动；旧云端收到 LogSync 走 default 分支忽略（既有行为） |
+| 新增端点 | `/api/v1/logs`、`/api/v1/logs/nodes`、`/api/v1/logs/nodes/{nodeID}`、`/api/v1/logs/nodes/{nodeID}/tail`、`DELETE /api/v1/logs/nodes/{nodeID}` | 只增不改：全部走既有 auth/audit 链 |
+| LogSync 语义 | ≤200 条/批；level 白名单 debug/info/warn/error；source ≤64 字符；message ≤4KB（边侧截断） | 校验失败回 invalid Ack（与既有校验路径同构） |
+| 上行通道 | 复用 v0.39 上行补传队列（写出成功即删行） | 断网不丢语义与 alarm/rule 完全同构；云端 msgID 滚动去重（独立实例，不与 RuleEvent 计数混淆） |
+| 边缘采集 | `EDGEFLOW_EDGED_LOGCOLLECTOR=on` opt-in（默认关零行为） | 默认零行为 opt-in 裁决延续；文件源启动从 EOF 不回放历史 |
+| 云端存储 | 内存环形（默认 5000 条/节点，`EDGEFLOW_CLOUDCORE_LOGSTORE_MAX`）+ 可选 JSONL 持久化（`EDGEFLOW_CLOUDCORE_LOGSTORE_FILE`，16MB 单代轮转） | 无条件启用内存模；环形淘汰即轮转 |
 
 ## v0.44.0 兼容性增量（2026-10-02）
 

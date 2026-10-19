@@ -78,6 +78,10 @@ type ScriptRunner struct {
 
 	tasks chan scriptTask // 仅 enabled 时非 nil
 
+	// sink 是可选生命周期事件汇（v0.48.0 日志链路接线点：logcollector.Emit）；
+	// nil 安全，调用不得阻塞（logcollector 满缓冲丢最旧不阻塞）。
+	sink func(source, level, message string)
+
 	mu     sync.Mutex
 	states map[string]*ScriptState // key = app
 }
@@ -97,6 +101,23 @@ func NewScriptRunner() *ScriptRunner {
 		go s.worker()
 	}
 	return s
+}
+
+// SetEventSink 注册生命周期事件汇（v0.48.0 日志链路；nil 取消）。并发安全。
+func (s *ScriptRunner) SetEventSink(fn func(source, level, message string)) {
+	s.mu.Lock()
+	s.sink = fn
+	s.mu.Unlock()
+}
+
+// emit 尽力投递一条生命周期事件（锁外调用 sink——sink 自身并发安全）。
+func (s *ScriptRunner) emit(source, level, msg string) {
+	s.mu.Lock()
+	fn := s.sink
+	s.mu.Unlock()
+	if fn != nil {
+		fn(source, level, msg)
+	}
 }
 
 // worker 串行消费配置任务（FIFO 保序：先 deploy 后 delete 不会乱序）。
@@ -196,6 +217,7 @@ func (s *ScriptRunner) deploy(d *scriptAppData) {
 		log.Errorf("[scriptrunner] %s 部署失败: %s", d.App, fmt.Sprintf(format, args...))
 		s.setState(key, &ScriptState{App: d.App, Version: d.Version, Phase: "failed",
 			Detail: fmt.Sprintf(format, args...), At: time.Now().UnixMilli()})
+		s.emit("scriptrunner", "error", d.App+"@"+d.Version+" 部署失败: "+fmt.Sprintf(format, args...))
 	}
 	if d.ScriptTar == "" {
 		fail("配置缺少 scriptTar（包内联体）")
@@ -249,6 +271,7 @@ func (s *ScriptRunner) deploy(d *scriptAppData) {
 	log.Infof("[scriptrunner] %s@%s 已部署并启动（work=%s）", d.App, d.Version, work)
 	s.setState(key, &ScriptState{App: d.App, Version: d.Version, Phase: "running",
 		Detail: "", At: time.Now().UnixMilli()})
+	s.emit("scriptrunner", "info", d.App+"@"+d.Version+" 已部署并启动")
 }
 
 // uninstall 执行 stop → uninstall → 清理工作目录与状态（尽力；失败记日志）。
@@ -268,6 +291,7 @@ func (s *ScriptRunner) uninstall(app string) {
 	}
 	_ = os.RemoveAll(work)
 	log.Infof("[scriptrunner] %s 已卸载（工作目录已清理）", app)
+	s.emit("scriptrunner", "info", app+"@"+ver+" 已卸载")
 	s.mu.Lock()
 	delete(s.states, app)
 	s.mu.Unlock()

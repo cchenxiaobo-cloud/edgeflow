@@ -24,6 +24,7 @@ import (
 	"edgeflow/edge/pkg/edged"
 	"edgeflow/edge/pkg/edgehub"
 	"edgeflow/edge/pkg/eventbus"
+	"edgeflow/edge/pkg/logcollector"
 	"edgeflow/edge/pkg/metamanager"
 	"edgeflow/pkg/certs"
 	"edgeflow/pkg/config"
@@ -286,6 +287,26 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 			}
 		}
 	}
+	// 日志采集器（v0.48.0，spec 0021）：opt-in（EDGEFLOW_EDGED_LOGCOLLECTOR=on
+	// 默认关）；上行 dispatch 与告警同构——UPLINK on 入补传队列（断网不丢），
+	// off 直发尽力而为；入队失败直发兜底。
+	logDispatch := func(msg *protocol.Message) error {
+		return client.Send(msg)
+	}
+	if uplinkRel != nil {
+		logDispatch = func(msg *protocol.Message) error {
+			if _, err := uplinkRel.q.EnqueueUplink(metamanager.UplinkPriorityNormal, msg); err != nil {
+				log.Warnf("日志批量入队失败（直发兜底）: %v", err)
+				return client.Send(msg)
+			}
+			uplinkRel.Notify()
+			return nil
+		}
+	}
+	logCollector := logcollector.New(opts.NodeID, logDispatch)
+	logCollector.Start()
+	defer logCollector.Stop()
+
 	alarmMgr := newAlarmManager(opts.NodeID, store, alarmDispatch,
 		envUplinkInt(envAlarmReannounceSec, defaultAlarmReannounceSec, 1))
 	if hardSamples != nil {
@@ -321,6 +342,9 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	if scriptRunner.Enabled() {
 		log.Infof("[scriptrunner] 已启用（工作/缓存目录 %s）", os.Getenv(edged.EnvAppPkgDir))
 	}
+	// v0.48.0：scriptrunner 生命周期事件 → 日志采集器（程序内事件源示范；
+	// collector 未启用时 Emit 为零行为，注入无副作用）。
+	scriptRunner.SetEventSink(logCollector.Emit)
 
 	// 消息处理回调（WBS 4.6）：云端下发类消息（PodSync/DeviceCommand 等）→
 	// MetaManager 落盘 / 设备影子更新；处理结果由 EdgeHub 自动回 Ack

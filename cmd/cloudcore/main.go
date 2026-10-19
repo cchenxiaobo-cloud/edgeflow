@@ -34,6 +34,7 @@ import (
 	"edgeflow/cloud/pkg/cloudhub"
 	"edgeflow/cloud/pkg/devicestatus"
 	"edgeflow/cloud/pkg/etcdstore"
+	"edgeflow/cloud/pkg/logstore"
 	"edgeflow/cloud/pkg/mediastore"
 	"edgeflow/cloud/pkg/metrics"
 	"edgeflow/cloud/pkg/modelrelease"
@@ -900,6 +901,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 	registerAppAPIs(apiMux)
 	log.Infof("[appstore] 应用目录就绪（应用 %d 个；持久化=%v；包服务=%v）",
 		appStore.Count(), os.Getenv(appstore.EnvFile) != "", appPkgDir != "")
+
+	// v0.48.0（spec 0021 G32/G11）：日志链路——云端存储无条件启用（内存环形，
+	// 可选 JSONL 持久化）+ LogSync 接收 + 检索 API。
+	ls, err := logstore.New(envLogstoreMax(), os.Getenv("EDGEFLOW_CLOUDCORE_LOGSTORE_FILE"))
+	if err != nil {
+		log.Errorf("[logstore] 持久化初始化失败（降级纯内存）: %v", err)
+		ls, _ = logstore.New(envLogstoreMax(), "")
+	}
+	logStore = ls
+	wireLogSyncHandler(hub, logStore)
+	registerLogAPIs(apiMux)
+	log.Infof("[logstore] 日志链路就绪（节点上限 %d 条；持久化=%v）",
+		envLogstoreMax(), os.Getenv("EDGEFLOW_CLOUDCORE_LOGSTORE_FILE") != "")
 
 	var apiHandler http.Handler = apiMux
 	if rbacOn && rbacUsers != nil {

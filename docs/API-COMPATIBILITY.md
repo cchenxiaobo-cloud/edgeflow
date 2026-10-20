@@ -146,6 +146,13 @@
 | 105 | POST | `/api/v1/term/sessions/{id}/exec` | 执行白名单命令 | v0.49.0 |
 | 106 | POST | `/api/v1/term/sessions/{id}/close` | 关闭会话 | v0.49.0 |
 | 107 | GET | `/api/v1/term/audit` | 命令级审计查询 | v0.49.0 |
+| 108 | POST | `/api/v1/regions` | 创建区域 | v0.50.0 |
+| 109 | GET | `/api/v1/regions` | 区域树 | v0.50.0 |
+| 110 | PUT | `/api/v1/regions/{id}` | 更新区域 | v0.50.0 |
+| 111 | DELETE | `/api/v1/regions/{id}` | 删除区域 | v0.50.0 |
+| 112 | POST | `/api/v1/regions/{id}/nodes` | 节点批量归属 | v0.50.0 |
+| 113 | POST | `/api/v1/tags` | 打标/删标 | v0.50.0 |
+| 114 | GET | `/api/v1/governance/nodes` | 区域+标签组合查询 | v0.50.0 |
 
 > 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行、v0.43.0 视频管理面行、v0.44.0 流媒体分发行）。
 
@@ -336,6 +343,7 @@
 | 变更项 | 内容 | 兼容性 |
 |---|---|---|
 | 新增端点 | `/api/v1/term/sessions`（POST/GET）、`/api/v1/term/sessions/{id}/exec`、`/api/v1/term/sessions/{id}/close`、`/api/v1/term/audit` | 只增不改：102→107 端点零改动；RBAC 全局管控（write=operator+ / read=viewer+，越权 403） |
+| v0.50.0 新增端点 | `/api/v1/regions`（POST/GET）、`/api/v1/regions/{id}`（PUT/DELETE）、`/api/v1/regions/{id}/nodes`（POST）、`/api/v1/tags`（POST）、`/api/v1/governance/nodes`（GET） | 只增不改：107→114 端点零改动、消息 19 不变（纯云端管理面）；区域树单父+防环+空区删除约束；标签三类锚点（{k:v} upsert / {k:null} 删）；组合查询 AND 语义不动 `/api/v1/nodes`；RBAC write=operator+ / delete=admin（对齐 v0.46 operator 无 delete）/ read=viewer+ |
 | 新增消息 | `TermExec`（云→边）、`TermResult`（边→云） | 只增不改：17→19 类消息零改动；旧边缘收 TermExec 走 default 忽略；旧云端收 TermResult 同理 |
 | 白名单语义 | 边侧强制（EDGEFLOW_EDGED_TERM_ALLOWLIST，默认 uname/date/uptime/df/free/ps），精确匹配不走 shell | opt-in：EDGEFLOW_EDGED_TERM=on 默认关；未启用一律 rejected 回执 |
 | 审计面 | API 层（既有 middleware）+ 命令级 JSONL（term-audit.jsonl）+ 边侧本地副账 | 审计文件新增，不影响既有 data/ 文件 |

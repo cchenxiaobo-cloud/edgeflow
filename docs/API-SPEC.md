@@ -136,6 +136,13 @@
 | POST | `/api/v1/term/sessions/{id}/exec` | **执行白名单命令（v0.49.0：同步等 TermResult，业务语义在负载）** | 200 / 400 / 404 / 409 / 503 |
 | POST | `/api/v1/term/sessions/{id}/close` | **关闭会话（v0.49.0：幂等）** | 200 / 404 |
 | GET | `/api/v1/term/audit` | **命令级审计查询（v0.49.0：X-Total-Count=过滤总数）** | 200 |
+| POST | `/api/v1/regions` | **创建区域（v0.50.0：单父树；父不存在 404）** | 201 |
+| GET | `/api/v1/regions` | **区域树（v0.50.0：children+nodeCount）** | 200 |
+| PUT | `/api/v1/regions/{id}` | **更新区域（v0.50.0：改名/描述/移动；防环 409）** | 200 |
+| DELETE | `/api/v1/regions/{id}` | **删除区域（v0.50.0：空区域约束 409；delete=admin）** | 200 |
+| POST | `/api/v1/regions/{id}/nodes` | **节点批量归属（v0.50.0：幂等换区）** | 200 |
+| POST | `/api/v1/tags` | **打标/删标（v0.50.0：node/device/model；{k:null} 删）** | 200 |
+| GET | `/api/v1/governance/nodes` | **区域+标签组合查询（v0.50.0：AND 语义）** | 200 |
 
 ### 1.2 错误码表（统一约定）
 

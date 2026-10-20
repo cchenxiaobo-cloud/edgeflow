@@ -42,9 +42,11 @@ import (
 	"edgeflow/cloud/pkg/nodecontroller"
 	"edgeflow/cloud/pkg/podstatus"
 	"edgeflow/cloud/pkg/rbac"
+	"edgeflow/cloud/pkg/regionstore"
 	"edgeflow/cloud/pkg/registry"
 	"edgeflow/cloud/pkg/rulestore"
 	"edgeflow/cloud/pkg/setpointstore"
+	"edgeflow/cloud/pkg/tagstore"
 	"edgeflow/cloud/pkg/termgw"
 	"edgeflow/cloud/pkg/videostream"
 	"edgeflow/pkg/alarm"
@@ -937,6 +939,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 			envTermInt("EDGEFLOW_CLOUDCORE_TERM_MAX_PER_NODE", 3),
 			envTermInt("EDGEFLOW_CLOUDCORE_TERM_MAX_GLOBAL", 32))
 	}
+
+	// v0.50.0 治理面（spec 0023 G03+G04）：区域树 + 标签 + 组合查询。
+	// 持久化 env 可选（空 = 纯内存，重启易失——spec 裁决 8）。
+	regionStore := regionstore.New(os.Getenv("EDGEFLOW_CLOUDCORE_REGION_FILE"))
+	tagStore := tagstore.New(os.Getenv("EDGEFLOW_CLOUDCORE_TAG_FILE"))
+	registerGovernanceAPIs(apiMux, regionStore, tagStore)
 
 	var apiHandler http.Handler = apiMux
 	if rbacOn && rbacUsers != nil {

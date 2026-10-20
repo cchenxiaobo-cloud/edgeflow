@@ -2,7 +2,7 @@
 // 「无兼容矩阵文档/测试（audit-m35 G4）」的可执行测试侧）。
 //
 // 本文件是契约的唯一事实源（source of truth）：
-//   - ContractEndpoints：cloudcore HTTP 端点契约（107 条），与
+//   - ContractEndpoints：cloudcore HTTP 端点契约（114 条），与
 //     cmd/cloudcore/main.go 的路由注册、docs/API-SPEC.md §1.1 端点总览、
 //     docs/API-COMPATIBILITY.md §1 REST API 端点矩阵逐行对应；
 //   - ContractMessageTypes：云边通道消息类型契约，直接引用
@@ -146,6 +146,14 @@ var ContractEndpoints = []Endpoint{
 	{Method: "POST", Path: "/api/v1/term/sessions/{id}/exec", Note: "执行白名单命令（同步等 TermResult；越权 403/离线 503；v0.49.0）"},
 	{Method: "POST", Path: "/api/v1/term/sessions/{id}/close", Note: "关闭会话（幂等；v0.49.0）"},
 	{Method: "GET", Path: "/api/v1/term/audit", Note: "命令级审计查询（X-Total-Count；v0.49.0）"},
+	// ── v0.50.0 区域层与标签治理（spec 0023，G03+G04；纯云端管理面）──
+	{Method: "POST", Path: "/api/v1/regions", Note: "创建区域（单父树；write=operator+；v0.50.0）"},
+	{Method: "GET", Path: "/api/v1/regions", Note: "区域树（含 nodeCount；v0.50.0）"},
+	{Method: "PUT", Path: "/api/v1/regions/{id}", Note: "更新区域（改名/描述/移动防环 409；v0.50.0）"},
+	{Method: "DELETE", Path: "/api/v1/regions/{id}", Note: "删除区域（空区域约束 409；delete=admin 对齐 v0.46 语义；v0.50.0）"},
+	{Method: "POST", Path: "/api/v1/regions/{id}/nodes", Note: "节点批量归属（幂等换区；批量 ≤64；v0.50.0）"},
+	{Method: "POST", Path: "/api/v1/tags", Note: "打标/删标（node/device/model 三类锚点；{k:v} upsert {k:null} 删；v0.50.0）"},
+	{Method: "GET", Path: "/api/v1/governance/nodes", Note: "区域+标签组合查询（region/tag/tagKey AND 语义；v0.50.0）"},
 }
 
 // MessageType 描述一种云边通道消息类型契约。

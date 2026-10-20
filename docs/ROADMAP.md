@@ -828,3 +828,12 @@ spec：specs/0018-model-sample-inference/spec.md（发展规划 v0.45 · G23+G25
 - 契约 97→**102** 端点/17 消息；默认零行为（采集 opt-in）；冻结带零改动；go.mod 零变化。
 - 详见 docs/RELEASE-NOTES-v0480.md。
 
+## §45 v0.49.0 — 远程运维终端（2026-10-20）
+
+- **交付**：受控运维会话（云端 termgw：生命周期/同步等待/命令级审计/归属校验）
+  + 边缘受控执行器（opt-in，白名单六只读命令默认集，不走 shell，超时终止，
+  64KB 截断 + UTF-8 净化，并发闸 4，本地审计副账）+ 消息 TermExec/TermResult
+  （17→19）+ 端点 5（102→107）+ RBAC 联动（write=operator+ / read=viewer+）。
+- **验收锚**（replan L204）：越权拒绝 ✓（viewer 403/匿名 401）+ 审计完整 ✓
+  （API 层 + 云端命令级 JSONL + 边侧副账三层）。
+- **后续**：交互式 PTY、审批双签、边审计上云、异步大超时（见 KI §50）。

@@ -147,3 +147,4 @@ EdgeFlow 是云边协同的边缘计算平台：云端控制面（cloudcore + et
 - `/speckit.checklist` — 质量清单（规格完备性/清晰度/一致性）
 
 > 本规范 v1.0.0 由 v0.10.0–v0.27.0 共 20+ 发布轮实践沉淀；下一次修订预期在 v0.28.x 分段计划稳定后（补充 FR-S1-04 全段验收标准）。
+| v0.50.0 | 2026-10-20 | 区域层与标签治理（G03+G04，spec 0023）：regionstore/tagstore（JSON 快照）+ 治理 API 7 端点（107→114）+ e2e 六段；RBAC 对齐 v0.46（DELETE=admin）；纯云端管理面消息 19 不变 | spec 0023 / RN-v0500 / KI §51 |

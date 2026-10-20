@@ -1,11 +1,12 @@
 // 远程运维终端 API（v0.49.0，spec 0022，G31）。
 //
 // 五端点（102→107）：
-//   POST   /api/v1/term/sessions            创建会话（write：operator+）
-//   GET    /api/v1/term/sessions            会话列表（read：viewer+）
-//   POST   /api/v1/term/sessions/{id}/exec  执行白名单命令（write，同步等结果）
-//   POST   /api/v1/term/sessions/{id}/close 关闭会话（write，幂等）
-//   GET    /api/v1/term/audit               命令级审计查询（read，X-Total-Count）
+//
+//	POST   /api/v1/term/sessions            创建会话（write：operator+）
+//	GET    /api/v1/term/sessions            会话列表（read：viewer+）
+//	POST   /api/v1/term/sessions/{id}/exec  执行白名单命令（write，同步等结果）
+//	POST   /api/v1/term/sessions/{id}/close 关闭会话（write，幂等）
+//	GET    /api/v1/term/audit               命令级审计查询（read，X-Total-Count）
 //
 // RBAC 由全局 middleware 统一管控（rbac.Allow：POST=write operator+ /
 // GET=read viewer+）；越权在 middleware 层 403，本文件不重复判定。

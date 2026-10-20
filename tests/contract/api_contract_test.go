@@ -331,6 +331,15 @@ func TestContractRoutesRegisteredAtRuntime(t *testing.T) {
 			// 判别 3：各端点按契约期望的精确状态码
 			hasParam := strings.Contains(ep.Path, "{")
 			switch {
+			case strings.HasPrefix(ep.Path, "/api/v1/term"):
+				// v0.49.0 终端面：契约进程 termgw 默认启用（会话/审计内存+文件），
+				// 200（列表/审计空）/400（POST 无体或参数非法）均为合法注册语义；
+				// 503（下行通道未配置）与 405 同样接受。
+				if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusBadRequest &&
+					resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusServiceUnavailable &&
+					resp.StatusCode != http.StatusMethodNotAllowed {
+					t.Errorf("%s %s → %d，期望 200/400/404/405/503（终端端点注册语义）", ep.Method, ep.Path, resp.StatusCode)
+				}
 			case strings.HasPrefix(ep.Path, "/api/v1/logs"):
 				// v0.48.0 日志面：契约进程 logstore 默认启用（内存模），
 				// 200（正常）/400（参数非法）/404（节点未知）均为合法注册语义；
@@ -422,7 +431,7 @@ type registeredRoute struct {
 func registeredRoutesFromSource(t *testing.T) []registeredRoute {
 	t.Helper()
 	var routes []registeredRoute
-	for _, file := range []string{"main.go", "model_api.go", "rules_api.go", "uplink_api.go", "alarm_api.go", "setpoint_api.go", "video_api.go", "media_stream_api.go", "hardsample_api.go", "model_scenes_api.go", "v0460_rbac_api.go", "v0470_app_api.go", "v0480_log_api.go"} {
+	for _, file := range []string{"main.go", "model_api.go", "rules_api.go", "uplink_api.go", "alarm_api.go", "setpoint_api.go", "video_api.go", "media_stream_api.go", "hardsample_api.go", "model_scenes_api.go", "v0460_rbac_api.go", "v0470_app_api.go", "v0480_log_api.go", "v0490_term_api.go"} {
 		paths := scanRouteFile(t, filepath.Join(repoRoot(t), "cmd", "cloudcore", file))
 		routes = append(routes, paths...)
 	}

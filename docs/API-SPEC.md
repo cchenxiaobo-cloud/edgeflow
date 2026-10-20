@@ -131,6 +131,11 @@
 | GET | `/api/v1/logs/nodes/{nodeID}` | **节点日志概要（v0.48.0：sources/levels 计数）** | 200 / 404 |
 | GET | `/api/v1/logs/nodes/{nodeID}/tail` | **节点日志尾部 N 条（v0.48.0：默认 100 上限 1000）** | 200 / 400 / 404 |
 | DELETE | `/api/v1/logs/nodes/{nodeID}` | **清空节点日志（v0.48.0：轮转/清理入口）** | 200 / 404 |
+| POST | `/api/v1/term/sessions` | **创建受控运维会话（v0.49.0：nodeId+reason 必填，write=operator+）** | 201 / 400 / 429 |
+| GET | `/api/v1/term/sessions` | **会话列表（v0.49.0：?nodeID= 过滤，创建倒序）** | 200 |
+| POST | `/api/v1/term/sessions/{id}/exec` | **执行白名单命令（v0.49.0：同步等 TermResult，业务语义在负载）** | 200 / 400 / 404 / 409 / 503 |
+| POST | `/api/v1/term/sessions/{id}/close` | **关闭会话（v0.49.0：幂等）** | 200 / 404 |
+| GET | `/api/v1/term/audit` | **命令级审计查询（v0.49.0：X-Total-Count=过滤总数）** | 200 |
 
 ### 1.2 错误码表（统一约定）
 

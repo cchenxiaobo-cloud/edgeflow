@@ -45,6 +45,7 @@ import (
 	"edgeflow/cloud/pkg/registry"
 	"edgeflow/cloud/pkg/rulestore"
 	"edgeflow/cloud/pkg/setpointstore"
+	"edgeflow/cloud/pkg/termgw"
 	"edgeflow/cloud/pkg/videostream"
 	"edgeflow/pkg/alarm"
 	"edgeflow/pkg/certs"
@@ -914,6 +915,28 @@ func run(args []string, stdout, stderr io.Writer) int {
 	registerLogAPIs(apiMux)
 	log.Infof("[logstore] 日志链路就绪（节点上限 %d 条；持久化=%v）",
 		envLogstoreMax(), os.Getenv("EDGEFLOW_CLOUDCORE_LOGSTORE_FILE") != "")
+
+	// v0.49.0（spec 0022 G31/G11）：远程运维终端——会话网关 + 受控命令执行
+	// （白名单边侧强制）+ 命令级审计（JSONL，验收锚「审计完整」）+ RBAC 全局
+	// 管控（write=operator+ / read=viewer+，越权 403）。
+	termGW, termErr := termgw.New(termgw.Options{
+		AuditPath:  os.Getenv("EDGEFLOW_CLOUDCORE_TERM_AUDIT_PATH"),
+		SessionTTL: envTermTTL(),
+		MaxPerNode: envTermInt("EDGEFLOW_CLOUDCORE_TERM_MAX_PER_NODE", 3),
+		MaxGlobal:  envTermInt("EDGEFLOW_CLOUDCORE_TERM_MAX_GLOBAL", 32),
+	}, hub.SendToNode)
+	if termErr != nil {
+		log.Errorf("[termgw] 终端网关初始化失败（审计不可用）: %v", termErr)
+	} else {
+		termGW.Start()
+		defer termGW.Stop()
+		wireTermResultHandler(hub, termGW)
+		registerTermAPIs(apiMux, termGW)
+		log.Infof("[termgw] 远程运维终端就绪（审计=%s；TTL=%s；上限 %d/节点 %d 全局）",
+			termGW.AuditPath(), envTermTTL(),
+			envTermInt("EDGEFLOW_CLOUDCORE_TERM_MAX_PER_NODE", 3),
+			envTermInt("EDGEFLOW_CLOUDCORE_TERM_MAX_GLOBAL", 32))
+	}
 
 	var apiHandler http.Handler = apiMux
 	if rbacOn && rbacUsers != nil {

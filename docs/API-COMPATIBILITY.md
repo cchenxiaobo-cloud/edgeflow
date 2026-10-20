@@ -141,6 +141,11 @@
 | 100 | GET | `/api/v1/logs/nodes/{nodeID}` | 节点日志概要 | v0.48.0 |
 | 101 | GET | `/api/v1/logs/nodes/{nodeID}/tail` | 节点日志尾部 N 条 | v0.48.0 |
 | 102 | DELETE | `/api/v1/logs/nodes/{nodeID}` | 清空节点日志 | v0.48.0 |
+| 103 | POST | `/api/v1/term/sessions` | 创建受控运维会话 | v0.49.0 |
+| 104 | GET | `/api/v1/term/sessions` | 会话列表 | v0.49.0 |
+| 105 | POST | `/api/v1/term/sessions/{id}/exec` | 执行白名单命令 | v0.49.0 |
+| 106 | POST | `/api/v1/term/sessions/{id}/close` | 关闭会话 | v0.49.0 |
+| 107 | GET | `/api/v1/term/audit` | 命令级审计查询 | v0.49.0 |
 
 > 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行、v0.43.0 视频管理面行、v0.44.0 流媒体分发行）。
 
@@ -168,6 +173,8 @@
 | `SetpointResult` | 边→云 | setpointId / ok / value / error / ts（设定值执行反馈闭环） | 新增（v0.40.0） |
 | `MediaUpload` | 边→云 | mediaId / kind（snapshot\|segment）/ nodeId / deviceName / streamName / capturedAt / contentType / frameCount / totalBytes / sha256 / chunkSeq / chunkTotal / chunkData（base64 分片） | 新增（v0.43.0） |
 | `LogSync` | 边→云 | entries[]（ts/source/level/message，≤200 条/批） | **v0.48.0 新增**：批量日志同步；复用补传队列（写出成功即删行，重发由 msgID 去重消化） |
+| `TermExec` | 云→边 | execId/sessionId/cmd/args[]/timeoutSec/operator | **v0.49.0 新增**：受控命令执行请求；白名单边侧强制（默认六个只读运维命令）；不走 shell；旧边缘 default 忽略 |
+| `TermResult` | 边→云 | execId/sessionId/ok/exitCode/output/truncated/rejected/reason/durationMs | **v0.49.0 新增**：执行结果回传；输出 ≤64KB 截断 + UTF-8 净化；旧云端 default 忽略 |
 | `Ack` | 双向 | id / ok / error | 稳定（可靠投递） |
 
 兼容规则：
@@ -323,6 +330,16 @@
 | Model/Update 元数据扩展校验（modality 白名单） | **只增不改**：无 modality 键 = 缺省 vision 兼容存量；非法值 400（新校验仅约束新写入） |
 | 零新依赖 / 既有包 API | go.mod 零变化；MQTT/OPC-UA/规则/时序面零触碰；v0240–v0350 冻结测试零改动 |
 
+
+### v0.49.0 兼容性增量（远程运维终端，spec 0022）
+
+| 变更项 | 内容 | 兼容性 |
+|---|---|---|
+| 新增端点 | `/api/v1/term/sessions`（POST/GET）、`/api/v1/term/sessions/{id}/exec`、`/api/v1/term/sessions/{id}/close`、`/api/v1/term/audit` | 只增不改：102→107 端点零改动；RBAC 全局管控（write=operator+ / read=viewer+，越权 403） |
+| 新增消息 | `TermExec`（云→边）、`TermResult`（边→云） | 只增不改：17→19 类消息零改动；旧边缘收 TermExec 走 default 忽略；旧云端收 TermResult 同理 |
+| 白名单语义 | 边侧强制（EDGEFLOW_EDGED_TERM_ALLOWLIST，默认 uname/date/uptime/df/free/ps），精确匹配不走 shell | opt-in：EDGEFLOW_EDGED_TERM=on 默认关；未启用一律 rejected 回执 |
+| 审计面 | API 层（既有 middleware）+ 命令级 JSONL（term-audit.jsonl）+ 边侧本地副账 | 审计文件新增，不影响既有 data/ 文件 |
+| exec 失败语义 | 节点离线 503（不入队不补传——运维命令时效性强）；会话态非法 409；达上限 429 | 新增语义，无既有端点行为变化 |
 
 ### v0.48.0 兼容性增量（日志链路，spec 0021）
 

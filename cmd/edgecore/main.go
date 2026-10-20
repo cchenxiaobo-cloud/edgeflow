@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"edgeflow/edge/pkg/eventbus"
 	"edgeflow/edge/pkg/logcollector"
 	"edgeflow/edge/pkg/metamanager"
+	"edgeflow/edge/pkg/termexec"
 	"edgeflow/pkg/certs"
 	"edgeflow/pkg/config"
 	"edgeflow/pkg/log"
@@ -307,6 +309,16 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 	logCollector.Start()
 	defer logCollector.Stop()
 
+	// 受控终端执行器（v0.49.0，spec 0022）：opt-in（EDGEFLOW_EDGED_TERM=on
+	// 默认关）；白名单边侧强制（EDGEFLOW_EDGED_TERM_ALLOWLIST，默认六个只读
+	// 运维命令）；结果经 TermResult 直发（会话命令时效性强，不补传——云端
+	// 等待超时即失败返回）。
+	termEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv("EDGEFLOW_EDGED_TERM")), "on")
+	termExec := termexec.New(termEnabled,
+		os.Getenv("EDGEFLOW_EDGED_TERM_ALLOWLIST"),
+		os.Getenv("EDGEFLOW_EDGED_TERM_AUDIT_PATH"))
+	defer termExec.Stop()
+
 	alarmMgr := newAlarmManager(opts.NodeID, store, alarmDispatch,
 		envUplinkInt(envAlarmReannounceSec, defaultAlarmReannounceSec, 1))
 	if hardSamples != nil {
@@ -367,6 +379,26 @@ func run(args []string, stdout, stderr io.Writer, sigCh <-chan os.Signal) int {
 			return execErr
 		case protocol.TypeRuleSync:
 			return handleRuleSync(ruleEngine, governor, store, msg)
+		case protocol.TypeTermExec:
+			// v0.49.0：受控命令执行（spec 0022）。受理即回 ok Ack；命令在
+			// 独立 goroutine 执行（耗时可达 timeoutSec，不得阻塞读循环），
+			// 结果经 TermResult 直发回传（无补传——超时即失败，spec 裁决 10）。
+			var tp protocol.TermExecPayload
+			if err := msg.DecodePayload(&tp); err != nil {
+				return err
+			}
+			go func(payload protocol.TermExecPayload) {
+				res := termExec.Handle(opts.NodeID, payload)
+				out, err := protocol.NewMessage(protocol.TypeTermResult, opts.NodeID, "cloud", res)
+				if err != nil {
+					log.Errorf("[term] 构造 TermResult 失败（exec=%s）: %v", payload.ExecID, err)
+					return
+				}
+				if err := client.Send(out); err != nil {
+					log.Warnf("[term] TermResult 回传失败（exec=%s）: %v", payload.ExecID, err)
+				}
+			}(tp)
+			return nil
 		default:
 			// 未知下发类型：暂不处理但回 ok，
 			// 避免云端视为失败无限重试；后续模块接入时在此扩展

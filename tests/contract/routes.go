@@ -2,7 +2,7 @@
 // 「无兼容矩阵文档/测试（audit-m35 G4）」的可执行测试侧）。
 //
 // 本文件是契约的唯一事实源（source of truth）：
-//   - ContractEndpoints：cloudcore HTTP 端点契约（102 条），与
+//   - ContractEndpoints：cloudcore HTTP 端点契约（107 条），与
 //     cmd/cloudcore/main.go 的路由注册、docs/API-SPEC.md §1.1 端点总览、
 //     docs/API-COMPATIBILITY.md §1 REST API 端点矩阵逐行对应；
 //   - ContractMessageTypes：云边通道消息类型契约，直接引用
@@ -141,6 +141,11 @@ var ContractEndpoints = []Endpoint{
 	{Method: "GET", Path: "/api/v1/logs/nodes/{nodeID}", Note: "节点日志概要（sources/levels 计数；v0.48.0）"},
 	{Method: "GET", Path: "/api/v1/logs/nodes/{nodeID}/tail", Note: "节点日志尾部 N 条（默认 100 上限 1000；v0.48.0）"},
 	{Method: "DELETE", Path: "/api/v1/logs/nodes/{nodeID}", Note: "清空节点日志（轮转/清理入口；v0.48.0）"},
+	{Method: "POST", Path: "/api/v1/term/sessions", Note: "创建受控运维会话（nodeId+reason 必填；write=operator+；v0.49.0）"},
+	{Method: "GET", Path: "/api/v1/term/sessions", Note: "会话列表（?nodeID= 过滤；v0.49.0）"},
+	{Method: "POST", Path: "/api/v1/term/sessions/{id}/exec", Note: "执行白名单命令（同步等 TermResult；越权 403/离线 503；v0.49.0）"},
+	{Method: "POST", Path: "/api/v1/term/sessions/{id}/close", Note: "关闭会话（幂等；v0.49.0）"},
+	{Method: "GET", Path: "/api/v1/term/audit", Note: "命令级审计查询（X-Total-Count；v0.49.0）"},
 }
 
 // MessageType 描述一种云边通道消息类型契约。
@@ -174,6 +179,8 @@ var ContractMessageTypes = []MessageType{
 	{Name: protocol.TypeSetpointResult, InDoc: true, Note: "边→云：设定值执行反馈（v0.40.0）"},
 	{Name: protocol.TypeMediaUpload, InDoc: true, Note: "边→云：媒资分片上传（快照/片段，v0.43.0）"},
 	{Name: protocol.TypeLogSync, InDoc: true, Note: "边→云：批量日志同步（v0.48.0）"},
+	{Name: protocol.TypeTermExec, InDoc: true, Note: "云→边：受控命令执行请求（白名单边侧强制；v0.49.0）"},
+	{Name: protocol.TypeTermResult, InDoc: true, Note: "边→云：执行结果回传（输出 ≤64KB 截断；v0.49.0）"},
 	{Name: protocol.TypeAck, InDoc: true, Note: "双向：通用确认（可靠投递）"},
 	{Name: protocol.TypeNodeJob, InDoc: false, Note: "云→边：任务分发（已关闭：v0.1.0 范围外，保留协议占位）"},
 	{Name: protocol.TypeNodeJobResult, InDoc: false, Note: "边→云：任务结果（已关闭：v0.1.0 范围外，保留协议占位）"},

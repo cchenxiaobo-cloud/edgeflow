@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -112,6 +113,138 @@ func (l *Ledger) Close() error {
 		return nil
 	}
 	return l.file.Close()
+}
+
+// ---- 查询面（v0.56.0，spec 0029）----
+
+// QueryFilter 是台账查询过滤器（零值字段不过滤）。
+type QueryFilter struct {
+	Operator string // 精确匹配操作者
+	Method   string // 精确匹配 HTTP 方法（原样比对）
+	PathSub  string // 实际路径子串包含
+	Status   int    // 精确匹配状态码（0 = 不过滤）
+	FromMs   int64  // 起始毫秒（含；0 = 不过滤）
+	ToMs     int64  // 结束毫秒（含；0 = 不过滤）
+}
+
+// match 报告条目是否通过过滤器。
+func (f QueryFilter) match(e Entry) bool {
+	if f.Operator != "" && e.Operator != f.Operator {
+		return false
+	}
+	if f.Method != "" && e.Method != f.Method {
+		return false
+	}
+	if f.PathSub != "" && !strings.Contains(e.Path, f.PathSub) {
+		return false
+	}
+	if f.Status != 0 && e.Status != f.Status {
+		return false
+	}
+	if f.FromMs > 0 && e.Ts < f.FromMs {
+		return false
+	}
+	if f.ToMs > 0 && e.Ts > f.ToMs {
+		return false
+	}
+	return true
+}
+
+// scan 读取台账文件并返回过滤后条目（文件原序，追加即时间序）。
+// 半行/损坏行跳过（追加写进程崩溃残留），不毒化其余记录。
+func (l *Ledger) scan(f QueryFilter) ([]Entry, error) {
+	if l == nil || l.path == "" {
+		return nil, errors.New("审计台账未初始化")
+	}
+	data, err := os.ReadFile(l.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("读取审计台账失败: %w", err)
+	}
+	var matched []Entry
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var e Entry
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			continue
+		}
+		if f.match(e) {
+			matched = append(matched, e)
+		}
+	}
+	return matched, nil
+}
+
+// Query 扫描台账并返回过滤后条目（Ts 降序，新→旧）与过滤后总数；
+// limit/offset 作用于降序序列（limit<=0 默认 50，钳 [1,500]；offset<0 取 0）。
+// 空台账/无命中返回空切片非 nil。
+func (l *Ledger) Query(f QueryFilter, limit, offset int) ([]Entry, int, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	matched, err := l.scan(f)
+	if err != nil {
+		return nil, 0, err
+	}
+	sort.Slice(matched, func(i, j int) bool { return matched[i].Ts > matched[j].Ts })
+	total := len(matched)
+	if offset >= total {
+		return []Entry{}, total, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return matched[offset:end], total, nil
+}
+
+// Stats 是台账聚合计数（与 Query 同一过滤语义）。
+type Stats struct {
+	Total      int64            `json:"total"`
+	ByOperator map[string]int64 `json:"byOperator"`
+	ByAction   map[string]int64 `json:"byAction"`
+	ByStatus   map[string]int64 `json:"byStatus"` // "2xx"/"4xx"/"5xx"/"other"
+}
+
+// statusBucket 归一状态码桶。
+func statusBucket(code int) string {
+	switch {
+	case code >= 200 && code < 300:
+		return "2xx"
+	case code >= 400 && code < 500:
+		return "4xx"
+	case code >= 500 && code < 600:
+		return "5xx"
+	default:
+		return "other"
+	}
+}
+
+// Stats 单遍扫描聚合（总数/按操作者/按动作/按状态桶）。
+func (l *Ledger) Stats(f QueryFilter) (*Stats, error) {
+	matched, err := l.scan(f)
+	if err != nil {
+		return nil, err
+	}
+	st := &Stats{ByOperator: map[string]int64{}, ByAction: map[string]int64{}, ByStatus: map[string]int64{}}
+	for _, e := range matched {
+		st.Total++
+		st.ByOperator[e.Operator]++
+		st.ByAction[e.Action]++
+		st.ByStatus[statusBucket(e.Status)]++
+	}
+	return st, nil
 }
 
 // identityKey 是请求身份槽在 context 中的键（本包私有，经 SetIdentity 写入）。

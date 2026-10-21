@@ -50,5 +50,9 @@
 
 ## N6 复核
 
-- R1（v0.52+v0.53）PASS 已处置；**R2（v0.54–v0.56 合并复核 + 全量 e2e 终验）**
-  于本版推送后启动，覆盖本版查询语义与契约 130 条对齐。
+- R1（v0.52+v0.53）**PASS** 已处置（回执 .cluster/edgeflow-v052-056/review.md）。
+- **R2（v0.54–v0.56 合并复核）：PASS**（无 P1/P2，P3×3 留档——QoS2 跨相迟到
+  PUBREC 窄窗口 / audit 参数静默归零 / US-4 帧数断言增强，登记 KI §57#4-6；
+  复核实测 race mqtt 6.0s/audit 3.0s/drstore 1.5s/forwardstore 5.0s + 契约
+  130 条 13.1s 全绿；报告 subagent_R2_review.md）。
+- 全量 e2e 终验随 R2 收口执行（结果回填 .cluster/edgeflow-v052-056/e2e-full-v0560.log）。

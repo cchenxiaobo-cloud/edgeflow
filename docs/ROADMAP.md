@@ -844,3 +844,10 @@ spec：specs/0018-model-sample-inference/spec.md（发展规划 v0.45 · G23+G25
 - **交付**：hierarchyview 聚合引擎（树形 rollup/子树明细/告警矩阵）+ 协同 API 5 端点（114→119，无 DELETE 面）+ 真节点 e2e 六段（三级视图演示锚）+ docs/DR-ASSESSMENT.md（现状第 2 级/差距 6 项）。
 - **设计要点**：在线判定以 registry Status 为唯一权威；聚合实时计算（量级假设 ≤数百节点）；策略仅存储不下发；多实例联邦待 v0.52 规模数据后立项。
 - **承接**：灾备差距 6 项由 v0.52 承接 2-3 级落地项（K8s 自愈基线/外部 etcd/持久化 env 强制/演练 SOP/备份策略/长跑实测）。
+
+### §48 v0.52.0 — 规模·韧性·基线（已交付 2026-10-21）
+
+- **范围**：G05 承接（环境可达项）+ DR-ASSESSMENT 差距 #3/#4/#5 落地 + 仓库卫生 + NFR-04。
+- **交付**：alarmstore.CountByNodeState（告警聚合无 2000 截断，KI §52#1/#4 修复）+ drstore 备份管理面（API 3 端点 119→122，manifest sha256+自检+轮转）+ scripts/dr-drill.sh + docs/DR-RUNBOOK.md（演练 SOP）+ docs/CONFIG-BASELINE.md（轻/标/重三档强制项）+ bench-baseline 机制（Makefile + PERFORMANCE-BASELINE 分节追加）+ tests/e2e/data 61MB WAL 清理。
+- **设计要点**：AlarmCountSource 可选接口（旧替身回退 List 路径，只增不改）；无 API 恢复面（防误操作放大，恢复走 SOP）；未启用语义显式（GET enabled=false / POST·详情 503）；id 字符集白名单防路径穿越。
+- **承接**：压测/长跑/信创实测结果待环境，机制就绪如实登记（spec 0025 非目标）；DR 差距 #1/#2 的 5 级路径（多实例联邦）待规模数据后专项立项。

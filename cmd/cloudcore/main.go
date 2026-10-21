@@ -33,6 +33,7 @@ import (
 	"edgeflow/cloud/pkg/auth"
 	"edgeflow/cloud/pkg/cloudhub"
 	"edgeflow/cloud/pkg/devicestatus"
+	"edgeflow/cloud/pkg/drstore"
 	"edgeflow/cloud/pkg/etcdstore"
 	"edgeflow/cloud/pkg/hierarchyview"
 	"edgeflow/cloud/pkg/logstore"
@@ -950,6 +951,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// v0.51.0 区域协同层（spec 0024 G01）：三级视图 + 区域策略 + 告警汇聚。
 	// 中心直管架构（replan 路径 3 增强）；聚合口径见 hierarchyview 包注释。
 	registerHierarchyAPIs(apiMux, regionStore, hierarchyview.New(regionStore, nodeReg, alarmStore))
+
+	// v0.52.0 灾备备份管理面（spec 0025，DR-ASSESSMENT 差距 #5 承接）：
+	// 治理面快照备份（region/tag/logstore）；DR_DIR 空 = 未启用（API 503/enabled=false）。
+	drDir := os.Getenv("EDGEFLOW_CLOUDCORE_DR_DIR")
+	drSources := []drstore.Source{}
+	if p := os.Getenv("EDGEFLOW_CLOUDCORE_REGION_FILE"); p != "" {
+		drSources = append(drSources, drstore.Source{Name: "region", Path: p})
+	}
+	if p := os.Getenv("EDGEFLOW_CLOUDCORE_TAG_FILE"); p != "" {
+		drSources = append(drSources, drstore.Source{Name: "tag", Path: p})
+	}
+	if p := os.Getenv("EDGEFLOW_CLOUDCORE_LOGSTORE_FILE"); p != "" {
+		drSources = append(drSources, drstore.Source{Name: "logstore", Path: p})
+	}
+	drStore := drstore.New(drDir, drSources, envDRKeep())
+	registerDRAPIs(apiMux, drStore)
+	log.Infof("[dr] 治理面备份管理面就绪（dir=%s；源 %d 个；保留 %d 份）", drDir, len(drSources), envDRKeep())
 
 	var apiHandler http.Handler = apiMux
 	if rbacOn && rbacUsers != nil {

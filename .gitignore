@@ -46,3 +46,6 @@ vendor/
 /cloudcore
 /edgecore
 /keadm
+
+# e2e 运行时残留（etcd 数据目录等，v0.52.0 清理 61MB WAL 误提交）
+/tests/e2e/data/

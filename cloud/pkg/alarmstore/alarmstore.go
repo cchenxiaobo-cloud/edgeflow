@@ -255,6 +255,29 @@ func (s *Store) Count() int {
 	return len(s.alarms)
 }
 
+// CountByNodeState 返回「节点 × 状态」告警计数的一致快照（v0.52.0 规模化，
+// spec 0025 裁决 2）：单锁单遍 O(n)（n=内存告警条数），无 List 的
+// alarmScanLimit 截断——hierarchyview 告警聚合优先走本方法，消除超限偏差
+// （KI §52#1 修复）。nodeID 为空串的告警不返回（与层级聚合口径一致：
+// 无归属告警不入区域聚合）。
+func (s *Store) CountByNodeState() map[string]map[string]int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]map[string]int64, len(s.alarms))
+	for _, a := range s.alarms {
+		if a.NodeID == "" {
+			continue
+		}
+		byState, ok := out[a.NodeID]
+		if !ok {
+			byState = map[string]int64{}
+			out[a.NodeID] = byState
+		}
+		byState[a.State]++
+	}
+	return out
+}
+
 // putKV etcd 写穿（kv=nil 跳过；调用方持锁）。
 func (s *Store) putKV(ctx context.Context, a alarm.Alarm) error {
 	if s.kv == nil {

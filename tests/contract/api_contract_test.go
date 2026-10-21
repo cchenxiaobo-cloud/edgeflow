@@ -331,6 +331,14 @@ func TestContractRoutesRegisteredAtRuntime(t *testing.T) {
 			// 判别 3：各端点按契约期望的精确状态码
 			hasParam := strings.Contains(ep.Path, "{")
 			switch {
+			case strings.HasPrefix(ep.Path, "/api/v1/dr"):
+				// v0.52.0 灾备备份：默认探测环境未配置 DR_DIR → 未启用语义
+				//（GET 清单 200 {enabled:false} / POST 与详情 503）；显式启用
+				// 时 200/404 亦合法。
+				if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusServiceUnavailable &&
+					resp.StatusCode != http.StatusNotFound {
+					t.Errorf("%s %s → %d，期望 200/404/503（dr 端点注册语义）", ep.Method, ep.Path, resp.StatusCode)
+				}
 			case strings.HasPrefix(ep.Path, "/api/v1/regions"),
 				strings.HasPrefix(ep.Path, "/api/v1/tags"),
 				strings.HasPrefix(ep.Path, "/api/v1/governance"),
@@ -443,7 +451,7 @@ type registeredRoute struct {
 func registeredRoutesFromSource(t *testing.T) []registeredRoute {
 	t.Helper()
 	var routes []registeredRoute
-	for _, file := range []string{"main.go", "model_api.go", "rules_api.go", "uplink_api.go", "alarm_api.go", "setpoint_api.go", "video_api.go", "media_stream_api.go", "hardsample_api.go", "model_scenes_api.go", "v0460_rbac_api.go", "v0470_app_api.go", "v0480_log_api.go", "v0490_term_api.go", "v0500_governance_api.go", "v0510_hierarchy_api.go"} {
+	for _, file := range []string{"main.go", "model_api.go", "rules_api.go", "uplink_api.go", "alarm_api.go", "setpoint_api.go", "video_api.go", "media_stream_api.go", "hardsample_api.go", "model_scenes_api.go", "v0460_rbac_api.go", "v0470_app_api.go", "v0480_log_api.go", "v0490_term_api.go", "v0500_governance_api.go", "v0510_hierarchy_api.go", "v0520_dr_api.go"} {
 		paths := scanRouteFile(t, filepath.Join(repoRoot(t), "cmd", "cloudcore", file))
 		routes = append(routes, paths...)
 	}

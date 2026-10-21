@@ -148,6 +148,9 @@
 | GET | `/api/v1/hierarchy/alarms` | **区域×状态告警计数（v0.51.0）** | 200 |
 | GET | `/api/v1/hierarchy/regions/{id}/policy` | **区域策略读取（v0.51.0：未设置返回 null）** | 200/404 |
 | PUT | `/api/v1/hierarchy/regions/{id}/policy` | **区域策略 upsert/清除（v0.51.0：≤4KB JSON 对象；null/{} 清除）** | 200/400/404 |
+| POST | `/api/v1/dr/backups` | **创建治理面快照备份（v0.52.0：DR_DIR 未启用 503）** | 200/503 |
+| GET | `/api/v1/dr/backups` | **备份清单（v0.52.0：{enabled,backups}）** | 200 |
+| GET | `/api/v1/dr/backups/{id}` | **备份详情（v0.52.0：?verify=true 触发 sha256 复核）** | 200/404/503 |
 
 ### 1.2 错误码表（统一约定）
 

@@ -158,6 +158,9 @@
 | 117 | GET | `/api/v1/hierarchy/alarms` | 区域告警计数 | v0.51.0 |
 | 118 | GET | `/api/v1/hierarchy/regions/{id}/policy` | 区域策略读取 | v0.51.0 |
 | 119 | PUT | `/api/v1/hierarchy/regions/{id}/policy` | 区域策略 upsert/清除 | v0.51.0 |
+| 120 | POST | `/api/v1/dr/backups` | 创建治理面快照备份 | v0.52.0 |
+| 121 | GET | `/api/v1/dr/backups` | 备份清单 | v0.52.0 |
+| 122 | GET | `/api/v1/dr/backups/{id}` | 备份详情（?verify=true 复核） | v0.52.0 |
 
 > 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行、v0.43.0 视频管理面行、v0.44.0 流媒体分发行）。
 
@@ -363,6 +366,16 @@
 | 消息 | 19 不变 | 纯云端管理面（聚合读 regionstore/registry/alarmstore） |
 | 路径裁决 | 中心直管 + 区域协同能力面（replan 路径 3 增强） | 多实例联邦待 v0.52 规模数据后立项评估 |
 | regionstore 扩展 | Region.Policy json.RawMessage（≤4KB；旧快照 Load 默认 nil） | 快照 schema 只增字段，向后兼容 |
+
+### v0.52.0 兼容性增量（规模·韧性·基线，spec 0025）
+
+| 项 | 内容 | 兼容性 |
+|---|---|---|
+| 新增端点 3（119→122） | POST /api/v1/dr/backups、GET /api/v1/dr/backups、GET /api/v1/dr/backups/{id}（?verify=true） | 只增不改：全新 /api/v1/dr/* 命名空间；既有 119 端点零改动 |
+| RBAC | read=viewer+ / write=operator+；无 DELETE 面（轮转自动保留 DR_KEEP 份） | 对齐 v0.46 矩阵只增不改 |
+| 未启用语义 | EDGEFLOW_CLOUDCORE_DR_DIR 未配置：GET 清单 200 {enabled:false}；POST/详情 503 | 显式语义，不误报错误 |
+| 告警聚合 | hierarchyview 优先 CountByNodeState（无 2000 截断；KI §52#1 修复）；旧 AlarmSource 替身回退 List 路径 | API 响应结构零改动 |
+| 消息 | 19 不变 | 纯云端管理面 |
 
 ### v0.48.0 兼容性增量（日志链路，spec 0021）
 

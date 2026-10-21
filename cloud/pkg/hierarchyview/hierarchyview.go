@@ -6,8 +6,9 @@
 //     Offline=离线）——本包不自建心跳窗口。
 //   - 递归聚合：子区域计数并入父（自底向上）；单父无环由 regionstore 保证
 //     （创建/移动防环 + Load 断链）。
-//   - 告警计数：alarmstore List 全量拉取（limit 2000）后按节点归属区域聚——
-//     超 limit 的偏差登记 KI；活跃 = 非 closed。
+//   - 告警计数：v0.52 起优先 alarmstore.CountByNodeState（单锁一致计数快照，
+//     无上限——KI §52#1 修复）；未实现 AlarmCountSource 的数据源回退 List
+//     全量拉取（limit 2000，超限偏差）。活跃 = 非 closed。
 //   - 性能口径：实时聚合（假设 ≤ 数百节点/≤2000 告警）；缓存化留 v0.52 规模版。
 //
 // 并发模型：本包无自身状态（纯函数式聚合），各数据源自带锁；单次调用内
@@ -30,6 +31,14 @@ type NodeSource interface {
 // AlarmSource 是告警数据源（alarmstore 抽象，测试可替身）。
 type AlarmSource interface {
 	List(nodeID, state, severity string, limit int) []alarm.Alarm
+}
+
+// AlarmCountSource 是无上限告警计数源（v0.52.0 规模化，spec 0025 裁决 2）：
+// alarmstore.CountByNodeState 的抽象。实现该接口的数据源优先于 List 路径被
+// Summary/AlarmStats 使用——单锁一致计数快照，消除 alarmScanLimit 截断偏差
+// （KI §52#1 修复）；测试替身可不实现（自动回退 List 既有路径，行为不变）。
+type AlarmCountSource interface {
+	CountByNodeState() map[string]map[string]int64 // nodeID → state → count（nodeID 空串条目不返回）
 }
 
 // View 是层级聚合视图（无状态，依赖注入）。
@@ -105,17 +114,37 @@ func (v *View) Summary() *RegionSummary {
 		}
 	}
 
-	// own 告警计数（活跃=非 closed）
-	for _, a := range v.alarms.List("", "", "", alarmScanLimit) {
-		if a.NodeID == "" {
-			continue
+	// own 告警计数（活跃=非 closed）。v0.52 规模化（spec 0025 裁决 2）：优先
+	// CountByNodeState 单锁一致计数快照（无 alarmScanLimit 截断，KI §52#1 修复）；
+	// 未实现该接口的数据源（旧替身）回退 List 既有路径。
+	if counts, ok := v.alarms.(AlarmCountSource); ok {
+		for nodeID, byState := range counts.CountByNodeState() {
+			rid, ok := assign[nodeID]
+			if !ok {
+				continue
+			}
+			s, ok := byID[rid]
+			if !ok {
+				continue
+			}
+			for st, n := range byState {
+				if st != alarm.StateClosed {
+					s.AlarmActiveCount += int(n)
+				}
+			}
 		}
-		rid, ok := assign[a.NodeID]
-		if !ok {
-			continue
-		}
-		if s, ok := byID[rid]; ok && a.State != alarm.StateClosed {
-			s.AlarmActiveCount++
+	} else {
+		for _, a := range v.alarms.List("", "", "", alarmScanLimit) {
+			if a.NodeID == "" {
+				continue
+			}
+			rid, ok := assign[a.NodeID]
+			if !ok {
+				continue
+			}
+			if s, ok := byID[rid]; ok && a.State != alarm.StateClosed {
+				s.AlarmActiveCount++
+			}
 		}
 	}
 
@@ -235,14 +264,41 @@ func (v *View) AlarmStats() *AlarmStatsResponse {
 			s.Closed++
 		}
 	}
-	for _, a := range v.alarms.List("", "", "", alarmScanLimit) {
-		if a.NodeID == "" {
-			continue
+	// 桶判定：节点归属区域；未归属/未知区域 → unassigned 独立桶。
+	bucket := func(nodeID string) *RegionAlarmStat {
+		if rid, ok := assign[nodeID]; ok {
+			return get(rid)
 		}
-		if rid, ok := assign[a.NodeID]; ok {
-			bump(get(rid), a.State)
-		} else {
-			bump(unassigned, a.State)
+		return unassigned
+	}
+	// v0.52 规模化（spec 0025 裁决 2）：优先 CountByNodeState 单锁计数快照
+	// （无 alarmScanLimit 截断）；未实现该接口的数据源（旧替身）回退 List 路径。
+	if cs, ok := v.alarms.(AlarmCountSource); ok {
+		bumpN := func(s *RegionAlarmStat, st string, n int64) {
+			s.Total += int(n)
+			switch st {
+			case alarm.StateRaised:
+				s.Raised += int(n)
+			case alarm.StateAcked:
+				s.Acked += int(n)
+			case alarm.StateAssigned:
+				s.Assigned += int(n)
+			case alarm.StateClosed:
+				s.Closed += int(n)
+			}
+		}
+		for nodeID, byState := range cs.CountByNodeState() {
+			target := bucket(nodeID)
+			for st, n := range byState {
+				bumpN(target, st, n)
+			}
+		}
+	} else {
+		for _, a := range v.alarms.List("", "", "", alarmScanLimit) {
+			if a.NodeID == "" {
+				continue
+			}
+			bump(bucket(a.NodeID), a.State)
 		}
 	}
 	resp := &AlarmStatsResponse{Unassigned: *unassigned, Regions: []RegionAlarmStat{}}

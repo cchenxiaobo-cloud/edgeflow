@@ -46,6 +46,10 @@ build:
 test:
 	go test -race -cover ./...
 
+## bench-baseline: 采集管道性能基线刷新（NFR-04；结果追加 docs/PERFORMANCE-BASELINE.md）
+bench-baseline:
+	bash scripts/bench-baseline.sh
+
 ## run: 本地运行 cloudcore
 run:
 	go run ./cmd/cloudcore

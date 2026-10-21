@@ -872,3 +872,10 @@ spec：specs/0018-model-sample-inference/spec.md（发展规划 v0.45 · G23+G25
 - **交付**：Options.ResendInterval/MaxResends（opt-in，默认禁用逐字节兼容）+ resendLoop 三路径（QoS1/QoS2-phase1 DUP=1 重发 PUBLISH、phase2 重发 PUBREL）+ errAckTimeout 哨兵 + SUBACK 语义不变（waitAck 拆分 waitAckFor）。
 - **设计要点**：断连/关闭立即返回不重发；额度耗尽返回 ack timeout（错误文本形态不变）；总尝试 ≤ 1+MaxResends（≤0 默认 3）。
 - **承接**：生产装配面按需接线（env 化留需时立项）；broker 侧下行重发不在库范围（spec 0028 裁决 6）。
+
+### §52 v0.56.0 — 审计台账查询面（已交付 2026-10-21）
+
+- **范围**：审计台账一等 API 资产（WBS 7.5 查询面收口）；纯只读版本。
+- **交付**：audit.Ledger Query/Stats（文件扫描 + Ts 降序分页 + 聚合桶）+ API 2 端点（128→130，viewer+）+ 单测 3 例 + e2e 三段（真请求审计→查询过滤→聚合）。
+- **设计要点**：记录面（Middleware/Record）零改动；损坏行跳过不毒化；无写面/无 DELETE（追加写不可变 + retention 30 天既有语义）；量级口径 KB~MB 级文件扫描成立。
+- **承接**：内存索引/导出/跨轮转查询登记非目标（spec 0029 裁决 6），量级实测后再立项。

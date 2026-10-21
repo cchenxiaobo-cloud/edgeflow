@@ -858,3 +858,10 @@ spec：specs/0018-model-sample-inference/spec.md（发展规划 v0.45 · G23+G25
 - **交付**：forwardstore 包（规则+送达台账+投递器）+ alarmstore 迁移挂点（SetTransitionHook 锁外通知）+ 规则 API 6 端点（122→128，首个 DELETE=admin 面，脱敏视图）+ 真告警全链 e2e 五段（raised 投递 + HMAC 签名校验 + ack/assign/close 生命周期 + 台账 + RBAC）。
 - **设计要点**：投递异步（每规则一 goroutine，panic 兜底）；HMAC-SHA256 签名头；重试 ≤3 退避 500ms/2s；台账环形 100 随规则删；快照 env 可选（EDGEFLOW_CLOUDCORE_FORWARD_FILE）。
 - **承接**：三场景闭环（v0.54）以本出口做「告警通知外部系统」；MQTT/对象存储 sink 与数据面转发登记非目标（spec 0026 裁决 7）。
+
+### §50 v0.54.0 — 三场景端到端验收（已交付 2026-10-21）
+
+- **范围**：G29 三场景主链路的平台级验收（真实进程+RBAC）+ R1 复核处置。
+- **交付**：三条场景 e2e（A 告警通知闭环：真告警→区域汇聚→webhook 签名校验；B 维护预警闭环：预警→ack→assign 工单→close 区域矩阵三态；C 优化设定值闭环：建单审批→applied 回告/拒绝留痕）+ docs/SCENARIO-E2E.md 验收文档。
+- **设计要点**：零 API 变更（契约 128 维持、消息 19 不变）；视频源用告警事件等价（视频链路已有独立 e2e）；R1 处置：hmacHex 补齐/台账 ID 随机化/drstore 自检告警/DR_KEEP 措辞对齐，台账写放大登记 KI §55。
+- **承接**：通知渠道扩展与外部工单集成由业务侧基于转发出口扩展（spec 0027 非目标）。

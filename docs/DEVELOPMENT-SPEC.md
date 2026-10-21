@@ -148,3 +148,4 @@ EdgeFlow 是云边协同的边缘计算平台：云端控制面（cloudcore + et
 
 > 本规范 v1.0.0 由 v0.10.0–v0.27.0 共 20+ 发布轮实践沉淀；下一次修订预期在 v0.28.x 分段计划稳定后（补充 FR-S1-04 全段验收标准）。
 | v0.50.0 | 2026-10-20 | 区域层与标签治理（G03+G04，spec 0023）：regionstore/tagstore（JSON 快照）+ 治理 API 7 端点（107→114）+ e2e 六段；RBAC 对齐 v0.46（DELETE=admin）；纯云端管理面消息 19 不变 | spec 0023 / RN-v0500 / KI §51 |
+| v0.51.0 | 2026-10-21 | 区域协同层（G01，spec 0024）：hierarchyview 聚合引擎 + 协同 API 5 端点（114→119，无 DELETE 面）+ 真节点 e2e 六段 + DR-ASSESSMENT 灾备评估（GB/T 20988 对标）；纯云端管理面消息 19 不变 | spec 0024 / RN-v0510 / DR-ASSESSMENT / KI §52 |

@@ -851,3 +851,10 @@ spec：specs/0018-model-sample-inference/spec.md（发展规划 v0.45 · G23+G25
 - **交付**：alarmstore.CountByNodeState（告警聚合无 2000 截断，KI §52#1/#4 修复）+ drstore 备份管理面（API 3 端点 119→122，manifest sha256+自检+轮转）+ scripts/dr-drill.sh + docs/DR-RUNBOOK.md（演练 SOP）+ docs/CONFIG-BASELINE.md（轻/标/重三档强制项）+ bench-baseline 机制（Makefile + PERFORMANCE-BASELINE 分节追加）+ tests/e2e/data 61MB WAL 清理。
 - **设计要点**：AlarmCountSource 可选接口（旧替身回退 List 路径，只增不改）；无 API 恢复面（防误操作放大，恢复走 SOP）；未启用语义显式（GET enabled=false / POST·详情 503）；id 字符集白名单防路径穿越。
 - **承接**：压测/长跑/信创实测结果待环境，机制就绪如实登记（spec 0025 非目标）；DR 差距 #1/#2 的 5 级路径（多实例联邦）待规模数据后专项立项。
+
+### §49 v0.53.0 — 数据转发出口（已交付 2026-10-21）
+
+- **范围**：G18 对接面首期——告警事件 webhook 转发出口（数据面转发留后续）。
+- **交付**：forwardstore 包（规则+送达台账+投递器）+ alarmstore 迁移挂点（SetTransitionHook 锁外通知）+ 规则 API 6 端点（122→128，首个 DELETE=admin 面，脱敏视图）+ 真告警全链 e2e 五段（raised 投递 + HMAC 签名校验 + ack/assign/close 生命周期 + 台账 + RBAC）。
+- **设计要点**：投递异步（每规则一 goroutine，panic 兜底）；HMAC-SHA256 签名头；重试 ≤3 退避 500ms/2s；台账环形 100 随规则删；快照 env 可选（EDGEFLOW_CLOUDCORE_FORWARD_FILE）。
+- **承接**：三场景闭环（v0.54）以本出口做「告警通知外部系统」；MQTT/对象存储 sink 与数据面转发登记非目标（spec 0026 裁决 7）。

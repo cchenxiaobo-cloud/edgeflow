@@ -150,3 +150,4 @@ EdgeFlow 是云边协同的边缘计算平台：云端控制面（cloudcore + et
 | v0.50.0 | 2026-10-20 | 区域层与标签治理（G03+G04，spec 0023）：regionstore/tagstore（JSON 快照）+ 治理 API 7 端点（107→114）+ e2e 六段；RBAC 对齐 v0.46（DELETE=admin）；纯云端管理面消息 19 不变 | spec 0023 / RN-v0500 / KI §51 |
 | v0.51.0 | 2026-10-21 | 区域协同层（G01，spec 0024）：hierarchyview 聚合引擎 + 协同 API 5 端点（114→119，无 DELETE 面）+ 真节点 e2e 六段 + DR-ASSESSMENT 灾备评估（GB/T 20988 对标）；纯云端管理面消息 19 不变 | spec 0024 / RN-v0510 / DR-ASSESSMENT / KI §52 |
 | v0.52.0 | 2026-10-21 | 规模·韧性·基线（G05 承接，spec 0025）：alarmstore.CountByNodeState + hierarchyview AlarmCountSource（聚合无截断，KI §52#1/#4 修复）+ drstore 备份管理面（API 3 端点 119→122）+ DR-RUNBOOK/CONFIG-BASELINE + bench-baseline 机制；纯云端管理面消息 19 不变 | spec 0025 / RN-v0520 / DR-RUNBOOK / CONFIG-BASELINE / KI §53 |
+| v0.53.0 | 2026-10-21 | 数据转发出口（G18 起点，spec 0026）：forwardstore webhook 转发（alarmstore 迁移挂点 + HMAC 签名 + 3 次重试 + 送达台账环形 100）+ 规则 API 6 端点（122→128，首个 DELETE=admin 面，脱敏视图）；纯云端管理面消息 19 不变 | spec 0026 / RN-v0530 / KI §54 |

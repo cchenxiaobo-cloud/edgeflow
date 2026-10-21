@@ -89,7 +89,7 @@ func writeDRErr(w http.ResponseWriter, err error) {
 	}
 }
 
-// envDRKeep 读取备份保留份数（DR_KEEP；默认 7，钳位 [1,100]）。
+// envDRKeep 读取备份保留份数（DR_KEEP；≤0 → 默认 7；>100 → 收敛 100）。
 func envDRKeep() int {
 	n, _ := strconv.Atoi(os.Getenv("EDGEFLOW_CLOUDCORE_DR_KEEP"))
 	if n <= 0 {

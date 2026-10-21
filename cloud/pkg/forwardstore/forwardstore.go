@@ -334,7 +334,7 @@ func (s *Store) deliver(rule Rule, event string, a alarm.Alarm, at int64) {
 		Message: a.Message, At: at,
 	})
 	if err != nil { // 不可达（纯 map/slice 结构）；防御性记失败
-		s.recordDelivery(Delivery{ID: newSeqID(at, rule.ID), RuleID: rule.ID, Event: event,
+		s.recordDelivery(Delivery{ID: newSeqID(at), RuleID: rule.ID, Event: event,
 			AlarmID: a.AlarmID, NodeID: a.NodeID, At: at, Status: "failed", Error: err.Error()})
 		return
 	}
@@ -361,7 +361,7 @@ func (s *Store) deliver(rule Rule, event string, a alarm.Alarm, at int64) {
 			_ = resp.Body.Close()
 			lastCode = resp.StatusCode
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				s.recordDelivery(Delivery{ID: newSeqID(at, rule.ID), RuleID: rule.ID, Event: event,
+				s.recordDelivery(Delivery{ID: newSeqID(at), RuleID: rule.ID, Event: event,
 					AlarmID: a.AlarmID, NodeID: a.NodeID, Severity: a.Severity,
 					At: at, Attempts: attempts, Status: "delivered",
 					RespCode: lastCode, DurationMs: time.Since(start).Milliseconds()})
@@ -375,7 +375,7 @@ func (s *Store) deliver(rule Rule, event string, a alarm.Alarm, at int64) {
 			time.Sleep(retryBackoff[i])
 		}
 	}
-	s.recordDelivery(Delivery{ID: newSeqID(at, rule.ID), RuleID: rule.ID, Event: event,
+	s.recordDelivery(Delivery{ID: newSeqID(at), RuleID: rule.ID, Event: event,
 		AlarmID: a.AlarmID, NodeID: a.NodeID, Severity: a.Severity,
 		At: at, Attempts: attempts, Status: "failed",
 		RespCode: lastCode, Error: lastErr, DurationMs: time.Since(start).Milliseconds()})
@@ -482,11 +482,12 @@ func randID(prefix string) (string, error) {
 	return prefix + "-" + hex.EncodeToString(buf[:]), nil
 }
 
-// newSeqID 生成台账记录 id（触发毫秒 + 规则前 4 字节；保证同规则内可读唯一性）。
-func newSeqID(atMs int64, ruleID string) string {
-	short := ruleID
-	if len(short) > 4 {
-		short = short[:4]
+// newSeqID 生成台账记录 id：dl-<触发毫秒>-<4 字节随机 hex>
+// （同毫秒并发投递由随机段规避重号；ID 不作索引，仅审计可读）。
+func newSeqID(atMs int64) string {
+	var buf [4]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return fmt.Sprintf("dl-%d", atMs) // 随机源退化：ID 可读性降级不阻断投递
 	}
-	return fmt.Sprintf("dl-%d-%s", atMs, short)
+	return fmt.Sprintf("dl-%d-%s", atMs, hex.EncodeToString(buf[:]))
 }

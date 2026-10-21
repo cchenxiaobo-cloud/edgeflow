@@ -30,6 +30,8 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+
+	"edgeflow/pkg/log"
 )
 
 // Source 描述一个被备份的快照文件（Name=语义名，Path=磁盘路径）。
@@ -127,6 +129,9 @@ func (s *Store) Create(trigger string, nowMs int64) (*Backup, error) {
 	}
 	if err := s.verifyLocked(b); err != nil {
 		return nil, err
+	}
+	if !b.Verified {
+		log.Warnf("[dr] 备份 %s 自检未通过（副本与 manifest 不一致，磁盘/外部干预可疑，请立即复核）", b.ID)
 	}
 	if err := s.writeManifest(bdir, b); err != nil {
 		return nil, err

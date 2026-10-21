@@ -20,6 +20,9 @@ var ErrClientClosed = errors.New("mqtt: client closed or disconnected")
 // production default stays 10s.
 var ackTimeout = ackTimeoutDefault
 
+// errAckTimeout 是确认等待超时哨兵（waitAck 包装携带时长；resendLoop 判别用）。
+var errAckTimeout = errors.New("mqtt: ack timeout")
+
 const (
 	ackTimeoutDefault = 10 * time.Second
 )
@@ -96,6 +99,16 @@ type Options struct {
 	// 生效）：>0 时服务端延迟发布，期间同会话重连取消。3.1.1 必须为
 	// 0（非 0 时 Dial 报错——3.1.1 无 Will Properties）。
 	WillDelaySec uint32
+
+	// ResendInterval 是 QoS>0 出站确认的单轮等待与重发间隔（v0.55.0，
+	// opt-in；默认 0 = 禁用重发，保持单轮 ackTimeout 的逐字节现状）。
+	// 启用后：PUBLISH/PUBREL 写出后按本间隔轮询确认，超时即 DUP=1 重发
+	//（QoS2 phase2 重发 PUBREL，无 DUP 位），总计 ≤ 1+MaxResends 次；
+	// 额度耗尽仍无确认 → publish 返回 ack timeout。断连/关闭立即返回。
+	ResendInterval time.Duration
+
+	// MaxResends 是重发上限（ResendInterval>0 时生效；≤0 取默认 3）。
+	MaxResends int
 }
 
 // Handler is invoked for every inbound PUBLISH whose topic matches one of the
@@ -133,6 +146,10 @@ type Client struct {
 	persistDir string // QoS2 record directory ("" = disabled, v0.26.0 behavior)
 
 	enableQoS2 bool // gate for the QoS2 code paths (Options.EnableQoS2)
+
+	// ---- 出站重发（v0.55.0，spec 0028 B1/B2）----
+	resendInterval time.Duration // 0 = 禁用（单轮 ackTimeout 既有行为）
+	maxResends     int
 
 	// ---- MQTT 5.0（v0.30.0，阶段一）----
 	v5        bool          // 协商结果：CONNECT 以 v5 发出
@@ -242,6 +259,8 @@ func Dial(addr string, opts Options) (*Client, error) {
 		return nil, fmt.Errorf("mqtt: send CONNECT: %w", err)
 	}
 	c.v5 = opts.ProtocolVersion5
+	c.resendInterval = opts.ResendInterval
+	c.maxResends = opts.MaxResends
 	if opts.PublishTopicAlias {
 		c.aliasMap = make(map[string]uint16)
 	}
@@ -518,7 +537,10 @@ func (c *Client) publish(topic string, qos byte, payload []byte, retain bool) er
 		return err
 	}
 	if qos == 1 {
-		ack, err := c.waitAck(ch)
+		ack, err := c.resendLoop(ch, func() error {
+			pk.Dup = 1
+			return c.write(pk)
+		})
 		if err != nil {
 			return err
 		}
@@ -542,7 +564,10 @@ func (c *Client) publish(topic string, qos byte, payload []byte, retain bool) er
 	// buffered channel (registered once for this packet id): the waiter
 	// drains the PUBREC delivery before blocking again, so the PUBCOMP
 	// from resolveAck lands in the same slot.
-	rec, err := c.waitAck(ch)
+	rec, err := c.resendLoop(ch, func() error {
+		pk.Dup = 1
+		return c.write(pk)
+	})
 	if err != nil {
 		return err
 	}
@@ -561,7 +586,9 @@ func (c *Client) publish(topic string, qos byte, payload []byte, retain bool) er
 	if err := c.write(rel); err != nil {
 		return err
 	}
-	comp, err := c.waitAck(ch)
+	comp, err := c.resendLoop(ch, func() error {
+		return c.write(rel)
+	})
 	if err != nil {
 		return err
 	}
@@ -739,12 +766,59 @@ func (c *Client) resolveAck(id uint16, p Packet) {
 
 // waitAck blocks for the ack, the ack timeout, or client shutdown.
 func (c *Client) waitAck(ch chan Packet) (Packet, error) {
+	return c.waitAckFor(ch, ackTimeout)
+}
+
+// waitAckFor 按指定时长等待指定确认通道（waitAck 用 ackTimeout；resendLoop 用重发间隔）。
+func (c *Client) waitAckFor(ch chan Packet, d time.Duration) (Packet, error) {
 	select {
 	case p := <-ch:
 		return p, nil
-	case <-time.After(ackTimeout):
-		return nil, fmt.Errorf("mqtt: ack timeout after %s", ackTimeout)
+	case <-time.After(d):
+		return nil, fmt.Errorf("%w after %s", errAckTimeout, d)
 	case <-c.done:
 		return nil, ErrClientClosed
+	}
+}
+
+// ackWaitDur 出站确认单轮等待时长（重发启用 = ResendInterval；禁用 = ackTimeout）。
+// 仅作用于 publish 确认路径（Subscribe 的 SUBACK 语义不变，仍走 ackTimeout）。
+func (c *Client) ackWaitDur() time.Duration {
+	if c.resendInterval > 0 {
+		return c.resendInterval
+	}
+	return ackTimeout
+}
+
+// resendAttempts 总尝试次数（1 首发 + 重发额度；禁用 = 1）。
+func (c *Client) resendAttempts() int {
+	if c.resendInterval > 0 {
+		n := c.maxResends
+		if n <= 0 {
+			n = 3
+		}
+		return 1 + n
+	}
+	return 1
+}
+
+// resendLoop 通用确认等待循环（v0.55.0，spec 0028 B1/B2）：每轮 waitAck；
+// 超时且仍有额度时调 resend 重发（QoS1/2-phase1 = DUP=1 重发 PUBLISH，
+// QoS2-phase2 = 重发 PUBREL）；断连/关闭（ErrClientClosed）立即返回；
+// 额度耗尽返回最后一次 waitAck 错误。禁用重发时 attempts=1，
+// 逐字节等价既有单轮 waitAck 行为。
+func (c *Client) resendLoop(ch chan Packet, resend func() error) (Packet, error) {
+	attempts := c.resendAttempts()
+	for attempt := 1; ; attempt++ {
+		ack, err := c.waitAckFor(ch, c.ackWaitDur())
+		if err == nil {
+			return ack, nil
+		}
+		if !errors.Is(err, errAckTimeout) || attempt >= attempts {
+			return nil, err
+		}
+		if rerr := resend(); rerr != nil {
+			return nil, rerr
+		}
 	}
 }

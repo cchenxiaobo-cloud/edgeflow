@@ -35,6 +35,7 @@ import (
 	"edgeflow/cloud/pkg/devicestatus"
 	"edgeflow/cloud/pkg/drstore"
 	"edgeflow/cloud/pkg/etcdstore"
+	"edgeflow/cloud/pkg/forwardstore"
 	"edgeflow/cloud/pkg/hierarchyview"
 	"edgeflow/cloud/pkg/logstore"
 	"edgeflow/cloud/pkg/mediastore"
@@ -968,6 +969,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 	drStore := drstore.New(drDir, drSources, envDRKeep())
 	registerDRAPIs(apiMux, drStore)
 	log.Infof("[dr] 治理面备份管理面就绪（dir=%s；源 %d 个；保留 %d 份）", drDir, len(drSources), envDRKeep())
+
+	// v0.53.0 数据转发出口（spec 0026，G18）：告警事件 webhook 转发。
+	// 挂点：alarmstore 状态迁移 → Dispatch（异步投递，锁外）；快照 env 可选空=内存。
+	forwardStore := forwardstore.New(os.Getenv("EDGEFLOW_CLOUDCORE_FORWARD_FILE"))
+	if err := forwardStore.Load(); err != nil {
+		log.Warnf("[forwardstore] 启动恢复失败（以空规则继续）: %v", err)
+	}
+	alarmStore.SetTransitionHook(forwardStore.Dispatch)
+	registerForwardsAPIs(apiMux, forwardStore)
+	log.Infof("[forwardstore] 数据转发出口就绪（规则 %d 条；快照=%s）", len(forwardStore.List()), os.Getenv("EDGEFLOW_CLOUDCORE_FORWARD_FILE"))
 
 	var apiHandler http.Handler = apiMux
 	if rbacOn && rbacUsers != nil {

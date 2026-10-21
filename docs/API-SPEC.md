@@ -151,6 +151,12 @@
 | POST | `/api/v1/dr/backups` | **创建治理面快照备份（v0.52.0：DR_DIR 未启用 503）** | 200/503 |
 | GET | `/api/v1/dr/backups` | **备份清单（v0.52.0：{enabled,backups}）** | 200 |
 | GET | `/api/v1/dr/backups/{id}` | **备份详情（v0.52.0：?verify=true 触发 sha256 复核）** | 200/404/503 |
+| GET | `/api/v1/forwards` | **转发规则清单（v0.53.0：脱敏视图 hasSecret）** | 200 |
+| POST | `/api/v1/forwards` | **创建转发规则（v0.53.0：URL/事件子集校验）** | 201/400 |
+| GET | `/api/v1/forwards/{id}` | **转发规则详情（v0.53.0）** | 200/404 |
+| PUT | `/api/v1/forwards/{id}` | **部分更新规则（v0.53.0：nil 字段保留；secret 空串清除）** | 200/400/404 |
+| DELETE | `/api/v1/forwards/{id}` | **删除规则（v0.53.0：delete=admin；台账随规则删）** | 200/404 |
+| GET | `/api/v1/forwards/{id}/deliveries` | **送达台账（v0.53.0：新→旧，重试终态）** | 200/404 |
 
 ### 1.2 错误码表（统一约定）
 

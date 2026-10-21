@@ -57,10 +57,12 @@ func (logTicketSink) OnAssign(a alarm.Alarm) {
 
 // Store 是云端告警存储（内存索引 + etcd 写穿）。
 type Store struct {
-	mu      sync.Mutex
-	kv      etcdstore.KVStore // nil = 纯内存（测试/内嵌形态）
-	alarms  map[string]*alarm.Alarm
-	tickets TicketSink
+	mu             sync.Mutex
+	kv             etcdstore.KVStore // nil = 纯内存（测试/内嵌形态）
+	alarms         map[string]*alarm.Alarm
+	tickets        TicketSink
+	hookMu         sync.RWMutex
+	transitionHook func(event string, a alarm.Alarm) // v0.53.0 转发挂点（spec 0026）
 }
 
 // NewStore 创建告警存储；kv 允许 nil（纯内存）；tickets 允许 nil（默认日志留痕）。
@@ -104,10 +106,10 @@ func (s *Store) Upsert(ctx context.Context, a alarm.Alarm) error {
 		return fmt.Errorf("告警校验失败: %w", err)
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	existing, ok := s.alarms[a.AlarmID]
 	if ok {
 		if existing.State == alarm.StateClosed {
+			s.mu.Unlock()
 			return nil // 终态不可复活：迟到重发整体忽略（边界登记 KI §41）
 		}
 		merged := existing.Clone()
@@ -125,10 +127,20 @@ func (s *Store) Upsert(ctx context.Context, a alarm.Alarm) error {
 		a = merged
 	}
 	if err := s.putKV(ctx, a); err != nil {
+		s.mu.Unlock()
 		return err
 	}
 	cp := a
 	s.alarms[a.AlarmID] = &cp
+	// v0.53.0 转发挂点（spec 0026）：锁外通知——新告警=raised；合并路径状态前移=对应事件。
+	isNew := !ok
+	s.mu.Unlock()
+	switch {
+	case isNew:
+		s.notifyTransition("alarm."+a.State, a)
+	case a.State != existing.State:
+		s.notifyTransition("alarm."+a.State, a)
+	}
 	return nil
 }
 
@@ -166,12 +178,13 @@ func (s *Store) Close(ctx context.Context, alarmID, operator string, nowMs int64
 // transition 状态迁移（写穿成功才更新内存；非法迁移返回原值 + ErrInvalidTransition）。
 func (s *Store) transition(ctx context.Context, alarmID, to string, nowMs int64, decorate func(*alarm.Alarm)) (alarm.Alarm, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	existing, ok := s.alarms[alarmID]
 	if !ok {
+		s.mu.Unlock()
 		return alarm.Alarm{}, ErrNotFound
 	}
 	if !alarm.CanTransition(existing.State, to) {
+		s.mu.Unlock()
 		return existing.Clone(), ErrInvalidTransition
 	}
 	updated := existing.Clone()
@@ -179,9 +192,13 @@ func (s *Store) transition(ctx context.Context, alarmID, to string, nowMs int64,
 	decorate(&updated)
 	updated.UpdatedAt = nowMs
 	if err := s.putKV(ctx, updated); err != nil {
+		s.mu.Unlock()
 		return alarm.Alarm{}, err
 	}
 	s.alarms[alarmID] = &updated
+	s.mu.Unlock()
+	// v0.53.0 转发挂点（spec 0026）：锁外通知目标态事件。
+	s.notifyTransition("alarm."+to, updated)
 	return updated.Clone(), nil
 }
 
@@ -253,6 +270,26 @@ func (s *Store) Count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.alarms)
+}
+
+// SetTransitionHook 设置告警状态迁移回调（v0.53.0 spec 0026：raised/acked/
+// assigned/closed 四态事件，事件名 = "alarm."+状态名；forwardstore.Dispatch 装配）。
+// 启动期一次性装配；回调在告警锁外被调用，回调内不得再调本 store 会取 s.mu 的方法
+// （当前消费方 Dispatch 只拷贝自身规则，无此需求）。
+func (s *Store) SetTransitionHook(hook func(event string, a alarm.Alarm)) {
+	s.hookMu.Lock()
+	defer s.hookMu.Unlock()
+	s.transitionHook = hook
+}
+
+// notifyTransition 锁外通知迁移回调（无回调 = 空操作）。
+func (s *Store) notifyTransition(event string, a alarm.Alarm) {
+	s.hookMu.RLock()
+	hook := s.transitionHook
+	s.hookMu.RUnlock()
+	if hook != nil {
+		hook(event, a)
+	}
 }
 
 // CountByNodeState 返回「节点 × 状态」告警计数的一致快照（v0.52.0 规模化，

@@ -161,6 +161,12 @@
 | 120 | POST | `/api/v1/dr/backups` | 创建治理面快照备份 | v0.52.0 |
 | 121 | GET | `/api/v1/dr/backups` | 备份清单 | v0.52.0 |
 | 122 | GET | `/api/v1/dr/backups/{id}` | 备份详情（?verify=true 复核） | v0.52.0 |
+| 123 | GET | `/api/v1/forwards` | 转发规则清单 | v0.53.0 |
+| 124 | POST | `/api/v1/forwards` | 创建转发规则 | v0.53.0 |
+| 125 | GET | `/api/v1/forwards/{id}` | 转发规则详情 | v0.53.0 |
+| 126 | PUT | `/api/v1/forwards/{id}` | 部分更新规则 | v0.53.0 |
+| 127 | DELETE | `/api/v1/forwards/{id}` | 删除规则 | v0.53.0 |
+| 128 | GET | `/api/v1/forwards/{id}/deliveries` | 送达台账 | v0.53.0 |
 
 > 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行、v0.43.0 视频管理面行、v0.44.0 流媒体分发行）。
 
@@ -375,6 +381,16 @@
 | RBAC | read=viewer+ / write=operator+；无 DELETE 面（轮转自动保留 DR_KEEP 份） | 对齐 v0.46 矩阵只增不改 |
 | 未启用语义 | EDGEFLOW_CLOUDCORE_DR_DIR 未配置：GET 清单 200 {enabled:false}；POST/详情 503 | 显式语义，不误报错误 |
 | 告警聚合 | hierarchyview 优先 CountByNodeState（无 2000 截断；KI §52#1 修复）；旧 AlarmSource 替身回退 List 路径 | API 响应结构零改动 |
+| 消息 | 19 不变 | 纯云端管理面 |
+
+### v0.53.0 兼容性增量（数据转发出口，spec 0026）
+
+| 项 | 内容 | 兼容性 |
+|---|---|---|
+| 新增端点 6（122→128） | GET/POST /api/v1/forwards、GET/PUT/DELETE /api/v1/forwards/{id}、GET /api/v1/forwards/{id}/deliveries | 只增不改：全新 /api/v1/forwards/* 命名空间；既有 122 端点零改动 |
+| RBAC | read=viewer+ / write=operator+ / **delete=admin**（首个 DELETE 面，v0.46 矩阵语义落地） | middleware 全局管控 |
+| alarmstore 扩展 | SetTransitionHook 迁移回调（锁外通知；事件名 = "alarm."+状态名） | 只增不改：未设回调行为不变 |
+| Secret 语义 | 规则 HMAC-SHA256 密钥仅持久化与签名用；GET 面不回显（hasSecret 代替） | 读面脱敏 |
 | 消息 | 19 不变 | 纯云端管理面 |
 
 ### v0.48.0 兼容性增量（日志链路，spec 0021）

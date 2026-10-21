@@ -2,7 +2,7 @@
 // 「无兼容矩阵文档/测试（audit-m35 G4）」的可执行测试侧）。
 //
 // 本文件是契约的唯一事实源（source of truth）：
-//   - ContractEndpoints：cloudcore HTTP 端点契约（122 条），与
+//   - ContractEndpoints：cloudcore HTTP 端点契约（128 条），与
 //     cmd/cloudcore/main.go 的路由注册、docs/API-SPEC.md §1.1 端点总览、
 //     docs/API-COMPATIBILITY.md §1 REST API 端点矩阵逐行对应；
 //   - ContractMessageTypes：云边通道消息类型契约，直接引用
@@ -23,7 +23,7 @@ type Endpoint struct {
 	Note   string // 契约说明（与文档矩阵口径一致）
 }
 
-// ContractEndpoints 是 cloudcore HTTP 端点契约表（97 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9 + v0.39.0 上行补传可视化 2 + v0.40.0 告警中心 5 + 设定值通道 3 + v0.43.0 视频管理面 8 + v0.44.0 流媒体分发与告警片段 3 + v0.45.0 模型面扩展与困难样本 3 + v0.46.0 RBAC 与镜像凭证 7 + v0.47.0 应用目录与分发 15 + v0.48.0 日志链路 5 + v0.49.0 远程运维终端 5 + v0.50.0 区域层与标签治理 7 + v0.51.0 区域协同层 5 + v0.52.0 灾备备份管理 3）。
+// ContractEndpoints 是 cloudcore HTTP 端点契约表（97 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9 + v0.39.0 上行补传可视化 2 + v0.40.0 告警中心 5 + 设定值通道 3 + v0.43.0 视频管理面 8 + v0.44.0 流媒体分发与告警片段 3 + v0.45.0 模型面扩展与困难样本 3 + v0.46.0 RBAC 与镜像凭证 7 + v0.47.0 应用目录与分发 15 + v0.48.0 日志链路 5 + v0.49.0 远程运维终端 5 + v0.50.0 区域层与标签治理 7 + v0.51.0 区域协同层 5 + v0.52.0 灾备备份管理 3 + v0.53.0 数据转发出口 6）。
 //
 // ⚠️ 路径以 cmd/cloudcore/main.go 实际注册为准（任务提示 podsync/pod-sync
 // 存在歧义：grep 确认代码与两份文档均为 /podsync，无连字符）。
@@ -164,6 +164,13 @@ var ContractEndpoints = []Endpoint{
 	{Method: "POST", Path: "/api/v1/dr/backups", Note: "创建治理面快照备份（DR_DIR 未启用 503；write=operator+；v0.52.0）"},
 	{Method: "GET", Path: "/api/v1/dr/backups", Note: "备份清单（{enabled,backups}；read=viewer+；v0.52.0）"},
 	{Method: "GET", Path: "/api/v1/dr/backups/{id}", Note: "备份详情（?verify=true 触发 sha256 复核；read=viewer+；v0.52.0）"},
+	// ── v0.53.0 数据转发出口（spec 0026，G18 起点）──
+	{Method: "GET", Path: "/api/v1/forwards", Note: "转发规则清单（脱敏视图；read=viewer+；v0.53.0）"},
+	{Method: "POST", Path: "/api/v1/forwards", Note: "创建转发规则（write=operator+；v0.53.0）"},
+	{Method: "GET", Path: "/api/v1/forwards/{id}", Note: "转发规则详情（read=viewer+；v0.53.0）"},
+	{Method: "PUT", Path: "/api/v1/forwards/{id}", Note: "部分更新规则（write=operator+；v0.53.0）"},
+	{Method: "DELETE", Path: "/api/v1/forwards/{id}", Note: "删除规则（delete=admin 对齐 v0.46 语义；v0.53.0）"},
+	{Method: "GET", Path: "/api/v1/forwards/{id}/deliveries", Note: "送达台账（新→旧；read=viewer+；v0.53.0）"},
 }
 
 // MessageType 描述一种云边通道消息类型契约。

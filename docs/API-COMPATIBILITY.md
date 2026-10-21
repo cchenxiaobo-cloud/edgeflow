@@ -153,6 +153,11 @@
 | 112 | POST | `/api/v1/regions/{id}/nodes` | 节点批量归属 | v0.50.0 |
 | 113 | POST | `/api/v1/tags` | 打标/删标 | v0.50.0 |
 | 114 | GET | `/api/v1/governance/nodes` | 区域+标签组合查询 | v0.50.0 |
+| 115 | GET | `/api/v1/hierarchy/summary` | 三级树形汇总 | v0.51.0 |
+| 116 | GET | `/api/v1/hierarchy/regions/{id}/nodes` | 区域节点明细（含子树） | v0.51.0 |
+| 117 | GET | `/api/v1/hierarchy/alarms` | 区域告警计数 | v0.51.0 |
+| 118 | GET | `/api/v1/hierarchy/regions/{id}/policy` | 区域策略读取 | v0.51.0 |
+| 119 | PUT | `/api/v1/hierarchy/regions/{id}/policy` | 区域策略 upsert/清除 | v0.51.0 |
 
 > 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行、v0.43.0 视频管理面行、v0.44.0 流媒体分发行）。
 
@@ -348,6 +353,16 @@
 | 白名单语义 | 边侧强制（EDGEFLOW_EDGED_TERM_ALLOWLIST，默认 uname/date/uptime/df/free/ps），精确匹配不走 shell | opt-in：EDGEFLOW_EDGED_TERM=on 默认关；未启用一律 rejected 回执 |
 | 审计面 | API 层（既有 middleware）+ 命令级 JSONL（term-audit.jsonl）+ 边侧本地副账 | 审计文件新增，不影响既有 data/ 文件 |
 | exec 失败语义 | 节点离线 503（不入队不补传——运维命令时效性强）；会话态非法 409；达上限 429 | 新增语义，无既有端点行为变化 |
+
+### v0.51.0 兼容性增量（区域协同层，spec 0024）
+
+| 项 | 内容 | 兼容性 |
+|---|---|---|
+| 新增端点 5（114→119） | GET hierarchy/summary、GET hierarchy/regions/{id}/nodes（含子树）、GET hierarchy/alarms、GET/PUT hierarchy/regions/{id}/policy | 只增不改：全新 /api/v1/hierarchy/* 命名空间；既有 114 端点零改动 |
+| RBAC | read=viewer+ / write=operator+；**无 DELETE 面** | 规避 operator 无 delete 语义（v0.46 矩阵只增不改） |
+| 消息 | 19 不变 | 纯云端管理面（聚合读 regionstore/registry/alarmstore） |
+| 路径裁决 | 中心直管 + 区域协同能力面（replan 路径 3 增强） | 多实例联邦待 v0.52 规模数据后立项评估 |
+| regionstore 扩展 | Region.Policy json.RawMessage（≤4KB；旧快照 Load 默认 nil） | 快照 schema 只增字段，向后兼容 |
 
 ### v0.48.0 兼容性增量（日志链路，spec 0021）
 

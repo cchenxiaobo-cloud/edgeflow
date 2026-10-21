@@ -143,6 +143,11 @@
 | POST | `/api/v1/regions/{id}/nodes` | **节点批量归属（v0.50.0：幂等换区）** | 200 |
 | POST | `/api/v1/tags` | **打标/删标（v0.50.0：node/device/model；{k:null} 删）** | 200 |
 | GET | `/api/v1/governance/nodes` | **区域+标签组合查询（v0.50.0：AND 语义）** | 200 |
+| GET | `/api/v1/hierarchy/summary` | **三级树形汇总（v0.51.0：递归聚合 nodeCount/onlineCount/alarmActiveCount）** | 200 |
+| GET | `/api/v1/hierarchy/regions/{id}/nodes` | **区域节点明细（v0.51.0：含子树）** | 200/404 |
+| GET | `/api/v1/hierarchy/alarms` | **区域×状态告警计数（v0.51.0）** | 200 |
+| GET | `/api/v1/hierarchy/regions/{id}/policy` | **区域策略读取（v0.51.0：未设置返回 null）** | 200/404 |
+| PUT | `/api/v1/hierarchy/regions/{id}/policy` | **区域策略 upsert/清除（v0.51.0：≤4KB JSON 对象；null/{} 清除）** | 200/400/404 |
 
 ### 1.2 错误码表（统一约定）
 

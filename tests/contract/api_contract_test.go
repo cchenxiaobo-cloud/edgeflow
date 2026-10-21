@@ -333,7 +333,8 @@ func TestContractRoutesRegisteredAtRuntime(t *testing.T) {
 			switch {
 			case strings.HasPrefix(ep.Path, "/api/v1/regions"),
 				strings.HasPrefix(ep.Path, "/api/v1/tags"),
-				strings.HasPrefix(ep.Path, "/api/v1/governance"):
+				strings.HasPrefix(ep.Path, "/api/v1/governance"),
+				strings.HasPrefix(ep.Path, "/api/v1/hierarchy"):
 				// v0.50.0 治理面：regionstore/tagstore 默认启用（内存模），
 				// 200（树/查询空态）/400（POST 无体或校验拒绝）/404（占位 ID
 				// 不存在——PUT/DELETE 探测语义）均为合法注册；无下行通道依赖，
@@ -442,7 +443,7 @@ type registeredRoute struct {
 func registeredRoutesFromSource(t *testing.T) []registeredRoute {
 	t.Helper()
 	var routes []registeredRoute
-	for _, file := range []string{"main.go", "model_api.go", "rules_api.go", "uplink_api.go", "alarm_api.go", "setpoint_api.go", "video_api.go", "media_stream_api.go", "hardsample_api.go", "model_scenes_api.go", "v0460_rbac_api.go", "v0470_app_api.go", "v0480_log_api.go", "v0490_term_api.go", "v0500_governance_api.go"} {
+	for _, file := range []string{"main.go", "model_api.go", "rules_api.go", "uplink_api.go", "alarm_api.go", "setpoint_api.go", "video_api.go", "media_stream_api.go", "hardsample_api.go", "model_scenes_api.go", "v0460_rbac_api.go", "v0470_app_api.go", "v0480_log_api.go", "v0490_term_api.go", "v0500_governance_api.go", "v0510_hierarchy_api.go"} {
 		paths := scanRouteFile(t, filepath.Join(repoRoot(t), "cmd", "cloudcore", file))
 		routes = append(routes, paths...)
 	}

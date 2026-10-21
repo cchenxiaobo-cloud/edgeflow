@@ -14,6 +14,7 @@
 package regionstore
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +35,7 @@ var (
 	ErrCycle          = errors.New("移动目标在自身子树内（会成环）")
 	ErrHasChildren    = errors.New("区域存在子区域，不可删除")
 	ErrHasNodes       = errors.New("区域存在节点归属，不可删除")
+	ErrPolicyInvalid  = errors.New("policy invalid")
 	ErrParentNotFound = errors.New("父区域不存在")
 	ErrEmptyName      = errors.New("区域名不得为空")
 	ErrNameTooLong    = errors.New("区域名超长（≤128B）")
@@ -56,6 +58,9 @@ type Region struct {
 	Description string `json:"description,omitempty"`
 	CreatedAt   int64  `json:"createdAt"`
 	UpdatedAt   int64  `json:"updatedAt"`
+	// Policy 是区域级策略对象（v0.51.0，spec 0024）：≤4KB 合法 JSON 对象，
+	// 本版仅存储与视图透出（不下发执行）；旧快照无此字段 Load 默认 nil。
+	Policy json.RawMessage `json:"policy,omitempty"`
 }
 
 // RegionNode 是树形视图节点（GET /api/v1/regions 响应元素）。
@@ -275,6 +280,29 @@ func (s *Store) AllAssignedNodes() []string {
 	return out
 }
 
+// All 返回全量区域值拷贝（稳定排序；层级视图聚合用）。
+func (s *Store) All() []Region {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Region, 0, len(s.regions))
+	for id := range s.regions {
+		out = append(out, *s.regions[id])
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// Assignments 返回归属表值拷贝（nodeID → regionID；层级视图聚合用）。
+func (s *Store) Assignments() map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]string, len(s.nodeAssign))
+	for nid, rid := range s.nodeAssign {
+		out[nid] = rid
+	}
+	return out
+}
+
 // NodesInRegion 返回直接归属该区域的节点 ID（稳定排序）。
 func (s *Store) NodesInRegion(regionID string) []string {
 	s.mu.RLock()
@@ -351,6 +379,55 @@ func (s *Store) Count() int {
 }
 
 // ─── 持久化（spec 裁决 8：全量快照 temp+rename 原子写）──────────────────
+
+// SetPolicy 原子更新区域策略（v0.51.0，spec 0024）：policy 为 nil/空对象语义为
+// 清除（落 nil）；非对象（数组/标量）或超 4KB 返回 ErrPolicyInvalid。未知区域
+// ErrNotFound。快照即时持久化（持锁内写，口径同其余变更方法）。
+func (s *Store) SetPolicy(id string, policy json.RawMessage, nowMs int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.regions[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if len(policy) > 0 {
+		var probe any
+		if err := json.Unmarshal(policy, &probe); err != nil {
+			return ErrPolicyInvalid
+		}
+		if probe != nil { // JSON null = 清除语义（spec 裁决 4），放行落 nil
+			if _, isObj := probe.(map[string]any); !isObj {
+				return ErrPolicyInvalid
+			}
+			if len(policy) > 4096 {
+				return ErrPolicyInvalid
+			}
+		}
+	}
+	r.Policy = normalizePolicy(policy)
+	r.UpdatedAt = nowMs
+	s.regions[id] = r
+	s.persistLocked()
+	return nil
+}
+
+// normalizePolicy 规整策略存储形态：nil/空对象 → nil；其余对象 → 紧凑 JSON。
+func normalizePolicy(policy json.RawMessage) json.RawMessage {
+	if len(policy) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(policy))
+	dec.UseNumber() // 大整数保真（复核 P3-②）：避免 float64 静默改写 >2^53 字面量
+	var probe any
+	if err := dec.Decode(&probe); err != nil {
+		return nil
+	}
+	if obj, ok := probe.(map[string]any); !ok || len(obj) == 0 {
+		return nil
+	}
+	b, _ := json.Marshal(probe)
+	return json.RawMessage(b)
+}
 
 func (s *Store) persistLocked() {
 	if s.file == "" {

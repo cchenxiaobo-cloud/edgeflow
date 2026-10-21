@@ -2,7 +2,7 @@
 // 「无兼容矩阵文档/测试（audit-m35 G4）」的可执行测试侧）。
 //
 // 本文件是契约的唯一事实源（source of truth）：
-//   - ContractEndpoints：cloudcore HTTP 端点契约（114 条），与
+//   - ContractEndpoints：cloudcore HTTP 端点契约（119 条），与
 //     cmd/cloudcore/main.go 的路由注册、docs/API-SPEC.md §1.1 端点总览、
 //     docs/API-COMPATIBILITY.md §1 REST API 端点矩阵逐行对应；
 //   - ContractMessageTypes：云边通道消息类型契约，直接引用
@@ -154,6 +154,12 @@ var ContractEndpoints = []Endpoint{
 	{Method: "POST", Path: "/api/v1/regions/{id}/nodes", Note: "节点批量归属（幂等换区；批量 ≤64；v0.50.0）"},
 	{Method: "POST", Path: "/api/v1/tags", Note: "打标/删标（node/device/model 三类锚点；{k:v} upsert {k:null} 删；v0.50.0）"},
 	{Method: "GET", Path: "/api/v1/governance/nodes", Note: "区域+标签组合查询（region/tag/tagKey AND 语义；v0.50.0）"},
+	// ── v0.51.0 区域协同层（spec 0024，G01；纯云端管理面，消息 19 不变）──
+	{Method: "GET", Path: "/api/v1/hierarchy/summary", Note: "三级树形汇总（递归聚合；read=viewer+；v0.51.0）"},
+	{Method: "GET", Path: "/api/v1/hierarchy/regions/{id}/nodes", Note: "区域节点明细（含子树；read=viewer+；v0.51.0）"},
+	{Method: "GET", Path: "/api/v1/hierarchy/alarms", Note: "区域×状态告警计数（read=viewer+；v0.51.0）"},
+	{Method: "GET", Path: "/api/v1/hierarchy/regions/{id}/policy", Note: "区域策略读取（read=viewer+；v0.51.0）"},
+	{Method: "PUT", Path: "/api/v1/hierarchy/regions/{id}/policy", Note: "区域策略 upsert/清除（write=operator+；无 DELETE 面；v0.51.0）"},
 }
 
 // MessageType 描述一种云边通道消息类型契约。

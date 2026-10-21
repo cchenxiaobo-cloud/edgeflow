@@ -231,3 +231,43 @@ func TestV0500RegionConcurrent(t *testing.T) {
 		t.Fatalf("并发归属应全部生效: %d", got)
 	}
 }
+
+// v0.51.0 spec 0024 裁决 4：PUT null/{ } 清除语义——JSON null 必须放行（e2e
+// run3 抓到类型守卫误拒 null 的缺陷后回归锚）。
+func TestV0510PolicyNullClear(t *testing.T) {
+	s := New("")
+	r, err := s.Create("A", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetPolicy(r.ID, []byte(`{"k":"v"}`), 1); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.RegionByID(r.ID)
+	if len(got.Policy) == 0 {
+		t.Fatal("策略应已设置")
+	}
+	// JSON null 清除
+	if err := s.SetPolicy(r.ID, []byte(`null`), 2); err != nil {
+		t.Fatalf("null 清除被误拒: %v", err)
+	}
+	got, _ = s.RegionByID(r.ID)
+	if len(got.Policy) != 0 {
+		t.Fatalf("null 清除后应空: %s", got.Policy)
+	}
+	// {} 清除
+	if err := s.SetPolicy(r.ID, []byte(`{"k":"v"}`), 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetPolicy(r.ID, []byte(`{}`), 4); err != nil {
+		t.Fatalf("{} 清除被误拒: %v", err)
+	}
+	got, _ = s.RegionByID(r.ID)
+	if len(got.Policy) != 0 {
+		t.Fatalf("{} 清除后应空: %s", got.Policy)
+	}
+	// 非对象仍拒绝
+	if err := s.SetPolicy(r.ID, []byte(`[1]`), 5); err != ErrPolicyInvalid {
+		t.Fatalf("数组应 ErrPolicyInvalid: %v", err)
+	}
+}

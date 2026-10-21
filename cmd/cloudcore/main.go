@@ -34,6 +34,7 @@ import (
 	"edgeflow/cloud/pkg/cloudhub"
 	"edgeflow/cloud/pkg/devicestatus"
 	"edgeflow/cloud/pkg/etcdstore"
+	"edgeflow/cloud/pkg/hierarchyview"
 	"edgeflow/cloud/pkg/logstore"
 	"edgeflow/cloud/pkg/mediastore"
 	"edgeflow/cloud/pkg/metrics"
@@ -945,6 +946,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	regionStore := regionstore.New(os.Getenv("EDGEFLOW_CLOUDCORE_REGION_FILE"))
 	tagStore := tagstore.New(os.Getenv("EDGEFLOW_CLOUDCORE_TAG_FILE"))
 	registerGovernanceAPIs(apiMux, regionStore, tagStore)
+
+	// v0.51.0 区域协同层（spec 0024 G01）：三级视图 + 区域策略 + 告警汇聚。
+	// 中心直管架构（replan 路径 3 增强）；聚合口径见 hierarchyview 包注释。
+	registerHierarchyAPIs(apiMux, regionStore, hierarchyview.New(regionStore, nodeReg, alarmStore))
 
 	var apiHandler http.Handler = apiMux
 	if rbacOn && rbacUsers != nil {

@@ -865,3 +865,10 @@ spec：specs/0018-model-sample-inference/spec.md（发展规划 v0.45 · G23+G25
 - **交付**：三条场景 e2e（A 告警通知闭环：真告警→区域汇聚→webhook 签名校验；B 维护预警闭环：预警→ack→assign 工单→close 区域矩阵三态；C 优化设定值闭环：建单审批→applied 回告/拒绝留痕）+ docs/SCENARIO-E2E.md 验收文档。
 - **设计要点**：零 API 变更（契约 128 维持、消息 19 不变）；视频源用告警事件等价（视频链路已有独立 e2e）；R1 处置：hmacHex 补齐/台账 ID 随机化/drstore 自检告警/DR_KEEP 措辞对齐，台账写放大登记 KI §55。
 - **承接**：通知渠道扩展与外部工单集成由业务侧基于转发出口扩展（spec 0027 非目标）。
+
+### §51 v0.55.0 — MQTT 出站重发（已交付 2026-10-21）
+
+- **范围**：持续项 B1/B2——pkg/mqtt QoS>0 出站确认重发定时器（库能力，零 API 变更）；B3 销项（v0.33 已交付出站 Topic Alias）。
+- **交付**：Options.ResendInterval/MaxResends（opt-in，默认禁用逐字节兼容）+ resendLoop 三路径（QoS1/QoS2-phase1 DUP=1 重发 PUBLISH、phase2 重发 PUBREL）+ errAckTimeout 哨兵 + SUBACK 语义不变（waitAck 拆分 waitAckFor）。
+- **设计要点**：断连/关闭立即返回不重发；额度耗尽返回 ack timeout（错误文本形态不变）；总尝试 ≤ 1+MaxResends（≤0 默认 3）。
+- **承接**：生产装配面按需接线（env 化留需时立项）；broker 侧下行重发不在库范围（spec 0028 裁决 6）。

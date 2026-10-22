@@ -893,3 +893,10 @@ spec：specs/0018-model-sample-inference/spec.md（发展规划 v0.45 · G23+G25
 - **交付**：新包 mutestore（窗口≤30 天/总数≤200/不可变/JSON 快照）+ hierarchy MuteSource 可选接口（活跃口径排除，未装配行为不变）+ API 3 端点（130→133，DELETE=admin）+ 真实告警管线 e2e 三段。
 - **设计要点**：活跃口径排除仅作用 summary alarmActiveCount（告警历史与四态计数不动）；过期惰性失效（active 实时标记，快照留痕）；窗口必须有界（≤30 天）。
 - **承接**：静默作用转发出口（通知抑制）/severity 维度/周期窗口登记非目标（spec 0031 裁决 6）。
+
+### §55 v0.59.0 — 转发出口增强：测试投递与 MQTT sink（已交付 2026-10-22）
+
+- **范围**：KI §54#2 反转（同步测试投递）+ 通知渠道扩展第一步（mqtt sink）。
+- **交付**：POST /api/v1/forwards/{id}/test（同步连通性验证，合成事件入台账）+ Rule.sinkType（webhook|mqtt）+ topic 字段（地址语义分叉校验）+ mqtt 短连接 QoS1 投递器（pkg/mqtt 复用）+ 单测 4 例 + e2e 两段。
+- **设计要点**：schema 只增字段向后兼容（旧快照默认 webhook）；测试投递绕过事件过滤但入台账（Event=test 可区分）；mqtt 成功=QoS1 确认完成；HMAC 不适用于 mqtt（broker 认证登记）。
+- **承接**：mqtt 连接池/broker 认证/重发曲线登记 KI §60；对象存储 sink 留需时立项。

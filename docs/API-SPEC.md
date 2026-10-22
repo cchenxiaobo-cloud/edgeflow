@@ -163,6 +163,9 @@
 | POST | `/api/v1/alerts/mutes` | **创建静默窗口（v0.58.0：durationSec 1..2592000）** | 201/400 |
 | DELETE | `/api/v1/alerts/mutes/{id}` | **删除窗口（v0.58.0：delete=admin）** | 200/404 |
 | GET | `/api/v1/alerts/mutes/stats` | **静默窗口统计（v0.63.0：总数/生效中/按节点）** | 200 |
+| GET | `/api/v1/audit/entries/export` | **审计台账 JSONL 导出（v0.65.0：Content-Disposition 附件下载）** | 200/500 |
+| GET | `/api/v1/forwards/export` | **转发规则脱敏 JSON 导出（v0.65.0：admin）** | 200 |
+| POST | `/api/v1/forwards/import` | **转发规则批量导入（v0.65.0：admin，去重跳过）** | 200/400 |
 | POST | `/api/v1/forwards/{id}/test` | **同步测试投递（v0.59.0：绕过事件过滤，结果入台账）** | 200/400/404 |
 | GET | `/api/v1/diagnostics/summary` | **诊断聚合（v0.61.0：节点/告警/区域/静默/转发/etcd 形态/运行时长）** | 200 |
 

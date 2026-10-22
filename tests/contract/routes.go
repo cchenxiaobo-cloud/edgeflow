@@ -2,7 +2,7 @@
 // 「无兼容矩阵文档/测试（audit-m35 G4）」的可执行测试侧）。
 //
 // 本文件是契约的唯一事实源（source of truth）：
-//   - ContractEndpoints：cloudcore HTTP 端点契约（136 条），与
+//   - ContractEndpoints：cloudcore HTTP 端点契约（139 条），与
 //     cmd/cloudcore/main.go 的路由注册、docs/API-SPEC.md §1.1 端点总览、
 //     docs/API-COMPATIBILITY.md §1 REST API 端点矩阵逐行对应；
 //   - ContractMessageTypes：云边通道消息类型契约，直接引用
@@ -23,7 +23,7 @@ type Endpoint struct {
 	Note   string // 契约说明（与文档矩阵口径一致）
 }
 
-// ContractEndpoints 是 cloudcore HTTP 端点契约表（97 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9 + v0.39.0 上行补传可视化 2 + v0.40.0 告警中心 5 + 设定值通道 3 + v0.43.0 视频管理面 8 + v0.44.0 流媒体分发与告警片段 3 + v0.45.0 模型面扩展与困难样本 3 + v0.46.0 RBAC 与镜像凭证 7 + v0.47.0 应用目录与分发 15 + v0.48.0 日志链路 5 + v0.49.0 远程运维终端 5 + v0.50.0 区域层与标签治理 7 + v0.51.0 区域协同层 5 + v0.52.0 灾备备份管理 3 + v0.53.0 数据转发出口 6 + v0.56.0 审计台账查询 2 + v0.58.0 告警静默窗口 3 + v0.59.0 转发出口测试投递 1 + v0.60.0/v0.61.0 OPC-UA 与诊断面零新增 + v0.63.0 静默统计 1）。
+// ContractEndpoints 是 cloudcore HTTP 端点契约表（139 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9 + v0.39.0 上行补传可视化 2 + v0.40.0 告警中心 5 + 设定值通道 3 + v0.43.0 视频管理面 8 + v0.44.0 流媒体分发与告警片段 3 + v0.45.0 模型面扩展与困难样本 3 + v0.46.0 RBAC 与镜像凭证 7 + v0.47.0 应用目录与分发 15 + v0.48.0 日志链路 5 + v0.49.0 远程运维终端 5 + v0.50.0 区域层与标签治理 7 + v0.51.0 区域协同层 5 + v0.52.0 灾备备份管理 3 + v0.53.0 数据转发出口 6 + v0.56.0 审计台账查询 2 + v0.61.0 诊断聚合面 1 + v0.63.0 静默统计 1 + v0.65.0 审计导出与规则导入 3 + v0.58.0 告警静默窗口 3 + v0.59.0 转发出口测试投递 1 + v0.60.0/v0.61.0 OPC-UA 与诊断面零新增 + v0.63.0 静默统计 1）。
 //
 // ⚠️ 路径以 cmd/cloudcore/main.go 实际注册为准（任务提示 podsync/pod-sync
 // 存在歧义：grep 确认代码与两份文档均为 /podsync，无连字符）。
@@ -183,6 +183,9 @@ var ContractEndpoints = []Endpoint{
 	{Method: "POST", Path: "/api/v1/forwards/{id}/test", Note: "同步测试投递（绕过事件过滤；write=operator+；v0.59.0）"},
 	// ── v0.61.0 诊断聚合面（spec 0034；系统健康一屏）──
 	{Method: "GET", Path: "/api/v1/diagnostics/summary", Note: "诊断聚合（节点/告警/区域/静默/转发/etcd 形态/运行时长；read=viewer+；v0.61.0）"},
+	{Method: "GET", Path: "/api/v1/audit/entries/export", Note: "审计台账 JSONL 导出（operator+；v0.65.0）"},
+	{Method: "GET", Path: "/api/v1/forwards/export", Note: "转发规则脱敏 JSON 导出（admin；v0.65.0）"},
+	{Method: "POST", Path: "/api/v1/forwards/import", Note: "转发规则批量导入（admin；v0.65.0）"},
 }
 
 // MessageType 描述一种云边通道消息类型契约。

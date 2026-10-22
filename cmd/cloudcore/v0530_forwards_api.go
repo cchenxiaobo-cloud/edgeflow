@@ -38,13 +38,16 @@ func registerForwardsAPIs(mux *http.ServeMux, fs *forwardstore.Store) {
 	// ─── 创建规则 ───
 	mux.HandleFunc("POST /api/v1/forwards", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Name      string   `json:"name"`
-			SinkType  string   `json:"sinkType"` // v0.59.0：webhook（默认）| mqtt
-			TargetURL string   `json:"targetUrl"`
-			Topic     string   `json:"topic"` // v0.59.0：mqtt sink 主题（空 = edgeflow/forward/<id>）
-			Secret    string   `json:"secret"`
-			Events    []string `json:"events"`
-			Enabled   *bool    `json:"enabled"` // 缺省 true
+			Name         string   `json:"name"`
+			SinkType     string   `json:"sinkType"` // v0.59.0：webhook（默认）| mqtt
+			TargetURL    string   `json:"targetUrl"`
+			Topic        string   `json:"topic"` // v0.59.0：mqtt sink 主题（空 = edgeflow/forward/<id>）
+			Secret       string   `json:"secret"`
+			MqttUsername string   `json:"mqttUsername"` // v0.64.0：mqtt sink 认证
+			MqttPassword string   `json:"mqttPassword"` // v0.64.0：mqtt sink 认证
+			MqttTLS      bool     `json:"mqttTLS"`      // v0.64.0：TLS 拨号
+			Events       []string `json:"events"`
+			Enabled      *bool    `json:"enabled"` // 缺省 true
 		}
 		if err := decodeForwardsBody(r, &body); err != nil {
 			writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error(), nil)
@@ -54,7 +57,7 @@ func registerForwardsAPIs(mux *http.ServeMux, fs *forwardstore.Store) {
 		if body.Enabled != nil {
 			enabled = *body.Enabled
 		}
-		rule, err := fs.Create(body.Name, body.SinkType, body.TargetURL, body.Topic, body.Secret, body.Events, enabled, time.Now().UnixMilli())
+		rule, err := fs.Create(body.Name, body.SinkType, body.TargetURL, body.Topic, body.Secret, body.MqttUsername, body.MqttPassword, body.MqttTLS, body.Events, enabled, time.Now().UnixMilli())
 		if err != nil {
 			writeFwdErr(w, err)
 			return

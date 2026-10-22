@@ -669,3 +669,49 @@ func newSeqID(atMs int64) string {
 	}
 	return fmt.Sprintf("dl-%d-%s", atMs, hex.EncodeToString(buf[:]))
 }
+
+// ImportRule 是导入请求的单条规则（ID 可选——空则新生成；非空且已存在则跳过）。
+type ImportRule struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	SinkType     string   `json:"sinkType"`
+	TargetURL    string   `json:"targetUrl"`
+	Topic        string   `json:"topic"`
+	Secret       string   `json:"secret"`
+	MqttUsername string   `json:"mqttUsername"`
+	MqttPassword string   `json:"mqttPassword"`
+	MqttTLS      bool     `json:"mqttTLS"`
+	Events       []string `json:"events"`
+	Enabled      bool     `json:"enabled"`
+}
+
+// ImportResult 是导入结果（spec 0038 裁决 3）。
+type ImportResult struct {
+	Imported int      `json:"imported"`
+	Skipped  int      `json:"skipped"`
+	Errors   []string `json:"errors,omitempty"`
+}
+
+// Import 批量导入规则（逐条校验，失败条目跳过计数；ID 已存在跳过）。
+// v0.65.0（spec 0038 裁决 3）。
+func (s *Store) Import(rules []ImportRule, nowMs int64) ImportResult {
+	result := ImportResult{}
+	for _, ir := range rules {
+		if ir.ID != "" {
+			s.mu.Lock()
+			_, exists := s.data.Rules[ir.ID]
+			s.mu.Unlock()
+			if exists {
+				result.Skipped++
+				continue
+			}
+		}
+		if _, err := s.Create(ir.Name, ir.SinkType, ir.TargetURL, ir.Topic, ir.Secret,
+			ir.MqttUsername, ir.MqttPassword, ir.MqttTLS, ir.Events, ir.Enabled, nowMs); err != nil {
+			result.Errors = append(result.Errors, ir.Name+": "+err.Error())
+			continue
+		}
+		result.Imported++
+	}
+	return result
+}

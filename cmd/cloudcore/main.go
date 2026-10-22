@@ -1000,6 +1000,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		mutes: muteStore, forwards: forwardStore, auditPath: auditPath,
 	})
 
+	// v0.65.0（spec 0038）：审计导出与转发规则导出/导入。
+	registerExportAPIs(apiMux, ledger, forwardStore)
+
 	// v0.56.0 审计台账查询面（spec 0029）：台账查询 + 聚合（文件扫描，只读；
 	// 记录仍由 ledger.Middleware 恒挂载写入，retention 30 天自动清理）。
 	registerAuditAPIs(apiMux, ledger)

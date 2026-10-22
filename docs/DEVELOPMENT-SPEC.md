@@ -161,3 +161,4 @@ EdgeFlow 是云边协同的边缘计算平台：云端控制面（cloudcore + et
 | v0.61.0 | 2026-10-22 | 诊断聚合面（spec 0034）：GET /api/v1/diagnostics/summary 系统健康一屏（节点/告警/区域/静默/转发/etcd 形态/运行时长）+ audit 参数非法值显式 400（R2 P3-2 处置）；纯云端管理面消息 19 不变 | spec 0034 / RN-v0610 / KI §62 |
 | v0.62.0 | 2026-10-22 | 静默联动通知抑制（spec 0035）：forwardstore MuteSource（Dispatch 节点+级别静默判定，命中不投递不记台账）+ mutestore severity 维度（仅转发过滤，层级活跃口径节点级）+ mutes POST schema 扩展；零新增端点 135 维持 | spec 0035 / RN-v0620 / KI §66 |
 | v0.63.0 | 2026-10-22 | 告警 muted 标记与静默统计（spec 0036）：/api/v1/alarms 列表每条增 muted 只读标记（匿名嵌入保全字段）+ GET /api/v1/alerts/mutes/stats；纯云端管理面消息 19 不变 | spec 0036 / RN-v0630 |
+| v0.64.0 | 2026-10-22 | MQTT sink 认证与 TLS（spec 0037）：Rule 增 mqttUsername/mqttPassword/mqttTLS（GET 面脱敏）+ 拨号构造注入（InsecureSkipVerify 自签常态）；库能力零新增端点 134 维持 | spec 0037 / RN-v0640 / KI §66 |

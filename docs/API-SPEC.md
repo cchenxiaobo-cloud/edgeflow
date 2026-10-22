@@ -159,6 +159,9 @@
 | GET | `/api/v1/forwards/{id}/deliveries` | **送达台账（v0.53.0：新→旧，重试终态）** | 200/404 |
 | GET | `/api/v1/audit/entries` | **台账查询（v0.56.0：operator/method/pathSub/status/from/to/limit/offset，Ts 降序）** | 200 |
 | GET | `/api/v1/audit/stats` | **台账聚合（v0.56.0：总数/按操作者/按动作/状态桶）** | 200 |
+| GET | `/api/v1/alerts/mutes` | **静默窗口清单（v0.58.0：含 active 实时标记）** | 200 |
+| POST | `/api/v1/alerts/mutes` | **创建静默窗口（v0.58.0：durationSec 1..2592000）** | 201/400 |
+| DELETE | `/api/v1/alerts/mutes/{id}` | **删除窗口（v0.58.0：delete=admin）** | 200/404 |
 
 ### 1.2 错误码表（统一约定）
 

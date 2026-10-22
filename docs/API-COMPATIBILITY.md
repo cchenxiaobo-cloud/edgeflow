@@ -169,6 +169,9 @@
 | 128 | GET | `/api/v1/forwards/{id}/deliveries` | 送达台账 | v0.53.0 |
 | 129 | GET | `/api/v1/audit/entries` | 台账查询 | v0.56.0 |
 | 130 | GET | `/api/v1/audit/stats` | 台账聚合 | v0.56.0 |
+| 131 | GET | `/api/v1/alerts/mutes` | 静默窗口清单 | v0.58.0 |
+| 132 | POST | `/api/v1/alerts/mutes` | 创建静默窗口 | v0.58.0 |
+| 133 | DELETE | `/api/v1/alerts/mutes/{id}` | 删除静默窗口 | v0.58.0 |
 
 > 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行、v0.43.0 视频管理面行、v0.44.0 流媒体分发行）。
 
@@ -402,6 +405,15 @@
 | 新增端点 2（128→130） | GET /api/v1/audit/entries、GET /api/v1/audit/stats | 只增不改：全新 /api/v1/audit/* 命名空间；既有 128 端点零改动 |
 | RBAC | read=viewer+；无写面/无 DELETE（台账追加写不可变，retention 30 天自动清理） | 对齐 v0.46 矩阵只增不改 |
 | 查询语义 | 文件扫描（KB~MB 级）；Ts 降序分页 limit 钳 [1,500]；损坏行跳过 | 空台账/无命中返回空数组非 null |
+| 消息 | 19 不变 | 纯云端管理面 |
+
+### v0.58.0 兼容性增量（告警静默窗口，spec 0031）
+
+| 项 | 内容 | 兼容性 |
+|---|---|---|
+| 新增端点 3（130→133） | GET/POST /api/v1/alerts/mutes、DELETE /api/v1/alerts/mutes/{id} | 只增不改：全新 /api/v1/alerts/mutes/* 命名空间；既有 130 端点零改动 |
+| RBAC | 清单 read=viewer+ / 创建 write=operator+ / 删除 delete=admin | 对齐 v0.46 矩阵只增不改 |
+| 活跃口径 | hierarchy summary alarmActiveCount 排除生效中的静默节点告警（MuteSource 可选接口，未装配行为不变）；告警历史数据与 AlarmStats 四态计数不动 | 只增不改 |
 | 消息 | 19 不变 | 纯云端管理面 |
 
 ### v0.48.0 兼容性增量（日志链路，spec 0021）

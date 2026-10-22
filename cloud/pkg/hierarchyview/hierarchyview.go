@@ -17,6 +17,7 @@ package hierarchyview
 
 import (
 	"sort"
+	"time"
 
 	"edgeflow/cloud/pkg/regionstore"
 	"edgeflow/cloud/pkg/registry"
@@ -41,16 +42,33 @@ type AlarmCountSource interface {
 	CountByNodeState() map[string]map[string]int64 // nodeID → state → count（nodeID 空串条目不返回）
 }
 
+// MuteSource 是静默窗口源（v0.58.0，spec 0031 裁决 4）：活跃口径排除生效中的
+// 静默窗口（运维已知晓，不重复计数）。可选接口——未设置时行为不变
+// （SetMutes 启动期一次性装配）。告警历史数据（/api/v1/alarms 列表与
+// AlarmStats 四态计数）不受影响——静默只作用于「活跃」判定。
+type MuteSource interface {
+	Muted(nodeID string, nowMs int64) bool
+}
+
 // View 是层级聚合视图（无状态，依赖注入）。
 type View struct {
 	regions *regionstore.Store
 	nodes   NodeSource
 	alarms  AlarmSource
+	mutes   MuteSource // v0.58.0 可选（spec 0031）；nil = 无静默语义
 }
 
 // New 构建层级视图。
 func New(regions *regionstore.Store, nodes NodeSource, alarms AlarmSource) *View {
 	return &View{regions: regions, nodes: nodes, alarms: alarms}
+}
+
+// SetMutes 装配静默窗口源（v0.58.0 spec 0031；启动期一次性调用）。
+func (v *View) SetMutes(m MuteSource) { v.mutes = m }
+
+// mutedNow 报告节点当前是否被静默（无静默源 = false；告警数据不动，仅活跃口径）。
+func (v *View) mutedNow(nodeID string, nowMs int64) bool {
+	return v.mutes != nil && v.mutes.Muted(nodeID, nowMs)
 }
 
 // RegionSummary 是区域汇总节点（递归聚合；UnassignedCount 仅根级非零）。
@@ -118,7 +136,13 @@ func (v *View) Summary() *RegionSummary {
 	// CountByNodeState 单锁一致计数快照（无 alarmScanLimit 截断，KI §52#1 修复）；
 	// 未实现该接口的数据源（旧替身）回退 List 既有路径。
 	if counts, ok := v.alarms.(AlarmCountSource); ok {
+		now := time.Now().UnixMilli()
 		for nodeID, byState := range counts.CountByNodeState() {
+			// v0.58.0（spec 0031 裁决 4）：节点处于生效静默窗口 → 活跃口径整节点排除
+			//（告警历史数据不动）。
+			if v.mutedNow(nodeID, now) {
+				continue
+			}
 			rid, ok := assign[nodeID]
 			if !ok {
 				continue
@@ -134,8 +158,12 @@ func (v *View) Summary() *RegionSummary {
 			}
 		}
 	} else {
+		now := time.Now().UnixMilli()
 		for _, a := range v.alarms.List("", "", "", alarmScanLimit) {
 			if a.NodeID == "" {
+				continue
+			}
+			if v.mutedNow(a.NodeID, now) {
 				continue
 			}
 			rid, ok := assign[a.NodeID]

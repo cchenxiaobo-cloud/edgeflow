@@ -42,6 +42,7 @@ import (
 	"edgeflow/cloud/pkg/metrics"
 	"edgeflow/cloud/pkg/modelrelease"
 	"edgeflow/cloud/pkg/modelrepo"
+	"edgeflow/cloud/pkg/mutestore"
 	"edgeflow/cloud/pkg/nodecontroller"
 	"edgeflow/cloud/pkg/podstatus"
 	"edgeflow/cloud/pkg/rbac"
@@ -951,7 +952,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	// v0.51.0 区域协同层（spec 0024 G01）：三级视图 + 区域策略 + 告警汇聚。
 	// 中心直管架构（replan 路径 3 增强）；聚合口径见 hierarchyview 包注释。
-	registerHierarchyAPIs(apiMux, regionStore, hierarchyview.New(regionStore, nodeReg, alarmStore))
+	// v0.58.0（spec 0031）：静默窗口源装配（活跃口径排除生效中的静默）。
+	muteStore := mutestore.New(os.Getenv("EDGEFLOW_CLOUDCORE_MUTE_FILE"))
+	if err := muteStore.Load(); err != nil {
+		log.Warnf("[mutestore] 启动恢复失败（以空窗口继续）: %v", err)
+	}
+	hierarchyView := hierarchyview.New(regionStore, nodeReg, alarmStore)
+	hierarchyView.SetMutes(muteStore)
+	registerHierarchyAPIs(apiMux, regionStore, hierarchyView)
+	registerMuteAPIs(apiMux, muteStore)
+	log.Infof("[mutestore] 静默窗口就绪（%d 条；快照=%s）", len(muteStore.List()), os.Getenv("EDGEFLOW_CLOUDCORE_MUTE_FILE"))
 
 	// v0.52.0 灾备备份管理面（spec 0025，DR-ASSESSMENT 差距 #5 承接）：
 	// 治理面快照备份（region/tag/logstore）；DR_DIR 空 = 未启用（API 503/enabled=false）。

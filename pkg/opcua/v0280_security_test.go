@@ -101,7 +101,7 @@ func TestV0280SHA1ThumbprintIsCanonical(t *testing.T) {
 }
 
 // TestV0280KeyDerivationDeterminism：相同 nonce 输入应派生相同密钥
-//（Part 6 §6.7.5.2 PSHA，零随机性；v0.60.0 D5 后证书不参与派生）。
+// （Part 6 §6.7.5.2 PSHA，零随机性；v0.60.0 D5 后证书不参与派生）。
 func TestV0280KeyDerivationDeterminism(t *testing.T) {
 	cn := bytes.Repeat([]byte{0x11}, 32)
 	sn := bytes.Repeat([]byte{0x22}, 32)

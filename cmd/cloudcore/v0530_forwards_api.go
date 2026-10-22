@@ -79,7 +79,7 @@ func registerForwardsAPIs(mux *http.ServeMux, fs *forwardstore.Store) {
 			Name      *string  `json:"name"`
 			SinkType  *string  `json:"sinkType"` // webhook|mqtt
 			TargetURL *string  `json:"targetUrl"`
-			Topic     *string  `json:"topic"` // mqtt sink 主题
+			Topic     *string  `json:"topic"`  // mqtt sink 主题
 			Secret    *string  `json:"secret"` // 传空串=清除密钥
 			Events    []string `json:"events"`
 			Enabled   *bool    `json:"enabled"`

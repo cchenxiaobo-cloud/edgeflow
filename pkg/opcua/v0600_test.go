@@ -25,10 +25,6 @@ func TestV0600PSHAGoldenAnchor(t *testing.T) {
 	}, ",")
 	const want = "b215456a6843e40769d120b403bf075e,0463ff7cd7160c3642a495b6a0011a5dc2d0f9d537407ba3b723633506382de2,f146fc1d745a0200a10c36db791c8d91,8bf5cf64d5389b5037a88984cd040752,b6dfaa8b6178a34f945969647f922b2159dfab2348d31ce7c85da71b8337604c,0ca7be9cad444cac7bf596772d482c58"
 	if golden != want {
-		t.Logf("GOLDEN=%s", golden) // 首跑采集后回填常量
-		return
-	}
-	if golden != want {
 		t.Fatalf("PSHA golden 锚漂移:\n got %s\nwant %s", golden, want)
 	}
 }

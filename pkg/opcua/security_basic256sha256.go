@@ -89,13 +89,16 @@ type b256Keys struct {
 func deriveKeys(clientNonce, serverNonce []byte) b256Keys {
 	stream := psha(serverNonce, clientNonce,
 		2*(b256EncryptKeyLen+b256MACKeyLen+b256EncryptIVLen))
+	// v0.61.0（R4 P3 处置）：六段切片共享 psha 底层数组——逐段拷贝，
+	// 防调用方对任一段的写操作经底层数组泄漏到相邻密钥段。
+	cp := func(b []byte) []byte { return append([]byte(nil), b...) }
 	return b256Keys{
-		ClientEncryptKey: stream[0:b256EncryptKeyLen],
-		ClientMACKey:     stream[b256EncryptKeyLen : b256EncryptKeyLen+b256MACKeyLen],
-		ClientEncryptIV:  stream[b256EncryptKeyLen+b256MACKeyLen : 2*b256EncryptKeyLen+b256MACKeyLen],
-		ServerEncryptKey: stream[64 : 64+b256EncryptKeyLen],
-		ServerMACKey:     stream[64+b256EncryptKeyLen : 64+b256EncryptKeyLen+b256MACKeyLen],
-		ServerEncryptIV:  stream[64+b256EncryptKeyLen+b256MACKeyLen : 64+2*b256EncryptKeyLen+b256MACKeyLen],
+		ClientEncryptKey: cp(stream[0:b256EncryptKeyLen]),
+		ClientMACKey:     cp(stream[b256EncryptKeyLen : b256EncryptKeyLen+b256MACKeyLen]),
+		ClientEncryptIV:  cp(stream[b256EncryptKeyLen+b256MACKeyLen : 2*b256EncryptKeyLen+b256MACKeyLen]),
+		ServerEncryptKey: cp(stream[64 : 64+b256EncryptKeyLen]),
+		ServerMACKey:     cp(stream[64+b256EncryptKeyLen : 64+b256EncryptKeyLen+b256MACKeyLen]),
+		ServerEncryptIV:  cp(stream[64+b256EncryptKeyLen+b256MACKeyLen : 64+2*b256EncryptKeyLen+b256MACKeyLen]),
 	}
 }
 

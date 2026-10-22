@@ -976,3 +976,10 @@ MQTT/OPC-UA/视频/模型面零触碰；v0240–v0350 冻结测试零改动。
 | 3 | forwardstore 错误文案误写 mutestore（R3 P3） | 排查误导 | ✅ 快修文案 |
 | 4 | mutestore 包注释「to>创建时刻」与实现（to>from）不符（R3 P3） | 注释误导 | ✅ 快修注释 |
 | 5 | sim.go 陈旧注释与共享 QoS1 实现矛盾（R3 P3） | 注释误导 | ✅ 快修注释（指向 B4 分支） |
+
+## §65 R3/R4 复核收口备注（2026-10-22）
+
+- R3（v0.57–59）：PASS（P2×2+P3×3）——全部处置（P2 hotfix c0bf996 / P3 快修），报告 .cluster/edgeflow-v057-061/subagent_R3_review.md。
+- R4（v0.60–61）：PASS 条件通过（P1×1+P3×4）——P1 golden 锚 hotfix 8bb8412、P3 快修 2+留档 2，报告 subagent_R4_review.md；KI §63 追记。
+- 全量 e2e 终验（-timeout 30m，两轮全部用例）：除 v0530 一用例超时偶发（全量套件资源竞争，单独复跑 PASS 14.911s 判非回归——TestSetpointFlushOnce 同型判例）外全部通过。
+- mqttsim race 高负载偶发一次（与全量 e2e 同窗口），二次复跑 ok 21.217s 判非回归。

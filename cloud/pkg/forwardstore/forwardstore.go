@@ -70,7 +70,7 @@ type Rule struct {
 	ID        string   `json:"id"`
 	Name      string   `json:"name"`
 	TargetURL string   `json:"targetUrl"`
-	SinkType  string   `json:"sinkType"` // v0.59.0：webhook（默认）| mqtt
+	SinkType  string   `json:"sinkType"`        // v0.59.0：webhook（默认）| mqtt
 	Topic     string   `json:"topic,omitempty"` // v0.59.0：mqtt sink 目标主题（空 = edgeflow/forward/<id>）
 	Secret    string   `json:"secret,omitempty"`
 	Events    []string `json:"events"`
@@ -431,8 +431,11 @@ func (s *Store) deliverSync(rule Rule, event string, a alarm.Alarm, at int64, bo
 // mqttPublishQoS1 短连接发布：dial → PUBLISH(QoS1) → 等 PUBACK → DISCONNECT。
 // 每次投递独立连接（低频事件面量级假设；连接池留需时立项）。
 func mqttPublishQoS1(brokerAddr, topic string, payload []byte) error {
-	c, err := mqtt.Dial(brokerAddr, mqtt.Options{
-		ClientID:       "edgeflow-forward-" + newSeqID(time.Now().UnixMilli()),
+	// v0.61.0（R3 P2-2 处置）：校验器放行 [tcp://]mqtt:// 前缀形态，拨号前剥除
+	//（net.Dial 不识别 mqtt:// scheme——不剥则被接受的配置永远投递失败）。
+	addr := strings.TrimPrefix(strings.TrimPrefix(brokerAddr, "tcp://"), "mqtt://")
+	c, err := mqtt.Dial(addr, mqtt.Options{
+		ClientID:         "edgeflow-forward-" + newSeqID(time.Now().UnixMilli()),
 		ProtocolVersion5: true,
 	})
 	if err != nil {
@@ -465,7 +468,7 @@ func (s *Store) TestDelivery(id string, nowMs int64) (Delivery, error) {
 		Message: testAlarm.Message, At: nowMs,
 	})
 	if err != nil {
-		return Delivery{}, fmt.Errorf("mutestore: 测试 payload 序列化失败: %w", err)
+		return Delivery{}, fmt.Errorf("forwardstore: 测试 payload 序列化失败: %w", err)
 	}
 	d := s.deliverSync(r, "test", testAlarm, nowMs, body)
 	s.recordDelivery(d)

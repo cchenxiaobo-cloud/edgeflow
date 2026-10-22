@@ -6,7 +6,7 @@
 // 计数；告警历史数据本身不动。
 //
 // 约束（spec 0031 裁决 2）：
-//   - 窗口必须有界：to > 创建时刻且 to ≤ 创建时刻+30 天（防永久静默）；
+//   - 窗口必须有界：to > from 且跨度 ≤30 天（防永久静默）；
 //   - 窗口不可变：无更新面，调整 = 删除重建；
 //   - 过期窗口惰性失效（查询/判定时按 now 判定），快照保留历史留痕；
 //   - JSON 快照持久化（EDGEFLOW_CLOUDCORE_MUTE_FILE，空=内存，治理面惯例）。
@@ -118,9 +118,6 @@ func (s *Store) Create(nodeID string, fromMs, toMs int64, reason, createdBy stri
 	if toMs-fromMs > maxWindowMs {
 		return Silence{}, fmt.Errorf("%w: 窗口上限 30 天", ErrInvalid)
 	}
-	if len(s.data.Silences) >= maxSilences {
-		return Silence{}, fmt.Errorf("%w: 静默窗口总数已达上限 %d", ErrInvalid, maxSilences)
-	}
 	id, err := randID("mute")
 	if err != nil {
 		return Silence{}, err
@@ -128,6 +125,11 @@ func (s *Store) Create(nodeID string, fromMs, toMs int64, reason, createdBy stri
 	sil := Silence{ID: id, NodeID: nodeID, FromMs: fromMs, ToMs: toMs, Reason: reason, CreatedBy: createdBy, CreatedAt: nowMs}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// v0.61.0（R3 P2-1 处置）：总数上限检查移入临界区——原锁外读
+	// len(s.data.Silences) 与 Load/Create/Delete 构成数据竞争。
+	if len(s.data.Silences) >= maxSilences {
+		return Silence{}, fmt.Errorf("%w: 静默窗口总数已达上限 %d", ErrInvalid, maxSilences)
+	}
 	s.data.Silences = append(s.data.Silences, sil)
 	if err := s.persistLocked(); err != nil {
 		s.data.Silences = s.data.Silences[:len(s.data.Silences)-1]

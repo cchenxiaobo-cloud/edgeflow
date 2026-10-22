@@ -536,7 +536,7 @@ func (b *Broker) fanoutBytes(publisher *simClient, topic string, data []byte, qo
 		}
 		// v0.33.0：v5 订阅 granted≥1 → QoS1 下行（在途窗口/会话队列）；
 		// v3.1.1 与 granted=0 维持 QoS0 best-effort 现状（冻结）。
-		// 共享订阅不受影响（维持 QoS0，spec 0006 边界登记）。
+		// 共享订阅见下方 B4 分支（v0.57.0 granted-QoS1；v3/granted=0 仍 QoS0）。
 		if m.c.connV5 && m.h.granted >= 1 && qos >= 1 {
 			pktID := b.nextPktID()
 			sess := m.c.sess

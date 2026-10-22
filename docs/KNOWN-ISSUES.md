@@ -966,3 +966,13 @@ MQTT/OPC-UA/视频/模型面零触碰；v0240–v0350 冻结测试零改动。
 | 2 | deriveKeys 六段切片共享 psha 底层数组（R4 P3） | 调用方写任一段会经底层数组泄漏到相邻段 | ✅ hotfix：逐段拷贝 |
 | 3 | audit summary bytes 字段在 Stat 失败时缺失（R4 P3） | 客户端需容忍字段缺省 | 📋 留档（失败路径为台账文件不存在=未产生审计，缺省合理） |
 | 4 | e2e json.Unmarshal 错误忽略（R4 P3） | 响应异常时断言路径可能偏软 | 测试代码惯例；关键路径均有显式状态码断言 |
+
+## §64 v0.57–v0.59 R3 复核处置追记（2026-10-22）
+
+| # | 现象 | 影响 | 缓解/状态 |
+|---|---|---|---|
+| 1 | mutestore.Create 总数上限检查在锁外读（R3 P2-1） | 与 Load/Create/Delete 数据竞争（race 未覆盖该交错） | ✅ hotfix：检查移入临界区 |
+| 2 | mqtt sink 校验放行 [tcp://]mqtt:// 前缀但拨号原样透传必失败（R3 P2-2） | 被接受的 mqtt 配置永远投递失败 | ✅ hotfix：mqttPublishQoS1 拨号前剥前缀（与校验语义一致） |
+| 3 | forwardstore 错误文案误写 mutestore（R3 P3） | 排查误导 | ✅ 快修文案 |
+| 4 | mutestore 包注释「to>创建时刻」与实现（to>from）不符（R3 P3） | 注释误导 | ✅ 快修注释 |
+| 5 | sim.go 陈旧注释与共享 QoS1 实现矛盾（R3 P3） | 注释误导 | ✅ 快修注释（指向 B4 分支） |

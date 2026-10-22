@@ -611,7 +611,7 @@ func (c *Client) renewLocked(timeout time.Duration) (float64, error) {
 	if len(resp.ServerNonce) != B256NonceLen {
 		return 0, fmt.Errorf("opcua: Renew 响应 ServerNonce 长度 %d 非 %d", len(resp.ServerNonce), B256NonceLen)
 	}
-	newKeys := DeriveKeys(nonce, resp.ServerNonce, c.sc.opts.ClientCert.Raw, c.sc.opts.ServerCert.Raw)
+	newKeys := DeriveKeys(nonce, resp.ServerNonce)
 	c.sc.swapKeys(newKeys, resp.SecurityToken.TokenID)
 	return resp.SecurityToken.RevisedLifetime, nil
 }

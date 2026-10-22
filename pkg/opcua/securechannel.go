@@ -577,7 +577,7 @@ func (sc *SecureChannel) recvOPN(timeout time.Duration) error {
 		sc.channelId = resp.SecurityToken.ChannelID
 		sc.lifetimeMs = resp.SecurityToken.RevisedLifetime
 		sc.keysMu.Lock()
-		sc.cur = keySet{keys: DeriveKeys(sc.clientNonce, sc.serverNonce, sc.opts.ClientCert.Raw, sc.opts.ServerCert.Raw), tokenID: resp.SecurityToken.TokenID}
+		sc.cur = keySet{keys: DeriveKeys(sc.clientNonce, sc.serverNonce), tokenID: resp.SecurityToken.TokenID}
 		sc.keysMu.Unlock()
 		return nil
 	}
@@ -640,9 +640,11 @@ func (sc *SecureChannel) sendSecure(body []byte) (uint32, error) {
 	return reqID, nil
 }
 
-// openIncoming 解封对端（服务端方向）MSG/CLO 帧：先试当前密钥组，
-// 失败回退 prev（Renew 换钥窗口的在途帧；TCP 单通道序保证对端切出不
-// 会早于本端，回退仅命中有限窗口）。None（cur.keys==nil）原样返回。
+// openIncoming 解封对端（服务端方向）MSG/CLO 帧：按帧内 TokenID 严格比对
+// 后用对应密钥组解封（v0.60.0 D4，KI §30 处置：不再仅靠 HMAC 兜底试钥）。
+// 试序：cur（当前令牌）→ prev（Renew 换钥窗口的在途帧；TCP 单通道序保证
+// 对端切出不会早于本端）。任一通过后校验帧内 TokenID 与所试令牌一致，
+// 不一致显式拒绝（构造异常）。None（cur.keys==nil）原样返回。
 func (sc *SecureChannel) openIncoming(msgType string, body []byte) ([]byte, error) {
 	cur := sc.curKeys()
 	if cur.keys == nil {
@@ -651,15 +653,21 @@ func (sc *SecureChannel) openIncoming(msgType string, body []byte) ([]byte, erro
 	sc.keysMu.RLock()
 	prev := sc.prev
 	sc.keysMu.RUnlock()
-	if _, plain, err := OpenMSGFrame(msgType, sc.channelId, body, cur.keys, false); err == nil {
+	if tid, plain, err := OpenMSGFrame(msgType, sc.channelId, body, cur.keys, false); err == nil {
+		if tid != cur.tokenID {
+			return nil, fmt.Errorf("opcua: MSG 帧 TokenID %d 与当前令牌 %d 不匹配", tid, cur.tokenID)
+		}
 		return plain, nil
 	}
 	if prev != nil {
-		if _, plain, err := OpenMSGFrame(msgType, sc.channelId, body, prev.keys, false); err == nil {
+		if tid, plain, err := OpenMSGFrame(msgType, sc.channelId, body, prev.keys, false); err == nil {
+			if tid != prev.tokenID {
+				return nil, fmt.Errorf("opcua: MSG 帧 TokenID %d 与上一代令牌 %d 不匹配", tid, prev.tokenID)
+			}
 			return plain, nil
 		}
 	}
-	return nil, errors.New("opcua: MSG 帧解封失败（HMAC/尾垫校验不通过）")
+	return nil, errors.New("opcua: MSG 帧解封失败（HMAC/尾垫校验不通过或 TokenID 未知）")
 }
 
 // recvSecure 读取下一条 MSG 响应并关联到期望 RequestId。

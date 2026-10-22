@@ -65,14 +65,12 @@ func TestV0281SignVerifyOPNBody(t *testing.T) {
 func TestV0281DeriveKeysDeterministicAndSymmetric(t *testing.T) {
 	cn := bytes.Repeat([]byte{0x11}, B256NonceLen)
 	sn := bytes.Repeat([]byte{0x22}, B256NonceLen)
-	cc := bytes.Repeat([]byte{0x33}, 256)
-	sc2 := bytes.Repeat([]byte{0x44}, 256)
-	k1 := DeriveKeys(cn, sn, cc, sc2)
-	k2 := DeriveKeys(cn, sn, cc, sc2)
+	k1 := DeriveKeys(cn, sn)
+	k2 := DeriveKeys(cn, sn)
 	if !bytes.Equal(k1.ClientEncryptKey, k2.ClientEncryptKey) || !bytes.Equal(k1.ServerMACKey, k2.ServerMACKey) {
 		t.Fatal("同输入派生应逐字节一致")
 	}
-	k3 := DeriveKeys(cn, bytes.Repeat([]byte{0x23}, B256NonceLen), cc, sc2)
+	k3 := DeriveKeys(cn, bytes.Repeat([]byte{0x23}, B256NonceLen))
 	if bytes.Equal(k1.ClientEncryptKey, k3.ClientEncryptKey) {
 		t.Fatal("serverNonce 变化应导致派生变化")
 	}
@@ -91,15 +89,14 @@ func TestV0281DeriveKeysDeterministicAndSymmetric(t *testing.T) {
 	}
 }
 
-// TestV0281ClientServerKeysMatch：客户端（派生输入=本端 nonce+证书）与
-// 服务端（同函数同输入）密钥协商一致性——双向核对全部 6 段。
+// TestV0281ClientServerKeysMatch：客户端（deriveKeys）与服务端（导出镜像
+// DeriveKeys）对同输入派生一致——双向核对全部 6 段（v0.60.0 D5：证书不再
+// 参与派生，nonce 是唯一密钥材料输入）。
 func TestV0281ClientServerKeysMatch(t *testing.T) {
-	key := testKey(t)
-	cert := realSelfSignedCert(t, key)
 	cn := bytes.Repeat([]byte{0xAA}, B256NonceLen)
 	sn := bytes.Repeat([]byte{0xBB}, B256NonceLen)
-	clientSide := deriveKeys(cn, sn, cert.Raw, cert.Raw)
-	serverSide := DeriveKeys(cn, sn, cert.Raw, cert.Raw)
+	clientSide := deriveKeys(cn, sn)
+	serverSide := DeriveKeys(cn, sn)
 	pairs := [][2][]byte{
 		{clientSide.ClientEncryptKey, serverSide.ClientEncryptKey},
 		{clientSide.ClientEncryptIV, serverSide.ClientEncryptIV},

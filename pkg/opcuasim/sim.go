@@ -611,7 +611,7 @@ func (s *Simulator) handleB256OpenSecureChannel(c net.Conn, asymHdr opcua.Asymme
 	if _, err := crand.Read(serverNonce); err != nil {
 		return sendErr(0x80020000, "Bad_InternalError")
 	}
-	keys := opcua.DeriveKeys(clientNonce, serverNonce, asymHdr.SenderCertificate, s.serverCert.Raw)
+	keys := opcua.DeriveKeys(clientNonce, serverNonce)
 	channelID, tokenID := uint32(rand.Int31n(1<<31-1)+1), uint32(rand.Int31n(1<<31-1)+1)
 	hs := &b256Handshake{keys: keys, channelID: channelID, tokenID: tokenID}
 	resp, err := opcua.EncodeOpenSecureChannelResponse(opcua.OpenSecureChannelResponse{
@@ -722,7 +722,7 @@ func (s *Simulator) handleB256Renew(cs *connSession, c net.Conn, sh opcua.Sequen
 	}
 	cs.mu.Lock()
 	oldIn := cs.b256Keys
-	newKeys := opcua.DeriveKeys(clientNonce, newServerNonce, cs.clientCertDER, s.serverCert.Raw)
+	newKeys := opcua.DeriveKeys(clientNonce, newServerNonce)
 	newTokenID := uint32(rand.Int31n(1<<31-1) + 1)
 	cs.mu.Unlock()
 	resp, err := opcua.EncodeOpenSecureChannelResponse(opcua.OpenSecureChannelResponse{

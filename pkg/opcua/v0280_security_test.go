@@ -100,14 +100,13 @@ func TestV0280SHA1ThumbprintIsCanonical(t *testing.T) {
 	}
 }
 
-// TestV0280KeyDerivationDeterminism：相同 nonce+cert 输入应派生相同密钥
-// （Part 6 §6.7.5.2 链式 SHA-1，零随机性）。
+// TestV0280KeyDerivationDeterminism：相同 nonce 输入应派生相同密钥
+//（Part 6 §6.7.5.2 PSHA，零随机性；v0.60.0 D5 后证书不参与派生）。
 func TestV0280KeyDerivationDeterminism(t *testing.T) {
-	c := testCert(t)
 	cn := bytes.Repeat([]byte{0x11}, 32)
 	sn := bytes.Repeat([]byte{0x22}, 32)
-	k1 := deriveKeys(cn, sn, c.Raw, c.Raw)
-	k2 := deriveKeys(cn, sn, c.Raw, c.Raw)
+	k1 := deriveKeys(cn, sn)
+	k2 := deriveKeys(cn, sn)
 	if !bytes.Equal(k1.ClientEncryptKey, k2.ClientEncryptKey) {
 		t.Fatal("ClientEncryptKey 不稳定")
 	}

@@ -17,7 +17,7 @@ import (
 func v0290TestKeys(seed byte) *DerivedKeys {
 	cn := bytes.Repeat([]byte{seed}, 16)
 	sn := bytes.Repeat([]byte{seed + 0x40}, 16)
-	return DeriveKeys(cn, sn, []byte("v0290-client-cert-DER"), []byte("v0290-server-cert-DER"))
+	return DeriveKeys(cn, sn)
 }
 
 // TestV0290SealOpenMSGRoundTrip：密封→解封往返（客户端/服务端双方向），

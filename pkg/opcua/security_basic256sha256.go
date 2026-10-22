@@ -32,6 +32,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1" //nolint:gosec // OPC-UA Basic256Sha256 规范强制 SHA-1
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/binary"
 	"errors"
@@ -57,7 +58,7 @@ const B256NonceLen = 32
 const (
 	b256EncryptKeyLen = 16 // AES-128
 	b256EncryptIVLen  = 16 // AES block size
-	b256MACKeyLen     = 32 // SHA-1 输出 20B，Part 6 规范 pad/截断为 32
+	b256MACKeyLen     = 32 // HMAC-SHA256 输出 32B（v0.60.0 D5：PSHA 规范化）
 )
 
 // b256Keys 是一对 Basic256Sha256 会话的对称密钥组。
@@ -70,57 +71,51 @@ type b256Keys struct {
 	ServerMACKey     []byte
 }
 
-// deriveKeys 用 Part 6 §6.7.5.2 KeyDerivationFunction 从 client/server nonce
-// + client/server cert 派生 5 段密钥；HKDF-lite（标准库无 HKDF 时的近似）。
+// deriveKeys 按 Part 6 §6.7.5.2 KeyDerivationFunction（PSHA，HMAC-SHA256）
+// 从双侧 nonce 派生对称密钥组（v0.60.0 D5：SHA-1 链式近似 → 规范 PSHA；
+// 证书不参与对称密钥派生——nonce 是唯一密钥材料输入）。
 //
-// 计算顺序：
+// 密钥流：secret = serverNonce，seed = clientNonce（客户端视角：本地 nonce
+// 为 seed、远端 nonce 为 secret；服务端用相同角色派生同一密钥组）。
 //
-//	K1 = SHA1(senderNonce || receiverNonce)  ; ClientEncryptKey
-//	K2 = SHA1(K1 || senderCert)              ; ClientMACKey
-//	K3 = SHA1(K2 || receiverCert)            ; ServerEncryptKey
-//	K4 = SHA1(K3 || receiverCert)            ; ServerMACKey
-//	IV = SHA1(K4 || senderNonce || receiverNonce) ; 两个 IV 共用
+//	A1 = HMAC-SHA256(secret, seed)；An = HMAC-SHA256(secret, A(n-1))
+//	块 Bi = HMAC-SHA256(secret, Ai || seed)，级联取前 128 字节
 //
-// 段长按 AES-128 = 16B、HMAC-SHA1 = 32B（截断/补齐到 32B）。
-// 与 OPC-UA Part 6 §6.7.5.2 KeyDerivationFunction 兼容（不直接 HKDF，
-// 而是规范规定的「链式 SHA1」）。
-func deriveKeys(clientNonce, serverNonce, clientCertDER, serverCertDER []byte) b256Keys {
-	s1 := sha1.New() //nolint:gosec // Part 6 规范要求
-	s1.Write(clientNonce)
-	s1.Write(serverNonce)
-	cekFull := s1.Sum(nil)
-	s2 := sha1.New()
-	s2.Write(cekFull)
-	s2.Write(clientCertDER)
-	cmkFull := s2.Sum(nil)
-	s3 := sha1.New()
-	s3.Write(cmkFull)
-	s3.Write(serverCertDER)
-	sekFull := s3.Sum(nil)
-	s4 := sha1.New()
-	s4.Write(sekFull)
-	s4.Write(serverCertDER)
-	smkFull := s4.Sum(nil)
-	s5 := sha1.New()
-	s5.Write(smkFull)
-	s5.Write(clientNonce)
-	s5.Write(serverNonce)
-	iv := s5.Sum(nil)
-	// Part 6 §6.7.5.2：MAC key 长度 = signing key length 字节
-	// （Basic256Sha256 = 32B；HMAC-SHA1 输出 20B，按规范需补 0 至 32B）。
-	pad := func(in []byte) []byte {
-		out := make([]byte, b256MACKeyLen)
-		copy(out, in)
-		return out
-	}
+// 切片（Part 6 Table 26 顺序，Basic256Sha256：EncryptionKey=16B、
+// MessageKey(MAC)=32B、IV=16B）：
+//
+//	[0:16] ClientEncryptKey  [16:48] ClientMACKey  [48:64] ClientEncryptIV
+//	[64:80] ServerEncryptKey [80:112] ServerMACKey [112:128] ServerEncryptIV
+func deriveKeys(clientNonce, serverNonce []byte) b256Keys {
+	stream := psha(serverNonce, clientNonce,
+		2*(b256EncryptKeyLen+b256MACKeyLen+b256EncryptIVLen))
 	return b256Keys{
-		ClientEncryptKey: append([]byte{}, cekFull[:b256EncryptKeyLen]...), // AES-128 → 16B（SHA-1 输出 20B，规范规定取前 EncryptionKeyLength 字节）
-		ClientEncryptIV:  append([]byte{}, iv[:b256EncryptIVLen]...),
-		ClientMACKey:     pad(cmkFull),
-		ServerEncryptKey: append([]byte{}, sekFull[:b256EncryptKeyLen]...),
-		ServerEncryptIV:  append([]byte{}, iv[:b256EncryptIVLen]...),
-		ServerMACKey:     pad(smkFull),
+		ClientEncryptKey: stream[0:b256EncryptKeyLen],
+		ClientMACKey:     stream[b256EncryptKeyLen : b256EncryptKeyLen+b256MACKeyLen],
+		ClientEncryptIV:  stream[b256EncryptKeyLen+b256MACKeyLen : 2*b256EncryptKeyLen+b256MACKeyLen],
+		ServerEncryptKey: stream[64 : 64+b256EncryptKeyLen],
+		ServerMACKey:     stream[64+b256EncryptKeyLen : 64+b256EncryptKeyLen+b256MACKeyLen],
+		ServerEncryptIV:  stream[64+b256EncryptKeyLen+b256MACKeyLen : 64+2*b256EncryptKeyLen+b256MACKeyLen],
 	}
+}
+
+// psha 按 Part 6 §6.7.5.2 KeyDerivationFunction 生成 length 字节密钥流：
+// A1 = HMAC-SHA256(secret, seed)；An = HMAC-SHA256(secret, A(n-1))；
+// 块 Bi = HMAC-SHA256(secret, Ai || seed)，级联取前 length 字节。
+func psha(secret, seed []byte, length int) []byte {
+	h := func(key, data []byte) []byte {
+		m := hmac.New(sha256.New, key)
+		m.Write(data)
+		return m.Sum(nil)
+	}
+	a := h(secret, seed)
+	out := make([]byte, 0, length+32)
+	for len(out) < length {
+		block := h(secret, append(append([]byte{}, a...), seed...))
+		out = append(out, block...)
+		a = h(secret, a)
+	}
+	return out[:length]
 }
 
 // RSA-OAEP-SHA1 解封（Part 6 §6.7.5.3「AsymmetricEncryptionWrap」）。
@@ -268,11 +263,11 @@ type DerivedKeys struct {
 	ServerMACKey     []byte
 }
 
-// DeriveKeys 用与客户端完全相同的链式 SHA-1 函数（deriveKeys）从双侧 nonce
-// 与双侧证书 DER 派生对称密钥组。客户端侧（securechannel 内部）与服务端
-// （opcuasim）各自调用，输入一致则输出逐字节一致（密钥协商）。
-func DeriveKeys(clientNonce, serverNonce, clientCertDER, serverCertDER []byte) *DerivedKeys {
-	k := deriveKeys(clientNonce, serverNonce, clientCertDER, serverCertDER)
+// DeriveKeys 用与客户端完全相同的规范 PSHA（HMAC-SHA256，deriveKeys）从双侧
+// nonce 派生对称密钥组（v0.60.0 D5：证书不再参与派生）。客户端侧（securechannel
+// 内部）与服务端（opcuasim）各自调用，输入一致则输出逐字节一致（密钥协商）。
+func DeriveKeys(clientNonce, serverNonce []byte) *DerivedKeys {
+	k := deriveKeys(clientNonce, serverNonce)
 	return &DerivedKeys{
 		ClientEncryptKey: k.ClientEncryptKey,
 		ClientEncryptIV:  k.ClientEncryptIV,

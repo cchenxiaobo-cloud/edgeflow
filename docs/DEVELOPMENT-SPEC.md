@@ -154,3 +154,4 @@ EdgeFlow 是云边协同的边缘计算平台：云端控制面（cloudcore + et
 | v0.54.0 | 2026-10-21 | 三场景端到端验收（G29，spec 0027）：三条场景级 e2e（真实进程+RBAC）+ docs/SCENARIO-E2E.md；R1 复核处置（P2×1+P3×4：hmacHex/台账 ID 随机化/自检告警/钳位措辞，P3-4 写放大登记）；零 API 变更契约 128 维持 | spec 0027 / RN-v0540 / SCENARIO-E2E / KI §55 |
 | v0.55.0 | 2026-10-21 | MQTT 出站重发（持续项 B1/B2，spec 0028）：pkg/mqtt Options.ResendInterval/MaxResends + resendLoop 三路径（QoS1/2-phase1 DUP=1、phase2 PUBREL）+ errAckTimeout 哨兵 + SUBACK 语义不变；B3 出站 alias 销项（v0.33 已交付）；库能力零 API 变更契约 128 维持 | spec 0028 / RN-v0550 / KI §56 |
 | v0.56.0 | 2026-10-21 | 审计台账查询面（spec 0029）：audit.Ledger Query/Stats（文件扫描过滤+降序分页+聚合桶）+ API 2 端点（128→130，viewer+，无 DELETE）；记录面零改动；纯云端管理面消息 19 不变 | spec 0029 / RN-v0560 / KI §57 |
+| v0.57.0 | 2026-10-22 | MQTT 出站修复与共享订阅（持续项 B4，spec 0030）：QoS2 phase2 专用等待循环（迟到 PUBREC 跳过+超时重发 PUBREL，R2 P3-1 处置）+ 共享订阅 granted-QoS1 下行（v5 面，降级锚保留）+ US-4 断言增强（R2 P3-3）；库能力零 API 变更契约 130 维持 | spec 0030 / RN-v0570 / KI §58 |

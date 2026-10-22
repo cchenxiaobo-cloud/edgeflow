@@ -879,3 +879,10 @@ spec：specs/0018-model-sample-inference/spec.md（发展规划 v0.45 · G23+G25
 - **交付**：audit.Ledger Query/Stats（文件扫描 + Ts 降序分页 + 聚合桶）+ API 2 端点（128→130，viewer+）+ 单测 3 例 + e2e 三段（真请求审计→查询过滤→聚合）。
 - **设计要点**：记录面（Middleware/Record）零改动；损坏行跳过不毒化；无写面/无 DELETE（追加写不可变 + retention 30 天既有语义）；量级口径 KB~MB 级文件扫描成立。
 - **承接**：内存索引/导出/跨轮转查询登记非目标（spec 0029 裁决 6），量级实测后再立项。
+
+### §53 v0.57.0 — MQTT 出站修复与共享订阅 granted-QoS1（已交付 2026-10-22）
+
+- **范围**：持续项 B4（共享订阅 granted-QoS1）+ R2 P3 处置（P3-1 QoS2 跨相窗口 / P3-3 断言增强）。
+- **交付**：QoS2 phase2 专用等待循环（迟到 PUBREC 跳过 + 超时重发 PUBREL + 有界额度）+ phase2 前 drain 保留 + shareSub.granted 入库与 QoS1 直发（v5 面，轮转不变，离线暂存边界保留）+ v3 降级锚。
+- **设计要点**：迟到帧跳过计入有界额度（attempts+8）防病态 broker 挂死；默认禁用重发时 phase2 等价；共享 QoS1 直发无 broker 重发（at-least-once 减重发，边界登记）。
+- **承接**：共享订阅离线暂存（spec 0005 US-5 边界）与 broker 下行重发维持非目标（spec 0030 裁决 5）。

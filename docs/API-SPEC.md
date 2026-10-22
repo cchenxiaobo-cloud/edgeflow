@@ -163,6 +163,7 @@
 | POST | `/api/v1/alerts/mutes` | **创建静默窗口（v0.58.0：durationSec 1..2592000）** | 201/400 |
 | DELETE | `/api/v1/alerts/mutes/{id}` | **删除窗口（v0.58.0：delete=admin）** | 200/404 |
 | POST | `/api/v1/forwards/{id}/test` | **同步测试投递（v0.59.0：绕过事件过滤，结果入台账）** | 200/400/404 |
+| GET | `/api/v1/diagnostics/summary` | **诊断聚合（v0.61.0：节点/告警/区域/静默/转发/etcd 形态/运行时长）** | 200 |
 
 ### 1.2 错误码表（统一约定）
 

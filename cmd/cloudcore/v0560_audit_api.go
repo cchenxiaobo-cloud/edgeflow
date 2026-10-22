@@ -12,6 +12,7 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -23,9 +24,12 @@ import (
 func registerAuditAPIs(mux *http.ServeMux, ledger *audit.Ledger) {
 	// ─── 台账查询 ───
 	mux.HandleFunc("GET /api/v1/audit/entries", func(w http.ResponseWriter, r *http.Request) {
-		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-		entries, total, err := ledger.Query(auditFilterFrom(r), limit, offset)
+		f, limit, offset, perr := auditFilterFrom(r)
+		if perr != nil {
+			writeErr(w, http.StatusBadRequest, perr.Error(), nil)
+			return
+		}
+		entries, total, err := ledger.Query(f, limit, offset)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "台账查询失败: "+err.Error(), nil)
 			return
@@ -35,7 +39,12 @@ func registerAuditAPIs(mux *http.ServeMux, ledger *audit.Ledger) {
 
 	// ─── 台账聚合 ───
 	mux.HandleFunc("GET /api/v1/audit/stats", func(w http.ResponseWriter, r *http.Request) {
-		st, err := ledger.Stats(auditFilterFrom(r))
+		f, _, _, perr := auditFilterFrom(r)
+		if perr != nil {
+			writeErr(w, http.StatusBadRequest, perr.Error(), nil)
+			return
+		}
+		st, err := ledger.Stats(f)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "台账聚合失败: "+err.Error(), nil)
 			return
@@ -45,12 +54,23 @@ func registerAuditAPIs(mux *http.ServeMux, ledger *audit.Ledger) {
 }
 
 // auditFilterFrom 从查询串归一过滤器（from/to 毫秒时间戳；method 大写归一）。
-func auditFilterFrom(r *http.Request) audit.QueryFilter {
+// v0.61.0（R2 P3-2 处置）：非法数值参数（limit/offset/status 负值）由调用方
+// 显式 400——本函数仅做语法转换，语义校验在 handler。
+func auditFilterFrom(r *http.Request) (audit.QueryFilter, int, int, error) {
 	q := r.URL.Query()
-	status, _ := strconv.Atoi(q.Get("status"))
+	status, serr := strconv.Atoi(q.Get("status"))
 	from, _ := strconv.ParseInt(q.Get("from"), 10, 64)
 	to, _ := strconv.ParseInt(q.Get("to"), 10, 64)
-	return audit.QueryFilter{
+	limit, lerr := strconv.Atoi(q.Get("limit"))
+	offset, oerr := strconv.Atoi(q.Get("offset"))
+	if (q.Get("status") != "" && serr != nil) || (q.Get("limit") != "" && lerr != nil) ||
+		(q.Get("offset") != "" && oerr != nil) {
+		return audit.QueryFilter{}, 0, 0, errors.New("status/limit/offset 须为整数")
+	}
+	if status < 0 || limit < 0 || offset < 0 {
+		return audit.QueryFilter{}, 0, 0, errors.New("status/limit/offset 不可为负")
+	}
+	f := audit.QueryFilter{
 		Operator: q.Get("operator"),
 		Method:   strings.ToUpper(q.Get("method")),
 		PathSub:  q.Get("pathSub"),
@@ -58,4 +78,5 @@ func auditFilterFrom(r *http.Request) audit.QueryFilter {
 		FromMs:   from,
 		ToMs:     to,
 	}
+	return f, limit, offset, nil
 }

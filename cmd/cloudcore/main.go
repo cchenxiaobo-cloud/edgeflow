@@ -990,6 +990,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	registerForwardsAPIs(apiMux, forwardStore)
 	log.Infof("[forwardstore] 数据转发出口就绪（规则 %d 条；快照=%s）", len(forwardStore.List()), os.Getenv("EDGEFLOW_CLOUDCORE_FORWARD_FILE"))
 
+	// v0.61.0（spec 0034）：诊断聚合面（系统健康一屏，聚合只读）。
+	registerDiagnosticsAPIs(apiMux, diagDeps{
+		nodes: nodeReg, alarms: alarmStore, regions: regionStore,
+		mutes: muteStore, forwards: forwardStore, auditPath: auditPath,
+	})
+
 	// v0.56.0 审计台账查询面（spec 0029）：台账查询 + 聚合（文件扫描，只读；
 	// 记录仍由 ledger.Middleware 恒挂载写入，retention 30 天自动清理）。
 	registerAuditAPIs(apiMux, ledger)

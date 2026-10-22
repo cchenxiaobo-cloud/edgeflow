@@ -23,7 +23,7 @@ type Endpoint struct {
 	Note   string // 契约说明（与文档矩阵口径一致）
 }
 
-// ContractEndpoints 是 cloudcore HTTP 端点契约表（97 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9 + v0.39.0 上行补传可视化 2 + v0.40.0 告警中心 5 + 设定值通道 3 + v0.43.0 视频管理面 8 + v0.44.0 流媒体分发与告警片段 3 + v0.45.0 模型面扩展与困难样本 3 + v0.46.0 RBAC 与镜像凭证 7 + v0.47.0 应用目录与分发 15 + v0.48.0 日志链路 5 + v0.49.0 远程运维终端 5 + v0.50.0 区域层与标签治理 7 + v0.51.0 区域协同层 5 + v0.53.0 数据转发出口 6 + v0.56.0 审计台账查询 2 + v0.58.0 告警静默窗口 3 + v0.59.0 转发出口测试投递 1）。
+// ContractEndpoints 是 cloudcore HTTP 端点契约表（97 条 = 既有 14 + v0.7.0 模型 API 17 + v0.12.0 digest 复核 1 + v0.16.0 pause/resume/export/import 4 + v0.17.0 PATCH 可调参数 1 + v0.18.0 全局部署影子查询 1 + v0.19.0 发布审计快照/全局发布查询 2 + v0.20.0 retry/终态归档删除 2 + v0.37.0 规则管理 API 9 + v0.39.0 上行补传可视化 2 + v0.40.0 告警中心 5 + 设定值通道 3 + v0.43.0 视频管理面 8 + v0.44.0 流媒体分发与告警片段 3 + v0.45.0 模型面扩展与困难样本 3 + v0.46.0 RBAC 与镜像凭证 7 + v0.47.0 应用目录与分发 15 + v0.48.0 日志链路 5 + v0.49.0 远程运维终端 5 + v0.50.0 区域层与标签治理 7 + v0.51.0 区域协同层 5 + v0.52.0 灾备备份管理 3 + v0.53.0 数据转发出口 6 + v0.56.0 审计台账查询 2 + v0.58.0 告警静默窗口 3 + v0.59.0 转发出口测试投递 1 + v0.60.0/v0.61.0 OPC-UA 与诊断面零新增）。
 //
 // ⚠️ 路径以 cmd/cloudcore/main.go 实际注册为准（任务提示 podsync/pod-sync
 // 存在歧义：grep 确认代码与两份文档均为 /podsync，无连字符）。
@@ -180,6 +180,8 @@ var ContractEndpoints = []Endpoint{
 	{Method: "DELETE", Path: "/api/v1/alerts/mutes/{id}", Note: "删除窗口（delete=admin 对齐 v0.46 语义；v0.58.0）"},
 	// ── v0.59.0 转发出口增强（spec 0032；sinkType webhook|mqtt + 测试投递）──
 	{Method: "POST", Path: "/api/v1/forwards/{id}/test", Note: "同步测试投递（绕过事件过滤；write=operator+；v0.59.0）"},
+	// ── v0.61.0 诊断聚合面（spec 0034；系统健康一屏）──
+	{Method: "GET", Path: "/api/v1/diagnostics/summary", Note: "诊断聚合（节点/告警/区域/静默/转发/etcd 形态/运行时长；read=viewer+；v0.61.0）"},
 }
 
 // MessageType 描述一种云边通道消息类型契约。

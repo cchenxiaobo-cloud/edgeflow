@@ -90,8 +90,9 @@ type Broker struct {
 
 // shareSub 是一条共享订阅（v0.32.0）：原始 filter 串 → 组名 + 内层 filter。
 type shareSub struct {
-	group string
-	inner string
+	group   string
+	inner   string
+	granted byte // v0.57.0（B4）：订阅授予 QoS（SUBACK 口径；下行 ≥1 时 QoS1）
 }
 
 // simSession 是断连后按 ClientID 保留的会话（v0.32.0 阶段二）：订阅表
@@ -579,7 +580,15 @@ func (b *Broker) fanoutBytes(publisher *simClient, topic string, data []byte, qo
 		picked[target][sh] = struct{}{}
 	}
 	for c, subs := range picked {
-		for range subs { // 每个命中组一份（同连接同组多 filter 已去重）
+		for sh := range subs { // 每个命中组一份（同连接同组多 filter 已去重）
+			// v0.57.0（B4）：v5 && granted≥1 && qos≥1 → QoS1 直发（PacketID
+			// 由 broker 分配；无离线暂存——共享订阅不落离线队列，spec 0005
+			// US-5 边界保留，恢复重放不覆盖共享面）；否则 QoS0 best-effort。
+			if c.connV5 && sh.granted >= 1 && qos >= 1 {
+				pktID := b.nextPktID()
+				inlineEnqueue(c, &mqtt.Publish{Topic: topic, Payload: data, QoS: 1, PacketID: pktID, V5: c.connV5})
+				continue
+			}
 			inlineEnqueue(c, &mqtt.Publish{Topic: topic, Payload: data, V5: c.connV5})
 		}
 	}
@@ -1115,8 +1124,10 @@ func (c *simClient) serve() {
 						plans = append(plans, retainPlan{inner: inner, granted: tf.QoS, send: true})
 					}
 				} else {
-					// 共享订阅下行维持 QoS0（v0.33.0 边界：granted-QoS1 仅普通订阅）。
-					c.shared[tf.Topic] = shareSub{group: group, inner: inner}
+					// v0.57.0（B4）：granted 入库；下行 v5 && granted≥1 && qos≥1 →
+					// QoS1 直发（无离线暂存——spec 0005 US-5 边界保留）；
+					// v3.1.1 与 granted=0 维持 QoS0 best-effort。
+					c.shared[tf.Topic] = shareSub{group: group, inner: inner, granted: tf.QoS}
 					codes[i] = tf.QoS
 				}
 			}

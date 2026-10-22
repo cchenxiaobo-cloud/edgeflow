@@ -582,18 +582,47 @@ func (c *Client) publish(topic string, qos byte, payload []byte, retain bool) er
 	if err := qos2Save(c.persistDir, qos2Record{Kind: 'o', Phase: 2, PktID: pk.PacketID, Topic: topic, Payload: payload}); err != nil {
 		return fmt.Errorf("mqtt: persist qos2 outbound phase 2: %w", err)
 	}
+	// v0.57.0（R2 P3-1 处置）：phase2 等待前非阻塞清空通道内滞留的迟到重复
+	// PUBREC——重发启用后 phase1 每轮超时重发都会触发 broker 回一帧 PUBREC，
+	// 确认帧到达前滞留在缓冲通道（cap=1）里的重复帧会被 phase2 的 PUBCOMP
+	// 等待误取导致类型断言失败。drain 后 phase2 只可能收到 PUBCOMP
+	//（PUBCOMP 仅在 PUBREL 之后由 broker 发出）。
+	for {
+		select {
+		case <-ch:
+			continue
+		default:
+		}
+		break
+	}
 	rel := &Pubrel{PacketID: pk.PacketID, V5: c.v5}
 	if err := c.write(rel); err != nil {
 		return err
 	}
-	comp, err := c.resendLoop(ch, func() error {
-		return c.write(rel)
-	})
-	if err != nil {
-		return err
-	}
-	if _, ok := comp.(*Pubcomp); !ok {
-		return fmt.Errorf("mqtt: expected PUBCOMP for packet id %d", pk.PacketID)
+	// Phase 2（v0.57.0 重构，R2 P3-1 处置）：等待 PUBCOMP——迟到重复
+	// PUBREC（重发启用时 phase1 的多余确认帧，可能在 PUBREL 之后才到达）
+	// 跳过继续等（计入有界额度防病态 broker 挂死）；单轮超时按重发语义
+	// 重发 PUBREL；额度 resendAttempts（含首发）耗尽返回最后错误。
+	attempts := c.resendAttempts()
+	var comp Packet
+	for attempt := 1; ; attempt++ {
+		c2, err2 := c.waitAckFor(ch, c.ackWaitDur())
+		if err2 != nil {
+			if !errors.Is(err2, errAckTimeout) || attempt >= attempts {
+				return err2
+			}
+			if werr := c.write(rel); werr != nil {
+				return werr
+			}
+			continue
+		}
+		comp = c2
+		if _, ok := comp.(*Pubcomp); ok {
+			break
+		}
+		if attempt >= attempts+8 {
+			return fmt.Errorf("mqtt: expected PUBCOMP for packet id %d, got %T", pk.PacketID, comp)
+		}
 	}
 	// Exchange complete: drop the record (no-op when disabled).
 	if err := qos2Remove(c.persistDir, pk.PacketID); err != nil {

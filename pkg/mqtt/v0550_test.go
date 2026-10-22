@@ -147,7 +147,8 @@ func TestV0550ResendDisabledSingleAttempt(t *testing.T) {
 }
 
 // US-4 QoS2 phase2 重发：broker 恒回 PUBREC，但第 2 次 PUBREL 才回 PUBCOMP；
-// 客户端重发 PUBREL 后闭环。
+// 客户端重发 PUBREL 后闭环（R2 P3-3 处置：补 PUBLISH 帧数断言——phase1 无超时
+// 即无重发，PUBLISH 应恰 1 帧）。
 func TestV0550QoS2PubrelResend(t *testing.T) {
 	b := startScriptBroker(t, nil, func(n int) bool { return n >= 2 })
 	c, err := Dial(b.addr(), Options{ClientID: "c-v0550", EnableQoS2: true, ResendInterval: 50 * time.Millisecond})
@@ -158,7 +159,7 @@ func TestV0550QoS2PubrelResend(t *testing.T) {
 	if err := c.Publish("resend/4", 2, []byte("x")); err != nil {
 		t.Fatalf("publish 应在 PUBREL 重发后成功: %v", err)
 	}
-	if _, _, rels := b.snapshot(); rels != 2 {
-		t.Fatalf("PUBREL 应 2 帧（首发+重发）: %d", rels)
+	if count, _, rels := b.snapshot(); count != 1 || rels != 2 {
+		t.Fatalf("帧数不符（PUBLISH=1 无 phase1 重发；PUBREL=2 首发+重发）: pubs=%d rels=%d", count, rels)
 	}
 }

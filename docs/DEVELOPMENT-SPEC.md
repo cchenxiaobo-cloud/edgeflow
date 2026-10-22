@@ -157,3 +157,4 @@ EdgeFlow 是云边协同的边缘计算平台：云端控制面（cloudcore + et
 | v0.57.0 | 2026-10-22 | MQTT 出站修复与共享订阅（持续项 B4，spec 0030）：QoS2 phase2 专用等待循环（迟到 PUBREC 跳过+超时重发 PUBREL，R2 P3-1 处置）+ 共享订阅 granted-QoS1 下行（v5 面，降级锚保留）+ US-4 断言增强（R2 P3-3）；库能力零 API 变更契约 130 维持 | spec 0030 / RN-v0570 / KI §58 |
 | v0.58.0 | 2026-10-22 | 告警静默窗口（spec 0031）：mutestore（窗口≤30 天/总数≤200/不可变/JSON 快照）+ hierarchy 活跃口径排除（MuteSource 可选接口）+ API 3 端点（130→133，DELETE=admin）；纯云端管理面消息 19 不变 | spec 0031 / RN-v0580 / KI §59 |
 | v0.59.0 | 2026-10-22 | 转发出口增强（spec 0032）：同步测试投递端点（133→134，KI §54#2 处置）+ sinkType webhook|mqtt（pkg/mqtt 短连接 QoS1，topic 可配）+ Rule schema 只增字段向后兼容；纯云端管理面消息 19 不变 | spec 0032 / RN-v0590 / KI §60 |
+| v0.60.0 | 2026-10-22 | OPC-UA 安全收口（持续项 D4/D5，spec 0033）：TokenID 严格比对（openIncoming 帧内校验，不匹配显式拒绝）+ deriveKeys PSHA 规范化（HMAC-SHA256，证书退出派生，golden 锚）；库能力零 API 变更契约 134 维持 | spec 0033 / RN-v0600 / KI §61 |

@@ -900,3 +900,10 @@ spec：specs/0018-model-sample-inference/spec.md（发展规划 v0.45 · G23+G25
 - **交付**：POST /api/v1/forwards/{id}/test（同步连通性验证，合成事件入台账）+ Rule.sinkType（webhook|mqtt）+ topic 字段（地址语义分叉校验）+ mqtt 短连接 QoS1 投递器（pkg/mqtt 复用）+ 单测 4 例 + e2e 两段。
 - **设计要点**：schema 只增字段向后兼容（旧快照默认 webhook）；测试投递绕过事件过滤但入台账（Event=test 可区分）；mqtt 成功=QoS1 确认完成；HMAC 不适用于 mqtt（broker 认证登记）。
 - **承接**：mqtt 连接池/broker 认证/重发曲线登记 KI §60；对象存储 sink 留需时立项。
+
+### §56 v0.60.0 — OPC-UA 安全收口：D4/D5（已交付 2026-10-22）
+
+- **范围**：持续项 D4（TokenID 严格比对，KI §30）+ D5（KDF 规范化，KI §28/§29）。
+- **交付**：openIncoming TokenID 严格比对（帧内校验，不匹配显式拒绝，换钥窗口保留）+ deriveKeys PSHA 规范化（HMAC-SHA256，证书退出派生，切片按 Part 6 Table 26）+ golden 锚 + TokenID 三态测试。
+- **设计要点**：DeriveKeys 导出签名去 cert 参数（调用面全量更新）；密钥流与旧近似不兼容（会话态无持久化负担）；实现规范化 ≠ 互操作验证（外部验证前提如实登记）。
+- **承接**：opcuasim 入站镜像校验/官方向量外部比对/Basic128Rsa15 登记非目标（spec 0033 裁决 6）。

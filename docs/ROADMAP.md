@@ -921,3 +921,10 @@ spec：specs/0018-model-sample-inference/spec.md（发展规划 v0.45 · G23+G25
 - **交付**：forwardstore MuteSource（Dispatch 节点+级别静默判定，命中不投递不记台账）+ mutestore severity 维度（MatchesEvent，仅转发过滤）+ mutes POST schema 扩展（severity）+ 真实告警管线 e2e 两段（静默零收包→解除后送达）。
 - **设计要点**：层级活跃口径维持节点级（severity 窗口不参与 Muted——口径差异显式声明）；mutestore.MutedEvent（事件级）与 Muted（节点级）两个消费方两种口径；未装配静默源时行为不变。
 - **承接**：「已抑制」审计留痕/severity 窗口参与活跃口径/周期性静默登记非目标（spec 0035 裁决 6）。
+
+### §59 v0.63.0 — 告警 muted 标记与静默统计（已交付 2026-10-22）
+
+- **范围**：静默窗口可观测性收口（列表标注 + 统计面）。
+- **交付**：/api/v1/alarms 列表每条增 muted 只读标记（匿名嵌入 wrapper 保全部既有字段）+ GET /api/v1/alerts/mutes/stats（总数/生效中/按节点）+ e2e 两段（真告警管线 muted:true → 解除后 false）。
+- **设计要点**：muted 实时标注不持久化；响应 schema 只增字段（匿名嵌入保 Alarm 全部既有字段）；severity 维度窗口在列表标记中生效（与转发过滤同口径）。
+- **承接**：静默历史趋势/按 severity 聚合统计登记非目标（spec 0036 裁决 4）。

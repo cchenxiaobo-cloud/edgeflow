@@ -376,9 +376,9 @@ func TestV0320ShareSubscriptionRejects(t *testing.T) {
 	defer b.Close()
 
 	c := v0320Dial(t, b.Addr(), "share-bad", true, 0)
-	bad := []string{"$share//t/data", "$share/g1", "$queue/t/data"}
+	bad := []string{"$share//t/data", "$share/g1"}
 	if err := mqtt.EncodePacket(c, &mqtt.Subscribe{V5: true, PacketID: 1, Topics: []mqtt.TopicFilter{
-		{Topic: bad[0], QoS: 0}, {Topic: bad[1], QoS: 0}, {Topic: bad[2], QoS: 0},
+		{Topic: bad[0], QoS: 0}, {Topic: bad[1], QoS: 0},
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -388,6 +388,17 @@ func TestV0320ShareSubscriptionRejects(t *testing.T) {
 		if code != subFailureCode {
 			t.Fatalf("%q must be rejected, got 0x%02X", bad[i], code)
 		}
+	}
+	// v0.66.0：$queue/t/data 现已支持（固定组共享订阅），不再拒绝——
+	// 单独验证 granted 为请求 QoS。
+	if err := mqtt.EncodePacket(c, &mqtt.Subscribe{V5: true, PacketID: 2, Topics: []mqtt.TopicFilter{
+		{Topic: "$queue/t/data", QoS: 1},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	p2 := v0320Expect(t, c, &mqtt.Suback{PacketID: 2})
+	if sa2 := p2.(*mqtt.Suback); sa2.Codes[0] != 1 {
+		t.Fatalf("$queue 应 granted 1: %d", sa2.Codes[0])
 	}
 }
 

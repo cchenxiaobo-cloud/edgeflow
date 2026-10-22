@@ -770,13 +770,18 @@ func (b *Broker) PingCount() int {
 	return b.pingCount
 }
 
-// parseShareFilter 拆解共享订阅 filter（v0.32.0）：
+// parseShareFilter 拆解共享订阅 filter（v0.32.0；v0.66.0 支持 $queue）：
 //   - "$share/{group}/{inner}" → (group, inner, true)；group/inner 任一为空 → !ok
+//   - "$queue/{inner}" → ("$queue", inner, true)——固定组共享订阅（B5）
 //   - "$queue/..." → 不支持，!ok
 //   - 其余 → (""，原文，true) 普通订阅
 func parseShareFilter(f string) (group, inner string, ok bool) {
 	if strings.HasPrefix(f, "$queue/") {
-		return "", "", false
+		inner := f[len("$queue/"):]
+		if inner == "" {
+			return "", "", false
+		}
+		return "$queue", inner, true
 	}
 	if !strings.HasPrefix(f, "$share/") {
 		return "", f, true

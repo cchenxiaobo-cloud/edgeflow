@@ -40,6 +40,7 @@ func registerMuteAPIs(mux *http.ServeMux, ms *mutestore.Store) {
 	mux.HandleFunc("POST /api/v1/alerts/mutes", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			NodeID      string `json:"nodeId"`      // 空 = 全部节点
+			Severity    string `json:"severity"`    // v0.62.0：空 = 全部级别（仅作用于转发过滤）
 			DurationSec int64  `json:"durationSec"` // 窗口时长（秒；1..2592000）
 			Reason      string `json:"reason"`
 		}
@@ -48,7 +49,7 @@ func registerMuteAPIs(mux *http.ServeMux, ms *mutestore.Store) {
 			return
 		}
 		now := time.Now().UnixMilli()
-		sil, err := ms.Create(body.NodeID, now, now+body.DurationSec*1000, body.Reason, audit.IdentityOf(r.Context()), now)
+		sil, err := ms.Create(body.NodeID, body.Severity, now, now+body.DurationSec*1000, body.Reason, audit.IdentityOf(r.Context()), now)
 		if err != nil {
 			writeMuteErr(w, err)
 			return

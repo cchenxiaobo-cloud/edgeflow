@@ -154,7 +154,20 @@ type Store struct {
 	file   string
 	data   snapshot
 	client *http.Client
+
+	mutes MuteSource // v0.62.0 可选（spec 0035）；nil = 无静默过滤
 }
+
+// MuteSource 是静默窗口源（v0.62.0，spec 0035 裁决 1）：节点+级别处于生效
+// 静默窗口的告警事件不投递（通知抑制，spec 0031 裁决 6 承接）。可选接口——
+// 未设置时行为不变。与 hierarchyview.MuteSource 同型但含 severity 维度
+// （避免跨包依赖，各自定义；口径差异见 mutestore.MatchesEvent）。
+type MuteSource interface {
+	MutedEvent(nodeID, severity string, nowMs int64) bool
+}
+
+// SetMutes 装配静默窗口源（启动期一次性调用；mutestore.Store 实现之）。
+func (s *Store) SetMutes(m MuteSource) { s.mutes = m }
 
 // New 构建存储（file 空 = 纯内存；Load() 触发恢复）。
 func New(file string) *Store {
@@ -316,6 +329,13 @@ func (s *Store) Deliveries(ruleID string, limit int) []Delivery {
 // 在告警 store 锁外被调用；回调方约定不在本方法内同步等待投递结果。
 func (s *Store) Dispatch(event string, a alarm.Alarm) {
 	if s == nil {
+		return
+	}
+	now0 := time.Now().UnixMilli()
+	// v0.62.0（spec 0035 裁决 1）：静默联动通知抑制——节点+级别处于生效静默
+	// 窗口 → 事件不投递、不记台账（通知未发生即无事件；severity 维度在此
+	// 生效，层级活跃口径仍维持节点级）。未装配静默源时跳过判定。
+	if s.mutes != nil && s.mutes.MutedEvent(a.NodeID, a.Severity, now0) {
 		return
 	}
 	s.mu.Lock()

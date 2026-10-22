@@ -43,9 +43,10 @@ var (
 // Silence 是一条静默窗口。
 type Silence struct {
 	ID        string `json:"id"`
-	NodeID    string `json:"nodeId,omitempty"` // 空 = 全部节点
-	FromMs    int64  `json:"from"`             // 窗口起点（毫秒，含）
-	ToMs      int64  `json:"to"`               // 窗口终点（毫秒，含）
+	NodeID    string `json:"nodeId,omitempty"`   // 空 = 全部节点
+	Severity  string `json:"severity,omitempty"` // v0.62.0：空 = 全部级别；critical|warning|info
+	FromMs    int64  `json:"from"`               // 窗口起点（毫秒，含）
+	ToMs      int64  `json:"to"`                 // 窗口终点（毫秒，含）
 	Reason    string `json:"reason"`
 	CreatedBy string `json:"createdBy"`
 	CreatedAt int64  `json:"createdAt"`
@@ -60,6 +61,15 @@ func (s Silence) Active(nowMs int64) bool {
 // 窗口未生效时恒 false（调用方通常先判 Active，本方法不重复判时间）。
 func (s Silence) Matches(nodeID string) bool {
 	return s.NodeID == "" || s.NodeID == nodeID
+}
+
+// MatchesEvent 报告窗口是否作用于指定节点+级别的告警事件（v0.62.0，
+// spec 0035 裁决 2：severity 维度仅供转发过滤；层级活跃口径维持节点级）。
+func (s Silence) MatchesEvent(nodeID, severity string) bool {
+	if !s.Matches(nodeID) {
+		return false
+	}
+	return s.Severity == "" || s.Severity == severity
 }
 
 type snapshot struct {
@@ -104,11 +114,16 @@ func (s *Store) Load() error {
 	return nil
 }
 
-// Create 创建静默窗口：nodeID 可选（空=全部）；窗口 [from,to] 必须有界
-// （to > from 且 to-from ≤ 30 天）；reason ≤256B；总数 ≤200。
-func (s *Store) Create(nodeID string, fromMs, toMs int64, reason, createdBy string, nowMs int64) (Silence, error) {
+// Create 创建静默窗口：nodeID 可选（空=全部）；severity 可选（v0.62.0，
+// 空=全部级别，仅作用于转发过滤——层级活跃口径维持节点级，spec 0035 裁决 4）；
+// 窗口 [from,to] 必须有界（to > from 且 to-from ≤ 30 天）；reason ≤256B；总数 ≤200。
+func (s *Store) Create(nodeID, severity string, fromMs, toMs int64, reason, createdBy string, nowMs int64) (Silence, error) {
 	nodeID = strings.TrimSpace(nodeID)
+	severity = strings.TrimSpace(severity)
 	reason = strings.TrimSpace(reason)
+	if severity != "" && severity != "critical" && severity != "warning" && severity != "info" {
+		return Silence{}, fmt.Errorf("%w: 非法 severity %q（critical|warning|info）", ErrInvalid, severity)
+	}
 	if len(reason) > maxReasonLen {
 		return Silence{}, fmt.Errorf("%w: reason 须 ≤%d 字节", ErrInvalid, maxReasonLen)
 	}
@@ -122,7 +137,7 @@ func (s *Store) Create(nodeID string, fromMs, toMs int64, reason, createdBy stri
 	if err != nil {
 		return Silence{}, err
 	}
-	sil := Silence{ID: id, NodeID: nodeID, FromMs: fromMs, ToMs: toMs, Reason: reason, CreatedBy: createdBy, CreatedAt: nowMs}
+	sil := Silence{ID: id, NodeID: nodeID, Severity: severity, FromMs: fromMs, ToMs: toMs, Reason: reason, CreatedBy: createdBy, CreatedAt: nowMs}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// v0.61.0（R3 P2-1 处置）：总数上限检查移入临界区——原锁外读
@@ -161,13 +176,31 @@ func (s *Store) List() []Silence {
 	return out
 }
 
-// Muted 报告指定节点在 nowMs 时刻是否处于任一生效窗口内（空 nodeID 告警
-// 仅被全节点窗口命中）。
+// Muted 报告指定节点在 nowMs 时刻是否处于任一生效窗口内（v0.58 节点级
+// 语义：仅全级别窗口参与——severity 维度窗口不参与节点级判定，避免
+// critical 静默误伤 warning 活跃计数；事件级过滤用 MutedEvent）。
 func (s *Store) Muted(nodeID string, nowMs int64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, sil := range s.data.Silences {
+		if sil.Severity != "" {
+			continue // severity 维度窗口不参与节点级判定
+		}
 		if sil.Active(nowMs) && sil.Matches(nodeID) {
+			return true
+		}
+	}
+	return false
+}
+
+// MutedEvent 报告指定节点+级别在 nowMs 时刻是否被任一生效窗口抑制
+// （v0.62.0，spec 0035 裁决 1：转发过滤专用——severity 维度在此生效；
+// severity 空串 = 不筛级别，任意级别命中）。
+func (s *Store) MutedEvent(nodeID, severity string, nowMs int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sil := range s.data.Silences {
+		if sil.Active(nowMs) && sil.MatchesEvent(nodeID, severity) {
 			return true
 		}
 	}

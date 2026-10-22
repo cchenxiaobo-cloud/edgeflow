@@ -174,6 +174,7 @@
 | 133 | DELETE | `/api/v1/alerts/mutes/{id}` | 删除静默窗口 | v0.58.0 |
 | 134 | POST | `/api/v1/forwards/{id}/test` | 同步测试投递 | v0.59.0 |
 | 135 | GET | `/api/v1/diagnostics/summary` | 诊断聚合 | v0.61.0 |
+| 136 | GET | `/api/v1/alerts/mutes/stats` | 静默窗口统计 | v0.63.0 |
 
 > 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行、v0.43.0 视频管理面行、v0.44.0 流媒体分发行）。
 
@@ -425,6 +426,14 @@
 | 新增端点 1（134→135） | GET /api/v1/diagnostics/summary | 只增不改：全新 /api/v1/diagnostics/* 命名空间；既有 134 端点零改动 |
 | RBAC | read=viewer+；无写面 | 对齐 v0.46 矩阵只增不改 |
 | audit 参数语义变更 | status/limit/offset 非法值（非数字/负数）由静默归零改为显式 400（R2 P3-2 处置） | 行为收紧：此前静默容忍的非法参数现在 400——客户端须传合法值（正常调用不受影响） |
+| 消息 | 19 不变 | 纯云端管理面 |
+
+### v0.63.0 兼容性增量（告警 muted 标记与静默统计，spec 0036）
+
+| 项 | 内容 | 兼容性 |
+|---|---|---|
+| 新增端点 1（135→136） | GET /api/v1/alerts/mutes/stats（总数/生效中/按节点） | 只增不改：既有 135 端点零改动 |
+| 响应 schema 扩展 | /api/v1/alarms 列表每条增 muted 只读标记（匿名嵌入 wrapper 保全部既有字段） | schema 只增字段；未装配静默源时恒 false |
 | 消息 | 19 不变 | 纯云端管理面 |
 
 ### v0.59.0 兼容性增量（转发出口增强，spec 0032）

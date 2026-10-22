@@ -24,6 +24,13 @@ import (
 // alarmAPI 是统一告警中心的 HTTP 处理器集合。
 type alarmAPI struct {
 	store *alarmstore.Store
+	mutes alarmMuteSource // v0.63.0（spec 0036）：muted 标记数据源（可选，nil = 不标注）
+}
+
+// alarmMuteSource 是告警列表 muted 标记的静默源抽象（mutestore.Store 实现之；
+// 与 hierarchyview/forwardstore 的 MuteSource 同型含 severity 维度）。
+type alarmMuteSource interface {
+	MutedEvent(nodeID, severity string, nowMs int64) bool
 }
 
 // Register 注册 5 条告警端点（Go 1.22 路径参数模式，与 rules_api 同风格）。
@@ -48,9 +55,24 @@ func (a *alarmAPI) listAlarms(w http.ResponseWriter, r *http.Request) {
 		r.URL.Query().Get("state"),
 		r.URL.Query().Get("severity"),
 		limit)
+	// v0.63.0（spec 0036）：muted 只读标记——告警历史数据不动，仅标注实时
+	// 静默状态（运维一眼区分「静默中的活跃告警」）；未装配静默源时恒 false。
+	// 匿名嵌入 wrapper 保 Alarm 全部既有字段（schema 只增不改）。
+	now := time.Now().UnixMilli()
+	type alarmRow struct {
+		alarm.Alarm
+		Muted bool `json:"muted"`
+	}
+	rows := make([]alarmRow, 0, len(alarms))
+	for _, al := range alarms {
+		rows = append(rows, alarmRow{
+			Alarm: al,
+			Muted: a.mutes != nil && a.mutes.MutedEvent(al.NodeID, al.Severity, now),
+		})
+	}
 	writeJSONAlarm(w, http.StatusOK, map[string]any{
-		"alarms": alarms,
-		"count":  len(alarms),
+		"alarms": rows,
+		"count":  len(rows),
 	})
 }
 

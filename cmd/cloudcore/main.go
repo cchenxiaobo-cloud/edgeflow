@@ -779,7 +779,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 			log.Warnf("[alarmstore] 告警入库失败（alarmId=%s）: %v", a.AlarmID, err)
 		}
 	})
-	(&alarmAPI{store: alarmStore}).Register(apiMux)
+	// v0.62.0（spec 0031）：静默窗口源装配（活跃口径排除生效中的静默）。
+	// v0.63.0：muteStore 创建前移至此（alarmAPI muted 标记依赖）。
+	muteStore := mutestore.New(os.Getenv("EDGEFLOW_CLOUDCORE_MUTE_FILE"))
+	if err := muteStore.Load(); err != nil {
+		log.Warnf("[mutestore] 启动恢复失败（以空窗口继续）: %v", err)
+	}
+	(&alarmAPI{store: alarmStore, mutes: muteStore}).Register(apiMux)
 
 	// v0.43.0 视频管理面（spec 0016）：videostream（流索引，etcd 写穿）+ mediastore
 	// （媒资分片组装与对象存储）+ 8 端点 + MediaUpload 接收（分片入库 → 完成后
@@ -953,10 +959,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// v0.51.0 区域协同层（spec 0024 G01）：三级视图 + 区域策略 + 告警汇聚。
 	// 中心直管架构（replan 路径 3 增强）；聚合口径见 hierarchyview 包注释。
 	// v0.58.0（spec 0031）：静默窗口源装配（活跃口径排除生效中的静默）。
-	muteStore := mutestore.New(os.Getenv("EDGEFLOW_CLOUDCORE_MUTE_FILE"))
-	if err := muteStore.Load(); err != nil {
-		log.Warnf("[mutestore] 启动恢复失败（以空窗口继续）: %v", err)
-	}
+	// muteStore 创建已前移至 alarmAPI 注册前（v0.63.0 muted 标记依赖同一实例）。
 	hierarchyView := hierarchyview.New(regionStore, nodeReg, alarmStore)
 	hierarchyView.SetMutes(muteStore)
 	registerHierarchyAPIs(apiMux, regionStore, hierarchyView)

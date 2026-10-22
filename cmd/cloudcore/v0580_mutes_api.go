@@ -62,6 +62,26 @@ func registerMuteAPIs(mux *http.ServeMux, ms *mutestore.Store) {
 		})
 	})
 
+	// ─── 统计（v0.63.0，spec 0036）───
+	mux.HandleFunc("GET /api/v1/alerts/mutes/stats", func(w http.ResponseWriter, r *http.Request) {
+		now := time.Now().UnixMilli()
+		list := ms.List()
+		active, byNode := 0, map[string]int64{}
+		for _, sil := range list {
+			if sil.Active(now) {
+				active++
+				key := sil.NodeID
+				if key == "" {
+					key = "*"
+				}
+				byNode[key]++
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"total": len(list), "active": active, "byNode": byNode, "now": now,
+		})
+	})
+
 	// ─── 删除（admin）───
 	mux.HandleFunc("DELETE /api/v1/alerts/mutes/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := ms.Delete(r.PathValue("id")); err != nil {

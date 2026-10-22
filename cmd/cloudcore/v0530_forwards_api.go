@@ -39,7 +39,9 @@ func registerForwardsAPIs(mux *http.ServeMux, fs *forwardstore.Store) {
 	mux.HandleFunc("POST /api/v1/forwards", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Name      string   `json:"name"`
+			SinkType  string   `json:"sinkType"` // v0.59.0：webhook（默认）| mqtt
 			TargetURL string   `json:"targetUrl"`
+			Topic     string   `json:"topic"` // v0.59.0：mqtt sink 主题（空 = edgeflow/forward/<id>）
 			Secret    string   `json:"secret"`
 			Events    []string `json:"events"`
 			Enabled   *bool    `json:"enabled"` // 缺省 true
@@ -52,7 +54,7 @@ func registerForwardsAPIs(mux *http.ServeMux, fs *forwardstore.Store) {
 		if body.Enabled != nil {
 			enabled = *body.Enabled
 		}
-		rule, err := fs.Create(body.Name, body.TargetURL, body.Secret, body.Events, enabled, time.Now().UnixMilli())
+		rule, err := fs.Create(body.Name, body.SinkType, body.TargetURL, body.Topic, body.Secret, body.Events, enabled, time.Now().UnixMilli())
 		if err != nil {
 			writeFwdErr(w, err)
 			return
@@ -75,7 +77,9 @@ func registerForwardsAPIs(mux *http.ServeMux, fs *forwardstore.Store) {
 	mux.HandleFunc("PUT /api/v1/forwards/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Name      *string  `json:"name"`
+			SinkType  *string  `json:"sinkType"` // webhook|mqtt
 			TargetURL *string  `json:"targetUrl"`
+			Topic     *string  `json:"topic"` // mqtt sink 主题
 			Secret    *string  `json:"secret"` // 传空串=清除密钥
 			Events    []string `json:"events"`
 			Enabled   *bool    `json:"enabled"`
@@ -85,8 +89,8 @@ func registerForwardsAPIs(mux *http.ServeMux, fs *forwardstore.Store) {
 			return
 		}
 		rule, err := fs.Update(r.PathValue("id"), forwardstore.UpdateReq{
-			Name: body.Name, TargetURL: body.TargetURL, Secret: body.Secret,
-			Events: body.Events, Enabled: body.Enabled,
+			Name: body.Name, SinkType: body.SinkType, TargetURL: body.TargetURL, Topic: body.Topic,
+			Secret: body.Secret, Events: body.Events, Enabled: body.Enabled,
 		}, time.Now().UnixMilli())
 		if err != nil {
 			writeFwdErr(w, err)
@@ -119,6 +123,19 @@ func registerForwardsAPIs(mux *http.ServeMux, fs *forwardstore.Store) {
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"deliveries": fs.Deliveries(id, limit)})
+	})
+
+	// ─── 测试投递（v0.59.0，spec 0032 裁决 2：同步连通性验证，绕过事件过滤）───
+	mux.HandleFunc("POST /api/v1/forwards/{id}/test", func(w http.ResponseWriter, r *http.Request) {
+		d, err := fs.TestDelivery(r.PathValue("id"), time.Now().UnixMilli())
+		if err != nil {
+			writeFwdErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"delivered": d.Status == "delivered", "attempts": d.Attempts,
+			"status": d.Status, "error": d.Error, "deliveryId": d.ID,
+		})
 	})
 }
 

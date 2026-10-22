@@ -172,6 +172,7 @@
 | 131 | GET | `/api/v1/alerts/mutes` | 静默窗口清单 | v0.58.0 |
 | 132 | POST | `/api/v1/alerts/mutes` | 创建静默窗口 | v0.58.0 |
 | 133 | DELETE | `/api/v1/alerts/mutes/{id}` | 删除静默窗口 | v0.58.0 |
+| 134 | POST | `/api/v1/forwards/{id}/test` | 同步测试投递 | v0.59.0 |
 
 > 契约详情见 API-SPEC.md §7（v0.7.0）/ §1.1（v0.37.0 规则 API 行、v0.39.0 上行可视化行、v0.43.0 视频管理面行、v0.44.0 流媒体分发行）。
 
@@ -415,6 +416,15 @@
 | RBAC | 清单 read=viewer+ / 创建 write=operator+ / 删除 delete=admin | 对齐 v0.46 矩阵只增不改 |
 | 活跃口径 | hierarchy summary alarmActiveCount 排除生效中的静默节点告警（MuteSource 可选接口，未装配行为不变）；告警历史数据与 AlarmStats 四态计数不动 | 只增不改 |
 | 消息 | 19 不变 | 纯云端管理面 |
+
+### v0.59.0 兼容性增量（转发出口增强，spec 0032）
+
+| 项 | 内容 | 兼容性 |
+|---|---|---|
+| 新增端点 1（133→134） | POST /api/v1/forwards/{id}/test（同步连通性验证，绕过事件过滤） | 只增不改；既有 133 端点零改动 |
+| Rule schema 扩展 | 增 sinkType（webhook 默认|mqtt）与 topic（mqtt 主题，空=edgeflow/forward/{id}）；地址语义分叉（webhook=http(s)、mqtt=[tcp://]host:port） | schema 只增字段，旧快照 Load 默认 webhook 向后兼容 |
+| mqtt sink | pkg/mqtt 短连接 QoS1 发布（每投递独立连接；成功=确认完成） | at-least-once 减重发边界登记 |
+| 消息 | 19 不变（mqtt sink 为出站 HTTP 外部协议，非云边消息面） | 纯云端管理面 |
 
 ### v0.48.0 兼容性增量（日志链路，spec 0021）
 

@@ -162,6 +162,7 @@
 | GET | `/api/v1/alerts/mutes` | **静默窗口清单（v0.58.0：含 active 实时标记）** | 200 |
 | POST | `/api/v1/alerts/mutes` | **创建静默窗口（v0.58.0：durationSec 1..2592000）** | 201/400 |
 | DELETE | `/api/v1/alerts/mutes/{id}` | **删除窗口（v0.58.0：delete=admin）** | 200/404 |
+| POST | `/api/v1/forwards/{id}/test` | **同步测试投递（v0.59.0：绕过事件过滤，结果入台账）** | 200/400/404 |
 
 ### 1.2 错误码表（统一约定）
 

@@ -44,7 +44,7 @@ func waitDelivery(t *testing.T, s *Store, ruleID string, want func([]Delivery) b
 // US-1 校验面：合法创建通过；7 类非法输入拒绝（ErrInvalid）。
 func TestV0530CreateValidate(t *testing.T) {
 	s := New("")
-	if _, err := s.Create("告警转发", "http://example.com/hook", "sec", []string{"alarm.raised"}, true, 1000); err != nil {
+	if _, err := s.Create("告警转发", "", "http://example.com/hook", "", "sec", []string{"alarm.raised"}, true, 1000); err != nil {
 		t.Fatalf("合法创建失败: %v", err)
 	}
 	long65 := make([]byte, 65)
@@ -62,7 +62,7 @@ func TestV0530CreateValidate(t *testing.T) {
 		{"r1", "http://example.com", "", []string{"alarm.opened"}},
 	}
 	for i, b := range bad {
-		if _, err := s.Create(b.name, b.url, b.secret, b.events, true, 1000); err == nil {
+		if _, err := s.Create(b.name, "", b.url, "", b.secret, b.events, true, 1000); err == nil {
 			t.Fatalf("非法用例 #%d 应拒绝", i)
 		}
 	}
@@ -71,7 +71,7 @@ func TestV0530CreateValidate(t *testing.T) {
 // US-2 更新与删除：部分更新（name/events/enabled/secret 清除/同值 URL）；未知 404；重复删除 404。
 func TestV0530UpdateDelete(t *testing.T) {
 	s := New("")
-	r, err := s.Create("r1", "http://a.com/h", "sec", []string{"alarm.raised"}, true, 1000)
+	r, err := s.Create("r1", "", "http://a.com/h", "", "sec", []string{"alarm.raised"}, true, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestV0530DispatchHMAC(t *testing.T) {
 	defer rcv.Close()
 
 	s := New("")
-	r, err := s.Create("hmac", rcv.URL, "s3cret", []string{"alarm.raised"}, true, 1000)
+	r, err := s.Create("hmac", "", rcv.URL, "", "s3cret", []string{"alarm.raised"}, true, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestV0530DispatchRetryFail(t *testing.T) {
 	defer rcv.Close()
 
 	s := New("")
-	r, err := s.Create("fail", rcv.URL, "", []string{"alarm.acked"}, true, 1000)
+	r, err := s.Create("fail", "", rcv.URL, "", "", []string{"alarm.acked"}, true, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestV0530EventFilterAndDisabled(t *testing.T) {
 	defer rcv.Close()
 
 	s := New("")
-	r, err := s.Create("flt", rcv.URL, "", []string{"alarm.closed"}, true, 1000)
+	r, err := s.Create("flt", "", rcv.URL, "", "", []string{"alarm.closed"}, true, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestV0530PersistenceRoundtrip(t *testing.T) {
 	if err := s.Load(); err != nil {
 		t.Fatalf("空载 Load: %v", err)
 	}
-	r, err := s.Create("persist", "http://a.com/h", "k", []string{"alarm.raised"}, true, 1000)
+	r, err := s.Create("persist", "", "http://a.com/h", "", "k", []string{"alarm.raised"}, true, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestV0530PersistenceRoundtrip(t *testing.T) {
 // US-7 台账环形：每规则保留最近 100 条（新→旧）。
 func TestV0530LedgerRing(t *testing.T) {
 	s := New("")
-	r, err := s.Create("ring", "http://a.com/h", "", []string{"alarm.raised"}, true, 1000)
+	r, err := s.Create("ring", "", "http://a.com/h", "", "", []string{"alarm.raised"}, true, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}

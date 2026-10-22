@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -38,6 +39,7 @@ import (
 
 	"edgeflow/pkg/alarm"
 	"edgeflow/pkg/log"
+	"edgeflow/pkg/mqtt"
 )
 
 // 限额与常量（spec 0026 裁决）。
@@ -45,6 +47,7 @@ const (
 	maxNameLen      = 64  // name 字节上限
 	maxURLLen       = 512 // targetUrl 字节上限
 	maxSecretLen    = 128 // secret 字节上限
+	maxTopicLen     = 256 // mqtt sink topic 字节上限（v0.59.0）
 	maxDeliveries   = 100 // 每规则台账环形上限
 	maxAttempts     = 3   // 单次投递尝试上限
 	dispatchTimeout = 5 * time.Second
@@ -67,6 +70,8 @@ type Rule struct {
 	ID        string   `json:"id"`
 	Name      string   `json:"name"`
 	TargetURL string   `json:"targetUrl"`
+	SinkType  string   `json:"sinkType"` // v0.59.0：webhook（默认）| mqtt
+	Topic     string   `json:"topic,omitempty"` // v0.59.0：mqtt sink 目标主题（空 = edgeflow/forward/<id>）
 	Secret    string   `json:"secret,omitempty"`
 	Events    []string `json:"events"`
 	Enabled   bool     `json:"enabled"`
@@ -79,6 +84,8 @@ type RuleView struct {
 	ID        string   `json:"id"`
 	Name      string   `json:"name"`
 	TargetURL string   `json:"targetUrl"`
+	SinkType  string   `json:"sinkType"`
+	Topic     string   `json:"topic,omitempty"`
 	HasSecret bool     `json:"hasSecret"`
 	Events    []string `json:"events"`
 	Enabled   bool     `json:"enabled"`
@@ -89,6 +96,7 @@ type RuleView struct {
 func (r *Rule) view() RuleView {
 	return RuleView{
 		ID: r.ID, Name: r.Name, TargetURL: r.TargetURL,
+		SinkType: r.SinkType, Topic: r.Topic,
 		HasSecret: r.Secret != "", Events: r.Events,
 		Enabled: r.Enabled, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 	}
@@ -125,7 +133,9 @@ type payload struct {
 // UpdateReq 是 PUT 的部分更新请求（nil 字段=保留原值；Secret 指向空串=清除）。
 type UpdateReq struct {
 	Name      *string
+	SinkType  *string
 	TargetURL *string
+	Topic     *string
 	Secret    *string
 	Events    []string
 	Enabled   *bool
@@ -183,8 +193,8 @@ func (s *Store) Load() error {
 }
 
 // Create 创建转发规则；校验失败返回 ErrInvalid（消息含原因）。
-func (s *Store) Create(name, targetURL, secret string, events []string, enabled bool, nowMs int64) (Rule, error) {
-	r, err := newRule(name, targetURL, secret, events, enabled, nowMs)
+func (s *Store) Create(name, sinkType, targetURL, topic, secret string, events []string, enabled bool, nowMs int64) (Rule, error) {
+	r, err := newRule(name, sinkType, targetURL, topic, secret, events, enabled, nowMs)
 	if err != nil {
 		return Rule{}, err
 	}
@@ -214,8 +224,17 @@ func (s *Store) Update(id string, req UpdateReq, nowMs int64) (Rule, error) {
 	if req.Name != nil {
 		next.Name = strings.TrimSpace(*req.Name)
 	}
+	if req.SinkType != nil {
+		next.SinkType = strings.TrimSpace(*req.SinkType)
+		if next.SinkType == "" {
+			next.SinkType = "webhook"
+		}
+	}
 	if req.TargetURL != nil {
 		next.TargetURL = strings.TrimSpace(*req.TargetURL)
+	}
+	if req.Topic != nil {
+		next.Topic = strings.TrimSpace(*req.Topic)
 	}
 	if req.Secret != nil {
 		next.Secret = strings.TrimSpace(*req.Secret)
@@ -226,7 +245,7 @@ func (s *Store) Update(id string, req UpdateReq, nowMs int64) (Rule, error) {
 	if req.Enabled != nil {
 		next.Enabled = *req.Enabled
 	}
-	if err := validateRuleFields(next.Name, next.TargetURL, next.Secret, next.Events); err != nil {
+	if err := validateRuleFields(next.Name, next.SinkType, next.TargetURL, next.Topic, next.Secret, next.Events); err != nil {
 		return Rule{}, err
 	}
 	next.UpdatedAt = nowMs
@@ -326,7 +345,7 @@ func (s *Store) Dispatch(event string, a alarm.Alarm) {
 	}
 }
 
-// deliver 执行单规则投递（≤maxAttempts 次；成功=2xx；结果记台账）。
+// deliver 执行单规则投递（异步入口）：构造 payload → 同步投递 → 台账记录。
 func (s *Store) deliver(rule Rule, event string, a alarm.Alarm, at int64) {
 	body, err := json.Marshal(payload{
 		Event: event, AlarmID: a.AlarmID, NodeID: a.NodeID,
@@ -338,10 +357,45 @@ func (s *Store) deliver(rule Rule, event string, a alarm.Alarm, at int64) {
 			AlarmID: a.AlarmID, NodeID: a.NodeID, At: at, Status: "failed", Error: err.Error()})
 		return
 	}
+	s.recordDelivery(s.deliverSync(rule, event, a, at, body))
+}
+
+// deliverSync 同步执行投递（webhook HTTP / mqtt publish 双路；≤maxAttempts 次；
+// 成功 = 2xx / QoS1 确认完成），返回台账记录（不落台账——调用方负责）。
+// v0.59.0（spec 0032 裁决 3）：按 sinkType 分叉。
+func (s *Store) deliverSync(rule Rule, event string, a alarm.Alarm, at int64, body []byte) Delivery {
 	start := time.Now()
 	attempts := 0
 	lastCode := 0
 	lastErr := ""
+	mk := func(status, errMsg string, respCode int) Delivery {
+		return Delivery{ID: newSeqID(at), RuleID: rule.ID, Event: event,
+			AlarmID: a.AlarmID, NodeID: a.NodeID, Severity: a.Severity,
+			At: at, Attempts: attempts, Status: status,
+			RespCode: respCode, Error: errMsg, DurationMs: time.Since(start).Milliseconds()}
+	}
+	if rule.SinkType == "mqtt" {
+		// v0.59.0：mqtt sink——pkg/mqtt 短连接 QoS1 发布到目标 broker 主题
+		//（成功 = Publish QoS1 确认完成；单轮 ack 上限 = mqtt 包内 ackTimeout）。
+		topic := rule.Topic
+		if topic == "" {
+			topic = "edgeflow/forward/" + rule.ID
+		}
+		for i := 0; i < maxAttempts; i++ {
+			attempts++
+			if perr := mqttPublishQoS1(rule.TargetURL, topic, body); perr != nil {
+				lastErr = perr.Error()
+			} else {
+				d := mk("delivered", "", 0)
+				return d
+			}
+			if i < maxAttempts-1 {
+				time.Sleep(retryBackoff[i])
+			}
+		}
+		return mk("failed", lastErr, 0)
+	}
+	// webhook 路径（既有语义）。
 	for i := 0; i < maxAttempts; i++ {
 		attempts++
 		req, rerr := http.NewRequest(http.MethodPost, rule.TargetURL, bytes.NewReader(body))
@@ -361,11 +415,7 @@ func (s *Store) deliver(rule Rule, event string, a alarm.Alarm, at int64) {
 			_ = resp.Body.Close()
 			lastCode = resp.StatusCode
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				s.recordDelivery(Delivery{ID: newSeqID(at), RuleID: rule.ID, Event: event,
-					AlarmID: a.AlarmID, NodeID: a.NodeID, Severity: a.Severity,
-					At: at, Attempts: attempts, Status: "delivered",
-					RespCode: lastCode, DurationMs: time.Since(start).Milliseconds()})
-				return
+				return mk("delivered", "", lastCode)
 			}
 			lastErr = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		} else {
@@ -375,10 +425,51 @@ func (s *Store) deliver(rule Rule, event string, a alarm.Alarm, at int64) {
 			time.Sleep(retryBackoff[i])
 		}
 	}
-	s.recordDelivery(Delivery{ID: newSeqID(at), RuleID: rule.ID, Event: event,
-		AlarmID: a.AlarmID, NodeID: a.NodeID, Severity: a.Severity,
-		At: at, Attempts: attempts, Status: "failed",
-		RespCode: lastCode, Error: lastErr, DurationMs: time.Since(start).Milliseconds()})
+	return mk("failed", lastErr, lastCode)
+}
+
+// mqttPublishQoS1 短连接发布：dial → PUBLISH(QoS1) → 等 PUBACK → DISCONNECT。
+// 每次投递独立连接（低频事件面量级假设；连接池留需时立项）。
+func mqttPublishQoS1(brokerAddr, topic string, payload []byte) error {
+	c, err := mqtt.Dial(brokerAddr, mqtt.Options{
+		ClientID:       "edgeflow-forward-" + newSeqID(time.Now().UnixMilli()),
+		ProtocolVersion5: true,
+	})
+	if err != nil {
+		return fmt.Errorf("mqtt dial: %w", err)
+	}
+	defer func() { _ = c.Close() }()
+	return c.Publish(topic, 1, payload)
+}
+
+// TestDelivery 同步执行一次测试投递（事件名 "test"，绕过事件过滤——连通性
+// 验证；spec 0032 裁决 2，KI §54#2 处置）。结果记台账并返回。
+func (s *Store) TestDelivery(id string, nowMs int64) (Delivery, error) {
+	s.mu.Lock()
+	rule, ok := s.data.Rules[id]
+	if !ok {
+		s.mu.Unlock()
+		return Delivery{}, ErrNotFound
+	}
+	r := *rule
+	s.mu.Unlock()
+	if !r.Enabled {
+		return Delivery{}, fmt.Errorf("%w: 规则已禁用（启用后再测试）", ErrInvalid)
+	}
+	testAlarm := alarm.Alarm{AlarmID: "test-" + r.ID, NodeID: "-", Source: alarm.SourceSystem,
+		Severity: alarm.SeverityInfo, State: alarm.StateRaised, Count: 1,
+		RaisedAt: nowMs, UpdatedAt: nowMs, Message: "连通性测试投递"}
+	body, err := json.Marshal(payload{
+		Event: "test", AlarmID: testAlarm.AlarmID, NodeID: testAlarm.NodeID,
+		State: testAlarm.State, Severity: testAlarm.Severity,
+		Message: testAlarm.Message, At: nowMs,
+	})
+	if err != nil {
+		return Delivery{}, fmt.Errorf("mutestore: 测试 payload 序列化失败: %w", err)
+	}
+	d := s.deliverSync(r, "test", testAlarm, nowMs, body)
+	s.recordDelivery(d)
+	return d, nil
 }
 
 // recordDelivery 追加台账（环形截断；尽力持久化，失败不阻断投递）。
@@ -419,33 +510,58 @@ func (s *Store) persistLocked() error {
 }
 
 // newRule 构建并校验新规则（trim + 事件去重 + 字段校验 + id 生成）。
-func newRule(name, targetURL, secret string, events []string, enabled bool, nowMs int64) (Rule, error) {
+func newRule(name, sinkType, targetURL, topic, secret string, events []string, enabled bool, nowMs int64) (Rule, error) {
 	name = strings.TrimSpace(name)
+	sinkType = strings.TrimSpace(sinkType)
+	if sinkType == "" {
+		sinkType = "webhook"
+	}
 	targetURL = strings.TrimSpace(targetURL)
+	topic = strings.TrimSpace(topic)
 	secret = strings.TrimSpace(secret)
 	events = normalizeEvents(events)
-	if err := validateRuleFields(name, targetURL, secret, events); err != nil {
+	if err := validateRuleFields(name, sinkType, targetURL, topic, secret, events); err != nil {
 		return Rule{}, err
 	}
 	id, err := randID("fw")
 	if err != nil {
 		return Rule{}, err
 	}
-	return Rule{ID: id, Name: name, TargetURL: targetURL, Secret: secret,
+	return Rule{ID: id, Name: name, TargetURL: targetURL, SinkType: sinkType, Topic: topic, Secret: secret,
 		Events: events, Enabled: enabled, CreatedAt: nowMs, UpdatedAt: nowMs}, nil
 }
 
-// validateRuleFields 校验规则字段（Create/Update 共用）。
-func validateRuleFields(name, targetURL, secret string, events []string) error {
+// validateRuleFields 校验规则字段（Create/Update 共用）。地址语义按 sinkType 分叉：
+// webhook = http(s) 绝对地址（既有语义）；mqtt = [tcp://]host:port（v0.59.0，spec 0032）。
+func validateRuleFields(name, sinkType, targetURL, topic, secret string, events []string) error {
 	if name == "" || len(name) > maxNameLen {
 		return fmt.Errorf("%w: name 须 1..%d 字节", ErrInvalid, maxNameLen)
 	}
-	if targetURL == "" || len(targetURL) > maxURLLen {
-		return fmt.Errorf("%w: targetUrl 须 1..%d 字节", ErrInvalid, maxURLLen)
-	}
-	u, err := url.Parse(targetURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("%w: targetUrl 须为 http(s) 绝对地址", ErrInvalid)
+	switch sinkType {
+	case "", "webhook":
+		if targetURL == "" || len(targetURL) > maxURLLen {
+			return fmt.Errorf("%w: targetUrl 须 1..%d 字节", ErrInvalid, maxURLLen)
+		}
+		u, err := url.Parse(targetURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("%w: targetUrl 须为 http(s) 绝对地址", ErrInvalid)
+		}
+	case "mqtt":
+		if targetURL == "" || len(targetURL) > maxURLLen {
+			return fmt.Errorf("%w: targetUrl 须 1..%d 字节", ErrInvalid, maxURLLen)
+		}
+		host := strings.TrimPrefix(strings.TrimPrefix(targetURL, "tcp://"), "mqtt://")
+		if host == "" || strings.Contains(host, "/") {
+			return fmt.Errorf("%w: mqtt sink targetUrl 须为 [tcp://]host:port", ErrInvalid)
+		}
+		if _, _, serr := net.SplitHostPort(host); serr != nil {
+			return fmt.Errorf("%w: mqtt sink targetUrl 缺少端口", ErrInvalid)
+		}
+		if len(topic) > maxTopicLen {
+			return fmt.Errorf("%w: topic 须 ≤%d 字节", ErrInvalid, maxTopicLen)
+		}
+	default:
+		return fmt.Errorf("%w: 非法 sinkType %q（webhook|mqtt）", ErrInvalid, sinkType)
 	}
 	if len(secret) > maxSecretLen {
 		return fmt.Errorf("%w: secret 须 ≤%d 字节", ErrInvalid, maxSecretLen)

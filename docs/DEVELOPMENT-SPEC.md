@@ -155,3 +155,4 @@ EdgeFlow 是云边协同的边缘计算平台：云端控制面（cloudcore + et
 | v0.55.0 | 2026-10-21 | MQTT 出站重发（持续项 B1/B2，spec 0028）：pkg/mqtt Options.ResendInterval/MaxResends + resendLoop 三路径（QoS1/2-phase1 DUP=1、phase2 PUBREL）+ errAckTimeout 哨兵 + SUBACK 语义不变；B3 出站 alias 销项（v0.33 已交付）；库能力零 API 变更契约 128 维持 | spec 0028 / RN-v0550 / KI §56 |
 | v0.56.0 | 2026-10-21 | 审计台账查询面（spec 0029）：audit.Ledger Query/Stats（文件扫描过滤+降序分页+聚合桶）+ API 2 端点（128→130，viewer+，无 DELETE）；记录面零改动；纯云端管理面消息 19 不变 | spec 0029 / RN-v0560 / KI §57 |
 | v0.57.0 | 2026-10-22 | MQTT 出站修复与共享订阅（持续项 B4，spec 0030）：QoS2 phase2 专用等待循环（迟到 PUBREC 跳过+超时重发 PUBREL，R2 P3-1 处置）+ 共享订阅 granted-QoS1 下行（v5 面，降级锚保留）+ US-4 断言增强（R2 P3-3）；库能力零 API 变更契约 130 维持 | spec 0030 / RN-v0570 / KI §58 |
+| v0.58.0 | 2026-10-22 | 告警静默窗口（spec 0031）：mutestore（窗口≤30 天/总数≤200/不可变/JSON 快照）+ hierarchy 活跃口径排除（MuteSource 可选接口）+ API 3 端点（130→133，DELETE=admin）；纯云端管理面消息 19 不变 | spec 0031 / RN-v0580 / KI §59 |

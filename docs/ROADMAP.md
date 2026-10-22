@@ -886,3 +886,10 @@ spec：specs/0018-model-sample-inference/spec.md（发展规划 v0.45 · G23+G25
 - **交付**：QoS2 phase2 专用等待循环（迟到 PUBREC 跳过 + 超时重发 PUBREL + 有界额度）+ phase2 前 drain 保留 + shareSub.granted 入库与 QoS1 直发（v5 面，轮转不变，离线暂存边界保留）+ v3 降级锚。
 - **设计要点**：迟到帧跳过计入有界额度（attempts+8）防病态 broker 挂死；默认禁用重发时 phase2 等价；共享 QoS1 直发无 broker 重发（at-least-once 减重发，边界登记）。
 - **承接**：共享订阅离线暂存（spec 0005 US-5 边界）与 broker 下行重发维持非目标（spec 0030 裁决 5）。
+
+### §54 v0.58.0 — 告警静默窗口（已交付 2026-10-22）
+
+- **范围**：告警治理运维增强——静默窗口 CRUD + 层级活跃口径排除。
+- **交付**：新包 mutestore（窗口≤30 天/总数≤200/不可变/JSON 快照）+ hierarchy MuteSource 可选接口（活跃口径排除，未装配行为不变）+ API 3 端点（130→133，DELETE=admin）+ 真实告警管线 e2e 三段。
+- **设计要点**：活跃口径排除仅作用 summary alarmActiveCount（告警历史与四态计数不动）；过期惰性失效（active 实时标记，快照留痕）；窗口必须有界（≤30 天）。
+- **承接**：静默作用转发出口（通知抑制）/severity 维度/周期窗口登记非目标（spec 0031 裁决 6）。

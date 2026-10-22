@@ -10,20 +10,20 @@ import (
 // US-1 创建校验：合法通过；reason 超限/空窗/窗口超 30 天/总数上限 拒绝。
 func TestV0580CreateValidate(t *testing.T) {
 	s := New("")
-	if _, err := s.Create("n1", 1000, 2000, "检修窗口", "op-1", 500); err != nil {
+	if _, err := s.Create("n1", "", 1000, 2000, "检修窗口", "op-1", 500); err != nil {
 		t.Fatalf("合法创建失败: %v", err)
 	}
-	if _, err := s.Create("n1", 1000, 2000, strings.Repeat("r", 257), "op-1", 500); err == nil {
+	if _, err := s.Create("n1", "", 1000, 2000, strings.Repeat("r", 257), "op-1", 500); err == nil {
 		t.Fatalf("reason 超限应拒绝")
 	}
-	if _, err := s.Create("n1", 2000, 2000, "r", "op-1", 500); err == nil {
+	if _, err := s.Create("n1", "", 2000, 2000, "r", "op-1", 500); err == nil {
 		t.Fatalf("空窗应拒绝")
 	}
-	if _, err := s.Create("n1", 1000, 1000+30*24*60*60*1000+1, "r", "op-1", 500); err == nil {
+	if _, err := s.Create("n1", "", 1000, 1000+30*24*60*60*1000+1, "r", "op-1", 500); err == nil {
 		t.Fatalf("超 30 天应拒绝")
 	}
 	// 全节点窗口（nodeID 空）合法
-	if _, err := s.Create("", 1000, 2000, "全站", "op-1", 500); err != nil {
+	if _, err := s.Create("", "", 1000, 2000, "全站", "op-1", 500); err != nil {
 		t.Fatalf("全节点创建失败: %v", err)
 	}
 }
@@ -32,7 +32,7 @@ func TestV0580CreateValidate(t *testing.T) {
 // 过期窗口不生效。
 func TestV0580ActiveAndMatches(t *testing.T) {
 	s := New("")
-	sil, err := s.Create("n1", 1000, 2000, "检修", "op-1", 500)
+	sil, err := s.Create("n1", "", 1000, 2000, "检修", "op-1", 500)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestV0580ActiveAndMatches(t *testing.T) {
 	if !sil.Matches("n1") || sil.Matches("n2") {
 		t.Fatalf("Matches 定向不符")
 	}
-	all, _ := s.Create("", 1000, 2000, "全站", "op-1", 500)
+	all, _ := s.Create("", "", 1000, 2000, "全站", "op-1", 500)
 	if !all.Matches("any-node") {
 		t.Fatalf("全节点窗口应命中任意节点")
 	}
@@ -57,9 +57,9 @@ func TestV0580ActiveAndMatches(t *testing.T) {
 // US-3 删除与 List：删除即时失效；未知 404；清单创建时间降序。
 func TestV0580DeleteAndList(t *testing.T) {
 	s := New("")
-	a, _ := s.Create("n1", 1000, 2000, "a", "op-1", 1000)
-	b, _ := s.Create("n2", 1000, 2000, "b", "op-1", 2000)
-	c, _ := s.Create("n3", 1000, 2000, "c", "op-1", 3000)
+	a, _ := s.Create("n1", "", 1000, 2000, "a", "op-1", 1000)
+	b, _ := s.Create("n2", "", 1000, 2000, "b", "op-1", 2000)
+	c, _ := s.Create("n3", "", 1000, 2000, "c", "op-1", 3000)
 	list := s.List()
 	if len(list) != 3 || list[0].ID != c.ID || list[2].ID != a.ID {
 		t.Fatalf("清单降序不符: %+v", list)
@@ -82,7 +82,7 @@ func TestV0580PersistenceRoundtrip(t *testing.T) {
 	if err := s.Load(); err != nil {
 		t.Fatalf("空载 Load: %v", err)
 	}
-	if _, err := s.Create("n1", 1000, 2000, "检修", "op-1", 500); err != nil {
+	if _, err := s.Create("n1", "", 1000, 2000, "检修", "op-1", 500); err != nil {
 		t.Fatal(err)
 	}
 	s2 := New(file)
@@ -99,11 +99,11 @@ func TestV0580PersistenceRoundtrip(t *testing.T) {
 func TestV0580CapLimit(t *testing.T) {
 	s := New("")
 	for i := 0; i < 200; i++ {
-		if _, err := s.Create("n", int64(i*10), int64(i*10+5), "r", "op-1", int64(i)); err != nil {
+		if _, err := s.Create("n", "", int64(i*10), int64(i*10+5), "r", "op-1", int64(i)); err != nil {
 			t.Fatalf("第 %d 条创建失败: %v", i+1, err)
 		}
 	}
-	if _, err := s.Create("n", 1, 2, "r", "op-1", 1); err == nil {
+	if _, err := s.Create("n", "", 1, 2, "r", "op-1", 1); err == nil {
 		t.Fatalf("超上限应拒绝")
 	}
 }

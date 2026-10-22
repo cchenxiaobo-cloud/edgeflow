@@ -63,6 +63,20 @@ const (
 // facetRoles 是角色管理面路径前缀（最高敏感，仅 admin；operator 删除也拒绝）。
 var facetRoles = []string{"/api/v1/roles", "/api/v1/users"}
 
+// adminOnlyPaths 仅 admin（v0.65.0 spec 0038；R5 复核 P1-1 处置：转发规则
+// 导出/导入——导出含脱敏配置面，导入写规则库；既有 opOf 仅按方法判定，
+// viewer/operator 可越权，现补路径级 facet 执行层）。
+var adminOnlyPaths = map[string]bool{
+	"/api/v1/forwards/export": true,
+	"/api/v1/forwards/import": true,
+}
+
+// operatorPlusPaths operator 及以上（v0.65.0 spec 0038；R5 复核 P1-1 处置：
+// 审计台账导出——JSONL 含 IP 敏感信息，viewer 拒绝）。
+var operatorPlusPaths = map[string]bool{
+	"/api/v1/audit/entries/export": true,
+}
+
 // User 是一条 API 凭证（存储形态：Token 仅存哈希）。
 type User struct {
 	ID   string   `json:"id"`                // 凭证 ID（审计 operator 记录此值）
@@ -226,6 +240,12 @@ func opOf(method, path string) (o op, facet string) {
 			return o, "roles"
 		}
 	}
+	if adminOnlyPaths[path] {
+		return o, "admin"
+	}
+	if operatorPlusPaths[path] {
+		return o, "opplus"
+	}
 	return o, ""
 }
 
@@ -255,14 +275,14 @@ func Can(u User, method, path string) bool {
 			return true
 		}
 	case RoleOperator:
-		if facet == "roles" {
+		if facet == "roles" || facet == "admin" {
 			return false // 角色管理面 operator 一律拒绝
 		}
 		if o == opDelete {
 			return false // v0.46 语义：operator 无删除（保守起步）
 		}
 	case RoleViewer:
-		if o != opRead || facet == "roles" {
+		if o != opRead || facet == "roles" || facet == "admin" || facet == "opplus" {
 			return false
 		}
 	default:

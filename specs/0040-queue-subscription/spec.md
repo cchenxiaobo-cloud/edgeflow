@@ -10,9 +10,12 @@
 2. 复用 $share 轮转机制（多订阅者负载均衡轮转接收）
 3. granted-QoS 回显请求 QoS（与 $share 一致）
 4. $queue 与 $share/{group} 各自独立轮转互不干扰
-5. v3.1.1 冻结锚保留（$queue 在 v3.1.1 路径仍拒绝）
+5. v3.1.1 语义（R5 复核 P2-3 处置修订，原裁决文本与实现不符）：$queue 与
+   $share 同语义——parseShareFilter 与协议版本无关，v3/v5 一致放行（对齐
+   既有共享订阅 v3/v5 同路行为，不为 $queue 单独新增 v3 拒绝分支）；行为
+   变更（$queue 订阅从 0x80 拒绝 → granted）登记 KI §68
 6. 非目标：$queue 离线暂存、$queue 与 $share 混合去重
 
 ## 交付锚
 
-实现+测试详见 RN-v0660。
+实现+测试详见 RN-v0660；v3.1.1 语义修订与行为变更登记见 KI §68。

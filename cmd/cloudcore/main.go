@@ -989,8 +989,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if err := forwardStore.Load(); err != nil {
 		log.Warnf("[forwardstore] 启动恢复失败（以空规则继续）: %v", err)
 	}
-	alarmStore.SetTransitionHook(forwardStore.Dispatch)
-	forwardStore.SetMutes(muteStore) // v0.62.0（spec 0035）：静默联动通知抑制
+	forwardStore.SetMutes(muteStore)                    // v0.62.0（spec 0035）：静默联动通知抑制（R5 复核 P3-5 处置：先挂静默链再挂事件钩子，消除窗口内事件跳过静默判定）
+	alarmStore.SetTransitionHook(forwardStore.Dispatch) // v0.62.0（spec 0035）：静默联动通知抑制
 	registerForwardsAPIs(apiMux, forwardStore)
 	log.Infof("[forwardstore] 数据转发出口就绪（规则 %d 条；快照=%s）", len(forwardStore.List()), os.Getenv("EDGEFLOW_CLOUDCORE_FORWARD_FILE"))
 

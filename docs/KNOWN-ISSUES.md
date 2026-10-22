@@ -995,6 +995,25 @@ MQTT/OPC-UA/视频/模型面零触碰；v0240–v0350 冻结测试零改动。
 
 | # | 现象 | 影响 | 缓解/状态 |
 |---|---|---|---|
-| 1 | 审计导出为全文件一次性写入（无分页/流式分块） | 台账极大时内存占用 | 30 天保留+管理面量级假设；分块留需时立项 |
+| 1 | ~~审计导出为全文件一次性写入（无分页/流式分块）~~ **R5 复核 P3-4 处置（hotfix）：已改 os.Open+io.Copy 流式**；分页/分块仍无 | 台账极大时内存占用已消；分块留需时立项 |
 | 2 | 转发规则导入 Secret 明文传输入口 | 导入请求含明文密钥（同创建语义） | HTTPS/内网场景；导入审计走 audit middleware |
 | 3 | 转发规则导入不校验 secret 强度 | 弱密钥可导入 | 与 Create 同语义（校验长度非强度）；强度策略留需时立项 |
+
+## §68 R5+R6 复核处置（v0.62–v0.66 hotfix）与登记
+
+R5+R6 合并复核判定 FAIL（1×P1+3×P2+6×P3），处置如下（报告 subagent_R56_review.md）：
+
+| 项 | 内容 | 处置 |
+|---|---|---|
+| P1-1 | v0.65 三端点 RBAC 声明与执行分叉（viewer 可下载审计 JSONL/规则导出，operator 可导入） | **已修**：rbac.go 增 adminOnlyPaths/operatorPlusPaths 路径级 facet（opOf/Can 执行层）+ rbac/v0650_test.go 矩阵单测 |
+| P2-1 | Import 不保留源 ID（二次导入全重复）且零测试 | **已修**：forwardstore insert 抽取 + Import 保留源 ID + v0650_test.go（round-trip/去重/非法条目） |
+| P2-2 | spec 0038 交付物未提交 | **已补录**：specs/0038-export-import/spec.md（含 RBAC/Import ID 裁决修订） |
+| P2-3 | spec 0040 裁决 5 与实现不符（v3.1.1 $queue 实际放行） | **已修 spec**：裁决 5 修订为 v3/v5 同语义放行（对齐 $share 既有 v3 行为）；行为变更登记本表 #1 |
+| P3-1 | mqtt sink tls:// 前缀映射不可达（校验器拒绝） | **已修**：validateRuleFields 剥 tls:// 前缀校验 host:port + 单测 |
+| P3-2 | POST mutes 201 响应缺 severity | **已修**：响应补 severity |
+| P3-3 | parseShareFilter 注释自相矛盾 | **已修**：注释更正 |
+| P3-4 | 审计导出非流式（全量入内存） | **已修**：os.Open+io.Copy（§67#1 同步） |
+| P3-5 | SetTransitionHook 先于 SetMutes 装配窗口 | **已修**：交换顺序 |
+| P3-6 | 共享订阅 SUBACK 回显不封顶（v5 请求 QoS2 回显 2，下行仍 QoS1） | 登记（v0.57 既有 $share 行为，非本区间回归；客户端兼容未受影响报障前不动） |
+
+**行为变更登记**：$queue 订阅（v0.66.0 起）对 v3.1.1 客户端从 SUBACK 0x80 拒绝变为正常 granted（固定组共享订阅，QoS 按请求）——依赖旧拒绝行为的客户端需适配。v0.66.0 hotfix 同批生效。

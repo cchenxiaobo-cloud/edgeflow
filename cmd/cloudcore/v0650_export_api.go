@@ -11,6 +11,7 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -23,7 +24,7 @@ import (
 func registerExportAPIs(mux *http.ServeMux, ledger *audit.Ledger, fs *forwardstore.Store) {
 	// ─── 审计台账导出（JSONL 原样流式）───
 	mux.HandleFunc("GET /api/v1/audit/entries/export", func(w http.ResponseWriter, r *http.Request) {
-		data, err := os.ReadFile(ledger.Path())
+		f, err := os.Open(ledger.Path())
 		if err != nil {
 			if os.IsNotExist(err) {
 				w.Header().Set("Content-Type", "application/jsonl")
@@ -33,10 +34,11 @@ func registerExportAPIs(mux *http.ServeMux, ledger *audit.Ledger, fs *forwardsto
 			writeErr(w, http.StatusInternalServerError, "台账读取失败: "+err.Error(), nil)
 			return
 		}
+		defer f.Close()
 		w.Header().Set("Content-Type", "application/jsonl")
 		w.Header().Set("Content-Disposition", "attachment; filename=audit-ledger-export.jsonl")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(data)
+		_, _ = io.Copy(w, f)
 	})
 
 	// ─── 转发规则导出（脱敏 JSON）───

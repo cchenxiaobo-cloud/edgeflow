@@ -56,7 +56,7 @@ func registerMuteAPIs(mux *http.ServeMux, ms *mutestore.Store) {
 		}
 		// 响应带 active 实时标记（与 GET 清单视图同型；新窗口必然 active）。
 		writeJSON(w, http.StatusCreated, map[string]any{
-			"id": sil.ID, "nodeId": sil.NodeID, "from": sil.FromMs, "to": sil.ToMs,
+			"id": sil.ID, "nodeId": sil.NodeID, "severity": sil.Severity, "from": sil.FromMs, "to": sil.ToMs,
 			"reason": sil.Reason, "createdBy": sil.CreatedBy, "createdAt": sil.CreatedAt,
 			"active": sil.Active(now),
 		})

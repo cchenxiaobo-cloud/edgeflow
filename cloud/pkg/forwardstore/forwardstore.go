@@ -223,6 +223,11 @@ func (s *Store) Create(name, sinkType, targetURL, topic, secret, mqttUsername, m
 	if err != nil {
 		return Rule{}, err
 	}
+	return s.insert(r)
+}
+
+// insert 落库（Create/Import 共用；R5 复核 P2-1 处置：Import 保留源 ID）。
+func (s *Store) insert(r Rule) (Rule, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.data.Rules == nil {
@@ -612,7 +617,7 @@ func validateRuleFields(name, sinkType, targetURL, topic, secret, mqttUsername, 
 		if targetURL == "" || len(targetURL) > maxURLLen {
 			return fmt.Errorf("%w: targetUrl 须 1..%d 字节", ErrInvalid, maxURLLen)
 		}
-		host := strings.TrimPrefix(strings.TrimPrefix(targetURL, "tcp://"), "mqtt://")
+		host := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(targetURL, "tcp://"), "mqtt://"), "tls://")
 		if host == "" || strings.Contains(host, "/") {
 			return fmt.Errorf("%w: mqtt sink targetUrl 须为 [tcp://]host:port", ErrInvalid)
 		}
@@ -706,8 +711,16 @@ func (s *Store) Import(rules []ImportRule, nowMs int64) ImportResult {
 				continue
 			}
 		}
-		if _, err := s.Create(ir.Name, ir.SinkType, ir.TargetURL, ir.Topic, ir.Secret,
-			ir.MqttUsername, ir.MqttPassword, ir.MqttTLS, ir.Events, ir.Enabled, nowMs); err != nil {
+		r, err := newRule(ir.Name, ir.SinkType, ir.TargetURL, ir.Topic, ir.Secret,
+			ir.MqttUsername, ir.MqttPassword, ir.MqttTLS, ir.Events, ir.Enabled, nowMs)
+		if err != nil {
+			result.Errors = append(result.Errors, ir.Name+": "+err.Error())
+			continue
+		}
+		if ir.ID != "" {
+			r.ID = ir.ID // R5 复核 P2-1 处置：保留源 ID（导出→导入 round-trip 幂等）
+		}
+		if _, err := s.insert(r); err != nil {
 			result.Errors = append(result.Errors, ir.Name+": "+err.Error())
 			continue
 		}

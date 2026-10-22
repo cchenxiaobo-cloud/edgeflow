@@ -914,3 +914,10 @@ spec：specs/0018-model-sample-inference/spec.md（发展规划 v0.45 · G23+G25
 - **交付**：GET /api/v1/diagnostics/summary（节点/告警/区域/静默/转发/etcd 形态/审计台账文件/运行时长，viewer+）+ audit 查询参数非法值显式 400（语义收紧登记增量节）+ e2e 两段。
 - **设计要点**：聚合只读（各 store 自带锁，非同一快照口径对齐 hierarchyview）；无新依赖（各既有 store Count/List/Stats 复用）。
 - **承接**：Prometheus 指标扩展/历史趋势/etcd 集群深探登记非目标（spec 0034 裁决 6）。
+
+### §58 v0.62.0 — 静默联动通知抑制（已交付 2026-10-22）
+
+- **范围**：spec 0031 裁决 6 承接——静默作用转发出口（通知抑制）。
+- **交付**：forwardstore MuteSource（Dispatch 节点+级别静默判定，命中不投递不记台账）+ mutestore severity 维度（MatchesEvent，仅转发过滤）+ mutes POST schema 扩展（severity）+ 真实告警管线 e2e 两段（静默零收包→解除后送达）。
+- **设计要点**：层级活跃口径维持节点级（severity 窗口不参与 Muted——口径差异显式声明）；mutestore.MutedEvent（事件级）与 Muted（节点级）两个消费方两种口径；未装配静默源时行为不变。
+- **承接**：「已抑制」审计留痕/severity 窗口参与活跃口径/周期性静默登记非目标（spec 0035 裁决 6）。

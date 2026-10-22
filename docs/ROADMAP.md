@@ -907,3 +907,10 @@ spec：specs/0018-model-sample-inference/spec.md（发展规划 v0.45 · G23+G25
 - **交付**：openIncoming TokenID 严格比对（帧内校验，不匹配显式拒绝，换钥窗口保留）+ deriveKeys PSHA 规范化（HMAC-SHA256，证书退出派生，切片按 Part 6 Table 26）+ golden 锚 + TokenID 三态测试。
 - **设计要点**：DeriveKeys 导出签名去 cert 参数（调用面全量更新）；密钥流与旧近似不兼容（会话态无持久化负担）；实现规范化 ≠ 互操作验证（外部验证前提如实登记）。
 - **承接**：opcuasim 入站镜像校验/官方向量外部比对/Basic128Rsa15 登记非目标（spec 0033 裁决 6）。
+
+### §57 v0.61.0 — 诊断聚合面（已交付 2026-10-22）
+
+- **范围**：运维可观测性——系统健康一屏（聚合只读）+ R2 P3-2 处置（audit 参数校验）。
+- **交付**：GET /api/v1/diagnostics/summary（节点/告警/区域/静默/转发/etcd 形态/审计台账文件/运行时长，viewer+）+ audit 查询参数非法值显式 400（语义收紧登记增量节）+ e2e 两段。
+- **设计要点**：聚合只读（各 store 自带锁，非同一快照口径对齐 hierarchyview）；无新依赖（各既有 store Count/List/Stats 复用）。
+- **承接**：Prometheus 指标扩展/历史趋势/etcd 集群深探登记非目标（spec 0034 裁决 6）。

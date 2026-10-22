@@ -21,6 +21,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -67,37 +68,45 @@ var (
 
 // Rule 是一条转发规则（Secret 仅持久化与投递签名用，API 读面输出 RuleView）。
 type Rule struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	TargetURL string   `json:"targetUrl"`
-	SinkType  string   `json:"sinkType"`        // v0.59.0：webhook（默认）| mqtt
-	Topic     string   `json:"topic,omitempty"` // v0.59.0：mqtt sink 目标主题（空 = edgeflow/forward/<id>）
-	Secret    string   `json:"secret,omitempty"`
-	Events    []string `json:"events"`
-	Enabled   bool     `json:"enabled"`
-	CreatedAt int64    `json:"createdAt"`
-	UpdatedAt int64    `json:"updatedAt"`
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	TargetURL    string   `json:"targetUrl"`
+	SinkType     string   `json:"sinkType"`        // v0.59.0：webhook（默认）| mqtt
+	Topic        string   `json:"topic,omitempty"` // v0.59.0：mqtt sink 目标主题（空 = edgeflow/forward/<id>）
+	Secret       string   `json:"secret,omitempty"`
+	MqttUsername string   `json:"mqttUsername,omitempty"` // v0.64.0：mqtt sink 用户名（GET 面脱敏）
+	MqttPassword string   `json:"mqttPassword,omitempty"` // v0.64.0：mqtt sink 密码（GET 面脱敏）
+	MqttTLS      bool     `json:"mqttTLS"`                // v0.64.0：tls:// 前缀映射位（true = TLS 拨号，跳过证书校验）
+	Events       []string `json:"events"`
+	Enabled      bool     `json:"enabled"`
+	CreatedAt    int64    `json:"createdAt"`
+	UpdatedAt    int64    `json:"updatedAt"`
 }
 
 // RuleView 是 Rule 的脱敏视图（GET 面输出；Secret 不回显）。
 type RuleView struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	TargetURL string   `json:"targetUrl"`
-	SinkType  string   `json:"sinkType"`
-	Topic     string   `json:"topic,omitempty"`
-	HasSecret bool     `json:"hasSecret"`
-	Events    []string `json:"events"`
-	Enabled   bool     `json:"enabled"`
-	CreatedAt int64    `json:"createdAt"`
-	UpdatedAt int64    `json:"updatedAt"`
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	TargetURL    string   `json:"targetUrl"`
+	SinkType     string   `json:"sinkType"`
+	Topic        string   `json:"topic,omitempty"`
+	HasSecret    bool     `json:"hasSecret"`
+	MqttUsername string   `json:"mqttUsername,omitempty"`
+	HasMqttPass  bool     `json:"hasMqttPass"`
+	MqttTLS      bool     `json:"mqttTLS"`
+	Events       []string `json:"events"`
+	Enabled      bool     `json:"enabled"`
+	CreatedAt    int64    `json:"createdAt"`
+	UpdatedAt    int64    `json:"updatedAt"`
 }
 
 func (r *Rule) view() RuleView {
 	return RuleView{
 		ID: r.ID, Name: r.Name, TargetURL: r.TargetURL,
 		SinkType: r.SinkType, Topic: r.Topic,
-		HasSecret: r.Secret != "", Events: r.Events,
+		HasSecret: r.Secret != "", MqttUsername: r.MqttUsername,
+		HasMqttPass: r.MqttPassword != "", MqttTLS: r.MqttTLS,
+		Events:  r.Events,
 		Enabled: r.Enabled, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 	}
 }
@@ -132,13 +141,16 @@ type payload struct {
 
 // UpdateReq 是 PUT 的部分更新请求（nil 字段=保留原值；Secret 指向空串=清除）。
 type UpdateReq struct {
-	Name      *string
-	SinkType  *string
-	TargetURL *string
-	Topic     *string
-	Secret    *string
-	Events    []string
-	Enabled   *bool
+	Name         *string
+	SinkType     *string
+	TargetURL    *string
+	Topic        *string
+	Secret       *string
+	MqttUsername *string
+	MqttPassword *string
+	MqttTLS      *bool
+	Events       []string
+	Enabled      *bool
 }
 
 // snapshot 是持久化形态（rules 键控 + deliveries 按规则环形）。
@@ -206,8 +218,8 @@ func (s *Store) Load() error {
 }
 
 // Create 创建转发规则；校验失败返回 ErrInvalid（消息含原因）。
-func (s *Store) Create(name, sinkType, targetURL, topic, secret string, events []string, enabled bool, nowMs int64) (Rule, error) {
-	r, err := newRule(name, sinkType, targetURL, topic, secret, events, enabled, nowMs)
+func (s *Store) Create(name, sinkType, targetURL, topic, secret, mqttUsername, mqttPassword string, mqttTLS bool, events []string, enabled bool, nowMs int64) (Rule, error) {
+	r, err := newRule(name, sinkType, targetURL, topic, secret, mqttUsername, mqttPassword, mqttTLS, events, enabled, nowMs)
 	if err != nil {
 		return Rule{}, err
 	}
@@ -252,13 +264,22 @@ func (s *Store) Update(id string, req UpdateReq, nowMs int64) (Rule, error) {
 	if req.Secret != nil {
 		next.Secret = strings.TrimSpace(*req.Secret)
 	}
+	if req.MqttUsername != nil {
+		next.MqttUsername = strings.TrimSpace(*req.MqttUsername)
+	}
+	if req.MqttPassword != nil {
+		next.MqttPassword = strings.TrimSpace(*req.MqttPassword)
+	}
+	if req.MqttTLS != nil {
+		next.MqttTLS = *req.MqttTLS
+	}
 	if req.Events != nil {
 		next.Events = normalizeEvents(req.Events)
 	}
 	if req.Enabled != nil {
 		next.Enabled = *req.Enabled
 	}
-	if err := validateRuleFields(next.Name, next.SinkType, next.TargetURL, next.Topic, next.Secret, next.Events); err != nil {
+	if err := validateRuleFields(next.Name, next.SinkType, next.TargetURL, next.Topic, next.Secret, next.MqttUsername, next.MqttPassword, next.Events); err != nil {
 		return Rule{}, err
 	}
 	next.UpdatedAt = nowMs
@@ -403,7 +424,7 @@ func (s *Store) deliverSync(rule Rule, event string, a alarm.Alarm, at int64, bo
 		}
 		for i := 0; i < maxAttempts; i++ {
 			attempts++
-			if perr := mqttPublishQoS1(rule.TargetURL, topic, body); perr != nil {
+			if perr := mqttPublishQoS1(rule, topic, body); perr != nil {
 				lastErr = perr.Error()
 			} else {
 				d := mk("delivered", "", 0)
@@ -450,14 +471,23 @@ func (s *Store) deliverSync(rule Rule, event string, a alarm.Alarm, at int64, bo
 
 // mqttPublishQoS1 短连接发布：dial → PUBLISH(QoS1) → 等 PUBACK → DISCONNECT。
 // 每次投递独立连接（低频事件面量级假设；连接池留需时立项）。
-func mqttPublishQoS1(brokerAddr, topic string, payload []byte) error {
-	// v0.61.0（R3 P2-2 处置）：校验器放行 [tcp://]mqtt:// 前缀形态，拨号前剥除
-	//（net.Dial 不识别 mqtt:// scheme——不剥则被接受的配置永远投递失败）。
-	addr := strings.TrimPrefix(strings.TrimPrefix(brokerAddr, "tcp://"), "mqtt://")
-	c, err := mqtt.Dial(addr, mqtt.Options{
+// v0.61.0（R3 P2-2 处置）：校验器放行 [tcp://]mqtt:// 前缀形态，拨号前剥除
+// （net.Dial 不识别 mqtt:// scheme——不剥则被接受的配置永远投递失败）。
+// v0.64.0（spec 0037）：支持认证（Username/Password）与 TLS（MqttTLS 或
+// tls:// 前缀映射；跳过证书校验——工业现场自签证书常态，登记 KI）。
+func mqttPublishQoS1(rule Rule, topic string, payload []byte) error {
+	addr := strings.TrimPrefix(strings.TrimPrefix(rule.TargetURL, "tcp://"), "mqtt://")
+	addr = strings.TrimPrefix(addr, "tls://")
+	opts := mqtt.Options{
 		ClientID:         "edgeflow-forward-" + newSeqID(time.Now().UnixMilli()),
 		ProtocolVersion5: true,
-	})
+		Username:         rule.MqttUsername,
+		Password:         rule.MqttPassword,
+	}
+	if rule.MqttTLS || strings.HasPrefix(rule.TargetURL, "tls://") {
+		opts.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // 工业现场自签证书常态，KI 登记
+	}
+	c, err := mqtt.Dial(addr, opts)
 	if err != nil {
 		return fmt.Errorf("mqtt dial: %w", err)
 	}
@@ -533,7 +563,7 @@ func (s *Store) persistLocked() error {
 }
 
 // newRule 构建并校验新规则（trim + 事件去重 + 字段校验 + id 生成）。
-func newRule(name, sinkType, targetURL, topic, secret string, events []string, enabled bool, nowMs int64) (Rule, error) {
+func newRule(name, sinkType, targetURL, topic, secret, mqttUsername, mqttPassword string, mqttTLS bool, events []string, enabled bool, nowMs int64) (Rule, error) {
 	name = strings.TrimSpace(name)
 	sinkType = strings.TrimSpace(sinkType)
 	if sinkType == "" {
@@ -542,8 +572,10 @@ func newRule(name, sinkType, targetURL, topic, secret string, events []string, e
 	targetURL = strings.TrimSpace(targetURL)
 	topic = strings.TrimSpace(topic)
 	secret = strings.TrimSpace(secret)
+	mqttUsername = strings.TrimSpace(mqttUsername)
+	mqttPassword = strings.TrimSpace(mqttPassword)
 	events = normalizeEvents(events)
-	if err := validateRuleFields(name, sinkType, targetURL, topic, secret, events); err != nil {
+	if err := validateRuleFields(name, sinkType, targetURL, topic, secret, mqttUsername, mqttPassword, events); err != nil {
 		return Rule{}, err
 	}
 	id, err := randID("fw")
@@ -551,14 +583,21 @@ func newRule(name, sinkType, targetURL, topic, secret string, events []string, e
 		return Rule{}, err
 	}
 	return Rule{ID: id, Name: name, TargetURL: targetURL, SinkType: sinkType, Topic: topic, Secret: secret,
+		MqttUsername: mqttUsername, MqttPassword: mqttPassword, MqttTLS: mqttTLS,
 		Events: events, Enabled: enabled, CreatedAt: nowMs, UpdatedAt: nowMs}, nil
 }
 
 // validateRuleFields 校验规则字段（Create/Update 共用）。地址语义按 sinkType 分叉：
 // webhook = http(s) 绝对地址（既有语义）；mqtt = [tcp://]host:port（v0.59.0，spec 0032）。
-func validateRuleFields(name, sinkType, targetURL, topic, secret string, events []string) error {
+func validateRuleFields(name, sinkType, targetURL, topic, secret, mqttUsername, mqttPassword string, events []string) error {
 	if name == "" || len(name) > maxNameLen {
 		return fmt.Errorf("%w: name 须 1..%d 字节", ErrInvalid, maxNameLen)
+	}
+	if len(mqttUsername) > maxSecretLen || len(mqttPassword) > maxSecretLen {
+		return fmt.Errorf("%w: mqttUsername/mqttPassword 须 ≤%d 字节", ErrInvalid, maxSecretLen)
+	}
+	if mqttPassword != "" && mqttUsername == "" {
+		return fmt.Errorf("%w: mqttPassword 须与 mqttUsername 成对", ErrInvalid)
 	}
 	switch sinkType {
 	case "", "webhook":

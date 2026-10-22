@@ -28,7 +28,7 @@ func TestV0590TestDeliveryWebhook(t *testing.T) {
 	defer rcv.Close()
 
 	s := New("")
-	r, err := s.Create("td", "", rcv.URL, "", "", []string{"alarm.raised"}, true, 1000)
+	r, err := s.Create("td", "", rcv.URL, "", "", "", "", false, []string{"alarm.raised"}, true, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestV0590TestDeliveryWebhook(t *testing.T) {
 // US-2 禁用规则测试投递 → ErrInvalid（启用后再测）；未知规则 → ErrNotFound。
 func TestV0590TestDeliveryGuards(t *testing.T) {
 	s := New("")
-	r, err := s.Create("off", "", "http://a.com/h", "", "", []string{"alarm.raised"}, false, 1000)
+	r, err := s.Create("off", "", "http://a.com/h", "", "", "", "", false, []string{"alarm.raised"}, false, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestV0590MqttSinkDispatch(t *testing.T) {
 	}
 
 	s := New("")
-	r, err := s.Create("mqtt-sink", "mqtt", b.Addr(), "t/fw", "", []string{"alarm.raised"}, true, 1000)
+	r, err := s.Create("mqtt-sink", "mqtt", b.Addr(), "t/fw", "", "", "", false, []string{"alarm.raised"}, true, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,16 +136,16 @@ got:
 // US-4 sinkType 校验：mqtt 无端口/含路径/非法形态拒绝；webhook 语义不变。
 func TestV0590SinkValidation(t *testing.T) {
 	s := New("")
-	if _, err := s.Create("m1", "mqtt", "127.0.0.1", "", "", []string{"alarm.raised"}, true, 1000); err == nil {
+	if _, err := s.Create("m1", "mqtt", "127.0.0.1", "", "", "", "", false, []string{"alarm.raised"}, true, 1000); err == nil {
 		t.Fatalf("mqtt 无端口应拒绝")
 	}
-	if _, err := s.Create("m2", "mqtt", "tcp://127.0.0.1:1883/x", "", "", []string{"alarm.raised"}, true, 1000); err == nil {
+	if _, err := s.Create("m2", "mqtt", "tcp://127.0.0.1:1883/x", "", "", "", "", false, []string{"alarm.raised"}, true, 1000); err == nil {
 		t.Fatalf("mqtt 含路径应拒绝")
 	}
-	if _, err := s.Create("m3", "kafka", "http://a.com", "", "", []string{"alarm.raised"}, true, 1000); err == nil {
+	if _, err := s.Create("m3", "kafka", "http://a.com", "", "", "", "", false, []string{"alarm.raised"}, true, 1000); err == nil {
 		t.Fatalf("非法 sinkType 应拒绝")
 	}
-	if _, err := s.Create("w1", "mqtt", "tcp://127.0.0.1:1883", "edgeflow/fw", "", []string{"alarm.raised"}, true, 1000); err != nil {
+	if _, err := s.Create("w1", "mqtt", "tcp://127.0.0.1:1883", "edgeflow/fw", "", "", "", false, []string{"alarm.raised"}, true, 1000); err != nil {
 		t.Fatalf("合法 mqtt 创建失败: %v", err)
 	}
 }

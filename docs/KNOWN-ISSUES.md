@@ -983,3 +983,10 @@ MQTT/OPC-UA/视频/模型面零触碰；v0240–v0350 冻结测试零改动。
 - R4（v0.60–61）：PASS 条件通过（P1×1+P3×4）——P1 golden 锚 hotfix 8bb8412、P3 快修 2+留档 2，报告 subagent_R4_review.md；KI §63 追记。
 - 全量 e2e 终验（-timeout 30m，两轮全部用例）：除 v0530 一用例超时偶发（全量套件资源竞争，单独复跑 PASS 14.911s 判非回归——TestSetpointFlushOnce 同型判例）外全部通过。
 - mqttsim race 高负载偶发一次（与全量 e2e 同窗口），二次复跑 ok 21.217s 判非回归。
+
+## §66 v0.64.0 MQTT sink 认证与 TLS 已知边界
+
+| # | 现象 | 影响 | 缓解/状态 |
+|---|---|---|---|
+| 1 | TLS 拨号 InsecureSkipVerify（不验证服务端证书链） | 中间人攻击风险（自签证书场景） | 工业现场自签证书常态；CA 验证模式（CAPool）留需时立项 |
+| 2 | mqttUsername/mqttPassword 明文存快照 | 同 Secret 语义（快照文件 0600） | 与 webhook Secret 同安全域；登记不扩大 |

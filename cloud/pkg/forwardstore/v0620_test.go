@@ -32,7 +32,7 @@ func TestV0620DispatchMuteSuppress(t *testing.T) {
 	defer rcv.Close()
 
 	s := New("")
-	r, err := s.Create("mute-link", "", rcv.URL, "", "", []string{"alarm.raised"}, true, 1000)
+	r, err := s.Create("mute-link", "", rcv.URL, "", "", "", "", false, []string{"alarm.raised"}, true, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -22,7 +22,7 @@ jobs:
           cache: true
 
       # lint 失败即失败（强制）：golangci-lint-action 检出问题后以非 0 退出，无静默降级
-      - name: 运行 golangci-lint（version: latest）
+      - name: "运行 golangci-lint（version: latest）"
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest

@@ -96,7 +96,7 @@ func TestV0470AppCatalogDeployE2E(t *testing.T) {
 		t.Fatalf("缺 image = %d, want 400", code)
 	}
 	// 列表分页
-	code, body, hdr := v0470Do(t, "GET", base+"/api/v1/applications?limit=1", nil)
+	code, _, hdr := v0470Do(t, "GET", base+"/api/v1/applications?limit=1", nil)
 	if code != 200 || hdr.Get("X-Total-Count") != "1" {
 		t.Fatalf("分页 = %d total=%q", code, hdr.Get("X-Total-Count"))
 	}
@@ -252,7 +252,7 @@ func TestV0470AppCatalogDeployE2E(t *testing.T) {
 	}
 	pkg := v0470BuildScriptPkg(t, "e2e-marker")
 	sum = sha256.Sum256(pkg)
-	req, err = http.NewRequest(http.MethodPut, base+"/api/v1/applications/demo-script/versions/v1.0.0/package", bytes.NewReader(pkg))
+	req, _ = http.NewRequest(http.MethodPut, base+"/api/v1/applications/demo-script/versions/v1.0.0/package", bytes.NewReader(pkg))
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("上传脚本包: %v", err)

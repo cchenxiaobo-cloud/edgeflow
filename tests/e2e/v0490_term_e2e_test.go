@@ -300,7 +300,7 @@ func TestV0490TermTerminalE2E(t *testing.T) {
 	t.Logf("US-4 白名单绿（reboot rejected + df 正常 + 边侧副账含 operator）")
 
 	// ── US-5 超时终止 ──
-	code, body = v0490TermDo(t, http.MethodPost, base+"/api/v1/term/sessions", opToken,
+	_, body = v0490TermDo(t, http.MethodPost, base+"/api/v1/term/sessions", opToken,
 		map[string]string{"nodeId": nodeID, "reason": "e2e 超时 US-5"})
 	var s5 v0490Session
 	_ = json.Unmarshal([]byte(body), &s5)

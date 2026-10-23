@@ -175,7 +175,7 @@ func expectedPropertyKeys(t *testing.T, typ reflect.Type) []string {
 			}
 		}
 		et := f.Type
-		for et.Kind() == reflect.Ptr {
+		for et.Kind() == reflect.Pointer {
 			et = et.Elem()
 		}
 		if isInline || (f.Anonymous && name == "") {

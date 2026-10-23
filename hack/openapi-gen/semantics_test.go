@@ -193,7 +193,7 @@ func deriveExpectedStruct(t *testing.T, typ reflect.Type) ([]string, []fieldExpe
 			// 未导出字段按 encoding/json 可见性规则：非内嵌一律忽略；
 			// 内嵌且类型未导出时仅 struct 参与（可能含导出字段），其余忽略。
 			pt := f.Type
-			for pt.Kind() == reflect.Ptr {
+			for pt.Kind() == reflect.Pointer {
 				pt = pt.Elem()
 			}
 			if !f.Anonymous || pt.Kind() != reflect.Struct {
@@ -220,7 +220,7 @@ func deriveExpectedStruct(t *testing.T, typ reflect.Type) ([]string, []fieldExpe
 			name = f.Name
 		}
 		et := f.Type
-		for et.Kind() == reflect.Ptr {
+		for et.Kind() == reflect.Pointer {
 			et = et.Elem()
 		}
 		if et.Kind() == reflect.Struct && (inline || (f.Anonymous && rawName == "")) {
@@ -240,7 +240,7 @@ func deriveExpectedStruct(t *testing.T, typ reflect.Type) ([]string, []fieldExpe
 // deriveExpectedSchema 独立推导字段类型的 OpenAPI 语义。
 func deriveExpectedSchema(t *testing.T, typ reflect.Type) *schemaExpect {
 	t.Helper()
-	for typ.Kind() == reflect.Ptr {
+	for typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 	if typ == reflect.TypeOf(time.Time{}) {
@@ -397,7 +397,7 @@ func crossCheckEncodingJSON(t *testing.T, name string, typ reflect.Type, node *y
 			continue
 		}
 		et := sf.Type
-		for et.Kind() == reflect.Ptr {
+		for et.Kind() == reflect.Pointer {
 			et = et.Elem()
 		}
 		if et.Kind() != reflect.Struct || !hasJSONOption(sf, "omitempty") {
@@ -461,7 +461,7 @@ func fieldForJSONName(t reflect.Type, key string) (reflect.StructField, bool) {
 		if f.PkgPath != "" {
 			// 与 fieldProps 相同的可见性规则：仅未导出类型的内嵌 struct 参与展开。
 			pt := f.Type
-			for pt.Kind() == reflect.Ptr {
+			for pt.Kind() == reflect.Pointer {
 				pt = pt.Elem()
 			}
 			if !f.Anonymous || pt.Kind() != reflect.Struct {
@@ -481,7 +481,7 @@ func fieldForJSONName(t reflect.Type, key string) (reflect.StructField, bool) {
 			}
 		}
 		et := f.Type
-		for et.Kind() == reflect.Ptr {
+		for et.Kind() == reflect.Pointer {
 			et = et.Elem()
 		}
 		if et.Kind() == reflect.Struct && (inline || (f.Anonymous && rawName == "")) {

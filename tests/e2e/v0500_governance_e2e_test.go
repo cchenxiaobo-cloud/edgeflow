@@ -108,7 +108,7 @@ func TestV0500GovernanceE2E(t *testing.T) {
 		t.Fatalf("US-2 创建车间B → %d", code)
 	}
 	shopB := region.ID
-	code, body = v0490TermDo(t, http.MethodPost, base+"/api/v1/regions", opToken,
+	_, body = v0490TermDo(t, http.MethodPost, base+"/api/v1/regions", opToken,
 		map[string]any{"name": "车间C"})
 	json.Unmarshal([]byte(body), &region)
 	shopC := region.ID
@@ -237,14 +237,14 @@ func TestV0500GovernanceE2E(t *testing.T) {
 
 	// ─── US-6 防环与删除约束 ───
 	t.Logf("US-6 防环：A→B→C 移动成环 409；删除约束 409×2 → 迁出后可删")
-	code, body = v0490TermDo(t, http.MethodPost, base+"/api/v1/regions", opToken, map[string]any{"name": "环A"})
+	_, body = v0490TermDo(t, http.MethodPost, base+"/api/v1/regions", opToken, map[string]any{"name": "环A"})
 	json.Unmarshal([]byte(body), &region)
 	ra := region.ID
-	code, body = v0490TermDo(t, http.MethodPost, base+"/api/v1/regions", opToken,
+	_, body = v0490TermDo(t, http.MethodPost, base+"/api/v1/regions", opToken,
 		map[string]any{"name": "环B", "parentId": ra})
 	json.Unmarshal([]byte(body), &region)
 	rb := region.ID
-	code, body = v0490TermDo(t, http.MethodPost, base+"/api/v1/regions", opToken,
+	_, body = v0490TermDo(t, http.MethodPost, base+"/api/v1/regions", opToken,
 		map[string]any{"name": "环C", "parentId": rb})
 	json.Unmarshal([]byte(body), &region)
 	rc := region.ID

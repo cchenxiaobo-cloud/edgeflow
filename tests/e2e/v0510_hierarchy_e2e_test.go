@@ -183,7 +183,7 @@ func TestV0510HierarchyE2E(t *testing.T) {
 		t.Fatalf("US-4 回读不符: %d %s", code, body)
 	}
 	// summary policySet 联动
-	code, body = v0490TermDo(t, http.MethodGet, base+"/api/v1/hierarchy/summary", viewToken, nil)
+	_, body = v0490TermDo(t, http.MethodGet, base+"/api/v1/hierarchy/summary", viewToken, nil)
 	json.Unmarshal([]byte(body), &summary)
 	if !strings.Contains(body, `"policySet":true`) {
 		t.Fatalf("US-4 summary policySet 不符: %s", body)

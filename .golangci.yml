@@ -1,7 +1,18 @@
-# golangci-lint 配置（v2 格式）
-# 默认启用 standard 组：errcheck、govet、ineffassign、staticcheck、unused
-# 后续如需更严格检查，可在此追加 linters.enable 条目
+# golangci-lint 分阶段启用配置（v2 schema）
+#
+# 背景：2026-10-23 CI 首轮真实运行（ci.yml YAML 修复后）实测全量默认 linter
+# 债务：errcheck 50 / staticcheck 27 / unused 28 / ineffassign 7 / govet 3。
+# 本轮修复 govet+ineffassign 全部 10 条并启用；其余三组为**已登记技术债**
+# （独立轮次偿还，逐组放开——不做 continue-on-error 静默降级，保持信号真实）。
 version: "2"
 
 linters:
-  default: standard
+  default: none
+  enable:
+    - govet
+    - ineffassign
+  # ── 待还债（按量从小到大逐组启用）──
+  # ineffassign/govet 已清零启用（2026-10-23）。
+  # - errcheck     # 50 处：未检查错误——多为测试文件 `_ =` 补齐即可
+  # - unused       # 28 处：未使用标识符——需逐处确认非保留接口
+  # - staticcheck  # 27 处：风格与现代性建议

@@ -152,7 +152,7 @@ func buildSchemas() *schemaSet {
 func (s *schemaSet) discover(t reflect.Type) {
 	for {
 		switch t.Kind() {
-		case reflect.Ptr, reflect.Slice, reflect.Array, reflect.Map:
+		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
 			t = t.Elem()
 			continue
 		}
@@ -180,7 +180,7 @@ func (s *schemaSet) discoverFields(t reflect.Type) {
 			// 未导出字段按 encoding/json 可见性规则：非内嵌一律忽略；
 			// 内嵌且类型未导出时仅 struct 参与（可能含导出字段），其余忽略。
 			pt := f.Type
-			for pt.Kind() == reflect.Ptr {
+			for pt.Kind() == reflect.Pointer {
 				pt = pt.Elem()
 			}
 			if !f.Anonymous || pt.Kind() != reflect.Struct {
@@ -219,7 +219,7 @@ func (s *schemaSet) fieldProps(t reflect.Type) (props []yamlPair, required []str
 			// 未导出字段按 encoding/json 可见性规则：非内嵌一律忽略；
 			// 内嵌且类型未导出时仅 struct 参与（可能含导出字段），其余忽略。
 			pt := f.Type
-			for pt.Kind() == reflect.Ptr {
+			for pt.Kind() == reflect.Pointer {
 				pt = pt.Elem()
 			}
 			if !f.Anonymous || pt.Kind() != reflect.Struct {
@@ -232,7 +232,7 @@ func (s *schemaSet) fieldProps(t reflect.Type) (props []yamlPair, required []str
 		}
 		name, opts := parseJSONTag(tag, f.Name)
 		et := f.Type
-		for et.Kind() == reflect.Ptr {
+		for et.Kind() == reflect.Pointer {
 			et = et.Elem()
 		}
 		// 内嵌展开判定基于原始 tag 名（无 tag 或空 tag 名的匿名 struct 字段），
@@ -254,7 +254,7 @@ func (s *schemaSet) fieldProps(t reflect.Type) (props []yamlPair, required []str
 
 // schemaOfType 将 Go 类型映射为 OpenAPI schema 节点。
 func (s *schemaSet) schemaOfType(t reflect.Type) *yamlNode {
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t == timeType {

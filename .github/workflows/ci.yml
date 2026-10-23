@@ -21,12 +21,14 @@ jobs:
           go-version: "1.26.x"
           cache: true
 
-      # lint 失败即失败（强制）：golangci-lint-action 检出问题后以非 0 退出，无静默降级
-      - name: "运行 golangci-lint（version: latest）"
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          args: run ./...
+      # lint 失败即失败（强制）。action 预编译二进制（go1.24）低于仓库工具链
+      # （go 1.26.2）会拒载配置——改源码安装与 setup-go 工具链一致；
+      # linter 集合见 .golangci.yml（分阶段启用，已登记技术债）。
+      - name: 安装 golangci-lint（源码编译，与仓库 Go 工具链一致）
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
+      - name: 运行 golangci-lint
+        run: "$(go env GOPATH)/bin/golangci-lint run ./..."
 
   build-test:
     name: Build & Test（覆盖率门槛 ≥70%）
@@ -50,13 +52,15 @@ jobs:
       - name: 编译（go build）
         run: go build ./...
 
-      - name: 单元测试（go test -race）
-        run: go test -race ./...
+      # e2e 套件（约 13 分钟）不进 race 步骤：默认 10m 超时必撞——由下方
+      # 独立步骤按项目门禁口径（-timeout 30m，无 race）运行。
+      - name: 单元测试（go test -race，不含 e2e）
+        run: go test -race -timeout 20m $(go list ./... | grep -v '/tests/e2e')
 
-      # 覆盖率门槛：总覆盖率 <70% 则 CI 失败
+      # 覆盖率门槛：仅单元包（首轮实测 71.7%）；总覆盖率 <70% 则 CI 失败
       - name: 覆盖率检查（总覆盖率 ≥70%）
         run: |
-          go test ./... -coverprofile=coverage.out
+          go test $(go list ./... | grep -v '/tests/e2e') -coverprofile=coverage.out
           total=$(go tool cover -func=coverage.out | tail -n 1 | awk '{print $3}' | tr -d '%')
           echo "总覆盖率: ${total}%"
           if awk -v t="$total" 'BEGIN { exit !(t >= 70) }'; then
@@ -65,3 +69,7 @@ jobs:
             echo "❌ 总覆盖率 ${total}% < 70%，未达门槛，CI 失败"
             exit 1
           fi
+
+      # 场景 e2e：项目版本门禁口径（全套约 13 分钟；-timeout 30m；无 race）
+      - name: 场景 e2e（-timeout 30m）
+        run: go test ./tests/e2e/ -count=1 -timeout 30m

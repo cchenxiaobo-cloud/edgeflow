@@ -214,7 +214,7 @@ func TestParseRTSPURL(t *testing.T) {
 	if u != "cam" || p != "s" || hp != "host:8554" || path != "/live" {
 		t.Fatalf("解析不符: %q %q %q %q", u, p, hp, path)
 	}
-	u, p, hp, path = parseRTSPURL("rtsp://host")
+	_, _, hp, path = parseRTSPURL("rtsp://host")
 	if hp != "host" || path != "/" {
 		t.Fatalf("缺端口/路径默认不符: %q %q", hp, path)
 	}

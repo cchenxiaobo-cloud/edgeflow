@@ -395,14 +395,14 @@ func TestModelAPIReleaseGuardRails(t *testing.T) {
 	t.Run("同模型在途发布→409", func(t *testing.T) {
 		srv, _, _ := newContractEnv(t, "node-a")
 		mustCreateModelVersion(t, srv, "mnist", "v1.0.0")
-		code, body := doJSON(t, http.MethodPost, srv.URL+"/api/v1/models/mnist/releases", map[string]any{
+		code, _ := doJSON(t, http.MethodPost, srv.URL+"/api/v1/models/mnist/releases", map[string]any{
 			"target":  map[string]any{"type": "percentage", "percentage": 100},
 			"version": "v1.0.0", "batchSize": 1,
 		})
 		if code != http.StatusAccepted {
 			t.Fatalf("首发布 = %d, want 202", code)
 		}
-		code, body = doJSON(t, http.MethodPost, srv.URL+"/api/v1/models/mnist/releases", map[string]any{
+		code, body := doJSON(t, http.MethodPost, srv.URL+"/api/v1/models/mnist/releases", map[string]any{
 			"target":  map[string]any{"type": "percentage", "percentage": 100},
 			"version": "v1.0.0", "batchSize": 1,
 		})

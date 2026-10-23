@@ -37,7 +37,9 @@ env:
   #   ghcr.io   → GitHub Container Registry（配 GITHUB_TOKEN 即用）
   #   docker.io → Docker Hub（需配 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets）
   REGISTRY: ghcr.io
-  IMAGE_ORG: edgeflow
+  # ghcr.io 要求镜像必须落在仓库属主命名空间下（GITHUB_TOKEN 权限边界）——
+  # 原占位值 edgeflow 会导致推送 403（R6 返工时由发布任务修正）。
+  IMAGE_ORG: ${{ github.repository_owner }}
   # 双架构目标：边缘设备以 arm64 为主，云端/开发机多为 amd64
   PLATFORMS: linux/amd64,linux/arm64
 

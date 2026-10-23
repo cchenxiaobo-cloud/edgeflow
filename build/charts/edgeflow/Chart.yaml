@@ -7,7 +7,7 @@ type: application
 version: 0.66.0
 
 # 应用版本号：对应被部署应用的版本（与 Makefile VERSION 保持一致）
-appVersion: "v0.25.0"
+appVersion: "v0.66.0"
 
 keywords:
   - edgeflow

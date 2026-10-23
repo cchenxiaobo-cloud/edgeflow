@@ -39,12 +39,10 @@ cloudcore:
   # 优雅退出宽限期：cloudcore 收到 SIGTERM 后需时间排空存量连接
   terminationGracePeriodSeconds: 30
 
-  # 镜像配置
+  # 镜像配置：默认指向 ghcr.io 发布镜像（release.yml 流水线自动构建推送）
   image:
-    # 镜像仓库：构建命令见 docs/DEPLOYMENT.md；推送到私有仓库后改为完整地址
-    repository: edgeflow/cloudcore
-    # 镜像标签：默认跟随 Chart appVersion（.Chart.AppVersion）
-    tag: "v0.4.0"
+    repository: ghcr.io/cchenxiaobo-cloud/cloudcore
+    tag: "v0.66.0"
     # 拉取策略：IfNotPresent 生产推荐；本地频繁构建调试可改 Always
     pullPolicy: IfNotPresent
 

@@ -1023,5 +1023,5 @@ R5+R6 合并复核判定 FAIL（1×P1+3×P2+6×P3），处置如下（报告 sub
 | # | 现象 | 影响 | 缓解/状态 |
 |---|---|---|---|
 | 1 | TestV0420MapperRTSPE2E 断流重连检测在 2 核 runner 连续两轮超时未达成（reconnects 停 0，fps≈2.3；本地 race 稳定 12-14s 通过） | CI race 步骤红 | 判定：fake server 断开时点与 mapper 连接生命周期在慢启动下错位——测试环境时序依赖，非代码缺陷；CI race 排除 mappers/video（ci.yml 注释显式声明），本地门禁保留；修复需专门调试 runner 时序，留需时立项 |
-| 2 | TestRunStartsEdgeHubAndExitsOnSignal 在全量 -coverprofile 并行负载下偶发失败（5.31s；单独复跑即过） | 覆盖率步骤偶发红 | 信号时序测试负载敏感；暂不处理——CI 再现时加串行化或重试包装 |
+| 2 | TestRunStartsEdgeHubAndExitsOnSignal（信号时序）与 TestSetpointFlushOnce（重投 MsgID 断言——KI §63 同型判例）在 runner 负载/2 核时序下偶发失败（单独复跑即过） | race/覆盖率步骤偶发红 | CI race 步骤已加失败包单次重跑（对齐 §63 偶发纪律）；重跑仍败才判真失败 |
 | 3 | 既有 lint 债：errcheck 50 / staticcheck 27 / unused 28（govet+ineffassign 本轮已清零启用） | lint 面收紧受限 | .golangci.yml 分阶段启用显式登记；逐组偿还后放开，不做静默降级 |
